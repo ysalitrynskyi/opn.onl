@@ -1,0 +1,115 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Force light color scheme for all UI elements */
+  color-scheme: light;
+}
+
+html {
+  /* Prevent browser from applying dark mode to form controls */
+  color-scheme: light only;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+/* Force all inputs to have light backgrounds regardless of system theme */
+input,
+textarea,
+select {
+  color-scheme: light;
+  background-color: white !important;
+  color: #0f172a !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-400;
+}
+
+*:focus-visible {
+  @apply outline-none ring-2 ring-primary-500 ring-offset-2;
+}
+
+::selection {
+  @apply bg-primary-100 text-primary-900;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.5s ease-out forwards;
+}
+
+.prose h2 {
+  @apply text-2xl font-bold text-slate-900 mt-8 mb-4;
+}
+
+.prose h3 {
+  @apply text-lg font-semibold text-slate-900 mt-6 mb-2;
+}
+
+.prose p {
+  @apply text-slate-600 leading-relaxed mb-4;
+}
+
+.prose ul {
+  @apply list-disc pl-5 space-y-1 mb-4 text-slate-600;
+}
+
+.prose a {
+  @apply text-primary-600 hover:text-primary-700 underline;
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0px 1000px white inset;
+  -webkit-text-fill-color: #0f172a;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  text-rendering: optimizeLegibility;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}

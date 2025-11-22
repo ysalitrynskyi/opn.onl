@@ -1,0 +1,25 @@
+# Build artifacts
+target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files (IMPORTANT: contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# GeoIP database (must be downloaded separately)
+*.mmdb
+
+# Editor
+*.bak
+*.tmp

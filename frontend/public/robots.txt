@@ -1,0 +1,17 @@
+# robots.txt for opn.onl
+
+User-agent: *
+Allow: /
+
+# Disallow private/auth pages
+Disallow: /dashboard
+Disallow: /settings
+Disallow: /analytics
+Disallow: /password
+Disallow: /verify-email
+Disallow: /reset-password
+Disallow: /forgot-password
+
+# Sitemap
+Sitemap: https://opn.onl/sitemap.xml
+

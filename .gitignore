@@ -1,0 +1,47 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+.DS_Store
+coverage/
+.vscode/
+.idea/
+*.log
+*.tsbuildinfo
+
+# Database
+db_data/
+postgres_data/
+redis_data/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+playwright-report/
+test-results/
+
+# Build
+build/
+
+# GeoIP database (user must download)
+*.mmdb

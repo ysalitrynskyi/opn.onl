@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# Tests
+coverage/
+e2e/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+playwright-report/
+test-results/
+
+# Documentation
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Editor
+*.bak
+*.tmp
+
+# Scripts (not needed in production)
+scripts/
+
+# TypeScript build info
+*.tsbuildinfo
+

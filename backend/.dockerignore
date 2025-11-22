@@ -1,0 +1,22 @@
+# Build artifacts
+target/
+
+# Tests
+tests/
+
+# Development
+.env
+.env.local
+*.log
+
+# GeoIP database (downloaded at runtime)
+data/*.mmdb
+*.mmdb
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
