@@ -30,18 +30,46 @@ impl EmailService {
 
         let mailer = if let (Some(host), Some(user), Some(pass)) = (smtp_host, smtp_user, smtp_pass) {
             let creds = Credentials::new(user, pass);
-            match AsyncSmtpTransport::<Tokio1Executor>::relay(&host) {
-                Ok(transport) => {
-                    info!("SMTP email service initialized");
-                    Some(
-                        transport
+            
+            // Port 465 uses TLS/SSL directly, port 587 uses STARTTLS
+            let transport_result = if smtp_port == 465 {
+                // Use TLS/SSL for port 465
+                match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
+                    Ok(tls_params) => {
+                        Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                            .port(smtp_port)
+                            .tls(lettre::transport::smtp::client::Tls::Wrapper(tls_params))
+                            .credentials(creds)
+                            .build())
+                    }
+                    Err(e) => {
+                        error!("Failed to create TLS parameters for port 465: {}", e);
+                        Err(format!("TLS error: {}", e))
+                    }
+                }
+            } else {
+                // Use STARTTLS for port 587 and others
+                match AsyncSmtpTransport::<Tokio1Executor>::relay(&host) {
+                    Ok(transport) => {
+                        Ok(transport
                             .port(smtp_port)
                             .credentials(creds)
-                            .build()
-                    )
+                            .build())
+                    }
+                    Err(e) => {
+                        error!("Failed to create SMTP transport: {}", e);
+                        Err(format!("SMTP relay error: {}", e))
+                    }
+                }
+            };
+            
+            match transport_result {
+                Ok(transport) => {
+                    info!("SMTP email service initialized (host: {}, port: {})", host, smtp_port);
+                    Some(transport)
                 }
                 Err(e) => {
-                    error!("Failed to create SMTP transport: {}", e);
+                    error!("Failed to initialize SMTP: {}", e);
                     None
                 }
             }

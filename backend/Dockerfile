@@ -38,7 +38,7 @@ RUN mkdir -p /app/logs /app/data && chown -R app:app /app
 USER app
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD wget --quiet --tries=1 --timeout=5 --spider http://localhost:3000/health 2>&1 || curl -f http://localhost:3000/health >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
