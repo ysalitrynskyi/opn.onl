@@ -1,8 +1,8 @@
 # Build stage
 FROM rust:1.85-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
+# Install build dependencies (curl needed for utoipa-swagger-ui)
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl
 
 # Create app directory
 WORKDIR /app
