@@ -416,6 +416,77 @@ pub async fn create_link(
     }
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct LinkPreviewResponse {
+    pub code: String,
+    pub short_url: String,
+    pub original_url: String,
+    pub domain: String,
+    pub has_password: bool,
+    pub is_expired: bool,
+    pub created_at: String,
+    pub click_count: i32,
+}
+
+/// Get link preview (add + to any short link URL to see preview)
+#[utoipa::path(
+    get,
+    path = "/{code}/preview",
+    params(
+        ("code" = String, Path, description = "Short link code")
+    ),
+    responses(
+        (status = 200, description = "Link preview", body = LinkPreviewResponse),
+        (status = 404, description = "Link not found"),
+    ),
+    tag = "Links"
+)]
+pub async fn preview_link(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+) -> impl IntoResponse {
+    // Remove trailing + if present (for URL compatibility)
+    let clean_code = code.trim_end_matches('+');
+    
+    let link = links::Entity::find()
+        .filter(links::Column::Code.eq(clean_code))
+        .filter(links::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    match link {
+        Some(link) => {
+            let is_expired = if let Some(exp) = link.expires_at {
+                exp < Utc::now().naive_utc()
+            } else {
+                false
+            };
+
+            // Extract domain from original URL
+            let domain = url::Url::parse(&link.original_url)
+                .map(|u| u.host_str().unwrap_or("unknown").to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            let base_url = get_base_url();
+
+            (StatusCode::OK, Json(LinkPreviewResponse {
+                code: link.code.clone(),
+                short_url: format!("{}/{}", base_url, link.code),
+                original_url: link.original_url,
+                domain,
+                has_password: link.password_hash.is_some(),
+                is_expired,
+                created_at: link.created_at.to_string(),
+                click_count: link.click_count,
+            })).into_response()
+        }
+        None => {
+            (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+        }
+    }
+}
+
 /// Redirect to original URL
 #[utoipa::path(
     get,

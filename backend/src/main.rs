@@ -289,6 +289,7 @@ async fn main() {
         
         // Redirect route (must be last to not conflict with other routes)
         .route("/:code/verify", post(handlers::links::verify_link_password))
+        .route("/:code/preview", get(handlers::links::preview_link))
         .route("/:code", get(handlers::links::redirect_link))
         
         // State

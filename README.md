@@ -527,3 +527,11 @@ opn.onl is not responsible for content accessible through shortened links. We ac
 ---
 
 Made with ❤️ by [ysalitrynskyi](https://github.com/ysalitrynskyi)
+
+## 💖 Support
+
+If you find opn.onl useful, please consider supporting its development:
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/ysalitrynskyi)
+
+Your sponsorship helps cover hosting costs and enables continued development of new features!

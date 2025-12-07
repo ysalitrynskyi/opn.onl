@@ -131,7 +131,13 @@ pub async fn register(
                 }
             }
 
-            let token = create_jwt(user_res.last_insert_id, &payload.email).unwrap();
+            let token = match create_jwt(user_res.last_insert_id, &payload.email) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to create JWT: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to create session".to_string() })).into_response();
+                }
+            };
             (StatusCode::CREATED, Json(AuthResponse { 
                 token,
                 user_id: user_res.last_insert_id,
@@ -177,7 +183,13 @@ pub async fn login(
 
     if let Some(user) = user {
         if verify_password(&payload.password, &user.password_hash).unwrap_or(false) {
-            let token = create_jwt(user.id, &user.email).unwrap();
+            let token = match create_jwt(user.id, &user.email) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to create JWT: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to create session".to_string() })).into_response();
+                }
+            };
             return (StatusCode::OK, Json(AuthResponse { 
                 token,
                 user_id: user.id,

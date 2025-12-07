@@ -106,8 +106,17 @@ pub async fn delete_user(
     headers: HeaderMap,
     Path(user_id): Path<i32>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return e.into_response();
+    let admin_id = match require_admin(&state, &headers).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    // SECURITY: Prevent admin from deleting themselves
+    if admin_id == user_id {
+        return (StatusCode::FORBIDDEN, Json(AdminResponse {
+            success: false,
+            message: "Cannot delete your own account".to_string(),
+        })).into_response();
     }
 
     let user = users::Entity::find_by_id(user_id)
@@ -175,8 +184,17 @@ pub async fn hard_delete_user(
     headers: HeaderMap,
     Path(user_id): Path<i32>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return e.into_response();
+    let admin_id = match require_admin(&state, &headers).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    // SECURITY: Prevent admin from hard deleting themselves
+    if admin_id == user_id {
+        return (StatusCode::FORBIDDEN, Json(AdminResponse {
+            success: false,
+            message: "Cannot permanently delete your own account".to_string(),
+        })).into_response();
     }
 
     // First delete all user's links and associated data
@@ -451,6 +469,75 @@ pub async fn make_admin(
         return (StatusCode::OK, Json(AdminResponse {
             success: true,
             message: format!("User {} is now an admin", user_id),
+        })).into_response();
+    }
+
+    (StatusCode::NOT_FOUND, Json(AdminResponse {
+        success: false,
+        message: "User not found".to_string(),
+    })).into_response()
+}
+
+/// Remove admin status from a user (admin only)
+#[utoipa::path(
+    post,
+    path = "/admin/users/{user_id}/remove-admin",
+    params(
+        ("user_id" = i32, Path, description = "User ID to remove admin from")
+    ),
+    responses(
+        (status = 200, description = "Admin status removed", body = AdminResponse),
+        (status = 403, description = "Admin access required or cannot demote self"),
+        (status = 404, description = "User not found"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn remove_admin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<i32>,
+) -> impl IntoResponse {
+    let admin_id = match require_admin(&state, &headers).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    // SECURITY: Prevent admin from demoting themselves
+    if admin_id == user_id {
+        return (StatusCode::FORBIDDEN, Json(AdminResponse {
+            success: false,
+            message: "Cannot remove your own admin status".to_string(),
+        })).into_response();
+    }
+
+    let user = users::Entity::find_by_id(user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(user) = user {
+        if !user.is_admin {
+            return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+                success: false,
+                message: "User is not an admin".to_string(),
+            })).into_response();
+        }
+
+        let mut active_user: users::ActiveModel = user.into();
+        active_user.is_admin = Set(false);
+        
+        if let Err(_) = active_user.update(&state.db).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to update user".to_string(),
+            })).into_response();
+        }
+
+        return (StatusCode::OK, Json(AdminResponse {
+            success: true,
+            message: format!("Admin status removed from user {}", user_id),
         })).into_response();
     }
 
@@ -887,65 +974,4 @@ pub async fn get_all_users(
     }).collect();
 
     (StatusCode::OK, Json(responses)).into_response()
-}
-
-/// Remove admin status (admin only)
-#[utoipa::path(
-    post,
-    path = "/admin/users/{user_id}/remove-admin",
-    params(
-        ("user_id" = i32, Path, description = "User ID to remove admin status")
-    ),
-    responses(
-        (status = 200, description = "Admin status removed", body = AdminResponse),
-        (status = 403, description = "Admin access required"),
-        (status = 404, description = "User not found"),
-    ),
-    tag = "Admin",
-    security(("bearer_auth" = []))
-)]
-pub async fn remove_admin(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(user_id): Path<i32>,
-) -> impl IntoResponse {
-    let admin_id = match require_admin(&state, &headers).await {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-
-    if admin_id == user_id {
-        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-            success: false,
-            message: "Cannot remove your own admin status".to_string(),
-        })).into_response();
-    }
-
-    let user = users::Entity::find_by_id(user_id)
-        .filter(users::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
-
-    if let Some(user) = user {
-        let mut active_user: users::ActiveModel = user.into();
-        active_user.is_admin = Set(false);
-        
-        if let Err(_) = active_user.update(&state.db).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to update user".to_string(),
-            })).into_response();
-        }
-
-        return (StatusCode::OK, Json(AdminResponse {
-            success: true,
-            message: format!("User {} is no longer an admin", user_id),
-        })).into_response();
-    }
-
-    (StatusCode::NOT_FOUND, Json(AdminResponse {
-        success: false,
-        message: "User not found".to_string(),
-    })).into_response()
 }
