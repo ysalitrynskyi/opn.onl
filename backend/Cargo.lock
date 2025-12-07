@@ -3413,6 +3413,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "urlencoding",
  "user-agent-parser",
  "utoipa",
  "utoipa-swagger-ui",

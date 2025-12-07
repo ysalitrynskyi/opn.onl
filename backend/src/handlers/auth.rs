@@ -588,6 +588,9 @@ pub struct AppSettingsResponse {
     pub custom_aliases_enabled: bool,
     pub max_links_per_user: Option<i32>,
     pub passkeys_enabled: bool,
+    pub min_alias_length: usize,
+    pub max_alias_length: usize,
+    pub url_sanitization_enabled: bool,
 }
 
 /// Get app settings
@@ -613,12 +616,30 @@ pub async fn get_app_settings() -> impl IntoResponse {
     let max_links_per_user = std::env::var("MAX_LINKS_PER_USER")
         .ok()
         .and_then(|v| v.parse().ok());
+    
+    let min_alias_length = std::env::var("MIN_ALIAS_LENGTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    
+    let max_alias_length = std::env::var("MAX_ALIAS_LENGTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+    
+    let url_sanitization_enabled = std::env::var("ENABLE_URL_SANITIZATION")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
 
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,
         custom_aliases_enabled,
         max_links_per_user,
         passkeys_enabled: true,
+        min_alias_length,
+        max_alias_length,
+        url_sanitization_enabled,
     }))
 }
 

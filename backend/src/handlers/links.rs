@@ -52,14 +52,127 @@ async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String>
     Ok(())
 }
 
+// ============= Configuration =============
+
+/// Get minimum alias length from ENV (default: 5)
+fn get_min_alias_length() -> usize {
+    std::env::var("MIN_ALIAS_LENGTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5)
+}
+
+/// Get maximum alias length from ENV (default: 50)
+fn get_max_alias_length() -> usize {
+    std::env::var("MAX_ALIAS_LENGTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+}
+
+/// Check if URL sanitization is enabled (default: true)
+fn is_url_sanitization_enabled() -> bool {
+    std::env::var("ENABLE_URL_SANITIZATION")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true)
+}
+
+// ============= URL Validation =============
+
+/// Validate URL is http/https only and sanitize if enabled
+fn validate_url(url: &str) -> Result<String, String> {
+    // Must be a valid URL
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
+    
+    // Must be http or https
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("URL must use http or https protocol".to_string());
+    }
+    
+    // Must have a host
+    if parsed.host_str().is_none() {
+        return Err("URL must have a valid host".to_string());
+    }
+    
+    // Sanitization checks (if enabled)
+    if is_url_sanitization_enabled() {
+        let url_lower = url.to_lowercase();
+        
+        // Block javascript: URLs (XSS)
+        if url_lower.contains("javascript:") {
+            return Err("URL contains potentially malicious content".to_string());
+        }
+        
+        // Block data: URLs (can contain malicious payloads)
+        if url_lower.contains("data:") {
+            return Err("Data URLs are not allowed".to_string());
+        }
+        
+        // Block common XSS patterns in URL
+        let xss_patterns = [
+            "<script", "</script>", "onerror=", "onload=", "onclick=",
+            "onmouseover=", "onfocus=", "onblur=", "eval(", "alert(",
+            "document.cookie", "document.location", "window.location",
+        ];
+        
+        for pattern in xss_patterns {
+            if url_lower.contains(pattern) {
+                return Err("URL contains potentially malicious content".to_string());
+            }
+        }
+        
+        // Block URLs with encoded malicious content
+        if let Ok(decoded) = urlencoding::decode(url) {
+            let decoded_lower = decoded.to_lowercase();
+            for pattern in xss_patterns {
+                if decoded_lower.contains(pattern) {
+                    return Err("URL contains encoded malicious content".to_string());
+                }
+            }
+        }
+        
+        // Block extremely long URLs (potential DoS)
+        if url.len() > 2048 {
+            return Err("URL is too long (max 2048 characters)".to_string());
+        }
+    }
+    
+    Ok(url.to_string())
+}
+
+/// Validate alias format and length
+fn validate_alias(alias: &str) -> Result<(), String> {
+    let min_len = get_min_alias_length();
+    let max_len = get_max_alias_length();
+    
+    if alias.len() < min_len {
+        return Err(format!("Alias must be at least {} characters", min_len));
+    }
+    
+    if alias.len() > max_len {
+        return Err(format!("Alias must be at most {} characters", max_len));
+    }
+    
+    // Only allow alphanumeric, hyphens, and underscores
+    if !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Alias can only contain letters, numbers, hyphens, and underscores".to_string());
+    }
+    
+    // Cannot start or end with hyphen/underscore
+    if alias.starts_with('-') || alias.starts_with('_') || alias.ends_with('-') || alias.ends_with('_') {
+        return Err("Alias cannot start or end with hyphen or underscore".to_string());
+    }
+    
+    Ok(())
+}
+
 // ============= DTOs =============
 
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct CreateLinkRequest {
-    #[validate(url)]
     #[serde(default)]
     pub original_url: String,
-    #[validate(length(min = 1, max = 50))]
     pub custom_alias: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub password: Option<String>,
@@ -73,7 +186,6 @@ pub struct CreateLinkRequest {
 
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct UpdateLinkRequest {
-    #[validate(url)]
     pub original_url: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub password: Option<String>,
@@ -95,7 +207,7 @@ pub struct BulkCreateLinkRequest {
 }
 
 fn is_valid_url(url: &str) -> bool {
-    url::Url::parse(url).map(|u| u.scheme() == "http" || u.scheme() == "https").unwrap_or(false)
+    validate_url(url).is_ok()
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -258,9 +370,11 @@ pub async fn create_link(
     headers: HeaderMap,
     Json(payload): Json<CreateLinkRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = payload.validate() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
-    }
+    // Validate URL first
+    let validated_url = match validate_url(&payload.original_url) {
+        Ok(url) => url,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
 
     let user_id = get_user_id_from_header(&headers);
 
@@ -280,6 +394,11 @@ pub async fn create_link(
         // Check if custom aliases are enabled
         if !custom_aliases_enabled {
             return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Custom aliases are disabled".to_string() })).into_response();
+        }
+        
+        // Validate alias format and length
+        if let Err(e) = validate_alias(&alias) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
         
         // Check if alias exists (active links)
@@ -308,15 +427,10 @@ pub async fn create_link(
             }
         }
         
-        // Check if URL or domain is blocked
-        if let Err(e) = check_blocked(&state.db, &payload.original_url).await {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
-        }
-        
         alias
     } else {
         // Check if URL or domain is blocked
-        if let Err(e) = check_blocked(&state.db, &payload.original_url).await {
+        if let Err(e) = check_blocked(&state.db, &validated_url).await {
             return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
         }
         
@@ -358,7 +472,7 @@ pub async fn create_link(
     }
 
     let link = links::ActiveModel {
-        original_url: Set(payload.original_url.clone()),
+        original_url: Set(validated_url.clone()),
         code: Set(code.clone()),
         user_id: Set(user_id),
         expires_at: Set(payload.expires_at.map(|d| d.naive_utc())),
@@ -1046,10 +1160,6 @@ pub async fn update_link(
     headers: HeaderMap,
     Json(payload): Json<UpdateLinkRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = payload.validate() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
-    }
-
     let user_id = match get_user_id_from_header(&headers) {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
@@ -1068,11 +1178,16 @@ pub async fn update_link(
         let mut active_link: links::ActiveModel = link.clone().into();
 
         if let Some(ref url) = payload.original_url {
+            // Validate URL format and sanitize
+            let validated_url = match validate_url(url) {
+                Ok(u) => u,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+            };
             // Check if new URL is blocked
-            if let Err(e) = check_blocked(&state.db, url).await {
+            if let Err(e) = check_blocked(&state.db, &validated_url).await {
                 return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
             }
-            active_link.original_url = Set(url.clone());
+            active_link.original_url = Set(validated_url);
         }
 
         if payload.remove_expiration == Some(true) {

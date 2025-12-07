@@ -25,6 +25,12 @@ interface LinkData {
     tags: { id: number; name: string; color: string }[];
 }
 
+interface AppSettings {
+    custom_aliases_enabled: boolean;
+    min_alias_length: number;
+    max_alias_length: number;
+}
+
 interface EditModalProps {
     link: LinkData;
     onClose: () => void;
@@ -327,6 +333,11 @@ export default function Dashboard() {
     const [currentPage, setCurrentPage] = useState(1);
     const [sortBy, setSortBy] = useState<'date' | 'clicks'>('date');
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+    const [appSettings, setAppSettings] = useState<AppSettings>({ 
+        custom_aliases_enabled: true, 
+        min_alias_length: 5, 
+        max_alias_length: 50 
+    });
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -336,7 +347,20 @@ export default function Dashboard() {
             return;
         }
         fetchLinks();
+        fetchSettings();
     }, [navigate]);
+
+    const fetchSettings = async () => {
+        try {
+            const res = await fetch(API_ENDPOINTS.appSettings);
+            if (res.ok) {
+                const data = await res.json();
+                setAppSettings(data);
+            }
+        } catch (err) {
+            console.error('Failed to fetch settings', err);
+        }
+    };
 
     // Filter and sort links
     const filteredLinks = useMemo(() => {
@@ -403,6 +427,32 @@ export default function Dashboard() {
         e.preventDefault();
         setCreating(true);
         setError('');
+        
+        // Validate alias length if provided
+        if (alias) {
+            if (alias.length < appSettings.min_alias_length) {
+                setError(`Alias must be at least ${appSettings.min_alias_length} characters`);
+                setCreating(false);
+                return;
+            }
+            if (alias.length > appSettings.max_alias_length) {
+                setError(`Alias must be at most ${appSettings.max_alias_length} characters`);
+                setCreating(false);
+                return;
+            }
+            // Check for valid characters
+            if (!/^[a-zA-Z0-9_-]+$/.test(alias)) {
+                setError('Alias can only contain letters, numbers, hyphens, and underscores');
+                setCreating(false);
+                return;
+            }
+            // Check for leading/trailing special chars
+            if (/^[-_]|[-_]$/.test(alias)) {
+                setError('Alias cannot start or end with hyphen or underscore');
+                setCreating(false);
+                return;
+            }
+        }
         
         try {
             const res = await fetch(API_ENDPOINTS.links, {
@@ -603,13 +653,17 @@ export default function Dashboard() {
                             value={newUrl}
                             onChange={(e) => setNewUrl(e.target.value)}
                         />
-                        <input
-                            type="text"
-                            placeholder="alias (optional)"
-                            className="sm:w-40 rounded-lg border border-slate-300 px-4 py-2.5 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                            value={alias}
-                            onChange={(e) => setAlias(e.target.value)}
-                        />
+                        {appSettings.custom_aliases_enabled && (
+                            <input
+                                type="text"
+                                placeholder={`alias (${appSettings.min_alias_length}-${appSettings.max_alias_length} chars)`}
+                                className="sm:w-48 rounded-lg border border-slate-300 px-4 py-2.5 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                value={alias}
+                                onChange={(e) => setAlias(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
+                                minLength={appSettings.min_alias_length}
+                                maxLength={appSettings.max_alias_length}
+                            />
+                        )}
                         <button
                             type="submit"
                             disabled={creating}
