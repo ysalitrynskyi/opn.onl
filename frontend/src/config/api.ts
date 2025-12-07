@@ -4,6 +4,9 @@
 export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export const API_ENDPOINTS = {
+    // Base URL for constructing custom endpoints
+    base: API_BASE_URL,
+    
     // Auth
     register: `${API_BASE_URL}/auth/register`,
     login: `${API_BASE_URL}/auth/login`,
@@ -69,6 +72,21 @@ export const API_ENDPOINTS = {
     // API Docs
     swagger: `${API_BASE_URL}/swagger-ui`,
     openapi: `${API_BASE_URL}/api-docs/openapi.json`,
+    
+    // Admin
+    adminStats: `${API_BASE_URL}/admin/stats`,
+    adminUsers: `${API_BASE_URL}/admin/users`,
+    adminUser: (id: number) => `${API_BASE_URL}/admin/users/${id}`,
+    adminUserHardDelete: (id: number) => `${API_BASE_URL}/admin/users/${id}/hard`,
+    adminUserRestore: (id: number) => `${API_BASE_URL}/admin/users/${id}/restore`,
+    adminUserMakeAdmin: (id: number) => `${API_BASE_URL}/admin/users/${id}/make-admin`,
+    adminUserRemoveAdmin: (id: number) => `${API_BASE_URL}/admin/users/${id}/remove-admin`,
+    adminBlockedLinks: `${API_BASE_URL}/admin/blocked/links`,
+    adminBlockedLink: (id: number) => `${API_BASE_URL}/admin/blocked/links/${id}`,
+    adminBlockedDomains: `${API_BASE_URL}/admin/blocked/domains`,
+    adminBlockedDomain: (id: number) => `${API_BASE_URL}/admin/blocked/domains/${id}`,
+    adminBackup: `${API_BASE_URL}/admin/backup`,
+    adminBackupCleanup: (keep: number) => `${API_BASE_URL}/admin/backup/cleanup/${keep}`,
 };
 
 // Helper to get auth headers

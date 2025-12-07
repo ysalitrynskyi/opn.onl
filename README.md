@@ -150,7 +150,9 @@ curl https://api.opn.onl/health
 Docker images are automatically built by GitHub Actions on every push to `release`.
 
 1. In Portainer: Stacks → Add Stack
-2. Use `docker-compose.portainer.amd64.yml` or `docker-compose.portainer.arm64.yml`
+2. Choose the appropriate file for your architecture:
+   - `docker-compose.portainer.amd64.yml` - Intel/AMD servers
+   - `docker-compose.portainer.arm64.yml` - ARM servers (Raspberry Pi, Apple Silicon, etc.)
 3. Add environment variables:
    ```
    BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
