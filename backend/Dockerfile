@@ -39,6 +39,6 @@ USER app
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
-  CMD wget -q --spider http://localhost:3000/health || exit 1
+  CMD curl -fsS http://localhost:3000/health || exit 1
 
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
