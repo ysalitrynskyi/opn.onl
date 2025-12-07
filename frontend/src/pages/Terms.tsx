@@ -150,7 +150,27 @@ export default function Terms() {
                         </p>
                     </TermsSection>
 
-                    <TermsSection number="10" title="Changes to Terms">
+                    <TermsSection number="10" title="Third-Party Content Disclaimer">
+                        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+                            <div className="flex items-start gap-3">
+                                <AlertTriangle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                                <p className="text-red-800 text-sm">
+                                    <strong>Important Notice:</strong> opn.onl is not responsible for the content 
+                                    of links created by users.
+                                </p>
+                            </div>
+                        </div>
+                        <ul className="list-disc pl-5 space-y-2">
+                            <li>We do not control, endorse, or verify the content accessible through shortened links</li>
+                            <li>Users are solely responsible for the content they link to</li>
+                            <li>We actively work to remove malicious links when reported, but cannot guarantee detection of all harmful content</li>
+                            <li>If you encounter a malicious link, please report it to <a href="mailto:abuse@opn.onl" className="text-primary-600 hover:underline">abuse@opn.onl</a></li>
+                            <li>We reserve the right to disable any link that violates our policies without notice</li>
+                            <li>We maintain blocklists of known malicious URLs and domains to protect users</li>
+                        </ul>
+                    </TermsSection>
+
+                    <TermsSection number="11" title="Changes to Terms">
                         <p>
                             We may modify these terms at any time. We will notify users of significant changes via 
                             email or a prominent notice on the website. Continued use of the service after changes 
@@ -158,7 +178,7 @@ export default function Terms() {
                         </p>
                     </TermsSection>
 
-                    <TermsSection number="11" title="Contact">
+                    <TermsSection number="12" title="Contact">
                         <p>
                             If you have questions about these Terms of Service, please contact us at:
                         </p>

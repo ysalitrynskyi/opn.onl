@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Github, LogOut, Menu, X, User, Settings, LayoutDashboard } from 'lucide-react';
+import { Github, LogOut, Menu, X, User, Settings, LayoutDashboard, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Logo from './Logo';
 
@@ -8,11 +8,13 @@ export default function Layout() {
     const navigate = useNavigate();
     const location = useLocation();
     const [token, setToken] = useState<string | null>(null);
+    const [isAdmin, setIsAdmin] = useState(false);
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const [userMenuOpen, setUserMenuOpen] = useState(false);
 
     useEffect(() => {
         setToken(localStorage.getItem('token'));
+        setIsAdmin(localStorage.getItem('is_admin') === 'true');
     }, [location]);
 
     useEffect(() => {
@@ -23,7 +25,9 @@ export default function Layout() {
 
     const handleLogout = () => {
         localStorage.removeItem('token');
+        localStorage.removeItem('is_admin');
         setToken(null);
+        setIsAdmin(false);
         navigate('/login');
     };
 
@@ -115,6 +119,15 @@ export default function Layout() {
                                                         <Settings className="h-4 w-4" />
                                                         Settings
                                                     </Link>
+                                                    {isAdmin && (
+                                                        <Link
+                                                            to="/admin"
+                                                            className="flex items-center gap-2 px-4 py-2 text-sm text-primary-700 hover:bg-primary-50"
+                                                        >
+                                                            <Shield className="h-4 w-4" />
+                                                            Admin Panel
+                                                        </Link>
+                                                    )}
                                                     <hr className="my-2 border-slate-100" />
                                                     <button
                                                         onClick={handleLogout}

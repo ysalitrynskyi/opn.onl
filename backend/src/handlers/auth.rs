@@ -59,6 +59,7 @@ pub struct AuthResponse {
     pub user_id: i32,
     pub email: String,
     pub email_verified: bool,
+    pub is_admin: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -100,12 +101,20 @@ pub async fn register(
     let verification_token = generate_token();
     let verification_expires = Utc::now() + Duration::hours(24);
 
+    // Check if this is the first user - make them admin
+    let user_count = users::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+    let is_first_user = user_count == 0;
+
     let new_user = users::ActiveModel {
         email: Set(payload.email.clone()),
         password_hash: Set(hashed_password),
         email_verified: Set(false),
         verification_token: Set(Some(verification_token.clone())),
         verification_token_expires: Set(Some(verification_expires.naive_utc())),
+        is_admin: Set(is_first_user), // First user is automatically admin
         ..Default::default()
     };
 
@@ -128,6 +137,7 @@ pub async fn register(
                 user_id: user_res.last_insert_id,
                 email: payload.email,
                 email_verified: false,
+                is_admin: is_first_user,
             })).into_response()
         }
         Err(DbErr::Query(err)) => {
@@ -173,6 +183,7 @@ pub async fn login(
                 user_id: user.id,
                 email: user.email,
                 email_verified: user.email_verified,
+                is_admin: user.is_admin,
             })).into_response();
         }
     }

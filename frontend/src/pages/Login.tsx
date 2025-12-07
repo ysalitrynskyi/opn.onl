@@ -37,10 +37,12 @@ export default function Login() {
             if (data.email_verified === false) {
                 setNeedsVerification(true);
                 localStorage.setItem('token', data.token);
+                localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
                 return;
             }
 
             localStorage.setItem('token', data.token);
+            localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
             navigate('/dashboard');
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : 'Login failed');

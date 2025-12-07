@@ -14,10 +14,43 @@ use bcrypt::{hash, DEFAULT_COST};
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::entity::{links, click_events, link_tags, tags};
+use crate::entity::{links, click_events, link_tags, tags, blocked_links, blocked_domains};
 use crate::utils::jwt::decode_jwt;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::handlers::websocket::ClickEvent;
+
+/// Check if URL or its domain is blocked
+async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String> {
+    // Parse URL to get domain
+    let parsed_url = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
+    let domain = parsed_url.host_str().unwrap_or("");
+    
+    // Check if exact URL is blocked
+    let blocked_url = blocked_links::Entity::find()
+        .filter(blocked_links::Column::Url.eq(url))
+        .one(db)
+        .await
+        .ok()
+        .flatten();
+    
+    if let Some(blocked) = blocked_url {
+        return Err(format!("This URL is blocked: {}", blocked.reason.unwrap_or_else(|| "Policy violation".to_string())));
+    }
+    
+    // Check if domain is blocked (including subdomains)
+    let blocked_domain = blocked_domains::Entity::find()
+        .all(db)
+        .await
+        .unwrap_or_default();
+    
+    for bd in blocked_domain {
+        if domain == bd.domain || domain.ends_with(&format!(".{}", bd.domain)) {
+            return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
+        }
+    }
+    
+    Ok(())
+}
 
 // ============= DTOs =============
 
@@ -231,18 +264,62 @@ pub async fn create_link(
 
     let user_id = get_user_id_from_header(&headers);
 
+    // Check if custom aliases are enabled
+    let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+    
+    // Check if reusing deleted slugs is allowed
+    let allow_deleted_slug_reuse = std::env::var("ALLOW_DELETED_SLUG_REUSE")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+
     let code = if let Some(alias) = payload.custom_alias {
-        let exists = links::Entity::find()
+        // Check if custom aliases are enabled
+        if !custom_aliases_enabled {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Custom aliases are disabled".to_string() })).into_response();
+        }
+        
+        // Check if alias exists (active links)
+        let exists_active = links::Entity::find()
             .filter(links::Column::Code.eq(&alias))
+            .filter(links::Column::DeletedAt.is_null())
             .one(&state.db)
             .await
             .unwrap_or(None);
         
-        if exists.is_some() {
-             return (StatusCode::CONFLICT, Json(ErrorResponse { error: "Alias already taken".to_string() })).into_response();
+        if exists_active.is_some() {
+            return (StatusCode::CONFLICT, Json(ErrorResponse { error: "Alias already taken".to_string() })).into_response();
         }
+        
+        // Check if alias was used by a deleted link
+        if !allow_deleted_slug_reuse {
+            let exists_deleted = links::Entity::find()
+                .filter(links::Column::Code.eq(&alias))
+                .filter(links::Column::DeletedAt.is_not_null())
+                .one(&state.db)
+                .await
+                .unwrap_or(None);
+            
+            if exists_deleted.is_some() {
+                return (StatusCode::CONFLICT, Json(ErrorResponse { error: "This alias was previously used and cannot be reused".to_string() })).into_response();
+            }
+        }
+        
+        // Check if URL or domain is blocked
+        if let Err(e) = check_blocked(&state.db, &payload.original_url).await {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
+        }
+        
         alias
     } else {
+        // Check if URL or domain is blocked
+        if let Err(e) = check_blocked(&state.db, &payload.original_url).await {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
+        }
+        
         let mut code = generate_short_code();
         while links::Entity::find().filter(links::Column::Code.eq(&code)).one(&state.db).await.unwrap_or(None).is_some() {
             code = generate_short_code();

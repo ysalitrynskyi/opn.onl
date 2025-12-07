@@ -36,6 +36,7 @@ export default function Register() {
 
             // Store token but show verification message
             localStorage.setItem('token', data.token);
+            localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
             
             // Check if email verification is required
             if (data.email_verified === false) {

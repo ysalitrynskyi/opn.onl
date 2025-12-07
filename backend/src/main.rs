@@ -217,12 +217,19 @@ async fn main() {
         .route("/contact", post(handlers::contact::send_contact_message))
         
         // Admin routes (protected)
+        .route("/admin/stats", get(handlers::admin::get_admin_stats))
+        .route("/admin/users", get(handlers::admin::get_all_users))
         .route("/admin/users/:user_id", delete(handlers::admin::delete_user))
         .route("/admin/users/:user_id/hard", delete(handlers::admin::hard_delete_user))
         .route("/admin/users/:user_id/restore", post(handlers::admin::restore_user))
         .route("/admin/users/:user_id/make-admin", post(handlers::admin::make_admin))
+        .route("/admin/users/:user_id/remove-admin", post(handlers::admin::remove_admin))
         .route("/admin/backup", get(handlers::admin::list_backups).post(handlers::admin::create_backup))
         .route("/admin/backup/cleanup/:keep_count", delete(handlers::admin::cleanup_backups))
+        .route("/admin/blocked/links", get(handlers::admin::get_blocked_links).post(handlers::admin::block_link))
+        .route("/admin/blocked/links/:id", delete(handlers::admin::unblock_link))
+        .route("/admin/blocked/domains", get(handlers::admin::get_blocked_domains).post(handlers::admin::block_domain))
+        .route("/admin/blocked/domains/:id", delete(handlers::admin::unblock_domain))
         
         // WebSocket for real-time updates
         .route("/ws", get(handlers::websocket::ws_handler))

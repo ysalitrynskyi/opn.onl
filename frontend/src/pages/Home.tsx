@@ -381,6 +381,13 @@ export default function Home() {
                                 Explore features
                             </Link>
                         </div>
+                        
+                        {/* Legal disclaimer */}
+                        <p className="mt-8 text-xs text-slate-400 max-w-xl mx-auto">
+                            Disclaimer: opn.onl is not responsible for content accessible through shortened links. 
+                            We actively remove malicious links when reported. 
+                            <Link to="/terms" className="underline hover:text-white ml-1">Terms apply</Link>.
+                        </p>
                     </div>
                 </motion.div>
             </section>

@@ -8,3 +8,5 @@ pub mod folders;
 pub mod tags;
 pub mod link_tags;
 pub mod audit_log;
+pub mod blocked_links;
+pub mod blocked_domains;

@@ -12,6 +12,7 @@ mod m20220101_000009_enhance_links;
 mod m20220101_000010_enhance_click_events;
 mod m20220101_000011_create_audit_log;
 mod m20220101_000012_add_email_verification;
+mod m20220101_000013_create_blocked_tables;
 
 pub struct Migrator;
 
@@ -31,6 +32,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000010_enhance_click_events::Migration),
             Box::new(m20220101_000011_create_audit_log::Migration),
             Box::new(m20220101_000012_add_email_verification::Migration),
+            Box::new(m20220101_000013_create_blocked_tables::Migration),
         ]
     }
 }
