@@ -259,6 +259,27 @@ pub async fn create_link(
         None
     };
 
+    // If org_id is provided, verify user is a member
+    if let Some(org_id) = payload.org_id {
+        if let Some(uid) = user_id {
+            use crate::entity::org_members;
+            let is_member = org_members::Entity::find()
+                .filter(org_members::Column::OrgId.eq(org_id))
+                .filter(org_members::Column::UserId.eq(uid))
+                .one(&state.db)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+            
+            if !is_member {
+                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Not a member of this organization".to_string() })).into_response();
+            }
+        } else {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Authentication required to create org links".to_string() })).into_response();
+        }
+    }
+
     let link = links::ActiveModel {
         original_url: Set(payload.original_url.clone()),
         code: Set(code.clone()),
@@ -651,16 +672,39 @@ pub async fn get_qr_code(
 
     if let Some(link) = link {
         // Verify ownership (allow if user owns the link or it belongs to their org)
-        if link.user_id != Some(user_id) && link.org_id.is_none() {
+        let has_access = if link.user_id == Some(user_id) {
+            true
+        } else if let Some(org_id) = link.org_id {
+            use crate::entity::org_members;
+            org_members::Entity::find()
+                .filter(org_members::Column::OrgId.eq(org_id))
+                .filter(org_members::Column::UserId.eq(user_id))
+                .one(&state.db)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        } else {
+            false
+        };
+        
+        if !has_access {
             return (StatusCode::FORBIDDEN, "You don't have permission to access this link").into_response();
         }
 
         let url = format!("{}/{}", get_base_url(), link.code);
-        let code = QrCode::new(url.as_bytes()).unwrap();
-        let image = code.render::<Luma<u8>>().build();
+        
+        let qr_code = match QrCode::new(url.as_bytes()) {
+            Ok(code) => code,
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate QR code").into_response(),
+        };
+        
+        let image = qr_code.render::<Luma<u8>>().build();
 
         let mut buffer = Cursor::new(Vec::new());
-        image.write_to(&mut buffer, image::ImageFormat::Png).unwrap();
+        if image.write_to(&mut buffer, image::ImageFormat::Png).is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to encode QR code image").into_response();
+        }
 
         (
             StatusCode::OK,
@@ -963,6 +1007,33 @@ pub async fn bulk_create_links(
     Json(payload): Json<BulkCreateLinkRequest>,
 ) -> impl IntoResponse {
     let user_id = get_user_id_from_header(&headers);
+
+    // If org_id is provided, verify user is a member
+    if let Some(org_id) = payload.org_id {
+        if let Some(uid) = user_id {
+            use crate::entity::org_members;
+            let is_member = org_members::Entity::find()
+                .filter(org_members::Column::OrgId.eq(org_id))
+                .filter(org_members::Column::UserId.eq(uid))
+                .one(&state.db)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+            
+            if !is_member {
+                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse { 
+                    links: vec![], 
+                    errors: vec!["Not a member of this organization".to_string()] 
+                })).into_response();
+            }
+        } else {
+            return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse { 
+                links: vec![], 
+                errors: vec!["Authentication required to create org links".to_string()] 
+            })).into_response();
+        }
+    }
 
     let mut result_links = Vec::new();
     let mut errors = Vec::new();

@@ -89,6 +89,26 @@ pub async fn create_tag(
         )
     })?;
 
+    // If org_id is provided, verify user is a member
+    if let Some(org_id) = payload.org_id {
+        use crate::entity::org_members;
+        let is_member = org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        
+        if !is_member {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Not a member of this organization"})),
+            ));
+        }
+    }
+
     let tag = tags::ActiveModel {
         name: Set(payload.name.clone()),
         color: Set(payload.color.clone()),
