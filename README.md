@@ -104,7 +104,10 @@ Open http://localhost:5173
 3. Copy the tunnel token
 4. Configure public hostnames:
    - `opn.onl` → `http://frontend:80`
-   - `api.opn.onl` → `http://backend:3000`
+   - `api.opn.onl` → `http://backend:3000` (or use `l.opn.onl` for shorter links)
+
+> **Note:** You can use any subdomain for the API (e.g., `l.opn.onl`, `api.opn.onl`, `go.opn.onl`). 
+> Short links work on both the main domain (`opn.onl/abc123`) and API subdomain (`l.opn.onl/abc123`).
 
 #### 2. Configure Environment
 

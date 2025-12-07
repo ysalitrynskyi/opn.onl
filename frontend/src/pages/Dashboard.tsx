@@ -415,7 +415,9 @@ export default function Dashboard() {
     };
 
     const handleCopy = async (link: LinkData) => {
-        await navigator.clipboard.writeText(link.short_url);
+        // Copy the main domain URL (not the API URL)
+        const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+        await navigator.clipboard.writeText(mainUrl);
         setCopiedId(link.id);
         setTimeout(() => setCopiedId(null), 2000);
     };
@@ -615,21 +617,22 @@ export default function Dashboard() {
                             className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition-shadow"
                         >
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                <div className="space-y-1 min-w-0 flex-1">
+                                <div className="space-y-2 min-w-0 flex-1">
+                                    {/* Primary short URL (main domain) */}
                                     <div className="flex items-center gap-3 flex-wrap">
                                         <a 
-                                            href={link.short_url} 
+                                            href={`${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`}
                                             target="_blank" 
                                             rel="noreferrer" 
                                             className="text-lg font-bold text-primary-600 hover:underline flex items-center gap-1"
                                         >
-                                            {link.short_url.replace('http://localhost:3000/', 'opn.onl/')}
+                                            {(import.meta.env.VITE_FRONTEND_URL || window.location.origin).replace(/^https?:\/\//, '')}/{link.code}
                                             <ExternalLink className="h-3.5 w-3.5" />
                                         </a>
                                         <button
                                             onClick={() => handleCopy(link)}
                                             className="text-slate-400 hover:text-slate-600 transition-colors"
-                                            title="Copy to clipboard"
+                                            title="Copy short URL"
                                         >
                                             {copiedId === link.id ? (
                                                 <Check className="h-4 w-4 text-green-500" />
@@ -650,6 +653,19 @@ export default function Dashboard() {
                                             </span>
                                         )}
                                     </div>
+                                    {/* API URL (alternative) */}
+                                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                                        <span>API:</span>
+                                        <a 
+                                            href={link.short_url}
+                                            target="_blank" 
+                                            rel="noreferrer" 
+                                            className="hover:text-slate-600 hover:underline"
+                                        >
+                                            {link.short_url.replace(/^https?:\/\//, '')}
+                                        </a>
+                                    </div>
+                                    {/* Original URL */}
                                     <p className="text-slate-500 text-sm truncate">{link.original_url}</p>
                                 </div>
 

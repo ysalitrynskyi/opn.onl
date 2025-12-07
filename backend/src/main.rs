@@ -71,6 +71,52 @@ async fn https_redirect(
     }
 }
 
+/// Ensure at least one admin exists in the system
+/// If no admins exist, promote the first user to admin
+async fn ensure_admin_exists(db: &DatabaseConnection) {
+    use entity::users;
+    use sea_orm::{EntityTrait, QueryFilter, ColumnTrait, ActiveModelTrait, Set};
+    
+    // Check if any admin exists
+    let admin_exists = users::Entity::find()
+        .filter(users::Column::IsAdmin.eq(true))
+        .filter(users::Column::DeletedAt.is_null())
+        .one(db)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    
+    if admin_exists {
+        return;
+    }
+    
+    tracing::warn!("No admin users found in the system!");
+    
+    // Get the first user (by ID)
+    let first_user = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .one(db)
+        .await
+        .ok()
+        .flatten();
+    
+    if let Some(user) = first_user {
+        tracing::info!("Promoting first user {} (ID: {}) to admin", user.email, user.id);
+        
+        let mut active_user: users::ActiveModel = user.into();
+        active_user.is_admin = Set(true);
+        
+        if let Err(e) = active_user.update(db).await {
+            tracing::error!("Failed to promote user to admin: {}", e);
+        } else {
+            tracing::info!("Successfully promoted user to admin");
+        }
+    } else {
+        tracing::info!("No users in the system yet - first registered user will be admin");
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Load environment variables
@@ -103,6 +149,9 @@ async fn main() {
     use migration::{Migrator, MigratorTrait};
     Migrator::up(&db, None).await.expect("Failed to run migrations");
     tracing::info!("Migrations completed");
+
+    // Ensure at least one admin exists - promote first user if no admins
+    ensure_admin_exists(&db).await;
 
     // Initialize WebSocket state
     let ws_state = Arc::new(WsState::new());
