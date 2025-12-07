@@ -45,3 +45,7 @@ build/
 
 # GeoIP database (user must download)
 *.mmdb
+
+# Prevent accidental commits of env copies
+*env copy*
+*env.copy*
