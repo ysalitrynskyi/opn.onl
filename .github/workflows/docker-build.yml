@@ -131,8 +131,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VITE_API_URL=https://api.opn.onl
-            VITE_FRONTEND_URL=https://opn.onl
+            VITE_API_URL=${{ secrets.VITE_API_URL || 'https://l.opn.onl' }}
+            VITE_FRONTEND_URL=${{ secrets.VITE_FRONTEND_URL || 'https://opn.onl' }}
             VITE_GA_ID=${{ secrets.VITE_GA_ID }}
           cache-from: type=gha,scope=frontend-${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=frontend-${{ matrix.platform }}

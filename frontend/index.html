@@ -4,21 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     
-    <!-- Google Analytics (injected at runtime if VITE_GA_ID is set) -->
+    <!-- Google Analytics -->
     <script>
       (function() {
+        // GA ID is injected at build time by Vite
         var gaId = '%VITE_GA_ID%';
-        if (gaId && gaId !== '' && !gaId.includes('VITE_GA_ID')) {
+        // Check if GA ID was properly replaced (not empty, not the placeholder)
+        if (gaId && gaId.length > 0 && gaId.indexOf('%') === -1 && gaId.startsWith('G-')) {
+          // Load gtag.js
           var script = document.createElement('script');
           script.async = true;
           script.src = 'https://www.googletagmanager.com/gtag/js?id=' + gaId;
           document.head.appendChild(script);
           
+          // Initialize gtag
           window.dataLayer = window.dataLayer || [];
           function gtag(){dataLayer.push(arguments);}
           gtag('js', new Date());
-          gtag('config', gaId);
+          gtag('config', gaId, {
+            page_path: window.location.pathname,
+            anonymize_ip: true
+          });
           window.gtag = gtag;
+          console.log('[GA] Initialized with ID:', gaId);
         }
       })();
     </script>
