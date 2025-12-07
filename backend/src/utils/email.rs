@@ -30,42 +30,87 @@ impl EmailService {
 
         let mailer = if let (Some(host), Some(user), Some(pass)) = (smtp_host, smtp_user, smtp_pass) {
             let creds = Credentials::new(user, pass);
+            let smtp_tls = std::env::var("SMTP_TLS").unwrap_or_else(|_| "starttls".to_string());
             
-            // Port 465 uses TLS/SSL directly, port 587 uses STARTTLS
-            let transport_result = if smtp_port == 465 {
-                // Use TLS/SSL for port 465
-                match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
-                    Ok(tls_params) => {
-                        Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
-                            .port(smtp_port)
-                            .tls(lettre::transport::smtp::client::Tls::Wrapper(tls_params))
-                            .credentials(creds)
-                            .build())
-                    }
-                    Err(e) => {
-                        error!("Failed to create TLS parameters for port 465: {}", e);
-                        Err(format!("TLS error: {}", e))
+            info!("Configuring SMTP: host={}, port={}, tls={}", host, smtp_port, smtp_tls);
+            
+            let transport_result = match smtp_tls.to_lowercase().as_str() {
+                // Port 465 style: TLS from the start (implicit TLS / SMTPS)
+                "tls" | "ssl" | "implicit" => {
+                    info!("Using implicit TLS/SSL (port 465 style)");
+                    match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
+                        Ok(tls_params) => {
+                            Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                                .port(smtp_port)
+                                .tls(lettre::transport::smtp::client::Tls::Wrapper(tls_params))
+                                .credentials(creds)
+                                .build())
+                        }
+                        Err(e) => {
+                            error!("Failed to create TLS parameters: {}", e);
+                            Err(format!("TLS error: {}", e))
+                        }
                     }
                 }
-            } else {
-                // Use STARTTLS for port 587 and others
-                match AsyncSmtpTransport::<Tokio1Executor>::relay(&host) {
-                    Ok(transport) => {
-                        Ok(transport
-                            .port(smtp_port)
-                            .credentials(creds)
-                            .build())
+                // Port 587 style: STARTTLS (start plain, upgrade to TLS)
+                "starttls" | "required" => {
+                    info!("Using STARTTLS (port 587 style)");
+                    match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
+                        Ok(tls_params) => {
+                            Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                                .port(smtp_port)
+                                .tls(lettre::transport::smtp::client::Tls::Required(tls_params))
+                                .credentials(creds)
+                                .build())
+                        }
+                        Err(e) => {
+                            error!("Failed to create STARTTLS parameters: {}", e);
+                            Err(format!("STARTTLS error: {}", e))
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to create SMTP transport: {}", e);
-                        Err(format!("SMTP relay error: {}", e))
+                }
+                // No encryption (not recommended, but useful for local testing)
+                "none" | "false" | "off" => {
+                    info!("Using no TLS (insecure)");
+                    Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                        .port(smtp_port)
+                        .tls(lettre::transport::smtp::client::Tls::None)
+                        .credentials(creds)
+                        .build())
+                }
+                // Auto-detect based on port
+                _ => {
+                    if smtp_port == 465 {
+                        info!("Auto-detected implicit TLS for port 465");
+                        match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
+                            Ok(tls_params) => {
+                                Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                                    .port(smtp_port)
+                                    .tls(lettre::transport::smtp::client::Tls::Wrapper(tls_params))
+                                    .credentials(creds)
+                                    .build())
+                            }
+                            Err(e) => Err(format!("TLS error: {}", e))
+                        }
+                    } else {
+                        info!("Auto-detected STARTTLS for port {}", smtp_port);
+                        match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
+                            Ok(tls_params) => {
+                                Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                                    .port(smtp_port)
+                                    .tls(lettre::transport::smtp::client::Tls::Required(tls_params))
+                                    .credentials(creds)
+                                    .build())
+                            }
+                            Err(e) => Err(format!("STARTTLS error: {}", e))
+                        }
                     }
                 }
             };
             
             match transport_result {
                 Ok(transport) => {
-                    info!("SMTP email service initialized (host: {}, port: {})", host, smtp_port);
+                    info!("SMTP email service initialized successfully");
                     Some(transport)
                 }
                 Err(e) => {
@@ -74,7 +119,7 @@ impl EmailService {
                 }
             }
         } else {
-            info!("SMTP not configured, email service disabled");
+            info!("SMTP not configured (missing host/user/pass), email service disabled");
             None
         };
 
