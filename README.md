@@ -255,26 +255,19 @@ docker compose up -d
 
 Docker images are **automatically built by GitHub Actions** on every push to `release`.
 
-**Choose the right compose file for your server architecture:**
-
-```bash
-# Check your server architecture
-uname -m
-# x86_64 → use docker-compose.portainer.amd64.yml
-# aarch64 → use docker-compose.portainer.arm64.yml
-```
-
 **In Portainer:**
 1. Go to Stacks → Add Stack
-2. Choose the compose file matching your architecture:
-   - `docker-compose.portainer.amd64.yml` (Intel/AMD servers)
-   - `docker-compose.portainer.arm64.yml` (ARM servers - Raspberry Pi, AWS Graviton, etc.)
+2. Use either compose file (Docker will auto-select the correct architecture):
+   - `docker-compose.portainer.amd64.yml` (for Intel/AMD servers)
+   - `docker-compose.portainer.arm64.yml` (for ARM servers)
 3. Add to your `.env`:
    ```
    BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
    FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
    ```
 4. Deploy!
+
+**Note:** Images are built as multi-arch manifests. Docker will automatically pull the correct architecture for your server.
 
 Images are available at:
 - `ghcr.io/ysalitrynskyi/opn-backend:latest`
