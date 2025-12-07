@@ -269,6 +269,22 @@ Docker images are **automatically built by GitHub Actions** on every push to `re
 
 **Note:** Images are built as multi-arch manifests. Docker will automatically pull the correct architecture for your server.
 
+**Troubleshooting:** If you get "exec format error", the multi-arch manifest might not be ready yet. Try:
+
+```bash
+# Remove old images
+docker rmi ghcr.io/ysalitrynskyi/opn-backend:latest
+docker rmi ghcr.io/ysalitrynskyi/opn-frontend:latest
+
+# Pull with explicit platform
+docker pull --platform linux/arm64 ghcr.io/ysalitrynskyi/opn-backend:latest
+docker pull --platform linux/arm64 ghcr.io/ysalitrynskyi/opn-frontend:latest
+
+# Or use platform-specific tags (if manifest not ready)
+docker pull ghcr.io/ysalitrynskyi/opn-backend:latest-arm64
+docker pull ghcr.io/ysalitrynskyi/opn-frontend:latest-arm64
+```
+
 Images are available at:
 - `ghcr.io/ysalitrynskyi/opn-backend:latest`
 - `ghcr.io/ysalitrynskyi/opn-frontend:latest`

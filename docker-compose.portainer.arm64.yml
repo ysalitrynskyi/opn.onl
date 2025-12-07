@@ -46,6 +46,7 @@ services:
 
   backend:
     image: ${BACKEND_IMAGE:-ghcr.io/ysalitrynskyi/opn-backend:latest}
+    platform: linux/arm64
     container_name: opn_onl_backend
     restart: unless-stopped
     depends_on:
@@ -95,6 +96,7 @@ services:
 
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/ysalitrynskyi/opn-frontend:latest}
+    platform: linux/arm64
     container_name: opn_onl_frontend
     restart: unless-stopped
     depends_on:
