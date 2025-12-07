@@ -543,6 +543,7 @@ pub async fn verify_link_password(
 ) -> impl IntoResponse {
     let link = links::Entity::find()
         .filter(links::Column::Code.eq(&code))
+        .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);

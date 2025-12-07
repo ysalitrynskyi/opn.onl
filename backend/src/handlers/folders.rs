@@ -247,8 +247,24 @@ pub async fn get_folder(
             )
         })?;
 
-    // Check ownership
-    if folder.user_id != Some(user_id) && folder.org_id.is_none() {
+    // Check ownership - must own the folder directly, or be member of the org that owns it
+    let has_access = if folder.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = folder.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -257,6 +273,7 @@ pub async fn get_folder(
 
     let link_count = links::Entity::find()
         .filter(links::Column::FolderId.eq(folder.id))
+        .filter(links::Column::DeletedAt.is_null())
         .count(&state.db)
         .await
         .unwrap_or(0) as i64;
@@ -317,8 +334,24 @@ pub async fn update_folder(
             )
         })?;
 
-    // Check ownership
-    if folder.user_id != Some(user_id) && folder.org_id.is_none() {
+    // Check ownership - must own the folder directly, or be member of the org that owns it
+    let has_access = if folder.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = folder.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -401,8 +434,24 @@ pub async fn delete_folder(
             )
         })?;
 
-    // Check ownership
-    if folder.user_id != Some(user_id) && folder.org_id.is_none() {
+    // Check ownership - must own the folder directly, or be member of the org that owns it
+    let has_access = if folder.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = folder.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -557,7 +606,24 @@ pub async fn get_folder_links(
             )
         })?;
 
-    if folder.user_id != Some(user_id) && folder.org_id.is_none() {
+    // Check ownership - must own the folder directly, or be member of the org that owns it
+    let has_access = if folder.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = folder.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -566,6 +632,7 @@ pub async fn get_folder_links(
 
     let links_list = links::Entity::find()
         .filter(links::Column::FolderId.eq(folder_id))
+        .filter(links::Column::DeletedAt.is_null())
         .order_by_desc(links::Column::CreatedAt)
         .all(&state.db)
         .await

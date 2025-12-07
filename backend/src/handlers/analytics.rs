@@ -159,13 +159,33 @@ pub async fn get_link_stats(
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
 
-    let link = match links::Entity::find_by_id(id).one(&state.db).await {
+    let link = match links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
+        .one(&state.db).await 
+    {
         Ok(Some(link)) => link,
         _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Link not found"}))).into_response(),
     };
 
-    // Check ownership
-    if link.user_id != Some(user_id) && link.org_id.is_none() {
+    // Check ownership - must own the link directly, or be member of the org that owns it
+    let has_access = if link.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = link.org_id {
+        // Check if user is member of this organization
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Access denied"}))).into_response();
     }
 

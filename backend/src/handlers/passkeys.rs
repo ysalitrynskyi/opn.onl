@@ -135,12 +135,14 @@ pub async fn register_finish(
         Err(_) => return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response(),
     };
 
-    let user = users::Entity::find()
+    let user = match users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
         .one(&state.db)
-        .await
-        .unwrap_or(None)
-        .unwrap();
+        .await 
+    {
+        Ok(Some(user)) => user,
+        _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+    };
 
     // Save passkey to DB - serialize the passkey for storage
     let passkey_json = serde_json::to_string(&passkey).unwrap_or_default();
@@ -237,14 +239,19 @@ pub async fn login_finish(
     }
 
     // Fetch user to issue token
-    let user = users::Entity::find()
+    let user = match users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
         .one(&state.db)
-        .await
-        .unwrap_or(None)
-        .unwrap();
+        .await 
+    {
+        Ok(Some(user)) => user,
+        _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+    };
 
-    let token = create_jwt(user.id, &user.email).unwrap();
+    let token = match create_jwt(user.id, &user.email) {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token").into_response(),
+    };
 
     (StatusCode::OK, Json(AuthResponse { token })).into_response()
 }
