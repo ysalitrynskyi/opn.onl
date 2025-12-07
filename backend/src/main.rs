@@ -155,12 +155,8 @@ async fn main() {
 
     // Build router
     let app = Router::new()
-        // API Documentation
+        // API Documentation (includes /api-docs/openapi.json and /swagger-ui)
         .merge(openapi::swagger_routes())
-        .route("/api-docs/openapi.json", get(|| async { 
-            use utoipa::OpenApi;
-            axum::Json(openapi::ApiDoc::openapi())
-        }))
         
         // Authentication routes
         .route("/auth/register", post(handlers::auth::register))
