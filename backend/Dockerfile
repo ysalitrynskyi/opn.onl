@@ -20,18 +20,19 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY migration ./migration
 COPY src ./src
+# Build the application (rust:alpine uses musl by default)
 RUN cargo build --release
 
 # Stage 4: Runtime
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates libgcc postgresql-client wget
+RUN apk add --no-cache ca-certificates libgcc postgresql-client wget curl
 RUN addgroup -g 1000 app && adduser -u 1000 -G app -s /bin/sh -D app
 
 WORKDIR /app
 COPY --from=builder /app/target/release/opn_onl_backend /app/opn_onl_backend
 COPY scripts/download-geoip.sh /app/scripts/download-geoip.sh
 COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
-RUN chmod +x /app/scripts/*.sh
+RUN chmod +x /app/scripts/*.sh /app/opn_onl_backend
 RUN mkdir -p /app/logs /app/data && chown -R app:app /app
 
 USER app
