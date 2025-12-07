@@ -7,24 +7,13 @@ RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl
 # Create app directory
 WORKDIR /app
 
-# Copy manifests
+# Copy everything needed for build
 COPY Cargo.toml Cargo.lock ./
-COPY migration/Cargo.toml migration/
-
-# Create dummy source files for dependency caching
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN mkdir -p migration/src && echo "fn main() {}" > migration/src/lib.rs
-
-# Build dependencies (this will be cached)
-RUN cargo build --release
-RUN rm src/main.rs migration/src/lib.rs
-
-# Copy actual source code
-COPY src ./src
 COPY migration ./migration
+COPY src ./src
 
-# Build the actual application
-RUN touch src/main.rs && cargo build --release
+# Build the application
+RUN cargo build --release
 
 # Runtime stage
 FROM alpine:3.19
