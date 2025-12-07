@@ -241,6 +241,33 @@ opn.onl/
 └── .env.example
 ```
 
+## Deployment Options
+
+### Option 1: Docker Compose (with build)
+
+```bash
+cp .env.example .env
+# Edit .env with your values
+docker compose up -d
+```
+
+### Option 2: Portainer (pre-built images)
+
+Docker images are **automatically built by GitHub Actions** on every push to `main`.
+
+```bash
+# In Portainer, deploy using docker-compose.portainer.yml
+# Images are built automatically by GitHub Actions
+BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
+FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
+```
+
+Images are available at:
+- `ghcr.io/ysalitrynskyi/opn-backend:latest`
+- `ghcr.io/ysalitrynskyi/opn-frontend:latest`
+
+Supported platforms: `linux/amd64`, `linux/arm64`
+
 ## GeoIP Analytics (Optional)
 
 To enable country/city detection for click analytics:
