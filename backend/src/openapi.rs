@@ -37,6 +37,8 @@ use crate::handlers::{
         // Authentication
         auth::register,
         auth::login,
+        auth::change_password,
+        auth::delete_account,
         
         // Links
         links::create_link,

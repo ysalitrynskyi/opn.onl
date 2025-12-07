@@ -54,6 +54,12 @@ export const API_ENDPOINTS = {
     // Redirect (for password verification)
     verifyPassword: (code: string) => `${API_BASE_URL}/${code}/verify`,
     
+    // Change password
+    changePassword: `${API_BASE_URL}/auth/change-password`,
+    
+    // Delete account
+    deleteAccount: `${API_BASE_URL}/auth/delete-account`,
+    
     // Contact
     contact: `${API_BASE_URL}/contact`,
     

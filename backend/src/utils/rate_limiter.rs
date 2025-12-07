@@ -136,9 +136,11 @@ pub struct RateLimiters {
 impl Default for RateLimiters {
     fn default() -> Self {
         Self {
-            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(1, 1))),
+            // Increased from 1/sec to 10/sec for better UX
+            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 1))),
             general: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 60))),
-            link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(50, 3600))),
+            // Increased from 50/hour to 100/hour for link creation
+            link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 3600))),
             auth: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 60))),
             redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 1))),
         }
@@ -217,7 +219,7 @@ pub async fn rate_limit_middleware(
                 serde_json::json!({
                     "error": "Too many requests",
                     "retry_after": retry_after_secs,
-                    "message": "Rate limit: maximum 1 request per second"
+                    "message": format!("Rate limit: maximum {} requests per second", limit)
                 }).to_string(),
             ).into_response();
             

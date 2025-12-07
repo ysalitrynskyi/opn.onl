@@ -420,8 +420,31 @@ export default function Dashboard() {
         setTimeout(() => setCopiedId(null), 2000);
     };
 
-    const handleExport = () => {
-        window.open(API_ENDPOINTS.exportLinks, '_blank');
+    const handleExport = async () => {
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch(API_ENDPOINTS.exportLinks, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+            
+            if (!response.ok) {
+                throw new Error('Failed to export links');
+            }
+            
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'links.csv';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        } catch (err: any) {
+            alert(err.message || 'Failed to export links');
+        }
     };
 
     const totalClicks = links.reduce((sum, link) => sum + link.click_count, 0);

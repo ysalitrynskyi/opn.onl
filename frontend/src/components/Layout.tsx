@@ -97,6 +97,12 @@ export default function Layout() {
                                                 >
                                                     <Link
                                                         to="/dashboard"
+                                                        onClick={(e) => {
+                                                            if (location.pathname === '/dashboard') {
+                                                                e.preventDefault();
+                                                                window.location.reload();
+                                                            }
+                                                        }}
                                                         className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
                                                     >
                                                         <LayoutDashboard className="h-4 w-4" />
@@ -180,6 +186,12 @@ export default function Layout() {
                                     <>
                                         <Link
                                             to="/dashboard"
+                                            onClick={(e) => {
+                                                if (location.pathname === '/dashboard') {
+                                                    e.preventDefault();
+                                                    window.location.reload();
+                                                }
+                                            }}
                                             className="flex items-center gap-2 py-2 text-base font-medium text-slate-600"
                                         >
                                             <LayoutDashboard className="h-5 w-5" />

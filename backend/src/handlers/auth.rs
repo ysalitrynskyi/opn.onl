@@ -13,7 +13,9 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::users;
 use crate::utils::jwt::{hash_password, verify_password, create_jwt};
+use axum::http::HeaderMap;
 use crate::utils::email::generate_token;
+use sea_orm::sea_query::Expr;
 
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
@@ -387,4 +389,172 @@ pub async fn reset_password(
     }
 
     (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid token".to_string() })).into_response()
+}
+
+#[derive(Deserialize, Validate, ToSchema)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    #[validate(length(min = 8))]
+    pub new_password: String,
+}
+
+/// Change password for authenticated user
+#[utoipa::path(
+    post,
+    path = "/auth/change-password",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 200, description = "Password changed successfully", body = MessageResponse),
+        (status = 400, description = "Invalid request or wrong current password"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    tag = "Authentication",
+    security(
+        ("bearer_auth" = [])
+    )
+)]
+pub async fn change_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = payload.validate() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
+    }
+
+    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+    };
+
+    let user = users::Entity::find_by_id(user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(user) = user {
+        // Verify current password
+        if user.password_hash.is_empty() {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "No password set for this account".to_string() })).into_response();
+        }
+        
+        match verify_password(&payload.current_password, &user.password_hash) {
+            Ok(true) => {},
+            Ok(false) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Current password is incorrect".to_string() })).into_response();
+            }
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password verification failed".to_string() })).into_response();
+            }
+        }
+
+        // Hash new password
+        let hashed_password = match hash_password(&payload.new_password) {
+            Ok(h) => h,
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response(),
+        };
+
+        // Update password
+        let mut active_user: users::ActiveModel = user.into();
+        active_user.password_hash = Set(hashed_password);
+
+        if let Err(_) = active_user.update(&state.db).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to change password".to_string() })).into_response();
+        }
+
+        return (StatusCode::OK, Json(MessageResponse { message: "Password changed successfully".to_string() })).into_response();
+    }
+
+    (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct DeleteAccountRequest {
+    pub password: String,
+}
+
+/// Delete own account (self-service, if enabled)
+#[utoipa::path(
+    post,
+    path = "/auth/delete-account",
+    request_body = DeleteAccountRequest,
+    responses(
+        (status = 200, description = "Account deleted successfully", body = MessageResponse),
+        (status = 400, description = "Invalid request or wrong password"),
+        (status = 403, description = "Account deletion is disabled"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    tag = "Authentication",
+    security(
+        ("bearer_auth" = [])
+    )
+)]
+pub async fn delete_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<DeleteAccountRequest>,
+) -> impl IntoResponse {
+    // Check if account deletion is enabled
+    let deletion_enabled = std::env::var("ENABLE_ACCOUNT_DELETION")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+
+    if !deletion_enabled {
+        return (StatusCode::FORBIDDEN, Json(ErrorResponse { 
+            error: "Account deletion is disabled. Contact support if you need to delete your account.".to_string() 
+        })).into_response();
+    }
+
+    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+    };
+
+    let user = users::Entity::find_by_id(user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(user) = user {
+        // Verify password
+        if user.password_hash.is_empty() {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "No password set for this account".to_string() })).into_response();
+        }
+        
+        match verify_password(&payload.password, &user.password_hash) {
+            Ok(true) => {},
+            Ok(false) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Password is incorrect".to_string() })).into_response();
+            }
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password verification failed".to_string() })).into_response();
+            }
+        }
+
+        // Soft delete user
+        let mut active_user: users::ActiveModel = user.into();
+        active_user.deleted_at = Set(Some(Utc::now().naive_utc()));
+
+        if let Err(_) = active_user.update(&state.db).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() })).into_response();
+        }
+
+        // Soft delete all user's links
+        use sea_orm::sea_query::Expr;
+        use crate::entity::links;
+        links::Entity::update_many()
+            .col_expr(links::Column::DeletedAt, Expr::value(Utc::now().naive_utc()))
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::DeletedAt.is_null())
+            .exec(&state.db)
+            .await
+            .ok();
+
+        return (StatusCode::OK, Json(MessageResponse { message: "Account deleted successfully".to_string() })).into_response();
+    }
+
+    (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
 }

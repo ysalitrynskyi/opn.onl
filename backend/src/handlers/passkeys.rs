@@ -26,10 +26,24 @@ static AUTH_STATE: Lazy<Mutex<HashMap<String, PasskeyAuthentication>>> = Lazy::n
 
 // Helper to get Webauthn instance
 fn get_webauthn() -> Webauthn {
-    let rp_id = "localhost";
-    let rp_origin = Url::parse("http://localhost:5173").expect("Invalid URL");
-    let builder = WebauthnBuilder::new(rp_id, &rp_origin).expect("Invalid configuration");
-    builder.build().expect("Invalid configuration")
+    let rp_id = std::env::var("WEBAUTHN_RP_ID")
+        .unwrap_or_else(|_| {
+            std::env::var("FRONTEND_URL")
+                .unwrap_or_else(|_| "localhost".to_string())
+                .replace("https://", "")
+                .replace("http://", "")
+                .split('/')
+                .next()
+                .unwrap_or("localhost")
+                .to_string()
+        });
+    
+    let rp_origin = std::env::var("FRONTEND_URL")
+        .unwrap_or_else(|_| "http://localhost:5173".to_string());
+    
+    let origin_url = Url::parse(&rp_origin).expect("Invalid FRONTEND_URL");
+    let builder = WebauthnBuilder::new(&rp_id, &origin_url).expect("Invalid WebAuthn configuration");
+    builder.build().expect("Failed to build WebAuthn")
 }
 
 #[derive(Deserialize)]

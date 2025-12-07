@@ -165,6 +165,8 @@ async fn main() {
         .route("/auth/resend-verification", post(handlers::auth::resend_verification))
         .route("/auth/forgot-password", post(handlers::auth::forgot_password))
         .route("/auth/reset-password", post(handlers::auth::reset_password))
+        .route("/auth/change-password", post(handlers::auth::change_password))
+        .route("/auth/delete-account", post(handlers::auth::delete_account))
         .route("/auth/passkey/register/start", post(handlers::passkeys::register_start))
         .route("/auth/passkey/register/finish", post(handlers::passkeys::register_finish))
         .route("/auth/passkey/login/start", post(handlers::passkeys::login_start))
