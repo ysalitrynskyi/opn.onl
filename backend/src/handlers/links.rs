@@ -1128,6 +1128,7 @@ pub async fn export_links_csv(
 
     let user_links = links::Entity::find()
         .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::DeletedAt.is_null())
         .order_by_desc(links::Column::CreatedAt)
         .all(&state.db)
         .await

@@ -144,6 +144,24 @@ pub async fn get_tags(
     let mut tag_query = tags::Entity::find();
 
     if let Some(org_id) = query.org_id {
+        // Verify user is member of this org before listing its tags
+        use crate::entity::org_members;
+        let is_member = org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        
+        if !is_member {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Not a member of this organization"})),
+            ));
+        }
+        
         tag_query = tag_query.filter(tags::Column::OrgId.eq(org_id));
     } else {
         tag_query = tag_query.filter(tags::Column::UserId.eq(user_id));
@@ -656,7 +674,24 @@ pub async fn get_links_by_tag(
             )
         })?;
 
-    if tag.user_id != Some(user_id) && tag.org_id.is_none() {
+    // Check ownership - must own the tag directly, or be member of the org that owns it
+    let has_access = if tag.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = tag.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),

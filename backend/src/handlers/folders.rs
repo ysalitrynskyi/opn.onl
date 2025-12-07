@@ -166,6 +166,24 @@ pub async fn get_folders(
     let mut folder_query = folders::Entity::find();
 
     if let Some(org_id) = query.org_id {
+        // Verify user is member of this org before listing its folders
+        use crate::entity::org_members;
+        let is_member = org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        
+        if !is_member {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Not a member of this organization"})),
+            ));
+        }
+        
         folder_query = folder_query.filter(folders::Column::OrgId.eq(org_id));
     } else {
         folder_query = folder_query.filter(folders::Column::UserId.eq(user_id));
@@ -531,7 +549,24 @@ pub async fn move_links_to_folder(
             )
         })?;
 
-    if folder.user_id != Some(user_id) && folder.org_id.is_none() {
+    // Check folder ownership - must own directly or be member of org
+    let folder_access = if folder.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = folder.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !folder_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -541,14 +576,23 @@ pub async fn move_links_to_folder(
     let mut moved_count = 0;
     for link_id in payload.link_ids {
         let link = links::Entity::find_by_id(link_id)
+            .filter(links::Column::DeletedAt.is_null())
             .one(&state.db)
             .await
             .ok()
             .flatten();
 
         if let Some(link) = link {
-            // Check link ownership
-            if link.user_id == Some(user_id) || link.org_id == folder.org_id {
+            // Check link ownership - must own directly or be member of same org
+            let link_access = if link.user_id == Some(user_id) {
+                true
+            } else if let Some(link_org) = link.org_id {
+                folder.org_id == Some(link_org) // Only if moving within same org
+            } else {
+                false
+            };
+            
+            if link_access {
                 let mut link: links::ActiveModel = link.into();
                 link.folder_id = Set(Some(folder_id));
                 let _ = link.update(&state.db).await;
