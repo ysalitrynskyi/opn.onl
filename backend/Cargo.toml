@@ -56,9 +56,9 @@ redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 # Email (SMTP)
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
 
-# S3/R2 Backup
-aws-sdk-s3 = "1.0"
-aws-config = "1.0"
+# S3/R2 Backup (pinned to versions compatible with Rust 1.85)
+aws-sdk-s3 = "=1.65.0"
+aws-config = "=1.5.10"
 flate2 = "1.0"
 tar = "0.4"
 
