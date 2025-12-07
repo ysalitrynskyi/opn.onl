@@ -996,8 +996,12 @@ pub async fn update_link(
 
         let mut active_link: links::ActiveModel = link.clone().into();
 
-        if let Some(url) = payload.original_url {
-            active_link.original_url = Set(url);
+        if let Some(ref url) = payload.original_url {
+            // Check if new URL is blocked
+            if let Err(e) = check_blocked(&state.db, url).await {
+                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
+            }
+            active_link.original_url = Set(url.clone());
         }
 
         if payload.remove_expiration == Some(true) {
@@ -1121,6 +1125,12 @@ pub async fn bulk_create_links(
         // Validate URL before creating link
         if !is_valid_url(&url) {
             errors.push(format!("Invalid URL: {}", url));
+            continue;
+        }
+        
+        // Check if URL or domain is blocked
+        if let Err(e) = check_blocked(&state.db, &url).await {
+            errors.push(format!("{}: {}", url, e));
             continue;
         }
         

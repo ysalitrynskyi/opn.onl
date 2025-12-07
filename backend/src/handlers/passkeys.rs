@@ -41,9 +41,38 @@ fn get_webauthn() -> Webauthn {
     let rp_origin = std::env::var("FRONTEND_URL")
         .unwrap_or_else(|_| "http://localhost:5173".to_string());
     
-    let origin_url = Url::parse(&rp_origin).expect("Invalid FRONTEND_URL");
-    let builder = WebauthnBuilder::new(&rp_id, &origin_url).expect("Invalid WebAuthn configuration");
-    builder.build().expect("Failed to build WebAuthn")
+    let origin_url = match Url::parse(&rp_origin) {
+        Ok(url) => url,
+        Err(e) => {
+            tracing::error!("Invalid FRONTEND_URL for WebAuthn: {}", e);
+            // Fall back to localhost for development
+            Url::parse("http://localhost:5173").unwrap()
+        }
+    };
+    
+    match WebauthnBuilder::new(&rp_id, &origin_url) {
+        Ok(builder) => match builder.build() {
+            Ok(webauthn) => webauthn,
+            Err(e) => {
+                tracing::error!("Failed to build WebAuthn: {:?}", e);
+                // Fallback to localhost
+                let fallback_url = Url::parse("http://localhost:5173").unwrap();
+                WebauthnBuilder::new("localhost", &fallback_url)
+                    .unwrap()
+                    .build()
+                    .unwrap()
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to create WebAuthn builder: {:?}", e);
+            // Fallback to localhost
+            let fallback_url = Url::parse("http://localhost:5173").unwrap();
+            WebauthnBuilder::new("localhost", &fallback_url)
+                .unwrap()
+                .build()
+                .unwrap()
+        }
+    }
 }
 
 #[derive(Deserialize)]
