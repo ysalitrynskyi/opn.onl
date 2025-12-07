@@ -581,3 +581,111 @@ pub async fn delete_account(
 
     (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
 }
+
+#[derive(Serialize, ToSchema)]
+pub struct AppSettingsResponse {
+    pub account_deletion_enabled: bool,
+    pub custom_aliases_enabled: bool,
+    pub max_links_per_user: Option<i32>,
+    pub passkeys_enabled: bool,
+}
+
+/// Get app settings
+#[utoipa::path(
+    get,
+    path = "/auth/settings",
+    responses(
+        (status = 200, description = "App settings", body = AppSettingsResponse),
+    ),
+    tag = "Authentication"
+)]
+pub async fn get_app_settings() -> impl IntoResponse {
+    let account_deletion_enabled = std::env::var("ENABLE_ACCOUNT_DELETION")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+    
+    let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+    
+    let max_links_per_user = std::env::var("MAX_LINKS_PER_USER")
+        .ok()
+        .and_then(|v| v.parse().ok());
+
+    (StatusCode::OK, Json(AppSettingsResponse {
+        account_deletion_enabled,
+        custom_aliases_enabled,
+        max_links_per_user,
+        passkeys_enabled: true,
+    }))
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct UserProfileResponse {
+    pub id: i32,
+    pub email: String,
+    pub email_verified: bool,
+    pub is_admin: bool,
+    pub created_at: String,
+    pub link_count: i64,
+    pub total_clicks: i64,
+}
+
+/// Get current user profile
+#[utoipa::path(
+    get,
+    path = "/auth/me",
+    responses(
+        (status = 200, description = "User profile", body = UserProfileResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
+pub async fn get_current_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+    };
+
+    let user = users::Entity::find_by_id(user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(user) = user {
+        use crate::entity::{links, click_events};
+        
+        let link_count = links::Entity::find()
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::DeletedAt.is_null())
+            .count(&state.db)
+            .await
+            .unwrap_or(0) as i64;
+        
+        let total_clicks = click_events::Entity::find()
+            .inner_join(links::Entity)
+            .filter(links::Column::UserId.eq(user_id))
+            .count(&state.db)
+            .await
+            .unwrap_or(0) as i64;
+
+        return (StatusCode::OK, Json(UserProfileResponse {
+            id: user.id,
+            email: user.email,
+            email_verified: user.email_verified,
+            is_admin: user.is_admin,
+            created_at: user.created_at.to_string(),
+            link_count,
+            total_clicks,
+        })).into_response();
+    }
+
+    (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+}

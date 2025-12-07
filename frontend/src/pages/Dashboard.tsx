@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { 
     Copy, ExternalLink, Plus, Trash2, BarChart2, 
     QrCode, Download, Lock, Clock, Edit2, X, Check,
-    Search, ChevronDown, Calendar
+    Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
+    TrendingUp, MousePointer, SortAsc, SortDesc,
+    Zap, Link2, Share2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
+import SEO from '../components/SEO';
 
 interface LinkData {
     id: number;
@@ -17,6 +20,9 @@ interface LinkData {
     created_at: string;
     expires_at: string | null;
     has_password: boolean;
+    notes: string | null;
+    is_active: boolean;
+    tags: { id: number; name: string; color: string }[];
 }
 
 interface EditModalProps {
@@ -71,8 +77,8 @@ function EditModal({ link, onClose, onSave }: EditModalProps) {
                 <div className="space-y-4">
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">Short URL</label>
-                        <div className="px-4 py-2 bg-slate-100 rounded-lg text-slate-600 text-sm">
-                            {link.short_url}
+                        <div className="px-4 py-2 bg-slate-100 rounded-lg text-slate-600 text-sm font-mono">
+                            {link.code}
                         </div>
                     </div>
 
@@ -81,8 +87,8 @@ function EditModal({ link, onClose, onSave }: EditModalProps) {
                         <input
                             type="url"
                             value={url}
-                            onChange={e => setUrl(e.target.value)}
-                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                            onChange={(e) => setUrl(e.target.value)}
+                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                         />
                     </div>
 
@@ -93,16 +99,16 @@ function EditModal({ link, onClose, onSave }: EditModalProps) {
                         <input
                             type="password"
                             value={password}
-                            onChange={e => setPassword(e.target.value)}
-                            placeholder={link.has_password ? '••••••••' : 'Leave empty for no password'}
-                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder={link.has_password ? 'Leave empty to keep current' : 'Optional'}
+                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                         />
                         {link.has_password && (
                             <label className="flex items-center gap-2 mt-2 text-sm text-slate-600">
                                 <input
                                     type="checkbox"
                                     checked={removePassword}
-                                    onChange={e => setRemovePassword(e.target.checked)}
+                                    onChange={(e) => setRemovePassword(e.target.checked)}
                                     className="rounded border-slate-300"
                                 />
                                 Remove password protection
@@ -115,42 +121,37 @@ function EditModal({ link, onClose, onSave }: EditModalProps) {
                         <input
                             type="date"
                             value={expiresAt}
-                            onChange={e => setExpiresAt(e.target.value)}
-                            disabled={removeExpiration}
-                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
+                            onChange={(e) => setExpiresAt(e.target.value)}
+                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                            min={new Date().toISOString().split('T')[0]}
                         />
                         {link.expires_at && (
                             <label className="flex items-center gap-2 mt-2 text-sm text-slate-600">
                                 <input
                                     type="checkbox"
                                     checked={removeExpiration}
-                                    onChange={e => setRemoveExpiration(e.target.checked)}
+                                    onChange={(e) => setRemoveExpiration(e.target.checked)}
                                     className="rounded border-slate-300"
                                 />
-                                Remove expiration
+                                Remove expiration date
                             </label>
                         )}
                     </div>
                 </div>
 
-                <div className="flex justify-end gap-3 mt-6">
+                <div className="flex gap-3 mt-6">
                     <button
                         onClick={onClose}
-                        className="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium"
+                        className="flex-1 px-4 py-2 text-slate-600 hover:text-slate-800 font-medium"
                     >
                         Cancel
                     </button>
                     <button
                         onClick={handleSave}
                         disabled={saving}
-                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-70 flex items-center gap-2"
+                        className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-70"
                     >
-                        {saving ? (
-                            <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        ) : (
-                            <Check className="h-4 w-4" />
-                        )}
-                        Save Changes
+                        {saving ? 'Saving...' : 'Save Changes'}
                     </button>
                 </div>
             </motion.div>
@@ -161,36 +162,31 @@ function EditModal({ link, onClose, onSave }: EditModalProps) {
 function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
     const [qrUrl, setQrUrl] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState('');
 
     useEffect(() => {
         const fetchQR = async () => {
             try {
-                const response = await fetch(API_ENDPOINTS.linkQr(link.id), {
-                    headers: getAuthHeaders(),
+                const res = await fetch(API_ENDPOINTS.linkQr(link.id), {
+                    headers: getAuthHeaders()
                 });
-                if (!response.ok) {
-                    throw new Error('Failed to load QR code');
+                if (res.ok) {
+                    const blob = await res.blob();
+                    setQrUrl(URL.createObjectURL(blob));
+                } else {
+                    setError('Failed to load QR code');
                 }
-                const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
-                setQrUrl(url);
-            } catch (err) {
-                setError(err instanceof Error ? err.message : 'Failed to load QR code');
+            } catch {
+                setError('Failed to load QR code');
             } finally {
                 setLoading(false);
             }
         };
         fetchQR();
-        
-        return () => {
-            if (qrUrl) {
-                URL.revokeObjectURL(qrUrl);
-            }
-        };
+        return () => { if (qrUrl) URL.revokeObjectURL(qrUrl); };
     }, [link.id]);
 
-    const downloadQR = async () => {
+    const downloadQR = () => {
         if (!qrUrl) return;
         const a = document.createElement('a');
         a.href = qrUrl;
@@ -233,7 +229,7 @@ function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
                         />
                     )}
                 </div>
-                <p className="text-sm text-slate-500 mb-4">{link.short_url}</p>
+                <p className="text-sm text-slate-500 mb-4 font-mono">{link.code}</p>
                 <div className="flex gap-3 justify-center">
                     <button
                         onClick={onClose}
@@ -243,7 +239,8 @@ function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
                     </button>
                     <button
                         onClick={downloadQR}
-                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 flex items-center gap-2"
+                        disabled={!qrUrl}
+                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-50 flex items-center gap-2"
                     >
                         <Download className="h-4 w-4" />
                         Download
@@ -275,9 +272,46 @@ function Skeleton() {
     );
 }
 
+// Mini stats component for each link
+function MiniStats({ link }: { link: LinkData }) {
+    const createdDate = new Date(link.created_at);
+    const daysSinceCreation = Math.max(1, Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24)));
+    const avgClicksPerDay = (link.click_count / daysSinceCreation).toFixed(1);
+    
+    return (
+        <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
+            <span className="flex items-center gap-1">
+                <TrendingUp className="h-3 w-3" />
+                {avgClicksPerDay}/day avg
+            </span>
+            <span className="flex items-center gap-1">
+                <Calendar className="h-3 w-3" />
+                {createdDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            </span>
+            {link.tags.length > 0 && (
+                <div className="flex gap-1">
+                    {link.tags.slice(0, 2).map(tag => (
+                        <span 
+                            key={tag.id}
+                            className="px-1.5 py-0.5 rounded text-xs"
+                            style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
+                        >
+                            {tag.name}
+                        </span>
+                    ))}
+                    {link.tags.length > 2 && (
+                        <span className="text-slate-400">+{link.tags.length - 2}</span>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+const LINKS_PER_PAGE = 20;
+
 export default function Dashboard() {
     const [links, setLinks] = useState<LinkData[]>([]);
-    const [filteredLinks, setFilteredLinks] = useState<LinkData[]>([]);
     const [loading, setLoading] = useState(true);
     const [newUrl, setNewUrl] = useState('');
     const [alias, setAlias] = useState('');
@@ -290,6 +324,9 @@ export default function Dashboard() {
     const [qrLink, setQrLink] = useState<LinkData | null>(null);
     const [copiedId, setCopiedId] = useState<number | null>(null);
     const [error, setError] = useState('');
+    const [currentPage, setCurrentPage] = useState(1);
+    const [sortBy, setSortBy] = useState<'date' | 'clicks'>('date');
+    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -301,17 +338,46 @@ export default function Dashboard() {
         fetchLinks();
     }, [navigate]);
 
-    useEffect(() => {
+    // Filter and sort links
+    const filteredLinks = useMemo(() => {
+        let result = [...links];
+        
+        // Search filter
         if (searchQuery) {
             const query = searchQuery.toLowerCase();
-            setFilteredLinks(links.filter(link => 
+            result = result.filter(link => 
                 link.code.toLowerCase().includes(query) ||
-                link.original_url.toLowerCase().includes(query)
-            ));
-        } else {
-            setFilteredLinks(links);
+                link.original_url.toLowerCase().includes(query) ||
+                link.notes?.toLowerCase().includes(query) ||
+                link.tags.some(t => t.name.toLowerCase().includes(query))
+            );
         }
-    }, [searchQuery, links]);
+        
+        // Sort
+        result.sort((a, b) => {
+            let comparison = 0;
+            if (sortBy === 'date') {
+                comparison = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+            } else {
+                comparison = a.click_count - b.click_count;
+            }
+            return sortOrder === 'asc' ? comparison : -comparison;
+        });
+        
+        return result;
+    }, [links, searchQuery, sortBy, sortOrder]);
+
+    // Pagination
+    const totalPages = Math.ceil(filteredLinks.length / LINKS_PER_PAGE);
+    const paginatedLinks = useMemo(() => {
+        const start = (currentPage - 1) * LINKS_PER_PAGE;
+        return filteredLinks.slice(start, start + LINKS_PER_PAGE);
+    }, [filteredLinks, currentPage]);
+
+    // Reset to page 1 when search changes
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchQuery]);
 
     const fetchLinks = async () => {
         try {
@@ -321,7 +387,6 @@ export default function Dashboard() {
             if (res.ok) {
                 const data = await res.json();
                 setLinks(data);
-                setFilteredLinks(data);
             } else if (res.status === 401) {
                 localStorage.removeItem('token');
                 navigate('/login');
@@ -351,8 +416,6 @@ export default function Dashboard() {
                 }),
             });
 
-            const data = await res.json();
-
             if (res.ok) {
                 setNewUrl('');
                 setAlias('');
@@ -361,6 +424,7 @@ export default function Dashboard() {
                 setShowAdvanced(false);
                 fetchLinks();
             } else {
+                const data = await res.json();
                 setError(data.error || 'Failed to create link');
             }
         } catch (error) {
@@ -372,21 +436,17 @@ export default function Dashboard() {
     };
 
     const handleDelete = async (id: number) => {
-        if (!confirm('Are you sure you want to delete this link? This action cannot be undone.')) {
-            return;
-        }
-
+        if (!confirm('Are you sure you want to delete this link?')) return;
+        
         try {
             const res = await fetch(API_ENDPOINTS.linkDelete(id), {
                 method: 'DELETE',
-                headers: getAuthHeaders(),
+                headers: getAuthHeaders()
             });
-
             if (res.ok) {
                 setLinks(links.filter(l => l.id !== id));
             } else {
-                const data = await res.json();
-                setError(data.error || 'Failed to delete link');
+                setError('Failed to delete link');
             }
         } catch (error) {
             console.error('Failed to delete link', error);
@@ -394,19 +454,17 @@ export default function Dashboard() {
         }
     };
 
-    const handleUpdate = async (id: number, updateData: any) => {
+    const handleUpdate = async (id: number, data: any) => {
         try {
             const res = await fetch(API_ENDPOINTS.linkUpdate(id), {
                 method: 'PUT',
                 headers: getAuthHeaders(),
-                body: JSON.stringify(updateData),
+                body: JSON.stringify(data),
             });
-
             if (res.ok) {
                 fetchLinks();
             } else {
-                const data = await res.json();
-                setError(data.error || 'Failed to update link');
+                setError('Failed to update link');
             }
         } catch (error) {
             console.error('Failed to update link', error);
@@ -415,7 +473,6 @@ export default function Dashboard() {
     };
 
     const handleCopy = async (link: LinkData) => {
-        // Copy the main domain URL (not the API URL)
         const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
         await navigator.clipboard.writeText(mainUrl);
         setCopiedId(link.id);
@@ -424,36 +481,49 @@ export default function Dashboard() {
 
     const handleExport = async () => {
         try {
-            const token = localStorage.getItem('token');
             const response = await fetch(API_ENDPOINTS.exportLinks, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                },
+                headers: getAuthHeaders(),
             });
             
-            if (!response.ok) {
-                throw new Error('Failed to export links');
-            }
+            if (!response.ok) throw new Error('Failed to export links');
             
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'links.csv';
+            a.download = 'opn_onl_links.csv';
             document.body.appendChild(a);
             a.click();
+            a.remove();
             window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
         } catch (err: any) {
-            alert(err.message || 'Failed to export links');
+            setError(err.message || 'Failed to export links');
+        }
+    };
+
+    const handleShare = async (link: LinkData) => {
+        const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+        if (navigator.share) {
+            try {
+                await navigator.share({
+                    title: 'Check out this link',
+                    url: mainUrl,
+                });
+            } catch {
+                handleCopy(link);
+            }
+        } else {
+            handleCopy(link);
         }
     };
 
     const totalClicks = links.reduce((sum, link) => sum + link.click_count, 0);
+    const activeLinks = links.filter(l => l.is_active).length;
 
     if (loading) {
         return (
             <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                <SEO title="Dashboard" noIndex />
                 <div className="mb-8">
                     <div className="h-8 bg-slate-200 rounded w-48 animate-pulse" />
                 </div>
@@ -464,6 +534,8 @@ export default function Dashboard() {
 
     return (
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <SEO title="Dashboard" noIndex />
+            
             <AnimatePresence>
                 {editingLink && (
                     <EditModal 
@@ -477,12 +549,24 @@ export default function Dashboard() {
                 )}
             </AnimatePresence>
 
+            {/* Header with Stats */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900">Dashboard</h1>
-                    <p className="text-slate-500 mt-1">
-                        {links.length} links · {totalClicks.toLocaleString()} total clicks
-                    </p>
+                    <div className="flex items-center gap-4 mt-2 text-sm text-slate-500">
+                        <span className="flex items-center gap-1">
+                            <Link2 className="h-4 w-4" />
+                            {links.length} links
+                        </span>
+                        <span className="flex items-center gap-1">
+                            <Zap className="h-4 w-4 text-green-500" />
+                            {activeLinks} active
+                        </span>
+                        <span className="flex items-center gap-1">
+                            <MousePointer className="h-4 w-4" />
+                            {totalClicks.toLocaleString()} clicks
+                        </span>
+                    </div>
                 </div>
                 <button
                     onClick={handleExport}
@@ -506,6 +590,7 @@ export default function Dashboard() {
                 </motion.div>
             )}
 
+            {/* Create Link Form */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8">
                 <h2 className="text-lg font-semibold mb-4">Create new link</h2>
                 <form onSubmit={handleCreate}>
@@ -590,24 +675,43 @@ export default function Dashboard() {
                 </form>
             </div>
 
+            {/* Search and Filter */}
             {links.length > 0 && (
-                <div className="mb-6">
-                    <div className="relative">
+                <div className="mb-6 flex flex-col sm:flex-row gap-4">
+                    <div className="relative flex-1">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
                         <input
                             type="text"
-                            placeholder="Search links..."
+                            placeholder="Search links, notes, tags..."
                             className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                             value={searchQuery}
                             onChange={e => setSearchQuery(e.target.value)}
                         />
                     </div>
+                    <div className="flex gap-2">
+                        <select
+                            value={sortBy}
+                            onChange={(e) => setSortBy(e.target.value as 'date' | 'clicks')}
+                            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                        >
+                            <option value="date">Sort by Date</option>
+                            <option value="clicks">Sort by Clicks</option>
+                        </select>
+                        <button
+                            onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                            className="p-2.5 border border-slate-300 rounded-lg hover:bg-slate-50"
+                            title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+                        >
+                            {sortOrder === 'asc' ? <SortAsc className="h-4 w-4" /> : <SortDesc className="h-4 w-4" />}
+                        </button>
+                    </div>
                 </div>
             )}
 
+            {/* Links List */}
             <div className="space-y-4">
                 <AnimatePresence mode="popLayout">
-                    {filteredLinks.map((link) => (
+                    {paginatedLinks.map((link) => (
                         <motion.div 
                             key={link.id}
                             layout
@@ -616,9 +720,9 @@ export default function Dashboard() {
                             exit={{ opacity: 0, scale: 0.95 }}
                             className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition-shadow"
                         >
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                <div className="space-y-2 min-w-0 flex-1">
-                                    {/* Primary short URL (main domain) */}
+                            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                                <div className="space-y-1 min-w-0 flex-1">
+                                    {/* Primary short URL */}
                                     <div className="flex items-center gap-3 flex-wrap">
                                         <a 
                                             href={`${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`}
@@ -649,24 +753,19 @@ export default function Dashboard() {
                                         {link.expires_at && (
                                             <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
                                                 <Clock className="h-3 w-3" />
-                                                Expires {new Date(link.expires_at).toLocaleDateString()}
+                                                {new Date(link.expires_at).toLocaleDateString()}
+                                            </span>
+                                        )}
+                                        {!link.is_active && (
+                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs font-medium">
+                                                Inactive
                                             </span>
                                         )}
                                     </div>
-                                    {/* API URL (alternative) */}
-                                    <div className="flex items-center gap-2 text-xs text-slate-400">
-                                        <span>API:</span>
-                                        <a 
-                                            href={link.short_url}
-                                            target="_blank" 
-                                            rel="noreferrer" 
-                                            className="hover:text-slate-600 hover:underline"
-                                        >
-                                            {link.short_url.replace(/^https?:\/\//, '')}
-                                        </a>
-                                    </div>
                                     {/* Original URL */}
                                     <p className="text-slate-500 text-sm truncate">{link.original_url}</p>
+                                    {/* Mini stats */}
+                                    <MiniStats link={link} />
                                 </div>
 
                                 <div className="flex items-center gap-2 sm:gap-4">
@@ -675,13 +774,20 @@ export default function Dashboard() {
                                         className="flex items-center gap-1.5 text-slate-600 hover:text-primary-600 text-sm font-medium transition-colors"
                                     >
                                         <BarChart2 className="h-4 w-4" />
-                                        <span>{link.click_count.toLocaleString()} clicks</span>
+                                        <span className="font-bold">{link.click_count.toLocaleString()}</span>
                                     </Link>
                                     <div className="flex items-center gap-1">
                                         <button 
+                                            onClick={() => handleShare(link)}
+                                            className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
+                                            title="Share"
+                                        >
+                                            <Share2 className="h-4 w-4" />
+                                        </button>
+                                        <button 
                                             onClick={() => setQrLink(link)}
                                             className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
-                                            title="View QR Code"
+                                            title="QR Code"
                                         >
                                             <QrCode className="h-4 w-4" />
                                         </button>
@@ -705,6 +811,34 @@ export default function Dashboard() {
                         </motion.div>
                     ))}
                 </AnimatePresence>
+
+                {/* Pagination */}
+                {totalPages > 1 && (
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-200">
+                        <p className="text-sm text-slate-500">
+                            Showing {((currentPage - 1) * LINKS_PER_PAGE) + 1}-{Math.min(currentPage * LINKS_PER_PAGE, filteredLinks.length)} of {filteredLinks.length}
+                        </p>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                disabled={currentPage === 1}
+                                className="p-2 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <ChevronLeft className="h-4 w-4" />
+                            </button>
+                            <span className="px-3 py-1 text-sm font-medium">
+                                {currentPage} / {totalPages}
+                            </span>
+                            <button
+                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                disabled={currentPage === totalPages}
+                                className="p-2 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <ChevronRight className="h-4 w-4" />
+                            </button>
+                        </div>
+                    </div>
+                )}
 
                 {filteredLinks.length === 0 && searchQuery && (
                     <div className="text-center py-12 text-slate-500">

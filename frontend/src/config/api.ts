@@ -15,11 +15,18 @@ export const API_ENDPOINTS = {
     forgotPassword: `${API_BASE_URL}/auth/forgot-password`,
     resetPassword: `${API_BASE_URL}/auth/reset-password`,
     
+    // User
+    appSettings: `${API_BASE_URL}/auth/settings`,
+    userProfile: `${API_BASE_URL}/auth/me`,
+    
     // Passkeys
+    passkeys: `${API_BASE_URL}/auth/passkeys`,
     passkeyRegisterStart: `${API_BASE_URL}/auth/passkey/register/start`,
     passkeyRegisterFinish: `${API_BASE_URL}/auth/passkey/register/finish`,
     passkeyLoginStart: `${API_BASE_URL}/auth/passkey/login/start`,
     passkeyLoginFinish: `${API_BASE_URL}/auth/passkey/login/finish`,
+    passkeyDelete: `${API_BASE_URL}/auth/passkey/delete`,
+    passkeyRename: `${API_BASE_URL}/auth/passkey/rename`,
     
     // Links
     links: `${API_BASE_URL}/links`,

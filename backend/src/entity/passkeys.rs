@@ -10,6 +10,7 @@ pub struct Model {
     pub cred_id: String,
     pub cred_public_key: String,
     pub counter: i32,
+    pub name: Option<String>,
     pub created_at: DateTime,
     pub last_used: Option<DateTime>,
 }

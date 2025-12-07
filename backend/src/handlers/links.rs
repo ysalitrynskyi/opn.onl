@@ -59,7 +59,7 @@ pub struct CreateLinkRequest {
     #[validate(url)]
     #[serde(default)]
     pub original_url: String,
-    #[validate(length(min = 3, max = 20))]
+    #[validate(length(min = 1, max = 50))]
     pub custom_alias: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub password: Option<String>,

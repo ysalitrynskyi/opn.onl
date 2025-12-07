@@ -216,10 +216,15 @@ async fn main() {
         .route("/auth/reset-password", post(handlers::auth::reset_password))
         .route("/auth/change-password", post(handlers::auth::change_password))
         .route("/auth/delete-account", post(handlers::auth::delete_account))
+        .route("/auth/settings", get(handlers::auth::get_app_settings))
+        .route("/auth/me", get(handlers::auth::get_current_user))
         .route("/auth/passkey/register/start", post(handlers::passkeys::register_start))
         .route("/auth/passkey/register/finish", post(handlers::passkeys::register_finish))
         .route("/auth/passkey/login/start", post(handlers::passkeys::login_start))
         .route("/auth/passkey/login/finish", post(handlers::passkeys::login_finish))
+        .route("/auth/passkeys", get(handlers::passkeys::list_passkeys))
+        .route("/auth/passkey/delete", post(handlers::passkeys::delete_passkey))
+        .route("/auth/passkey/rename", post(handlers::passkeys::rename_passkey))
         
         // Link routes
         .route("/links", get(handlers::links::get_user_links).post(handlers::links::create_link))

@@ -284,3 +284,139 @@ pub async fn login_finish(
 
     (StatusCode::OK, Json(AuthResponse { token })).into_response()
 }
+
+#[derive(Serialize)]
+pub struct PasskeyInfo {
+    pub id: i32,
+    pub name: String,
+    pub created_at: String,
+    pub last_used: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PasskeyListResponse {
+    pub passkeys: Vec<PasskeyInfo>,
+}
+
+/// List user's passkeys
+pub async fn list_passkeys(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+    };
+
+    let user_passkeys = passkeys::Entity::find()
+        .filter(passkeys::Column::UserId.eq(user_id))
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let passkey_list: Vec<PasskeyInfo> = user_passkeys.into_iter().map(|pk| PasskeyInfo {
+        id: pk.id,
+        name: pk.name.unwrap_or_else(|| format!("Passkey {}", pk.id)),
+        created_at: pk.created_at.to_string(),
+        last_used: pk.last_used.map(|lu| lu.to_string()),
+    }).collect();
+
+    (StatusCode::OK, Json(PasskeyListResponse { passkeys: passkey_list })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct DeletePasskeyRequest {
+    pub passkey_id: i32,
+}
+
+/// Delete a passkey
+pub async fn delete_passkey(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<DeletePasskeyRequest>,
+) -> impl IntoResponse {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+    };
+
+    // Verify the passkey belongs to the user
+    let passkey = passkeys::Entity::find_by_id(payload.passkey_id)
+        .filter(passkeys::Column::UserId.eq(user_id))
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if passkey.is_none() {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Passkey not found"}))).into_response();
+    }
+
+    // Don't allow deleting last passkey if user has no password
+    let user = users::Entity::find_by_id(user_id)
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(user) = user {
+        if user.password_hash.is_empty() {
+            let passkey_count = passkeys::Entity::find()
+                .filter(passkeys::Column::UserId.eq(user_id))
+                .count(&state.db)
+                .await
+                .unwrap_or(0);
+
+            if passkey_count <= 1 {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "error": "Cannot delete the last passkey when no password is set"
+                }))).into_response();
+            }
+        }
+    }
+
+    // Delete the passkey
+    let result = passkeys::Entity::delete_by_id(payload.passkey_id)
+        .exec(&state.db)
+        .await;
+
+    match result {
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"message": "Passkey deleted successfully"}))).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to delete passkey"}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RenamePasskeyRequest {
+    pub passkey_id: i32,
+    pub name: String,
+}
+
+/// Rename a passkey
+pub async fn rename_passkey(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<RenamePasskeyRequest>,
+) -> impl IntoResponse {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+    };
+
+    // Verify the passkey belongs to the user
+    let passkey = passkeys::Entity::find_by_id(payload.passkey_id)
+        .filter(passkeys::Column::UserId.eq(user_id))
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(pk) = passkey {
+        let mut active_pk: passkeys::ActiveModel = pk.into();
+        active_pk.name = Set(Some(payload.name.clone()));
+        
+        match active_pk.update(&state.db).await {
+            Ok(_) => (StatusCode::OK, Json(serde_json::json!({"message": "Passkey renamed successfully"}))).into_response(),
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to rename passkey"}))).into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Passkey not found"}))).into_response()
+    }
+}
