@@ -61,6 +61,10 @@ pub struct BulkCreateLinkRequest {
     pub org_id: Option<i32>,
 }
 
+fn is_valid_url(url: &str) -> bool {
+    url::Url::parse(url).map(|u| u.scheme() == "http" || u.scheme() == "https").unwrap_or(false)
+}
+
 #[derive(Deserialize, ToSchema)]
 pub struct BulkDeleteRequest {
     pub ids: Vec<i32>,
@@ -339,8 +343,8 @@ pub async fn redirect_link(
     // Try to get from Redis cache first (for non-password-protected links)
     if let Some(cache) = &state.redis_cache {
         if let Some(cached) = cache.get_link(&code).await {
-            // Skip cache for password-protected links (need full DB record)
-            if !cached.has_password {
+            // Skip cache for password-protected links and max_clicks links (need precise counting)
+            if !cached.has_password && cached.max_clicks.is_none() {
                 // Check if link is active based on cached data
                 let now = chrono::Utc::now().timestamp();
                 
@@ -418,8 +422,8 @@ pub async fn redirect_link(
             }
         }
 
-        // Cache the link for future requests (only non-password-protected)
-        if link.password_hash.is_none() {
+        // Cache the link for future requests (only non-password-protected and without max_clicks)
+        if link.password_hash.is_none() && link.max_clicks.is_none() {
             if let Some(cache) = &state.redis_cache {
                 let cached = CachedLink {
                     id: link.id,
@@ -556,13 +560,18 @@ pub async fn verify_link_password(
 
         if let Some(hash_str) = &link.password_hash {
             if bcrypt::verify(&payload.password, hash_str).unwrap_or(false) {
-                // Update click count
-                let new_click_count = link.click_count + 1;
-                let mut active_link: links::ActiveModel = link.clone().into();
-                active_link.click_count = Set(new_click_count);
-                let _ = active_link.update(&state.db).await;
-
-                // Extract request info for analytics
+                // Use click buffer for consistent click tracking (same as regular redirects)
+                record_click_buffered(
+                    &state.click_buffer,
+                    state.ws_state.as_ref().map(|w| w.as_ref()),
+                    link.id,
+                    &link.code,
+                    link.user_id,
+                    link.click_count,
+                    &headers,
+                );
+                
+                // For real-time broadcast, we need to get the info
                 let ip = headers.get("x-forwarded-for")
                     .and_then(|h| h.to_str().ok())
                     .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
@@ -571,33 +580,11 @@ pub async fn verify_link_password(
                 let user_agent = headers.get("user-agent")
                     .and_then(|h| h.to_str().ok())
                     .map(|s| s.to_string());
-
-                let referer = headers.get("referer")
-                    .and_then(|h| h.to_str().ok())
-                    .map(|s| s.to_string());
-
-                // GeoIP lookup
-                let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
                 
-                // Parse user agent
+                let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
                 let ua_info = user_agent.as_ref().map(|ua| parse_user_agent(ua)).unwrap_or_default();
-
-                let click_event = click_events::ActiveModel {
-                    link_id: Set(link.id),
-                    ip_address: Set(ip),
-                    user_agent: Set(user_agent),
-                    referer: Set(referer),
-                    country: Set(geo.country.clone()),
-                    city: Set(geo.city.clone()),
-                    region: Set(geo.region),
-                    latitude: Set(geo.latitude),
-                    longitude: Set(geo.longitude),
-                    device: Set(ua_info.device.clone()),
-                    browser: Set(ua_info.browser.clone()),
-                    os: Set(ua_info.os),
-                    ..Default::default()
-                };
-                let _ = click_events::Entity::insert(click_event).exec(&state.db).await;
+                
+                let new_click_count = link.click_count + 1;
 
                 // Broadcast real-time event
                 if let Some(ws_state) = state.ws_state.as_ref() {
@@ -982,6 +969,12 @@ pub async fn bulk_create_links(
     let base_url = get_base_url();
 
     for url in payload.urls {
+        // Validate URL before creating link
+        if !is_valid_url(&url) {
+            errors.push(format!("Invalid URL: {}", url));
+            continue;
+        }
+        
         let code: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(6)

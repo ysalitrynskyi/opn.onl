@@ -225,8 +225,24 @@ pub async fn get_tag(
             )
         })?;
 
-    // Check ownership
-    if tag.user_id != Some(user_id) && tag.org_id.is_none() {
+    // Check ownership - must own the tag directly, or be member of the org that owns it
+    let has_access = if tag.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = tag.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -295,8 +311,24 @@ pub async fn update_tag(
             )
         })?;
 
-    // Check ownership
-    if tag.user_id != Some(user_id) && tag.org_id.is_none() {
+    // Check ownership - must own the tag directly, or be member of the org that owns it
+    let has_access = if tag.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = tag.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -379,8 +411,24 @@ pub async fn delete_tag(
             )
         })?;
 
-    // Check ownership
-    if tag.user_id != Some(user_id) && tag.org_id.is_none() {
+    // Check ownership - must own the tag directly, or be member of the org that owns it
+    let has_access = if tag.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = tag.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    } else {
+        false
+    };
+    
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -429,8 +477,9 @@ pub async fn add_tags_to_link(
         )
     })?;
 
-    // Verify link exists and user has access
+    // Verify link exists, not deleted, and user has access
     let link = links::Entity::find_by_id(link_id)
+        .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -520,8 +569,9 @@ pub async fn remove_tags_from_link(
         )
     })?;
 
-    // Verify link exists and user has access
+    // Verify link exists, not deleted, and user has access
     let link = links::Entity::find_by_id(link_id)
+        .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {
