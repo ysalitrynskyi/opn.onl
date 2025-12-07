@@ -1,20 +1,16 @@
 version: '3.8'
 
 # ===========================================
-# PORTAINER DEPLOYMENT (DEPRECATED - USE ARCH-SPECIFIC FILES)
+# PORTAINER DEPLOYMENT - ARM64 (aarch64)
 # ===========================================
+# For ARM-based servers (Raspberry Pi, AWS Graviton, etc.)
 # 
-# ⚠️  Use architecture-specific files instead:
-#   - docker-compose.portainer.amd64.yml  (for Intel/AMD servers)
-#   - docker-compose.portainer.arm64.yml  (for ARM servers)
-#
 # Images are automatically built by GitHub Actions.
-# Just set BACKEND_IMAGE and FRONTEND_IMAGE in your .env
+# Just set BACKEND_IMAGE and FRONTEND_IMAGE in your .env:
+#   BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
+#   FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
 
 services:
-  # ===========================================
-  # DATABASE - PostgreSQL
-  # ===========================================
   db:
     image: postgres:15-alpine
     container_name: opn_onl_db
@@ -33,9 +29,6 @@ services:
     networks:
       - opn-network
 
-  # ===========================================
-  # CACHE - Redis
-  # ===========================================
   redis:
     image: redis:7-alpine
     container_name: opn_onl_redis
@@ -51,11 +44,9 @@ services:
     networks:
       - opn-network
 
-  # ===========================================
-  # BACKEND - Rust/Axum API
-  # ===========================================
   backend:
     image: ${BACKEND_IMAGE:-ghcr.io/ysalitrynskyi/opn-backend:latest}
+    platform: linux/arm64
     container_name: opn_onl_backend
     restart: unless-stopped
     depends_on:
@@ -103,11 +94,9 @@ services:
     networks:
       - opn-network
 
-  # ===========================================
-  # FRONTEND - React/Vite + Nginx
-  # ===========================================
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/ysalitrynskyi/opn-frontend:latest}
+    platform: linux/arm64
     container_name: opn_onl_frontend
     restart: unless-stopped
     depends_on:
@@ -120,9 +109,6 @@ services:
     networks:
       - opn-network
 
-  # ===========================================
-  # CLOUDFLARE TUNNEL - Expose services
-  # ===========================================
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: opn_onl_cloudflared
