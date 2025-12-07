@@ -266,7 +266,7 @@ Images are available at:
 - `ghcr.io/ysalitrynskyi/opn-backend:latest`
 - `ghcr.io/ysalitrynskyi/opn-frontend:latest`
 
-Supported platform: `linux/amd64`
+Supported platforms: `linux/amd64`, `linux/arm64`
 
 ## GeoIP Analytics (Optional)
 
