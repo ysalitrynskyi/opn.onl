@@ -382,9 +382,10 @@ pub async fn get_dashboard_stats(
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
 
-    // Get user's links
+    // Get user's links (exclude deleted)
     let user_links = links::Entity::find()
         .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::DeletedAt.is_null())
         .all(&state.db)
         .await
         .unwrap_or_default();

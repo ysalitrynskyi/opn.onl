@@ -224,6 +224,7 @@ pub async fn get_folders(
     for folder in folders {
         let link_count = links::Entity::find()
             .filter(links::Column::FolderId.eq(folder.id))
+            .filter(links::Column::DeletedAt.is_null())
             .count(&state.db)
             .await
             .unwrap_or(0) as i64;
@@ -414,6 +415,7 @@ pub async fn update_folder(
 
     let link_count = links::Entity::find()
         .filter(links::Column::FolderId.eq(folder.id))
+        .filter(links::Column::DeletedAt.is_null())
         .count(&state.db)
         .await
         .unwrap_or(0) as i64;

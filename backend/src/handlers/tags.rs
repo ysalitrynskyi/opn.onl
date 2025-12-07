@@ -734,6 +734,7 @@ pub async fn get_links_by_tag(
 
     let links_list = links::Entity::find()
         .filter(links::Column::Id.is_in(link_ids))
+        .filter(links::Column::DeletedAt.is_null())
         .all(&state.db)
         .await
         .map_err(|_| {

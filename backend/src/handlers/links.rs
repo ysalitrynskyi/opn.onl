@@ -666,6 +666,7 @@ pub async fn get_qr_code(
     };
 
     let link = links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
