@@ -1,5 +1,32 @@
-# Build stage
-FROM node:22-alpine AS builder
+# Build stage - use full Node image for Puppeteer/Chromium support
+FROM node:22-slim AS builder
+
+# Install Puppeteer dependencies
+RUN apt-get update && apt-get install -y \
+    chromium \
+    fonts-liberation \
+    libappindicator3-1 \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    xdg-utils \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Puppeteer to use installed Chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
@@ -15,12 +42,18 @@ COPY . .
 # Set build-time environment variables (API URLs are baked in at build time)
 ARG VITE_API_URL
 ARG VITE_FRONTEND_URL
+ARG SKIP_PRERENDER=false
 
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_FRONTEND_URL=$VITE_FRONTEND_URL
+ENV SKIP_PRERENDER=$SKIP_PRERENDER
 
-# Build the application
-RUN npm run build
+# Build the application (prerendering happens in production mode)
+RUN if [ "$SKIP_PRERENDER" = "true" ]; then \
+      NODE_ENV=development npm run build; \
+    else \
+      npm run build; \
+    fi
 
 # Production stage with nginx
 FROM nginx:alpine

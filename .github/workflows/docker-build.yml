@@ -134,6 +134,7 @@ jobs:
             VITE_API_URL=${{ secrets.VITE_API_URL || 'https://l.opn.onl' }}
             VITE_FRONTEND_URL=${{ secrets.VITE_FRONTEND_URL || 'https://opn.onl' }}
             VITE_GA_ID=${{ secrets.VITE_GA_ID }}
+            SKIP_PRERENDER=${{ secrets.SKIP_PRERENDER || 'true' }}
           cache-from: type=gha,scope=frontend-${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=frontend-${{ matrix.platform }}
           provenance: false
