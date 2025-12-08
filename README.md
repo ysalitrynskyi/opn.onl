@@ -44,6 +44,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Click Buffering** - Batch click events for better DB performance
 - **Real-time Updates** - WebSocket/SSE for live click notifications
 - **GeoIP Lookup** - Country and city detection (optional MaxMind)
+- **Database Indexes** - Optimized for billions of rows with composite indexes
 
 ### Developer Experience
 - **API Documentation** - OpenAPI/Swagger UI included at `/swagger-ui/`
@@ -186,7 +187,9 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | `SMTP_PORT` | 587 | SMTP port (587 for STARTTLS, 465 for SSL) |
 | `SMTP_USER` | - | SMTP username |
 | `SMTP_PASS` | - | SMTP password |
+| `SMTP_TLS` | starttls | TLS mode: `starttls`, `tls`, or `none` |
 | `SMTP_FROM_EMAIL` | noreply@opn.onl | From email address |
+| `SMTP_FROM_NAME` | opn.onl | From display name |
 | `ADMIN_EMAIL` | admin@opn.onl | Admin email for contact form |
 
 ### Link Management
@@ -195,6 +198,9 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 |----------|---------|-------------|
 | `ENABLE_CUSTOM_ALIASES` | true | Allow users to create custom aliases |
 | `ALLOW_DELETED_SLUG_REUSE` | false | Allow reusing slugs from deleted links |
+| `MIN_ALIAS_LENGTH` | 5 | Minimum custom alias length |
+| `MAX_ALIAS_LENGTH` | 25 | Maximum custom alias length |
+| `ENABLE_URL_SANITIZATION` | true | Sanitize URLs for security |
 | `ENABLE_ACCOUNT_DELETION` | false | Allow users to delete their own accounts |
 
 ### Performance Tuning
@@ -424,6 +430,8 @@ Backups can be triggered via Admin panel or API. Old backups are automatically c
 - **General:** 100 requests/minute per IP
 - **Link creation:** 100 links/hour per user
 - **Auth endpoints:** 10 attempts/minute per IP
+- **Password verification:** 5 attempts/minute per IP+link (anti-bruteforce)
+- **Same URL:** 10 times per 10 minutes per user
 - **Redirects:** 100/second per IP
 
 ### Content Blocking
@@ -437,8 +445,9 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
 - Passwords hashed with bcrypt
 - JWT tokens with expiration
 - Soft-delete for links and users (data preserved)
-- Email verification required (configurable)
+- Email verification required before creating links
 - HTTPS enforced in production
+- URL sanitization and blocking
 
 ## Development
 
