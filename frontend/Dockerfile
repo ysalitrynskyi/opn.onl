@@ -42,18 +42,12 @@ COPY . .
 # Set build-time environment variables (API URLs are baked in at build time)
 ARG VITE_API_URL
 ARG VITE_FRONTEND_URL
-ARG SKIP_PRERENDER=false
 
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_FRONTEND_URL=$VITE_FRONTEND_URL
-ENV SKIP_PRERENDER=$SKIP_PRERENDER
 
-# Build the application (prerendering happens in production mode)
-RUN if [ "$SKIP_PRERENDER" = "true" ]; then \
-      NODE_ENV=development npm run build; \
-    else \
-      npm run build; \
-    fi
+# Build the application with prerendering
+RUN npm run build
 
 # Production stage with nginx
 FROM nginx:alpine
