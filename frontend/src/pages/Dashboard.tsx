@@ -5,7 +5,7 @@ import {
     QrCode, Download, Lock, Clock, Edit2, X, Check,
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
     TrendingUp, MousePointer, SortAsc, SortDesc,
-    Zap, Link2, Share2, Upload, Clipboard
+    Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus, Heart, Activity
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
@@ -28,6 +28,7 @@ interface LinkData {
     has_password: boolean;
     notes: string | null;
     is_active: boolean;
+    is_pinned: boolean;
     tags: { id: number; name: string; color: string }[];
 }
 
@@ -508,8 +509,12 @@ export default function Dashboard() {
             );
         }
         
-        // Sort
+        // Sort - pinned items first, then by selected sort
         result.sort((a, b) => {
+            // Pinned items always first
+            if (a.is_pinned && !b.is_pinned) return -1;
+            if (!a.is_pinned && b.is_pinned) return 1;
+            
             let comparison = 0;
             if (sortBy === 'date') {
                 comparison = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
@@ -683,6 +688,43 @@ export default function Dashboard() {
             setTimeout(() => setCopiedSourceId(null), 2000);
         } catch {
             toast('Failed to copy source URL', 'error');
+        }
+    };
+
+    const handlePin = async (link: LinkData) => {
+        try {
+            const res = await fetch(API_ENDPOINTS.linkPin(link.id), {
+                method: 'POST',
+                headers: getAuthHeaders()
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setLinks(links.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
+                toast(data.message, 'success');
+            } else {
+                toast('Failed to update pin status', 'error');
+            }
+        } catch {
+            toast('Network error', 'error');
+        }
+    };
+
+    const handleClone = async (link: LinkData) => {
+        try {
+            const res = await fetch(API_ENDPOINTS.linkClone(link.id), {
+                method: 'POST',
+                headers: getAuthHeaders()
+            });
+            if (res.ok) {
+                const data = await res.json();
+                toast(`Link cloned! New code: ${data.code}`, 'success');
+                fetchLinks();
+            } else {
+                const data = await res.json();
+                toast(data.error || 'Failed to clone link', 'error');
+            }
+        } catch {
+            toast('Network error', 'error');
         }
     };
 
@@ -1172,28 +1214,42 @@ export default function Dashboard() {
                                         <span className="font-bold">{link.click_count.toLocaleString()}</span>
                                     </Link>
                                     <div className="flex items-center gap-1">
-                                        <button 
+                                        <button
+                                            onClick={() => handlePin(link)}
+                                            className={`p-2 transition-colors ${link.is_pinned ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-500'}`}
+                                            title={link.is_pinned ? 'Unpin' : 'Pin'}
+                                        >
+                                            <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
+                                        </button>
+                                        <button
+                                            onClick={() => handleClone(link)}
+                                            className="p-2 text-slate-400 hover:text-primary-600 transition-colors"
+                                            title="Clone"
+                                        >
+                                            <CopyPlus className="h-4 w-4" />
+                                        </button>
+                                        <button
                                             onClick={() => handleShare(link)}
                                             className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
                                             title="Share"
                                         >
                                             <Share2 className="h-4 w-4" />
                                         </button>
-                                        <button 
+                                        <button
                                             onClick={() => setQrLink(link)}
                                             className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
                                             title="QR Code"
                                         >
                                             <QrCode className="h-4 w-4" />
                                         </button>
-                                        <button 
+                                        <button
                                             onClick={() => setEditingLink(link)}
                                             className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
                                             title="Edit"
                                         >
                                             <Edit2 className="h-4 w-4" />
                                         </button>
-                                        <button 
+                                        <button
                                             onClick={() => handleDelete(link.id)}
                                             className="p-2 text-slate-400 hover:text-red-600 transition-colors"
                                             title="Delete"

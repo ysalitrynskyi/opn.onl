@@ -273,6 +273,7 @@ pub struct LinkResponse {
     pub starts_at: Option<String>,
     pub max_clicks: Option<i32>,
     pub is_active: bool,
+    pub is_pinned: bool,
     pub tags: Vec<TagInfo>,
 }
 
@@ -571,6 +572,7 @@ pub async fn create_link(
                 starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
                 max_clicks: payload.max_clicks,
                 is_active: true,
+                is_pinned: false,
                 tags,
             })).into_response()
         }
@@ -1097,6 +1099,7 @@ pub async fn get_user_links(
             starts_at: l.starts_at.map(|s| s.to_string()),
             max_clicks: l.max_clicks,
             is_active: l.is_active(),
+            is_pinned: l.is_pinned,
             tags,
         });
     }
@@ -1279,6 +1282,7 @@ pub async fn update_link(
                     starts_at: updated.starts_at.map(|s| s.to_string()),
                     max_clicks: updated.max_clicks,
                     is_active: updated.is_active(),
+                    is_pinned: updated.is_pinned,
                     tags,
                 })).into_response()
             }
@@ -1556,4 +1560,419 @@ pub async fn export_links_csv(
         ],
         csv_content,
    ).into_response()
+}
+
+// ============= New Feature: Clone Link =============
+
+#[derive(Serialize, ToSchema)]
+pub struct CloneLinkResponse {
+    pub id: i32,
+    pub code: String,
+    pub short_url: String,
+    pub original_url: String,
+    pub message: String,
+}
+
+/// Clone an existing link with a new short code
+#[utoipa::path(
+    post,
+    path = "/links/{id}/clone",
+    params(
+        ("id" = i32, Path, description = "Link ID to clone")
+    ),
+    responses(
+        (status = 201, description = "Link cloned", body = CloneLinkResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Link not found"),
+    ),
+    tag = "Links"
+)]
+pub async fn clone_link(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+    };
+
+    let link = links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(link) = link {
+        // Verify ownership
+        if link.user_id != Some(user_id) {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "You don't have permission to clone this link".to_string() })).into_response();
+        }
+
+        // Generate new short code
+        let mut code = generate_short_code();
+        while links::Entity::find().filter(links::Column::Code.eq(&code)).one(&state.db).await.unwrap_or(None).is_some() {
+            code = generate_short_code();
+        }
+
+        // Create new link with same settings but new code
+        let new_link = links::ActiveModel {
+            original_url: Set(link.original_url.clone()),
+            code: Set(code.clone()),
+            user_id: Set(Some(user_id)),
+            expires_at: Set(link.expires_at),
+            password_hash: Set(link.password_hash.clone()),
+            title: Set(link.title.clone().map(|t| format!("{} (copy)", t))),
+            notes: Set(link.notes.clone()),
+            folder_id: Set(link.folder_id),
+            org_id: Set(link.org_id),
+            starts_at: Set(link.starts_at),
+            max_clicks: Set(link.max_clicks),
+            is_pinned: Set(false), // Don't copy pin status
+            ..Default::default()
+        };
+
+        match links::Entity::insert(new_link).exec(&state.db).await {
+            Ok(res) => {
+                // Copy tags
+                let link_tags_list = link_tags::Entity::find()
+                    .filter(link_tags::Column::LinkId.eq(id))
+                    .all(&state.db)
+                    .await
+                    .unwrap_or_default();
+
+                for lt in link_tags_list {
+                    let new_lt = link_tags::ActiveModel {
+                        link_id: Set(res.last_insert_id),
+                        tag_id: Set(lt.tag_id),
+                        ..Default::default()
+                    };
+                    let _ = new_lt.insert(&state.db).await;
+                }
+
+                let base_url = get_base_url();
+                (StatusCode::CREATED, Json(CloneLinkResponse {
+                    id: res.last_insert_id,
+                    code: code.clone(),
+                    short_url: format!("{}/{}", base_url, code),
+                    original_url: link.original_url,
+                    message: "Link cloned successfully".to_string(),
+                })).into_response()
+            }
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to clone link".to_string() })).into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+    }
+}
+
+// ============= New Feature: Toggle Pin =============
+
+#[derive(Serialize, ToSchema)]
+pub struct PinResponse {
+    pub is_pinned: bool,
+    pub message: String,
+}
+
+/// Toggle pin status for a link
+#[utoipa::path(
+    post,
+    path = "/links/{id}/pin",
+    params(
+        ("id" = i32, Path, description = "Link ID")
+    ),
+    responses(
+        (status = 200, description = "Pin status toggled", body = PinResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Link not found"),
+    ),
+    tag = "Links"
+)]
+pub async fn toggle_pin(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+    };
+
+    let link = links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(link) = link {
+        if link.user_id != Some(user_id) {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "You don't have permission to pin this link".to_string() })).into_response();
+        }
+
+        let new_pin_status = !link.is_pinned;
+        let mut active_link: links::ActiveModel = link.into();
+        active_link.is_pinned = Set(new_pin_status);
+
+        match active_link.update(&state.db).await {
+            Ok(_) => (StatusCode::OK, Json(PinResponse {
+                is_pinned: new_pin_status,
+                message: if new_pin_status { "Link pinned".to_string() } else { "Link unpinned".to_string() },
+            })).into_response(),
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update pin status".to_string() })).into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+    }
+}
+
+// ============= New Feature: Check Code Availability =============
+
+#[derive(Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct CheckCodeQuery {
+    pub code: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CheckCodeResponse {
+    pub available: bool,
+    pub code: String,
+    pub message: String,
+}
+
+/// Check if a custom alias/code is available
+#[utoipa::path(
+    get,
+    path = "/links/check-code",
+    params(CheckCodeQuery),
+    responses(
+        (status = 200, description = "Code availability checked", body = CheckCodeResponse),
+    ),
+    tag = "Links"
+)]
+pub async fn check_code_availability(
+    State(state): State<AppState>,
+    Query(query): Query<CheckCodeQuery>,
+) -> impl IntoResponse {
+    let code = query.code.trim();
+    
+    // Validate alias format
+    if let Err(e) = validate_alias(code) {
+        return (StatusCode::OK, Json(CheckCodeResponse {
+            available: false,
+            code: code.to_string(),
+            message: e,
+        })).into_response();
+    }
+
+    // Check if code exists (including deleted, if reuse is disabled)
+    let allow_deleted_slug_reuse = std::env::var("ALLOW_DELETED_SLUG_REUSE")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+
+    let mut exists_query = links::Entity::find()
+        .filter(links::Column::Code.eq(code));
+    
+    if !allow_deleted_slug_reuse {
+        // Check all links including deleted
+    } else {
+        // Only check non-deleted links
+        exists_query = exists_query.filter(links::Column::DeletedAt.is_null());
+    }
+
+    let exists = exists_query.one(&state.db).await.unwrap_or(None).is_some();
+
+    if exists {
+        (StatusCode::OK, Json(CheckCodeResponse {
+            available: false,
+            code: code.to_string(),
+            message: "This alias is already taken".to_string(),
+        })).into_response()
+    } else {
+        (StatusCode::OK, Json(CheckCodeResponse {
+            available: true,
+            code: code.to_string(),
+            message: "This alias is available".to_string(),
+        })).into_response()
+    }
+}
+
+// ============= New Feature: URL Health Check =============
+
+#[derive(Deserialize, ToSchema)]
+pub struct HealthCheckRequest {
+    pub url: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct UrlHealthResponse {
+    pub url: String,
+    pub reachable: bool,
+    pub status_code: Option<u16>,
+    pub response_time_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Check if a URL is reachable
+#[utoipa::path(
+    post,
+    path = "/links/health-check",
+    request_body = HealthCheckRequest,
+    responses(
+        (status = 200, description = "URL health checked", body = UrlHealthResponse),
+        (status = 400, description = "Invalid URL"),
+    ),
+    tag = "Links"
+)]
+pub async fn check_url_health(
+    Json(payload): Json<HealthCheckRequest>,
+) -> impl IntoResponse {
+    // Validate URL first
+    if validate_url(&payload.url).is_err() {
+        return (StatusCode::BAD_REQUEST, Json(UrlHealthResponse {
+            url: payload.url,
+            reachable: false,
+            status_code: None,
+            response_time_ms: None,
+            error: Some("Invalid URL format".to_string()),
+        })).into_response();
+    }
+
+    let start = std::time::Instant::now();
+    
+    // Create HTTP client with timeout
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return (StatusCode::OK, Json(UrlHealthResponse {
+                url: payload.url,
+                reachable: false,
+                status_code: None,
+                response_time_ms: None,
+                error: Some("Failed to create HTTP client".to_string()),
+            })).into_response();
+        }
+    };
+
+    // Send HEAD request (faster than GET)
+    match client.head(&payload.url).send().await {
+        Ok(response) => {
+            let elapsed = start.elapsed().as_millis() as u64;
+            let status = response.status().as_u16();
+            
+            (StatusCode::OK, Json(UrlHealthResponse {
+                url: payload.url,
+                reachable: response.status().is_success() || response.status().is_redirection(),
+                status_code: Some(status),
+                response_time_ms: Some(elapsed),
+                error: if response.status().is_client_error() || response.status().is_server_error() {
+                    Some(format!("HTTP {}", status))
+                } else {
+                    None
+                },
+            })).into_response()
+        }
+        Err(e) => {
+            let elapsed = start.elapsed().as_millis() as u64;
+            (StatusCode::OK, Json(UrlHealthResponse {
+                url: payload.url,
+                reachable: false,
+                status_code: None,
+                response_time_ms: Some(elapsed),
+                error: Some(e.to_string()),
+            })).into_response()
+        }
+    }
+}
+
+// ============= New Feature: Build UTM URL =============
+
+#[derive(Deserialize, ToSchema)]
+pub struct BuildUtmRequest {
+    pub url: String,
+    pub utm_source: Option<String>,
+    pub utm_medium: Option<String>,
+    pub utm_campaign: Option<String>,
+    pub utm_term: Option<String>,
+    pub utm_content: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BuildUtmResponse {
+    pub original_url: String,
+    pub url_with_utm: String,
+    pub utm_params: std::collections::HashMap<String, String>,
+}
+
+/// Build URL with UTM parameters
+#[utoipa::path(
+    post,
+    path = "/links/build-utm",
+    request_body = BuildUtmRequest,
+    responses(
+        (status = 200, description = "UTM URL built", body = BuildUtmResponse),
+        (status = 400, description = "Invalid URL"),
+    ),
+    tag = "Links"
+)]
+pub async fn build_utm_url(
+    Json(payload): Json<BuildUtmRequest>,
+) -> impl IntoResponse {
+    // Parse the original URL
+    let mut parsed = match url::Url::parse(&payload.url) {
+        Ok(u) => u,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid URL format".to_string() })).into_response();
+        }
+    };
+
+    let mut utm_params = std::collections::HashMap::new();
+
+    // Add UTM parameters
+    {
+        let mut query_pairs = parsed.query_pairs_mut();
+        
+        if let Some(ref source) = payload.utm_source {
+            if !source.is_empty() {
+                query_pairs.append_pair("utm_source", source);
+                utm_params.insert("utm_source".to_string(), source.clone());
+            }
+        }
+        if let Some(ref medium) = payload.utm_medium {
+            if !medium.is_empty() {
+                query_pairs.append_pair("utm_medium", medium);
+                utm_params.insert("utm_medium".to_string(), medium.clone());
+            }
+        }
+        if let Some(ref campaign) = payload.utm_campaign {
+            if !campaign.is_empty() {
+                query_pairs.append_pair("utm_campaign", campaign);
+                utm_params.insert("utm_campaign".to_string(), campaign.clone());
+            }
+        }
+        if let Some(ref term) = payload.utm_term {
+            if !term.is_empty() {
+                query_pairs.append_pair("utm_term", term);
+                utm_params.insert("utm_term".to_string(), term.clone());
+            }
+        }
+        if let Some(ref content) = payload.utm_content {
+            if !content.is_empty() {
+                query_pairs.append_pair("utm_content", content);
+                utm_params.insert("utm_content".to_string(), content.clone());
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(BuildUtmResponse {
+        original_url: payload.url,
+        url_with_utm: parsed.to_string(),
+        utm_params,
+    })).into_response()
 }

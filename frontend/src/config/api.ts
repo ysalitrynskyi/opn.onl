@@ -35,10 +35,15 @@ export const API_ENDPOINTS = {
     bulkDeleteLinks: `${API_BASE_URL}/links/bulk/delete`,
     bulkUpdateLinks: `${API_BASE_URL}/links/bulk/update`,
     exportLinks: `${API_BASE_URL}/links/export`,
+    checkCode: `${API_BASE_URL}/links/check-code`,
+    healthCheck: `${API_BASE_URL}/links/health-check`,
+    buildUtm: `${API_BASE_URL}/links/build-utm`,
     linkStats: (id: number) => `${API_BASE_URL}/links/${id}/stats`,
     linkQr: (id: number) => `${API_BASE_URL}/links/${id}/qr`,
     linkDelete: (id: number) => `${API_BASE_URL}/links/${id}`,
     linkUpdate: (id: number) => `${API_BASE_URL}/links/${id}`,
+    linkClone: (id: number) => `${API_BASE_URL}/links/${id}/clone`,
+    linkPin: (id: number) => `${API_BASE_URL}/links/${id}/pin`,
     linkTags: (id: number) => `${API_BASE_URL}/links/${id}/tags`,
     linkRealtimeClicks: (id: number) => `${API_BASE_URL}/links/${id}/clicks/realtime`,
     
@@ -158,6 +163,7 @@ export interface Link {
     starts_at?: string;
     max_clicks?: number;
     is_active: boolean;
+    is_pinned: boolean;
     tags: Tag[];
 }
 

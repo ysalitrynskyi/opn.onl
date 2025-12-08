@@ -765,6 +765,7 @@ pub async fn get_links_by_tag(
             starts_at: l.starts_at.map(|s| s.to_string()),
             max_clicks: l.max_clicks,
             is_active: l.is_active(),
+            is_pinned: l.is_pinned,
             tags: vec![],
         })
         .collect();

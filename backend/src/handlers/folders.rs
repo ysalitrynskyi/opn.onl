@@ -731,6 +731,7 @@ pub async fn get_folder_links(
             starts_at: l.starts_at.map(|s| s.to_string()),
             max_clicks: l.max_clicks,
             is_active: l.is_active(),
+            is_pinned: l.is_pinned,
             tags: link_tags,
         });
     }

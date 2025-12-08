@@ -68,8 +68,9 @@ mod url_validation_tests {
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         // But we should reject non-http/https schemes
-        assert_ne!(parsed.unwrap().scheme(), "http");
-        assert_ne!(parsed.unwrap().scheme(), "https");
+        let parsed = parsed.unwrap();
+        assert_ne!(parsed.scheme(), "http");
+        assert_ne!(parsed.scheme(), "https");
     }
 
     #[test]

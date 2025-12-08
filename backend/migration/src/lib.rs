@@ -17,6 +17,7 @@ mod m20220101_000014_add_passkey_name;
 mod m20220101_000015_add_link_title;
 mod m20220101_000016_add_user_profile;
 mod m20220101_000017_add_performance_indexes;
+mod m20220101_000018_add_link_pinned;
 
 pub struct Migrator;
 
@@ -41,6 +42,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000015_add_link_title::Migration),
             Box::new(m20220101_000016_add_user_profile::Migration),
             Box::new(m20220101_000017_add_performance_indexes::Migration),
+            Box::new(m20220101_000018_add_link_pinned::Migration),
         ]
     }
 }

@@ -22,6 +22,8 @@ pub struct Model {
     pub starts_at: Option<DateTime>,
     pub max_clicks: Option<i32>,
     pub deleted_at: Option<DateTime>,
+    #[sea_orm(default_value = "false")]
+    pub is_pinned: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
