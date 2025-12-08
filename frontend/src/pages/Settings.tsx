@@ -24,6 +24,11 @@ interface UserProfile {
     created_at: string;
     link_count: number;
     total_clicks: number;
+    display_name: string | null;
+    bio: string | null;
+    website: string | null;
+    avatar_url: string | null;
+    location: string | null;
 }
 
 interface AppSettings {
@@ -61,6 +66,14 @@ export default function Settings() {
     // Rename passkey state
     const [renamingPasskeyId, setRenamingPasskeyId] = useState<number | null>(null);
     const [newPasskeyName, setNewPasskeyName] = useState('');
+    
+    // Profile editing state
+    const [editingProfile, setEditingProfile] = useState(false);
+    const [displayName, setDisplayName] = useState('');
+    const [bio, setBio] = useState('');
+    const [website, setWebsite] = useState('');
+    const [location, setLocation] = useState('');
+    const [savingProfile, setSavingProfile] = useState(false);
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -331,6 +344,47 @@ export default function Settings() {
         }
     };
 
+    const handleEditProfile = () => {
+        setDisplayName(profile?.display_name || '');
+        setBio(profile?.bio || '');
+        setWebsite(profile?.website || '');
+        setLocation(profile?.location || '');
+        setEditingProfile(true);
+    };
+
+    const handleSaveProfile = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setSavingProfile(true);
+        setError('');
+
+        try {
+            const res = await fetch(API_ENDPOINTS.updateProfile, {
+                method: 'PUT',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                    display_name: displayName || undefined,
+                    bio: bio || undefined,
+                    website: website || undefined,
+                    location: location || undefined,
+                }),
+            });
+
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.error || 'Failed to update profile');
+            }
+
+            const data = await res.json();
+            setProfile(data);
+            setEditingProfile(false);
+            setSuccess('Profile updated successfully');
+        } catch (err: any) {
+            setError(err.message);
+        } finally {
+            setSavingProfile(false);
+        }
+    };
+
     if (loading) {
         return (
             <div className="min-h-[60vh] flex items-center justify-center">
@@ -381,56 +435,161 @@ export default function Settings() {
                     className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"
                 >
                     <div className="p-6 border-b border-slate-100">
-                        <div className="flex items-center gap-3">
-                            <div className="h-10 w-10 bg-primary-100 rounded-full flex items-center justify-center">
-                                <User className="h-5 w-5 text-primary-600" />
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="h-10 w-10 bg-primary-100 rounded-full flex items-center justify-center">
+                                    <User className="h-5 w-5 text-primary-600" />
+                                </div>
+                                <div>
+                                    <h2 className="text-lg font-semibold text-slate-900">
+                                        {profile?.display_name || 'Profile'}
+                                    </h2>
+                                    <p className="text-sm text-slate-500">{profile?.email}</p>
+                                </div>
                             </div>
-                            <div>
-                                <h2 className="text-lg font-semibold text-slate-900">Profile</h2>
-                                <p className="text-sm text-slate-500">{profile?.email}</p>
+                            <div className="flex items-center gap-2">
+                                {profile?.email_verified ? (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                                        <Check className="h-3 w-3" />
+                                        Verified
+                                    </span>
+                                ) : (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-medium">
+                                        <AlertTriangle className="h-3 w-3" />
+                                        Unverified
+                                    </span>
+                                )}
+                                {!editingProfile && (
+                                    <button
+                                        onClick={handleEditProfile}
+                                        className="p-2 text-slate-400 hover:text-slate-600"
+                                        title="Edit profile"
+                                    >
+                                        <Edit2 className="h-4 w-4" />
+                                    </button>
+                                )}
                             </div>
-                            {profile?.email_verified ? (
-                                <span className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">
-                                    <Check className="h-3 w-3" />
-                                    Verified
-                                </span>
-                            ) : (
-                                <span className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-medium">
-                                    <AlertTriangle className="h-3 w-3" />
-                                    Unverified
-                                </span>
-                            )}
                         </div>
                     </div>
                     <div className="p-6 space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="p-4 bg-slate-50 rounded-xl">
-                                <p className="text-sm text-slate-500">Total Links</p>
-                                <p className="text-2xl font-bold text-slate-900">{profile?.link_count?.toLocaleString() || 0}</p>
-                            </div>
-                            <div className="p-4 bg-slate-50 rounded-xl">
-                                <p className="text-sm text-slate-500">Total Clicks</p>
-                                <p className="text-2xl font-bold text-slate-900">{profile?.total_clicks?.toLocaleString() || 0}</p>
-                            </div>
-                        </div>
-                        
-                        {/* Show resend verification only if NOT verified */}
-                        {profile && !profile.email_verified && (
-                            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                                <div className="flex items-center justify-between">
+                        {editingProfile ? (
+                            <form onSubmit={handleSaveProfile} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Display Name</label>
+                                    <input
+                                        type="text"
+                                        value={displayName}
+                                        onChange={(e) => setDisplayName(e.target.value)}
+                                        className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                        placeholder="Your name"
+                                        maxLength={100}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Bio</label>
+                                    <textarea
+                                        value={bio}
+                                        onChange={(e) => setBio(e.target.value)}
+                                        className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
+                                        placeholder="Tell us about yourself"
+                                        rows={3}
+                                        maxLength={500}
+                                    />
+                                    <p className="text-xs text-slate-500 mt-1">{bio.length}/500 characters</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <p className="font-medium text-amber-800">Email not verified</p>
-                                        <p className="text-sm text-amber-700">Please verify your email to access all features.</p>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Website</label>
+                                        <input
+                                            type="url"
+                                            value={website}
+                                            onChange={(e) => setWebsite(e.target.value)}
+                                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                            placeholder="https://example.com"
+                                        />
                                     </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
+                                        <input
+                                            type="text"
+                                            value={location}
+                                            onChange={(e) => setLocation(e.target.value)}
+                                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                            placeholder="City, Country"
+                                            maxLength={100}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex gap-3 pt-2">
                                     <button
-                                        onClick={handleResendVerification}
-                                        disabled={resendingVerification}
-                                        className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+                                        type="button"
+                                        onClick={() => setEditingProfile(false)}
+                                        className="px-4 py-2 text-slate-600 hover:text-slate-800"
                                     >
-                                        {resendingVerification ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Resend'}
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={savingProfile}
+                                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-50"
+                                    >
+                                        {savingProfile ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save Profile'}
                                     </button>
                                 </div>
-                            </div>
+                            </form>
+                        ) : (
+                            <>
+                                {/* Profile info display */}
+                                {(profile?.bio || profile?.website || profile?.location) && (
+                                    <div className="space-y-2 pb-4 border-b border-slate-100">
+                                        {profile?.bio && (
+                                            <p className="text-slate-600">{profile.bio}</p>
+                                        )}
+                                        {(profile?.website || profile?.location) && (
+                                            <div className="flex flex-wrap gap-4 text-sm text-slate-500">
+                                                {profile?.website && (
+                                                    <a href={profile.website} target="_blank" rel="noreferrer" className="hover:text-primary-600">
+                                                        🔗 {profile.website.replace(/^https?:\/\//, '')}
+                                                    </a>
+                                                )}
+                                                {profile?.location && (
+                                                    <span>📍 {profile.location}</span>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                                
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="p-4 bg-slate-50 rounded-xl">
+                                        <p className="text-sm text-slate-500">Total Links</p>
+                                        <p className="text-2xl font-bold text-slate-900">{profile?.link_count?.toLocaleString() || 0}</p>
+                                    </div>
+                                    <div className="p-4 bg-slate-50 rounded-xl">
+                                        <p className="text-sm text-slate-500">Total Clicks</p>
+                                        <p className="text-2xl font-bold text-slate-900">{profile?.total_clicks?.toLocaleString() || 0}</p>
+                                    </div>
+                                </div>
+                                
+                                {/* Show resend verification only if NOT verified */}
+                                {profile && !profile.email_verified && (
+                                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                                        <div className="flex items-center justify-between">
+                                            <div>
+                                                <p className="font-medium text-amber-800">Email not verified</p>
+                                                <p className="text-sm text-amber-700">Please verify your email to access all features.</p>
+                                            </div>
+                                            <button
+                                                onClick={handleResendVerification}
+                                                disabled={resendingVerification}
+                                                className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+                                            >
+                                                {resendingVerification ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Resend'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </>
                         )}
                     </div>
                 </motion.div>

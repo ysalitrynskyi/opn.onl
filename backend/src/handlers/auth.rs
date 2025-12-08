@@ -652,6 +652,21 @@ pub struct UserProfileResponse {
     pub created_at: String,
     pub link_count: i64,
     pub total_clicks: i64,
+    // Profile fields
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub website: Option<String>,
+    pub avatar_url: Option<String>,
+    pub location: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateProfileRequest {
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub website: Option<String>,
+    pub avatar_url: Option<String>,
+    pub location: Option<String>,
 }
 
 /// Get current user profile
@@ -705,8 +720,110 @@ pub async fn get_current_user(
             created_at: user.created_at.to_string(),
             link_count,
             total_clicks,
+            display_name: user.display_name,
+            bio: user.bio,
+            website: user.website,
+            avatar_url: user.avatar_url,
+            location: user.location,
         })).into_response();
     }
 
     (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+}
+
+/// Update user profile
+#[utoipa::path(
+    put,
+    path = "/auth/profile",
+    request_body = UpdateProfileRequest,
+    responses(
+        (status = 200, description = "Profile updated", body = UserProfileResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
+pub async fn update_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateProfileRequest>,
+) -> impl IntoResponse {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+    };
+
+    let user = users::Entity::find_by_id(user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(user) = user {
+        let mut active_user: users::ActiveModel = user.clone().into();
+        
+        if let Some(name) = payload.display_name {
+            active_user.display_name = Set(Some(name));
+        }
+        if let Some(bio) = payload.bio {
+            // Validate bio length (max 500 chars)
+            if bio.len() > 500 {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Bio must be 500 characters or less".to_string() })).into_response();
+            }
+            active_user.bio = Set(Some(bio));
+        }
+        if let Some(website) = payload.website {
+            // Validate website URL
+            if !website.is_empty() {
+                if let Err(_) = url::Url::parse(&website) {
+                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid website URL".to_string() })).into_response();
+                }
+            }
+            active_user.website = Set(if website.is_empty() { None } else { Some(website) });
+        }
+        if let Some(avatar) = payload.avatar_url {
+            active_user.avatar_url = Set(if avatar.is_empty() { None } else { Some(avatar) });
+        }
+        if let Some(location) = payload.location {
+            active_user.location = Set(if location.is_empty() { None } else { Some(location) });
+        }
+        
+        match active_user.update(&state.db).await {
+            Ok(updated) => {
+                use crate::entity::{links, click_events};
+                
+                let link_count = links::Entity::find()
+                    .filter(links::Column::UserId.eq(user_id))
+                    .filter(links::Column::DeletedAt.is_null())
+                    .count(&state.db)
+                    .await
+                    .unwrap_or(0) as i64;
+                
+                let total_clicks = click_events::Entity::find()
+                    .inner_join(links::Entity)
+                    .filter(links::Column::UserId.eq(user_id))
+                    .count(&state.db)
+                    .await
+                    .unwrap_or(0) as i64;
+                
+                (StatusCode::OK, Json(UserProfileResponse {
+                    id: updated.id,
+                    email: updated.email,
+                    email_verified: updated.email_verified,
+                    is_admin: updated.is_admin,
+                    created_at: updated.created_at.to_string(),
+                    link_count,
+                    total_clicks,
+                    display_name: updated.display_name,
+                    bio: updated.bio,
+                    website: updated.website,
+                    avatar_url: updated.avatar_url,
+                    location: updated.location,
+                })).into_response()
+            }
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update profile".to_string() })).into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+    }
 }

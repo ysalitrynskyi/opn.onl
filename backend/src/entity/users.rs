@@ -17,6 +17,12 @@ pub struct Model {
     pub password_reset_expires: Option<DateTime>,
     pub is_admin: bool,
     pub deleted_at: Option<DateTime>,
+    // Profile fields
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub website: Option<String>,
+    pub avatar_url: Option<String>,
+    pub location: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

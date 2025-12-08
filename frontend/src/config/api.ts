@@ -18,6 +18,7 @@ export const API_ENDPOINTS = {
     // User
     appSettings: `${API_BASE_URL}/auth/settings`,
     userProfile: `${API_BASE_URL}/auth/me`,
+    updateProfile: `${API_BASE_URL}/auth/profile`,
     
     // Passkeys
     passkeys: `${API_BASE_URL}/auth/passkeys`,

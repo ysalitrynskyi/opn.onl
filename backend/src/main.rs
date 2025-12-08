@@ -75,27 +75,27 @@ async fn https_redirect(
 /// If no admins exist, promote the first user to admin
 async fn ensure_admin_exists(db: &DatabaseConnection) {
     use entity::users;
-    use sea_orm::{EntityTrait, QueryFilter, ColumnTrait, ActiveModelTrait, Set};
+    use sea_orm::{EntityTrait, QueryFilter, ColumnTrait, ActiveModelTrait, Set, QueryOrder, PaginatorTrait};
     
-    // Check if any admin exists
-    let admin_exists = users::Entity::find()
+    // Check if any admin exists (non-deleted)
+    let admin_count = users::Entity::find()
         .filter(users::Column::IsAdmin.eq(true))
         .filter(users::Column::DeletedAt.is_null())
-        .one(db)
+        .count(db)
         .await
-        .ok()
-        .flatten()
-        .is_some();
+        .unwrap_or(0);
     
-    if admin_exists {
+    if admin_count > 0 {
+        tracing::info!("Found {} admin(s) in the system", admin_count);
         return;
     }
     
-    tracing::warn!("No admin users found in the system!");
+    tracing::warn!("No admin users found in the system! Will promote first user.");
     
-    // Get the first user (by ID)
+    // Get the first user by ID (oldest user)
     let first_user = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
+        .order_by_asc(users::Column::Id)
         .one(db)
         .await
         .ok()
@@ -107,10 +107,13 @@ async fn ensure_admin_exists(db: &DatabaseConnection) {
         let mut active_user: users::ActiveModel = user.into();
         active_user.is_admin = Set(true);
         
-        if let Err(e) = active_user.update(db).await {
-            tracing::error!("Failed to promote user to admin: {}", e);
-        } else {
-            tracing::info!("Successfully promoted user to admin");
+        match active_user.update(db).await {
+            Ok(updated) => {
+                tracing::info!("✓ Successfully promoted user {} to admin", updated.email);
+            }
+            Err(e) => {
+                tracing::error!("✗ Failed to promote user to admin: {}", e);
+            }
         }
     } else {
         tracing::info!("No users in the system yet - first registered user will be admin");
@@ -218,6 +221,7 @@ async fn main() {
         .route("/auth/delete-account", post(handlers::auth::delete_account))
         .route("/auth/settings", get(handlers::auth::get_app_settings))
         .route("/auth/me", get(handlers::auth::get_current_user))
+        .route("/auth/profile", put(handlers::auth::update_profile))
         .route("/auth/passkey/register/start", post(handlers::passkeys::register_start))
         .route("/auth/passkey/register/finish", post(handlers::passkeys::register_finish))
         .route("/auth/passkey/login/start", post(handlers::passkeys::login_start))
