@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { 
     Copy, Plus, Trash2, BarChart2, 
@@ -175,6 +175,7 @@ function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
     const [qrUrl, setQrUrl] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const qrUrlRef = useRef<string | null>(null);
 
     useEffect(() => {
         const fetchQR = async () => {
@@ -184,7 +185,9 @@ function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
                 });
                 if (res.ok) {
                     const blob = await res.blob();
-                    setQrUrl(URL.createObjectURL(blob));
+                    const url = URL.createObjectURL(blob);
+                    qrUrlRef.current = url;
+                    setQrUrl(url);
                 } else {
                     setError('Failed to load QR code');
                 }
@@ -195,7 +198,12 @@ function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
             }
         };
         fetchQR();
-        return () => { if (qrUrl) URL.revokeObjectURL(qrUrl); };
+        return () => { 
+            if (qrUrlRef.current) {
+                URL.revokeObjectURL(qrUrlRef.current);
+                qrUrlRef.current = null;
+            }
+        };
     }, [link.id]);
 
     const downloadQR = () => {
@@ -377,9 +385,14 @@ export default function Dashboard() {
 
     // Check clipboard for URL on focus
     useEffect(() => {
+        let isMounted = true;
+        
         const checkClipboard = async () => {
             try {
                 const text = await navigator.clipboard.readText();
+                // Only update state if component is still mounted
+                if (!isMounted) return;
+                
                 if (text && /^https?:\/\/.+/.test(text.trim())) {
                     setClipboardUrl(text.trim());
                 } else {
@@ -387,13 +400,19 @@ export default function Dashboard() {
                 }
             } catch {
                 // Clipboard access denied or not available
+                if (isMounted) {
+                    setClipboardUrl(null);
+                }
             }
         };
 
         window.addEventListener('focus', checkClipboard);
         checkClipboard();
 
-        return () => window.removeEventListener('focus', checkClipboard);
+        return () => {
+            isMounted = false;
+            window.removeEventListener('focus', checkClipboard);
+        };
     }, []);
 
     // Keyboard shortcuts

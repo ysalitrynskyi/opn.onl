@@ -424,6 +424,11 @@ pub async fn create_link(
         }
     }
 
+    // Check if URL or domain is blocked (MUST be checked before any link creation)
+    if let Err(e) = check_blocked(&state.db, &validated_url).await {
+        return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
+    }
+
     // Check if custom aliases are enabled
     let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
         .unwrap_or_else(|_| "true".to_string())
@@ -475,11 +480,6 @@ pub async fn create_link(
         
         alias
     } else {
-        // Check if URL or domain is blocked
-        if let Err(e) = check_blocked(&state.db, &validated_url).await {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
-        }
-        
         let mut code = generate_short_code();
         while links::Entity::find().filter(links::Column::Code.eq(&code)).one(&state.db).await.unwrap_or(None).is_some() {
             code = generate_short_code();
@@ -894,6 +894,7 @@ pub async fn verify_link_password(
         if let Some(hash_str) = &link.password_hash {
             if bcrypt::verify(&payload.password, hash_str).unwrap_or(false) {
                 // Use click buffer for consistent click tracking (same as regular redirects)
+                // This also handles WebSocket broadcast internally
                 record_click_buffered(
                     &state.click_buffer,
                     state.ws_state.as_ref().map(|w| w.as_ref()),
@@ -903,37 +904,6 @@ pub async fn verify_link_password(
                     link.click_count,
                     &headers,
                 );
-                
-                // For real-time broadcast, we need to get the info
-                let ip = headers.get("x-forwarded-for")
-                    .and_then(|h| h.to_str().ok())
-                    .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-                    .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
-                
-                let user_agent = headers.get("user-agent")
-                    .and_then(|h| h.to_str().ok())
-                    .map(|s| s.to_string());
-                
-                let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
-                let ua_info = user_agent.as_ref().map(|ua| parse_user_agent(ua)).unwrap_or_default();
-                
-                let new_click_count = link.click_count + 1;
-
-                // Broadcast real-time event
-                if let Some(ws_state) = state.ws_state.as_ref() {
-                    let event = ClickEvent {
-                        link_id: link.id,
-                        link_code: link.code.clone(),
-                        user_id: link.user_id,
-                        click_count: new_click_count,
-                        country: geo.country,
-                        city: geo.city,
-                        device: ua_info.device,
-                        browser: ua_info.browser,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                    };
-                    ws_state.broadcast_click(event);
-                }
 
                 return (StatusCode::OK, Json(serde_json::json!({ "url": link.original_url }))).into_response();
             } else {
