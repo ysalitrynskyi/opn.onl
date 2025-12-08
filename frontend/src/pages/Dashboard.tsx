@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { 
-    Copy, ExternalLink, Plus, Trash2, BarChart2, 
+    Copy, Plus, Trash2, BarChart2, 
     QrCode, Download, Lock, Clock, Edit2, X, Check,
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
     TrendingUp, MousePointer, SortAsc, SortDesc,
@@ -1063,16 +1063,25 @@ export default function Dashboard() {
                                         )}
                                     </div>
                                     
-                                    {/* Primary short URL */}
-                                    <div className="flex items-center gap-3 flex-wrap">
+                                    {/* Primary short URL → Destination */}
+                                    <div className="flex items-center gap-2 flex-wrap">
                                         <a 
                                             href={mainUrl}
                                             target="_blank" 
                                             rel="noreferrer" 
-                                            className="text-lg font-bold text-primary-600 hover:underline flex items-center gap-1"
+                                            className="text-lg font-bold text-primary-600 hover:underline"
                                         >
                                             {mainUrl.replace(/^https?:\/\//, '')}
-                                            <ExternalLink className="h-3.5 w-3.5" />
+                                        </a>
+                                        <span className="text-slate-400">→</span>
+                                        <a 
+                                            href={link.original_url}
+                                            target="_blank" 
+                                            rel="noreferrer" 
+                                            className="text-sm text-slate-500 hover:text-slate-700 hover:underline truncate max-w-[300px]"
+                                            title={link.original_url}
+                                        >
+                                            {link.original_url.replace(/^https?:\/\//, '').substring(0, 50)}{link.original_url.length > 60 ? '...' : ''}
                                         </a>
                                         <button
                                             onClick={() => handleCopy(link)}
@@ -1107,8 +1116,6 @@ export default function Dashboard() {
                                     <p className="text-xs text-slate-400">
                                         API: <a href={apiUrl} target="_blank" rel="noreferrer" className="hover:underline">{apiUrl}</a>
                                     </p>
-                                    {/* Original URL */}
-                                    <p className="text-slate-500 text-sm truncate">{link.original_url}</p>
                                     {/* Mini stats */}
                                     <MiniStats link={link} />
                                 </div>
