@@ -65,6 +65,9 @@ export const API_ENDPOINTS = {
     // Redirect (for password verification)
     verifyPassword: (code: string) => `${API_BASE_URL}/${code}/verify`,
     
+    // Link preview (for checking if link exists)
+    preview: (code: string) => `${API_BASE_URL}/${code}/preview`,
+    
     // Change password
     changePassword: `${API_BASE_URL}/auth/change-password`,
     

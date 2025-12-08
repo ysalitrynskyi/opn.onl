@@ -346,6 +346,7 @@ export default function Dashboard() {
     const [qrLink, setQrLink] = useState<LinkData | null>(null);
     const [shareLink, setShareLink] = useState<LinkData | null>(null);
     const [copiedId, setCopiedId] = useState<number | null>(null);
+    const [copiedSourceId, setCopiedSourceId] = useState<number | null>(null);
     const [error, setError] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
     const [sortBy, setSortBy] = useState<'date' | 'clicks'>('date');
@@ -667,10 +668,21 @@ export default function Dashboard() {
             const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
             await navigator.clipboard.writeText(mainUrl);
             setCopiedId(link.id);
-            toast('Link copied to clipboard!', 'success');
+            toast('Short link copied!', 'success');
             setTimeout(() => setCopiedId(null), 2000);
         } catch {
             toast('Failed to copy link', 'error');
+        }
+    };
+
+    const handleCopySource = async (link: LinkData) => {
+        try {
+            await navigator.clipboard.writeText(link.original_url);
+            setCopiedSourceId(link.id);
+            toast('Source URL copied!', 'success');
+            setTimeout(() => setCopiedSourceId(null), 2000);
+        } catch {
+            toast('Failed to copy source URL', 'error');
         }
     };
 
@@ -1093,6 +1105,17 @@ export default function Dashboard() {
                                         >
                                             {mainUrl.replace(/^https?:\/\//, '')}
                                         </a>
+                                        <button
+                                            onClick={() => handleCopy(link)}
+                                            className="p-1 text-slate-400 hover:text-primary-600 transition-colors rounded hover:bg-primary-50"
+                                            title="Copy short URL"
+                                        >
+                                            {copiedId === link.id ? (
+                                                <Check className="h-4 w-4 text-green-500" />
+                                            ) : (
+                                                <Copy className="h-4 w-4" />
+                                            )}
+                                        </button>
                                         <span className="text-slate-400">→</span>
                                         <a 
                                             href={link.original_url}
@@ -1104,14 +1127,14 @@ export default function Dashboard() {
                                             {link.original_url.replace(/^https?:\/\//, '').substring(0, 50)}{link.original_url.length > 60 ? '...' : ''}
                                         </a>
                                         <button
-                                            onClick={() => handleCopy(link)}
-                                            className="text-slate-400 hover:text-slate-600 transition-colors"
-                                            title="Copy short URL"
+                                            onClick={() => handleCopySource(link)}
+                                            className="p-1 text-slate-400 hover:text-slate-600 transition-colors rounded hover:bg-slate-100"
+                                            title="Copy source URL"
                                         >
-                                            {copiedId === link.id ? (
+                                            {copiedSourceId === link.id ? (
                                                 <Check className="h-4 w-4 text-green-500" />
                                             ) : (
-                                                <Copy className="h-4 w-4" />
+                                                <Link2 className="h-4 w-4" />
                                             )}
                                         </button>
                                         {link.has_password && (
