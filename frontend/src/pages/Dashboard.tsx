@@ -295,7 +295,7 @@ function MiniStats({ link }: { link: LinkData }) {
                 <Calendar className="h-3 w-3" />
                 {createdDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
             </span>
-            {link.tags.length > 0 && (
+            {link.tags && link.tags.length > 0 && (
                 <div className="flex gap-1">
                     {link.tags.slice(0, 2).map(tag => (
                         <span 

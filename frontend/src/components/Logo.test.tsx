@@ -5,12 +5,15 @@ import Logo from './Logo';
 describe('Logo', () => {
   it('renders the logo text by default', () => {
     render(<Logo />);
-    expect(screen.getByText('opn.onl')).toBeInTheDocument();
+    // Logo text is split into colored spans: opn.onl or OPeN.ONLine
+    // Check for the presence of individual letter groups
+    expect(screen.getByText('opn')).toBeInTheDocument();
   });
 
   it('hides text when iconOnly is true', () => {
     render(<Logo iconOnly />);
-    expect(screen.queryByText('opn.onl')).not.toBeInTheDocument();
+    // With iconOnly, no text should be visible
+    expect(screen.queryByText('opn')).not.toBeInTheDocument();
   });
 
   it('applies custom className', () => {

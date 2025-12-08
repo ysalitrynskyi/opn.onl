@@ -101,6 +101,9 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
+    environment:
+      # Google Analytics (optional) - set to your GA4 tracking ID
+      GA_ID: ${GA_ID:-}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:80/health"]
       interval: 30s

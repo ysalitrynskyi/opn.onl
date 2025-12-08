@@ -131,6 +131,8 @@ pub struct RateLimiters {
     pub auth: Arc<RateLimiter>,
     /// Link redirect rate limiter (100 per second per IP - more relaxed for redirects)
     pub redirect: Arc<RateLimiter>,
+    /// Password verification rate limiter (5 per minute per IP+code - anti-bruteforce)
+    pub password_verify: Arc<RateLimiter>,
 }
 
 impl Default for RateLimiters {
@@ -143,6 +145,8 @@ impl Default for RateLimiters {
             link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 3600))),
             auth: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 60))),
             redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 1))),
+            // Anti-bruteforce: only 5 password attempts per minute per IP+code
+            password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(5, 60))),
         }
     }
 }
@@ -163,6 +167,7 @@ impl RateLimiters {
                 limiters.link_creation.cleanup();
                 limiters.auth.cleanup();
                 limiters.redirect.cleanup();
+                limiters.password_verify.cleanup();
                 tracing::debug!("Rate limiter cleanup completed");
             }
         });
@@ -234,7 +239,11 @@ pub async fn rate_limit_middleware(
     }
 
     // Choose appropriate limiter based on path
-    let result = if path.starts_with("/auth") {
+    let result = if path.ends_with("/verify") && req.method() == axum::http::Method::POST {
+        // Password verification - strict anti-bruteforce (5 per minute per IP+code)
+        let code = path.split('/').filter(|s| !s.is_empty()).next().unwrap_or("unknown");
+        limiters.password_verify.check(&format!("pwverify:{}:{}", ip, code))
+    } else if path.starts_with("/auth") {
         limiters.auth.check(&format!("auth:{}", ip))
     } else if path.starts_with("/links") && req.method() == axum::http::Method::POST {
         limiters.link_creation.check(&format!("create:{}", ip))

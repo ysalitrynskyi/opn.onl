@@ -12,14 +12,12 @@ RUN npm ci --legacy-peer-deps
 # Copy source code
 COPY . .
 
-# Set build-time environment variables
+# Set build-time environment variables (API URLs are baked in at build time)
 ARG VITE_API_URL
 ARG VITE_FRONTEND_URL
-ARG VITE_GA_ID
 
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_FRONTEND_URL=$VITE_FRONTEND_URL
-ENV VITE_GA_ID=$VITE_GA_ID
 
 # Build the application
 RUN npm run build
@@ -32,6 +30,10 @@ RUN apk add --no-cache curl
 
 # Copy custom nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy docker entrypoint script
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -50,6 +52,7 @@ EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
   CMD curl -fsS http://localhost:80/health || exit 1
 
-# Start nginx
+# Use entrypoint for runtime env injection
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
 

@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     
-    <!-- Google Analytics -->
+    <!-- Google Analytics - GA_ID is injected at runtime via docker-entrypoint.sh -->
     <script>
       (function() {
-        // GA ID is injected at build time by Vite
-        var gaId = '%VITE_GA_ID%';
-        // Check if GA ID was properly replaced (not empty, not the placeholder)
-        if (gaId && gaId.length > 0 && gaId.indexOf('%') === -1 && gaId.startsWith('G-')) {
+        // GA ID is injected at runtime by nginx entrypoint
+        var gaId = window.GA_ID || '';
+        // Check if GA ID is set and valid
+        if (gaId && gaId.length > 0 && gaId.startsWith('G-')) {
           // Load gtag.js
           var script = document.createElement('script');
           script.async = true;
@@ -26,10 +26,11 @@
             anonymize_ip: true
           });
           window.gtag = gtag;
-          console.log('[GA] Initialized with ID:', gaId);
         }
       })();
     </script>
+    <!-- Runtime config injection point - replaced by docker-entrypoint.sh -->
+    <script>window.GA_ID = "%%GA_ID%%";</script>
     
     <!-- Favicons -->
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
