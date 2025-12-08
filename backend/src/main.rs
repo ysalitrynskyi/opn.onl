@@ -77,6 +77,22 @@ async fn ensure_admin_exists(db: &DatabaseConnection) {
     use entity::users;
     use sea_orm::{EntityTrait, QueryFilter, ColumnTrait, ActiveModelTrait, Set, QueryOrder, PaginatorTrait};
     
+    tracing::info!("Checking for admin users...");
+    
+    // Count total users first
+    let total_users = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .count(db)
+        .await
+        .unwrap_or(0);
+    
+    tracing::info!("Total users in system: {}", total_users);
+    
+    if total_users == 0 {
+        tracing::info!("No users in the system yet - first registered user will be admin");
+        return;
+    }
+    
     // Check if any admin exists (non-deleted)
     let admin_count = users::Entity::find()
         .filter(users::Column::IsAdmin.eq(true))
@@ -85,38 +101,60 @@ async fn ensure_admin_exists(db: &DatabaseConnection) {
         .await
         .unwrap_or(0);
     
+    tracing::info!("Current admin count: {}", admin_count);
+    
     if admin_count > 0 {
-        tracing::info!("Found {} admin(s) in the system", admin_count);
+        tracing::info!("✓ Found {} admin(s) in the system - no action needed", admin_count);
         return;
     }
     
-    tracing::warn!("No admin users found in the system! Will promote first user.");
+    tracing::warn!("⚠ No admin users found! Promoting first user to admin...");
     
     // Get the first user by ID (oldest user)
-    let first_user = users::Entity::find()
+    let first_user_result = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
         .order_by_asc(users::Column::Id)
         .one(db)
-        .await
-        .ok()
-        .flatten();
+        .await;
     
-    if let Some(user) = first_user {
-        tracing::info!("Promoting first user {} (ID: {}) to admin", user.email, user.id);
-        
-        let mut active_user: users::ActiveModel = user.into();
-        active_user.is_admin = Set(true);
-        
-        match active_user.update(db).await {
-            Ok(updated) => {
-                tracing::info!("✓ Successfully promoted user {} to admin", updated.email);
+    match first_user_result {
+        Ok(Some(user)) => {
+            tracing::info!("Found first user: {} (ID: {}, is_admin: {})", user.email, user.id, user.is_admin);
+            
+            if user.is_admin {
+                tracing::info!("User is already admin - count query may have had an issue");
+                return;
             }
-            Err(e) => {
-                tracing::error!("✗ Failed to promote user to admin: {}", e);
+            
+            let user_id = user.id;
+            let user_email = user.email.clone();
+            let mut active_user: users::ActiveModel = user.into();
+            active_user.is_admin = Set(true);
+            
+            match active_user.update(db).await {
+                Ok(updated) => {
+                    tracing::info!("✓ Successfully promoted user {} (ID: {}) to admin", updated.email, user_id);
+                    
+                    // Verify the update worked
+                    if let Ok(Some(verify)) = users::Entity::find_by_id(user_id).one(db).await {
+                        if verify.is_admin {
+                            tracing::info!("✓ Verified: {} is now admin", verify.email);
+                        } else {
+                            tracing::error!("✗ Verification failed: {} is still not admin!", verify.email);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("✗ Failed to promote user {} to admin: {}", user_email, e);
+                }
             }
         }
-    } else {
-        tracing::info!("No users in the system yet - first registered user will be admin");
+        Ok(None) => {
+            tracing::warn!("No users found despite count showing {} users", total_users);
+        }
+        Err(e) => {
+            tracing::error!("✗ Database error while finding first user: {}", e);
+        }
     }
 }
 
