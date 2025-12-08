@@ -34,6 +34,7 @@ export default function Layout() {
     const navLinks = [
         { href: '/features', label: 'Features' },
         { href: '/pricing', label: 'Pricing' },
+        { href: '/docs', label: 'Docs' },
         { href: '/faq', label: 'FAQ' },
     ];
 
