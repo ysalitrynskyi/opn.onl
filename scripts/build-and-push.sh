@@ -75,3 +75,5 @@ echo "Update your .env for Portainer:"
 echo "  BACKEND_IMAGE=$BACKEND_IMAGE:$VERSION"
 echo "  FRONTEND_IMAGE=$FRONTEND_IMAGE:$VERSION"
 
+
+
