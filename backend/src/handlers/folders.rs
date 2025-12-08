@@ -718,6 +718,7 @@ pub async fn get_folder_links(
             code: l.code.clone(),
             short_url: format!("{}/{}", base_url, l.code),
             original_url: l.original_url.clone(),
+            title: l.title.clone(),
             click_count: l.click_count,
             created_at: l.created_at.to_string(),
             expires_at: l.expires_at.map(|e| e.to_string()),

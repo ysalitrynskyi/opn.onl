@@ -16,6 +16,7 @@ interface LinkData {
     code: string;
     original_url: string;
     short_url: string;
+    title: string | null;
     click_count: number;
     created_at: string;
     expires_at: string | null;
@@ -321,8 +322,10 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
     const [newUrl, setNewUrl] = useState('');
     const [alias, setAlias] = useState('');
+    const [title, setTitle] = useState('');
     const [password, setPassword] = useState('');
     const [expiresAt, setExpiresAt] = useState('');
+    const [expiresTime, setExpiresTime] = useState('23:59');
     const [creating, setCreating] = useState(false);
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -455,22 +458,32 @@ export default function Dashboard() {
         }
         
         try {
+            // Build expiration datetime with timezone
+            let expirationDate: string | undefined;
+            if (expiresAt) {
+                const dateTime = `${expiresAt}T${expiresTime || '23:59'}:00`;
+                expirationDate = new Date(dateTime).toISOString();
+            }
+            
             const res = await fetch(API_ENDPOINTS.links, {
                 method: 'POST',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({
                     original_url: newUrl,
                     custom_alias: alias || undefined,
+                    title: title || undefined,
                     password: password || undefined,
-                    expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined,
+                    expires_at: expirationDate,
                 }),
             });
 
             if (res.ok) {
                 setNewUrl('');
                 setAlias('');
+                setTitle('');
                 setPassword('');
                 setExpiresAt('');
+                setExpiresTime('23:59');
                 setShowAdvanced(false);
                 fetchLinks();
             } else {
@@ -695,32 +708,65 @@ export default function Dashboard() {
                                 exit={{ height: 0, opacity: 0 }}
                                 className="overflow-hidden"
                             >
-                                <div className="grid sm:grid-cols-2 gap-4 mt-4 pt-4 border-t border-slate-100">
+                                <div className="space-y-4 mt-4 pt-4 border-t border-slate-100">
+                                    {/* Title - full width */}
                                     <div>
                                         <label className="block text-sm font-medium text-slate-700 mb-1">
-                                            <Lock className="h-3.5 w-3.5 inline mr-1" />
-                                            Password Protection
+                                            Title (private, only visible to you)
                                         </label>
                                         <input
-                                            type="password"
-                                            placeholder="Leave empty for no password"
+                                            type="text"
+                                            placeholder="e.g. Marketing campaign Q1"
                                             className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                                            value={password}
-                                            onChange={(e) => setPassword(e.target.value)}
+                                            value={title}
+                                            onChange={(e) => setTitle(e.target.value)}
+                                            maxLength={100}
                                         />
                                     </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">
-                                            <Calendar className="h-3.5 w-3.5 inline mr-1" />
-                                            Expiration Date
-                                        </label>
-                                        <input
-                                            type="date"
-                                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                                            value={expiresAt}
-                                            onChange={(e) => setExpiresAt(e.target.value)}
-                                            min={new Date().toISOString().split('T')[0]}
-                                        />
+                                    
+                                    <div className="grid sm:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                <Lock className="h-3.5 w-3.5 inline mr-1" />
+                                                Password Protection
+                                            </label>
+                                            <input
+                                                type="password"
+                                                placeholder="Leave empty for no password"
+                                                className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                                value={password}
+                                                onChange={(e) => setPassword(e.target.value)}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                <Calendar className="h-3.5 w-3.5 inline mr-1" />
+                                                Expiration
+                                            </label>
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="date"
+                                                    className="flex-1 rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                                    value={expiresAt}
+                                                    onChange={(e) => setExpiresAt(e.target.value)}
+                                                    min={new Date().toISOString().split('T')[0]}
+                                                />
+                                                <input
+                                                    type="time"
+                                                    className="w-28 rounded-lg border border-slate-300 px-3 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                                    value={expiresTime}
+                                                    onChange={(e) => setExpiresTime(e.target.value)}
+                                                />
+                                            </div>
+                                            <p className="text-xs text-slate-500 mt-1">
+                                                Your timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}
+                                                {expiresAt && expiresTime && (
+                                                    <span className="ml-2">
+                                                        → Expires: {new Date(`${expiresAt}T${expiresTime}`).toLocaleString()}
+                                                    </span>
+                                                )}
+                                            </p>
+                                        </div>
                                     </div>
                                 </div>
                             </motion.div>
@@ -765,7 +811,13 @@ export default function Dashboard() {
             {/* Links List */}
             <div className="space-y-4">
                 <AnimatePresence mode="popLayout">
-                    {paginatedLinks.map((link) => (
+                    {paginatedLinks.map((link, index) => {
+                        // Calculate link number (bottom to top, 1 = oldest)
+                        const linkNumber = filteredLinks.length - ((currentPage - 1) * LINKS_PER_PAGE + index);
+                        const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+                        const apiUrl = link.short_url; // This is the API URL from backend
+                        
+                        return (
                         <motion.div 
                             key={link.id}
                             layout
@@ -776,15 +828,27 @@ export default function Dashboard() {
                         >
                             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                                 <div className="space-y-1 min-w-0 flex-1">
+                                    {/* Link number and title */}
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <span className="text-xs font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                                            #{linkNumber}
+                                        </span>
+                                        {link.title && (
+                                            <span className="text-sm font-medium text-slate-700 truncate">
+                                                {link.title}
+                                            </span>
+                                        )}
+                                    </div>
+                                    
                                     {/* Primary short URL */}
                                     <div className="flex items-center gap-3 flex-wrap">
                                         <a 
-                                            href={`${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`}
+                                            href={mainUrl}
                                             target="_blank" 
                                             rel="noreferrer" 
                                             className="text-lg font-bold text-primary-600 hover:underline flex items-center gap-1"
                                         >
-                                            {(import.meta.env.VITE_FRONTEND_URL || window.location.origin).replace(/^https?:\/\//, '')}/{link.code}
+                                            {mainUrl.replace(/^https?:\/\//, '')}
                                             <ExternalLink className="h-3.5 w-3.5" />
                                         </a>
                                         <button
@@ -816,6 +880,10 @@ export default function Dashboard() {
                                             </span>
                                         )}
                                     </div>
+                                    {/* API URL */}
+                                    <p className="text-xs text-slate-400">
+                                        API: <a href={apiUrl} target="_blank" rel="noreferrer" className="hover:underline">{apiUrl}</a>
+                                    </p>
                                     {/* Original URL */}
                                     <p className="text-slate-500 text-sm truncate">{link.original_url}</p>
                                     {/* Mini stats */}
@@ -863,7 +931,7 @@ export default function Dashboard() {
                                 </div>
                             </div>
                         </motion.div>
-                    ))}
+                    );})}
                 </AnimatePresence>
 
                 {/* Pagination */}

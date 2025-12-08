@@ -188,6 +188,7 @@ pub struct CreateLinkRequest {
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct UpdateLinkRequest {
     pub original_url: Option<String>,
+    pub title: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub password: Option<String>,
     pub remove_password: Option<bool>,
@@ -260,6 +261,7 @@ pub struct LinkResponse {
     pub code: String,
     pub short_url: String,
     pub original_url: String,
+    pub title: Option<String>,
     pub click_count: i32,
     pub created_at: String,
     pub expires_at: Option<String>,
@@ -478,6 +480,7 @@ pub async fn create_link(
         user_id: Set(user_id),
         expires_at: Set(payload.expires_at.map(|d| d.naive_utc())),
         password_hash: Set(password_hash.clone()),
+        title: Set(payload.title.clone()),
         notes: Set(payload.notes.clone()),
         folder_id: Set(payload.folder_id),
         org_id: Set(payload.org_id),
@@ -512,6 +515,7 @@ pub async fn create_link(
                 code: code.clone(),
                 short_url: format!("{}/{}", base_url, code),
                 original_url: payload.original_url,
+                title: payload.title,
                 click_count: 0,
                 created_at: chrono::Utc::now().to_rfc3339(),
                 expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
@@ -1065,6 +1069,7 @@ pub async fn get_user_links(
             code: l.code.clone(),
             short_url: format!("{}/{}", base_url, l.code),
             original_url: l.original_url.clone(),
+            title: l.title.clone(),
             click_count: l.click_count,
             created_at: l.created_at.to_string(),
             expires_at: l.expires_at.map(|d| d.to_string()),
@@ -1206,6 +1211,10 @@ pub async fn update_link(
             }
         }
 
+        if let Some(title) = payload.title {
+            active_link.title = Set(Some(title));
+        }
+
         if let Some(notes) = payload.notes {
             active_link.notes = Set(Some(notes));
         }
@@ -1240,6 +1249,7 @@ pub async fn update_link(
                     code: updated.code.clone(),
                     short_url: format!("{}/{}", base_url, updated.code),
                     original_url: updated.original_url.clone(),
+                    title: updated.title.clone(),
                     click_count: updated.click_count,
                     created_at: updated.created_at.to_string(),
                     expires_at: updated.expires_at.map(|d| d.to_string()),
