@@ -6,44 +6,20 @@ interface LogoProps {
 
 export default function Logo({ className = "h-8", iconOnly = false, showFull = true }: LogoProps) {
     return (
-        <div className={`group flex items-center gap-3 ${className}`}>
-            {/* Modern icon */}
-            <div className="relative flex items-center justify-center w-10 h-10 rounded-2xl bg-gradient-to-br from-violet-500 via-primary-500 to-cyan-500 p-[2px] shadow-xl shadow-primary-500/20 transition-transform duration-300 group-hover:scale-105">
-                <div className="flex items-center justify-center w-full h-full rounded-[14px] bg-white dark:bg-slate-900">
-                    {/* Chain link icon */}
-                    <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
-                        <path 
-                            d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" 
-                            stroke="url(#logoGradient1)" 
-                            strokeWidth="2.5" 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round"
-                        />
-                        <path 
-                            d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" 
-                            stroke="url(#logoGradient2)" 
-                            strokeWidth="2.5" 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round"
-                        />
-                        <defs>
-                            <linearGradient id="logoGradient1" x1="10" y1="4" x2="20" y2="14" gradientUnits="userSpaceOnUse">
-                                <stop stopColor="#8B5CF6" />
-                                <stop offset="1" stopColor="#0EA5E9" />
-                            </linearGradient>
-                            <linearGradient id="logoGradient2" x1="4" y1="10" x2="14" y2="20" gradientUnits="userSpaceOnUse">
-                                <stop stopColor="#0EA5E9" />
-                                <stop offset="1" stopColor="#10B981" />
-                            </linearGradient>
-                        </defs>
-                    </svg>
-                </div>
+        <div className={`flex items-center gap-2.5 font-bold text-2xl tracking-tighter ${className}`}>
+            {/* Original icon - interlocking circles */}
+            <div className="logo-icon relative flex items-center justify-center w-9 h-9 bg-gradient-to-br from-primary-500 to-primary-700 rounded-xl shadow-lg shadow-primary-500/25 overflow-hidden">
+                <div className="logo-shine" />
+                <svg viewBox="0 0 24 24" className="w-5 h-5 text-white relative z-10" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="9" cy="12" r="4" />
+                    <circle cx="15" cy="12" r="4" />
+                </svg>
             </div>
             
             {!iconOnly && (
                 <div className="flex items-center select-none">
                     {showFull ? (
-                        // Full version: OPeN.ONLine - modern typography
+                        // Full version: OPeN.ONLine
                         <div className="flex items-baseline tracking-tight">
                             <span className="text-2xl font-black bg-gradient-to-r from-violet-600 via-primary-600 to-cyan-600 bg-clip-text text-transparent">
                                 OPeN

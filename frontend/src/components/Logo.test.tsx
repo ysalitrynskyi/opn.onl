@@ -27,13 +27,10 @@ describe('Logo', () => {
     expect(container.firstChild).toHaveClass('custom-class');
   });
 
-  it('contains SVG icon with gradient', () => {
+  it('contains SVG icon', () => {
     const { container } = render(<Logo />);
     const svg = container.querySelector('svg');
     expect(svg).toBeInTheDocument();
-    // Check for gradient definitions
-    const gradients = container.querySelectorAll('linearGradient');
-    expect(gradients.length).toBe(2);
   });
 });
 
