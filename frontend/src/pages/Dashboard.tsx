@@ -5,7 +5,7 @@ import {
     QrCode, Download, Lock, Clock, Edit2, X, Check,
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
     TrendingUp, MousePointer, SortAsc, SortDesc,
-    Zap, Link2, Share2
+    Zap, Link2, Share2, Upload, Clipboard
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
@@ -341,6 +341,10 @@ export default function Dashboard() {
         min_alias_length: 5, 
         max_alias_length: 50 
     });
+    const [showBulkImport, setShowBulkImport] = useState(false);
+    const [bulkUrls, setBulkUrls] = useState('');
+    const [bulkImporting, setBulkImporting] = useState(false);
+    const [clipboardUrl, setClipboardUrl] = useState<string | null>(null);
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -362,6 +366,74 @@ export default function Dashboard() {
             }
         } catch (err) {
             console.error('Failed to fetch settings', err);
+        }
+    };
+
+    // Check clipboard for URL on focus
+    useEffect(() => {
+        const checkClipboard = async () => {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text && /^https?:\/\/.+/.test(text.trim())) {
+                    setClipboardUrl(text.trim());
+                } else {
+                    setClipboardUrl(null);
+                }
+            } catch {
+                // Clipboard access denied or not available
+            }
+        };
+
+        window.addEventListener('focus', checkClipboard);
+        checkClipboard();
+
+        return () => window.removeEventListener('focus', checkClipboard);
+    }, []);
+
+    // Bulk import handler
+    const handleBulkImport = async () => {
+        const urls = bulkUrls.split('\n').map(u => u.trim()).filter(u => u && /^https?:\/\/.+/.test(u));
+        
+        if (urls.length === 0) {
+            setError('No valid URLs found. Each line should contain a valid URL starting with http:// or https://');
+            return;
+        }
+
+        setBulkImporting(true);
+        setError('');
+
+        try {
+            const res = await fetch(API_ENDPOINTS.bulkLinks, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ urls }),
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                setShowBulkImport(false);
+                setBulkUrls('');
+                fetchLinks();
+                
+                if (data.errors && data.errors.length > 0) {
+                    setError(`Created ${data.links.length} links. ${data.errors.length} failed: ${data.errors.slice(0, 3).join(', ')}${data.errors.length > 3 ? '...' : ''}`);
+                }
+            } else {
+                const data = await res.json();
+                setError(data.error || 'Failed to import links');
+            }
+        } catch (err) {
+            setError('Network error during import');
+        } finally {
+            setBulkImporting(false);
+        }
+    };
+
+    // Quick create from clipboard
+    const handleClipboardCreate = () => {
+        if (clipboardUrl) {
+            setNewUrl(clipboardUrl);
+            setClipboardUrl(null);
         }
     };
 
@@ -631,14 +703,117 @@ export default function Dashboard() {
                         </span>
                     </div>
                 </div>
-                <button
-                    onClick={handleExport}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-medium hover:bg-slate-200 transition-colors"
-                >
-                    <Download className="h-4 w-4" />
-                    Export CSV
-                </button>
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => setShowBulkImport(true)}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-primary-50 text-primary-700 rounded-lg font-medium hover:bg-primary-100 transition-colors"
+                    >
+                        <Upload className="h-4 w-4" />
+                        Bulk Import
+                    </button>
+                    <button
+                        onClick={handleExport}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-medium hover:bg-slate-200 transition-colors"
+                    >
+                        <Download className="h-4 w-4" />
+                        Export CSV
+                    </button>
+                </div>
             </div>
+
+            {/* Clipboard URL Suggestion */}
+            {clipboardUrl && !newUrl && (
+                <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="mb-6 p-4 bg-primary-50 border border-primary-200 rounded-xl flex items-center justify-between"
+                >
+                    <div className="flex items-center gap-3">
+                        <Clipboard className="h-5 w-5 text-primary-600" />
+                        <div>
+                            <p className="text-sm font-medium text-primary-800">URL detected in clipboard</p>
+                            <p className="text-xs text-primary-600 truncate max-w-md">{clipboardUrl}</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setClipboardUrl(null)}
+                            className="p-1 text-primary-400 hover:text-primary-600"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+                        <button
+                            onClick={handleClipboardCreate}
+                            className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700"
+                        >
+                            Shorten it
+                        </button>
+                    </div>
+                </motion.div>
+            )}
+
+            {/* Bulk Import Modal */}
+            <AnimatePresence>
+                {showBulkImport && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+                        onClick={() => setShowBulkImport(false)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.95, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.95, opacity: 0 }}
+                            className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6"
+                            onClick={e => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-xl font-bold text-slate-900">Bulk Import URLs</h3>
+                                <button onClick={() => setShowBulkImport(false)} className="text-slate-400 hover:text-slate-600">
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+                            <p className="text-sm text-slate-600 mb-4">
+                                Paste one URL per line. Each URL will be shortened automatically.
+                            </p>
+                            <textarea
+                                value={bulkUrls}
+                                onChange={(e) => setBulkUrls(e.target.value)}
+                                className="w-full h-48 px-4 py-3 border border-slate-300 rounded-lg focus:border-primary-500 focus:ring-1 focus:ring-primary-500 font-mono text-sm"
+                                placeholder="https://example.com/page1&#10;https://example.com/page2&#10;https://example.com/page3"
+                            />
+                            <div className="flex justify-between items-center mt-4">
+                                <span className="text-sm text-slate-500">
+                                    {bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length} valid URLs
+                                </span>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setShowBulkImport(false)}
+                                        className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handleBulkImport}
+                                        disabled={bulkImporting}
+                                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-70 flex items-center gap-2"
+                                    >
+                                        {bulkImporting ? (
+                                            <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                        ) : (
+                                            <Upload className="h-4 w-4" />
+                                        )}
+                                        Import All
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             {error && (
                 <motion.div 
