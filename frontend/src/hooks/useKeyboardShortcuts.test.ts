@@ -13,10 +13,10 @@ describe('useKeyboardShortcuts Hook', () => {
 
     describe('Key Event Handling', () => {
         it('registers keyboard event listener on mount', () => {
-            const addEventListenerSpy = vi.spyOn(document, 'addEventListener');
+            const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
             
             const shortcuts = [
-                { key: 'n', callback: vi.fn() },
+                { key: 'n', handler: vi.fn(), description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
@@ -27,10 +27,10 @@ describe('useKeyboardShortcuts Hook', () => {
         });
 
         it('removes event listener on unmount', () => {
-            const removeEventListenerSpy = vi.spyOn(document, 'removeEventListener');
+            const removeEventListenerSpy = vi.spyOn(window, 'removeEventListener');
             
             const shortcuts = [
-                { key: 'n', callback: vi.fn() },
+                { key: 'n', handler: vi.fn(), description: 'New item' },
             ];
             
             const { unmount } = renderHook(() => useKeyboardShortcuts(shortcuts));
@@ -43,212 +43,213 @@ describe('useKeyboardShortcuts Hook', () => {
     });
 
     describe('Simple Shortcuts', () => {
-        it('calls callback when key is pressed', () => {
-            const callback = vi.fn();
+        it('calls handler when key is pressed', () => {
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', callback },
+                { key: 'n', handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'n' });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
 
-        it('does not call callback for different key', () => {
-            const callback = vi.fn();
+        it('does not call handler for different key', () => {
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', callback },
+                { key: 'n', handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'x' });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         it('handles multiple shortcuts', () => {
-            const callback1 = vi.fn();
-            const callback2 = vi.fn();
+            const handler1 = vi.fn();
+            const handler2 = vi.fn();
             const shortcuts = [
-                { key: 'n', callback: callback1 },
-                { key: 's', callback: callback2 },
+                { key: 'n', handler: handler1, description: 'New item' },
+                { key: 's', handler: handler2, description: 'Save' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
             });
             
-            expect(callback1).toHaveBeenCalled();
-            expect(callback2).toHaveBeenCalled();
+            expect(handler1).toHaveBeenCalled();
+            expect(handler2).toHaveBeenCalled();
         });
     });
 
     describe('Modifier Keys', () => {
         it('handles Ctrl+key shortcut', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', ctrlKey: true, callback },
+                { key: 'n', ctrl: true, handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'n', ctrlKey: true });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
 
-        it('does not call Ctrl+key callback without modifier', () => {
-            const callback = vi.fn();
+        it('does not call Ctrl+key handler without modifier', () => {
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', ctrlKey: true, callback },
+                { key: 'n', ctrl: true, handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'n', ctrlKey: false });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         it('handles Alt+key shortcut', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', altKey: true, callback },
+                { key: 'n', alt: true, handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'n', altKey: true });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
 
         it('handles Shift+key shortcut', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'N', shiftKey: true, callback },
+                { key: 'N', shift: true, handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'N', shiftKey: true });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
 
-        it('handles Meta/Cmd+key shortcut', () => {
-            const callback = vi.fn();
+        it('handles Meta/Cmd+key shortcut (treated as ctrl)', () => {
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', metaKey: true, callback },
+                { key: 'n', ctrl: true, handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
+            // Hook treats metaKey same as ctrlKey
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'n', metaKey: true });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
 
         it('handles multiple modifier keys', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 's', ctrlKey: true, shiftKey: true, callback },
+                { key: 's', ctrl: true, shift: true, handler, description: 'Save all' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, shiftKey: true });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
     });
 
     describe('Special Keys', () => {
         it('handles Escape key', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'Escape', callback },
+                { key: 'Escape', handler, description: 'Close' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'Escape' });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
 
         it('handles Enter key', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'Enter', callback },
+                { key: 'Enter', handler, description: 'Submit' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
                 const event = new KeyboardEvent('keydown', { key: 'Enter' });
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            expect(callback).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalled();
         });
 
         it('handles Arrow keys', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'ArrowUp', callback },
-                { key: 'ArrowDown', callback },
+                { key: 'ArrowUp', handler, description: 'Up' },
+                { key: 'ArrowDown', handler, description: 'Down' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
             
             act(() => {
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
             });
             
-            expect(callback).toHaveBeenCalledTimes(2);
+            expect(handler).toHaveBeenCalledTimes(2);
         });
     });
 
     describe('Input Elements', () => {
         it('ignores shortcuts when typing in input', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', callback },
+                { key: 'n', handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
@@ -259,21 +260,20 @@ describe('useKeyboardShortcuts Hook', () => {
             input.focus();
             
             act(() => {
-                const event = new KeyboardEvent('keydown', { key: 'n' });
-                Object.defineProperty(event, 'target', { value: input });
-                document.dispatchEvent(event);
+                const event = new KeyboardEvent('keydown', { key: 'n', bubbles: true });
+                Object.defineProperty(event, 'target', { value: input, writable: false });
+                window.dispatchEvent(event);
             });
             
-            // Should not call callback when focus is on input
-            // Note: This depends on implementation
+            // Handler may or may not be called depending on how target is checked
             
             document.body.removeChild(input);
         });
 
         it('ignores shortcuts when typing in textarea', () => {
-            const callback = vi.fn();
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 'n', callback },
+                { key: 'n', handler, description: 'New item' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
@@ -283,9 +283,9 @@ describe('useKeyboardShortcuts Hook', () => {
             textarea.focus();
             
             act(() => {
-                const event = new KeyboardEvent('keydown', { key: 'n' });
-                Object.defineProperty(event, 'target', { value: textarea });
-                document.dispatchEvent(event);
+                const event = new KeyboardEvent('keydown', { key: 'n', bubbles: true });
+                Object.defineProperty(event, 'target', { value: textarea, writable: false });
+                window.dispatchEvent(event);
             });
             
             document.body.removeChild(textarea);
@@ -294,34 +294,34 @@ describe('useKeyboardShortcuts Hook', () => {
 
     describe('Shortcut Updates', () => {
         it('updates shortcuts when dependencies change', () => {
-            const callback1 = vi.fn();
-            const callback2 = vi.fn();
+            const handler1 = vi.fn();
+            const handler2 = vi.fn();
             
             const { rerender } = renderHook(
                 ({ shortcuts }) => useKeyboardShortcuts(shortcuts),
-                { initialProps: { shortcuts: [{ key: 'n', callback: callback1 }] } }
+                { initialProps: { shortcuts: [{ key: 'n', handler: handler1, description: 'New 1' }] } }
             );
             
             act(() => {
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
             });
-            expect(callback1).toHaveBeenCalled();
+            expect(handler1).toHaveBeenCalled();
             
             // Rerender with new shortcuts
-            rerender({ shortcuts: [{ key: 'n', callback: callback2 }] });
+            rerender({ shortcuts: [{ key: 'n', handler: handler2, description: 'New 2' }] });
             
             act(() => {
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
             });
-            expect(callback2).toHaveBeenCalled();
+            expect(handler2).toHaveBeenCalled();
         });
     });
 
     describe('Prevent Default', () => {
-        it('prevents default when specified', () => {
-            const callback = vi.fn();
+        it('prevents default on matching shortcut', () => {
+            const handler = vi.fn();
             const shortcuts = [
-                { key: 's', ctrlKey: true, callback, preventDefault: true },
+                { key: 's', ctrl: true, handler, description: 'Save' },
             ];
             
             renderHook(() => useKeyboardShortcuts(shortcuts));
@@ -330,38 +330,20 @@ describe('useKeyboardShortcuts Hook', () => {
             const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
             
             act(() => {
-                document.dispatchEvent(event);
+                window.dispatchEvent(event);
             });
             
-            // Note: This depends on implementation
-        });
-    });
-
-    describe('Disabled State', () => {
-        it('does not trigger shortcuts when disabled', () => {
-            const callback = vi.fn();
-            const shortcuts = [
-                { key: 'n', callback },
-            ];
-            
-            renderHook(() => useKeyboardShortcuts(shortcuts, { enabled: false }));
-            
-            act(() => {
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
-            });
-            
-            // Should not call callback when disabled
-            // Note: This depends on implementation
+            // The hook calls preventDefault on matching shortcuts
+            expect(preventDefaultSpy).toHaveBeenCalled();
         });
     });
 });
 
-describe('Keyboard Shortcut Utilities', () => {
-    describe('formatShortcut', () => {
-        // If there's a utility function to format shortcuts for display
-        it('formats Ctrl+S correctly', () => {
-            const shortcut = { key: 'S', ctrlKey: true };
-            // Expected output depends on OS: Ctrl+S or ⌘S
-        });
+describe('Keyboard Shortcut Constants', () => {
+    it('SHORTCUTS array is defined', async () => {
+        const { SHORTCUTS } = await import('./useKeyboardShortcuts');
+        expect(SHORTCUTS).toBeDefined();
+        expect(Array.isArray(SHORTCUTS)).toBe(true);
+        expect(SHORTCUTS.length).toBeGreaterThan(0);
     });
 });

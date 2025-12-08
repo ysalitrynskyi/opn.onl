@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '../test/test-utils';
+import { describe, it, expect, vi } from 'vitest';
+import { render } from '../test/test-utils';
 import SEO from './SEO';
 
 // Mock react-helmet-async
@@ -18,7 +18,7 @@ describe('SEO Component', () => {
         });
 
         it('renders with custom title', () => {
-            const { container } = render(<SEO title="Custom Title" />);
+            render(<SEO title="Custom Title" />);
             // Check that title element is created
         });
 
@@ -27,43 +27,39 @@ describe('SEO Component', () => {
         });
 
         it('renders with custom keywords', () => {
-            render(<SEO keywords={['url', 'shortener', 'links']} />);
+            render(<SEO keywords="url, shortener, links" />);
         });
     });
 
     describe('Meta Tags', () => {
-        it('includes Open Graph tags', () => {
+        it('includes Open Graph tags with image', () => {
             render(
                 <SEO 
                     title="Test Title" 
                     description="Test Description"
-                    ogImage="https://example.com/og-image.png"
+                    image="https://example.com/og-image.png"
                 />
             );
         });
 
-        it('includes Twitter card tags', () => {
+        it('renders with url prop', () => {
             render(
                 <SEO 
                     title="Test Title" 
-                    twitterCard="summary_large_image"
+                    url="https://opn.onl/page"
                 />
             );
         });
 
-        it('includes canonical URL', () => {
-            render(<SEO canonical="https://opn.onl/page" />);
-        });
-
-        it('includes robots meta', () => {
-            render(<SEO robots="index, follow" />);
+        it('renders with noIndex prop', () => {
+            render(<SEO noIndex={true} />);
         });
     });
 
     describe('Title Formatting', () => {
         it('appends site name to title', () => {
-            const { container } = render(<SEO title="Page Title" />);
-            // Expected: "Page Title | OPN.onl" or similar
+            render(<SEO title="Page Title" />);
+            // Expected: "Page Title | opn.onl"
         });
 
         it('uses default title when none provided', () => {
@@ -73,62 +69,70 @@ describe('SEO Component', () => {
     });
 
     describe('Schema.org Data', () => {
-        it('includes structured data when provided', () => {
+        it('includes structured data with schemaType', () => {
             render(
                 <SEO 
-                    structuredData={{
-                        "@type": "WebPage",
-                        "name": "Test Page"
-                    }}
+                    schemaType="WebSite"
+                />
+            );
+        });
+
+        it('renders with FAQ items', () => {
+            render(
+                <SEO 
+                    schemaType="FAQPage"
+                    faqItems={[
+                        { question: 'What is this?', answer: 'A URL shortener' },
+                        { question: 'Is it free?', answer: 'Yes!' },
+                    ]}
+                />
+            );
+        });
+
+        it('renders with breadcrumbs', () => {
+            render(
+                <SEO 
+                    breadcrumbs={[
+                        { name: 'Home', url: 'https://opn.onl' },
+                        { name: 'Dashboard', url: 'https://opn.onl/dashboard' },
+                    ]}
                 />
             );
         });
     });
 
     describe('Social Media', () => {
-        it('sets correct OG type', () => {
-            render(<SEO ogType="website" />);
+        it('sets correct type', () => {
+            render(<SEO type="website" />);
         });
 
-        it('sets OG image dimensions', () => {
+        it('sets article type', () => {
+            render(<SEO type="article" />);
+        });
+
+        it('sets OG image', () => {
             render(
                 <SEO 
-                    ogImage="https://example.com/image.png"
-                    ogImageWidth={1200}
-                    ogImageHeight={630}
+                    image="https://example.com/image.png"
                 />
             );
         });
     });
 
-    describe('Language and Locale', () => {
-        it('sets language attribute', () => {
-            render(<SEO lang="en" />);
-        });
-
-        it('sets locale for OG', () => {
-            render(<SEO locale="en_US" />);
-        });
-    });
-
-    describe('Additional Tags', () => {
-        it('renders custom meta tags', () => {
+    describe('All Props Together', () => {
+        it('renders with all available props', () => {
             render(
                 <SEO 
-                    additionalMeta={[
-                        { name: 'author', content: 'Test Author' },
-                        { property: 'custom:tag', content: 'value' },
-                    ]}
-                />
-            );
-        });
-
-        it('renders link tags', () => {
-            render(
-                <SEO 
-                    additionalLinks={[
-                        { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
-                    ]}
+                    title="Full Test"
+                    description="A complete description"
+                    keywords="test, keywords, seo"
+                    image="https://example.com/image.png"
+                    url="https://opn.onl/test"
+                    type="website"
+                    noIndex={false}
+                    schemaType="WebApplication"
+                    faqItems={[{ question: 'Q?', answer: 'A' }]}
+                    breadcrumbs={[{ name: 'Home', url: '/' }]}
                 />
             );
         });
@@ -147,10 +151,7 @@ describe('SEO Best Practices', () => {
     });
 
     it('keywords should be relevant', () => {
-        const keywords = ['url shortener', 'link management', 'analytics'];
+        const keywords = 'url shortener, link management, analytics';
         expect(keywords.length).toBeGreaterThan(0);
-        keywords.forEach(keyword => {
-            expect(keyword.length).toBeGreaterThan(0);
-        });
     });
 });

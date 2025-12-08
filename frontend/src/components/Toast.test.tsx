@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, act } from '../test/test-utils';
-import { ToastContainer, toast, clearToasts } from './Toast';
+import { render, screen, waitFor } from '../test/test-utils';
+import { act } from '@testing-library/react';
+import { ToastContainer, toast } from './Toast';
 
 describe('Toast Component', () => {
     beforeEach(() => {
-        clearToasts();
         vi.useFakeTimers();
     });
 
@@ -118,34 +118,33 @@ describe('Toast Component', () => {
     });
 
     describe('toast function', () => {
-        it('returns unique ID for each toast', () => {
-            const id1 = toast('Toast 1', 'success');
-            const id2 = toast('Toast 2', 'success');
-            
-            expect(id1).not.toBe(id2);
-        });
-    });
-
-    describe('clearToasts function', () => {
-        it('clears all toasts', async () => {
+        it('can be called with default type', async () => {
             render(<ToastContainer />);
             
             act(() => {
-                toast('Toast 1', 'success');
-                toast('Toast 2', 'error');
+                toast('Default toast');
             });
 
             await waitFor(() => {
-                expect(screen.getByText('Toast 1')).toBeInTheDocument();
+                expect(screen.getByText('Default toast')).toBeInTheDocument();
             });
+        });
 
+        it('handles all toast types', async () => {
+            render(<ToastContainer />);
+            
             act(() => {
-                clearToasts();
+                toast('Success', 'success');
+                toast('Error', 'error');
+                toast('Info', 'info');
+                toast('Warning', 'warning');
             });
 
             await waitFor(() => {
-                expect(screen.queryByText('Toast 1')).not.toBeInTheDocument();
-                expect(screen.queryByText('Toast 2')).not.toBeInTheDocument();
+                expect(screen.getByText('Success')).toBeInTheDocument();
+                expect(screen.getByText('Error')).toBeInTheDocument();
+                expect(screen.getByText('Info')).toBeInTheDocument();
+                expect(screen.getByText('Warning')).toBeInTheDocument();
             });
         });
     });
