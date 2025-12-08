@@ -14,7 +14,7 @@ use bcrypt::{hash, DEFAULT_COST};
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::entity::{links, click_events, link_tags, tags, blocked_links, blocked_domains, users};
+use crate::entity::{links, link_tags, tags, blocked_links, blocked_domains, users};
 use crate::utils::jwt::decode_jwt;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::handlers::websocket::ClickEvent;

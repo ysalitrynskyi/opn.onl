@@ -21,6 +21,7 @@ pub struct AdminResponse {
 }
 
 #[derive(Deserialize, ToSchema)]
+#[allow(dead_code)]
 pub struct DeleteUserRequest {
     pub user_id: i32,
     pub hard_delete: Option<bool>,

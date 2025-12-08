@@ -40,6 +40,7 @@ impl Related<super::links::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 impl Model {
+    #[allow(dead_code)]
     pub fn is_deleted(&self) -> bool {
         self.deleted_at.is_some()
     }

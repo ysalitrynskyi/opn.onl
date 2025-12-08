@@ -15,7 +15,6 @@ use crate::entity::users;
 use crate::utils::jwt::{hash_password, verify_password, create_jwt};
 use axum::http::HeaderMap;
 use crate::utils::email::generate_token;
-use sea_orm::sea_query::Expr;
 
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {

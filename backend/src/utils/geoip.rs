@@ -7,6 +7,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Default)]
 pub struct GeoLocation {
     pub country: Option<String>,
+    #[allow(dead_code)]
     pub country_code: Option<String>,
     pub city: Option<String>,
     pub region: Option<String>,

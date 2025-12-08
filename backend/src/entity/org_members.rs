@@ -60,6 +60,7 @@ impl Model {
         self.role == "editor" || self.is_admin()
     }
 
+    #[allow(dead_code)]
     pub fn can_view(&self) -> bool {
         true // All members can view
     }

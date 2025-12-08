@@ -1,6 +1,5 @@
 use parking_lot::RwLock;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
-use sea_orm::sea_query::Expr;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
