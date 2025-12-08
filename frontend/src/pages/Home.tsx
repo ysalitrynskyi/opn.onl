@@ -102,9 +102,13 @@ export default function Home() {
         <main className="space-y-24 pb-24">
             {/* Hero Section */}
             <section className="relative overflow-hidden">
-                {/* Background gradient */}
-                <div className="absolute inset-0 bg-gradient-to-br from-primary-50 via-white to-slate-50" />
-                <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiMwMDAiIGZpbGwtb3BhY2l0eT0iMC4wMiI+PHBhdGggZD0iTTM2IDM0djItSDI0di0yaDEyek0zNiAyNHYySDI0di0yaDEyeiIvPjwvZz48L2c+PC9zdmc+')] opacity-50" />
+                {/* Background patterns */}
+                <div className="absolute inset-0 bg-hero-pattern" />
+                
+                {/* Floating orbs */}
+                <div className="bg-orb bg-orb-primary w-96 h-96 -top-48 -left-48" style={{ animationDelay: '0s' }} />
+                <div className="bg-orb bg-orb-emerald w-80 h-80 top-1/2 -right-40" style={{ animationDelay: '2s' }} />
+                <div className="bg-orb bg-orb-primary w-64 h-64 -bottom-32 left-1/3" style={{ animationDelay: '4s' }} />
                 
                 <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 sm:py-32">
                     <motion.div
@@ -297,7 +301,7 @@ export default function Home() {
             </section>
 
             {/* How It Works */}
-            <section className="bg-slate-50 py-24">
+            <section className="bg-slate-50 bg-dots-pattern py-24 relative">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}

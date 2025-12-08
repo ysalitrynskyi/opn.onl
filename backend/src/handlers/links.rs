@@ -14,7 +14,7 @@ use bcrypt::{hash, DEFAULT_COST};
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::entity::{links, click_events, link_tags, tags, blocked_links, blocked_domains};
+use crate::entity::{links, click_events, link_tags, tags, blocked_links, blocked_domains, users};
 use crate::utils::jwt::decode_jwt;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::handlers::websocket::ClickEvent;
@@ -325,7 +325,9 @@ pub fn get_user_id_from_header(headers: &HeaderMap) -> Option<i32> {
 }
 
 fn get_base_url() -> String {
-    std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
+    // Use FRONTEND_URL for short links (e.g., https://opn.onl)
+    // The frontend proxies short links to the backend API
+    std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string())
 }
 
 async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
@@ -380,6 +382,41 @@ pub async fn create_link(
     };
 
     let user_id = get_user_id_from_header(&headers);
+
+    // Check email verification for authenticated users
+    if let Some(uid) = user_id {
+        let user = users::Entity::find_by_id(uid)
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten();
+        
+        if let Some(u) = user {
+            if !u.email_verified {
+                return (StatusCode::FORBIDDEN, Json(ErrorResponse { 
+                    error: "Please verify your email address before creating links".to_string() 
+                })).into_response();
+            }
+        }
+    }
+
+    // Rate limit: same URL can only be shortened 10 times in 10 minutes
+    if let Some(uid) = user_id {
+        let ten_mins_ago = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let recent_same_url_count = links::Entity::find()
+            .filter(links::Column::UserId.eq(uid))
+            .filter(links::Column::OriginalUrl.eq(&validated_url))
+            .filter(links::Column::CreatedAt.gte(ten_mins_ago.naive_utc()))
+            .count(&state.db)
+            .await
+            .unwrap_or(0);
+        
+        if recent_same_url_count >= 10 {
+            return (StatusCode::TOO_MANY_REQUESTS, Json(ErrorResponse { 
+                error: "You have shortened this URL too many times. Please wait a few minutes.".to_string() 
+            })).into_response();
+        }
+    }
 
     // Check if custom aliases are enabled
     let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
@@ -1286,6 +1323,24 @@ pub async fn bulk_create_links(
     Json(payload): Json<BulkCreateLinkRequest>,
 ) -> impl IntoResponse {
     let user_id = get_user_id_from_header(&headers);
+
+    // Check email verification for authenticated users
+    if let Some(uid) = user_id {
+        let user = users::Entity::find_by_id(uid)
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten();
+        
+        if let Some(u) = user {
+            if !u.email_verified {
+                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse { 
+                    links: vec![], 
+                    errors: vec!["Please verify your email address before creating links".to_string()] 
+                })).into_response();
+            }
+        }
+    }
 
     // If org_id is provided, verify user is a member
     if let Some(org_id) = payload.org_id {

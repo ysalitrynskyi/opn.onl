@@ -3,17 +3,18 @@ import { render, screen } from '../test/test-utils';
 import Logo from './Logo';
 
 describe('Logo', () => {
-  it('renders the logo text by default', () => {
+  it('renders the logo text by default (full version: OPeN.ONLine)', () => {
     render(<Logo />);
-    // Logo text is split into colored spans: opn.onl or OPeN.ONLine
-    // Check for the presence of individual letter groups
-    expect(screen.getByText('opn')).toBeInTheDocument();
+    // Default is showFull=true, so it shows OPeN.ONLine
+    // Check for the presence of "OP" which is part of "OPeN"
+    expect(screen.getByText('OP')).toBeInTheDocument();
+    expect(screen.getByText('ONL')).toBeInTheDocument();
   });
 
   it('hides text when iconOnly is true', () => {
     render(<Logo iconOnly />);
     // With iconOnly, no text should be visible
-    expect(screen.queryByText('opn')).not.toBeInTheDocument();
+    expect(screen.queryByText('OP')).not.toBeInTheDocument();
   });
 
   it('applies custom className', () => {

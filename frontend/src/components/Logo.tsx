@@ -4,7 +4,7 @@ interface LogoProps {
     showFull?: boolean;
 }
 
-export default function Logo({ className = "h-8", iconOnly = false, showFull = false }: LogoProps) {
+export default function Logo({ className = "h-8", iconOnly = false, showFull = true }: LogoProps) {
     return (
         <div className={`flex items-center gap-2.5 font-bold text-2xl tracking-tighter ${className}`}>
             <div className="logo-icon relative flex items-center justify-center w-9 h-9 bg-gradient-to-br from-primary-500 to-primary-700 rounded-xl shadow-lg shadow-primary-500/25 overflow-hidden">
