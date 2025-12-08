@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Fingerprint, Mail, Send, CheckCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -16,6 +16,14 @@ export default function Login() {
     const [resendSuccess, setResendSuccess] = useState(false);
     const showPasskeyOption = true;
     const navigate = useNavigate();
+
+    // Redirect to dashboard if already logged in
+    useEffect(() => {
+        const token = localStorage.getItem('token');
+        if (token) {
+            navigate('/dashboard', { replace: true });
+        }
+    }, [navigate]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
