@@ -4,6 +4,7 @@ import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lu
 import { motion } from 'framer-motion';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
+import logger from '../utils/logger';
 
 interface DayStats {
     date: string;
@@ -180,7 +181,7 @@ export default function Analytics() {
                 setError('Failed to load analytics.');
             }
         } catch (error) {
-            console.error('Failed to fetch stats', error);
+            logger.error('Failed to fetch stats', error);
             setError('Network error. Please try again.');
         } finally {
             setLoading(false);

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Lock, Loader2, ArrowRight, ShieldAlert } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
+import logger from '../utils/logger';
 
 export default function PasswordPrompt() {
     const { code } = useParams<{ code: string }>();
@@ -38,7 +39,7 @@ export default function PasswordPrompt() {
                 setError(data.error || 'Something went wrong. Please try again.');
             }
         } catch (error) {
-            console.error('Password verification failed', error);
+            logger.error('Password verification failed', error);
             setError('Network error. Please check your connection and try again.');
         } finally {
             setLoading(false);

@@ -10,6 +10,10 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
 import SEO from '../components/SEO';
+import logger from '../utils/logger';
+import { toast } from '../components/Toast';
+import ShareModal from '../components/ShareModal';
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 
 interface LinkData {
     id: number;
@@ -331,6 +335,7 @@ export default function Dashboard() {
     const [searchQuery, setSearchQuery] = useState('');
     const [editingLink, setEditingLink] = useState<LinkData | null>(null);
     const [qrLink, setQrLink] = useState<LinkData | null>(null);
+    const [shareLink, setShareLink] = useState<LinkData | null>(null);
     const [copiedId, setCopiedId] = useState<number | null>(null);
     const [error, setError] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
@@ -365,7 +370,7 @@ export default function Dashboard() {
                 setAppSettings(data);
             }
         } catch (err) {
-            console.error('Failed to fetch settings', err);
+            logger.error('Failed to fetch settings', err);
         }
     };
 
@@ -389,6 +394,36 @@ export default function Dashboard() {
 
         return () => window.removeEventListener('focus', checkClipboard);
     }, []);
+
+    // Keyboard shortcuts
+    useKeyboardShortcuts([
+        {
+            key: 'n',
+            handler: () => {
+                const input = document.querySelector('input[placeholder*="example.com"]') as HTMLInputElement;
+                if (input) input.focus();
+            },
+            description: 'Focus new link input',
+        },
+        {
+            key: '/',
+            handler: () => {
+                const input = document.querySelector('input[placeholder*="Search"]') as HTMLInputElement;
+                if (input) input.focus();
+            },
+            description: 'Focus search',
+        },
+        {
+            key: 'Escape',
+            handler: () => {
+                setEditingLink(null);
+                setQrLink(null);
+                setShareLink(null);
+                setSearchQuery('');
+            },
+            description: 'Close modal / Clear search',
+        },
+    ]);
 
     // Bulk import handler
     const handleBulkImport = async () => {
@@ -491,7 +526,7 @@ export default function Dashboard() {
                 navigate('/login');
             }
         } catch (error) {
-            console.error('Failed to fetch links', error);
+            logger.error('Failed to fetch links', error);
             setError('Failed to load links. Please try again.');
         } finally {
             setLoading(false);
@@ -563,7 +598,7 @@ export default function Dashboard() {
                 setError(data.error || 'Failed to create link');
             }
         } catch (error) {
-            console.error('Failed to create link', error);
+            logger.error('Failed to create link', error);
             setError('Network error. Please try again.');
         } finally {
             setCreating(false);
@@ -584,7 +619,7 @@ export default function Dashboard() {
                 setError('Failed to delete link');
             }
         } catch (error) {
-            console.error('Failed to delete link', error);
+            logger.error('Failed to delete link', error);
             setError('Network error. Please try again.');
         }
     };
@@ -602,16 +637,21 @@ export default function Dashboard() {
                 setError('Failed to update link');
             }
         } catch (error) {
-            console.error('Failed to update link', error);
+            logger.error('Failed to update link', error);
             setError('Network error. Please try again.');
         }
     };
 
     const handleCopy = async (link: LinkData) => {
-        const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
-        await navigator.clipboard.writeText(mainUrl);
-        setCopiedId(link.id);
-        setTimeout(() => setCopiedId(null), 2000);
+        try {
+            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+            await navigator.clipboard.writeText(mainUrl);
+            setCopiedId(link.id);
+            toast('Link copied to clipboard!', 'success');
+            setTimeout(() => setCopiedId(null), 2000);
+        } catch {
+            toast('Failed to copy link', 'error');
+        }
     };
 
     const handleExport = async () => {
@@ -636,19 +676,20 @@ export default function Dashboard() {
         }
     };
 
-    const handleShare = async (link: LinkData) => {
-        const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
-        if (navigator.share) {
-            try {
-                await navigator.share({
-                    title: 'Check out this link',
-                    url: mainUrl,
-                });
-            } catch {
-                handleCopy(link);
-            }
+    const handleShare = (link: LinkData) => {
+        // On mobile, try native share first
+        if (navigator.share && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+            navigator.share({
+                title: link.title || 'Check out this link',
+                url: mainUrl,
+            }).catch(() => {
+                // If native share fails, show modal
+                setShareLink(link);
+            });
         } else {
-            handleCopy(link);
+            // On desktop, show share modal
+            setShareLink(link);
         }
     };
 
@@ -681,6 +722,13 @@ export default function Dashboard() {
                 )}
                 {qrLink && (
                     <QRModal link={qrLink} onClose={() => setQrLink(null)} />
+                )}
+                {shareLink && (
+                    <ShareModal 
+                        url={`${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${shareLink.code}`}
+                        title={shareLink.title || `Check out this link`}
+                        onClose={() => setShareLink(null)} 
+                    />
                 )}
             </AnimatePresence>
 

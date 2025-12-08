@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Fingerprint, Mail, Send, CheckCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
+import logger from '../utils/logger';
 
 export default function Login() {
     const [email, setEmail] = useState('');
@@ -148,7 +149,7 @@ export default function Login() {
             localStorage.setItem('token', data.token);
             navigate('/dashboard');
         } catch (err: unknown) {
-            console.error('Passkey login error:', err);
+            logger.error('Passkey login error:', err);
             setError(err instanceof Error ? err.message : 'Passkey authentication failed');
         } finally {
             setPasskeyLoading(false);

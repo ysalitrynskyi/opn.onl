@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
 import SEO from '../components/SEO';
+import logger from '../utils/logger';
 
 interface Passkey {
     id: number;
@@ -104,7 +105,7 @@ export default function Settings() {
                 setPasskeys(data.passkeys || []);
             }
         } catch (err) {
-            console.error('Failed to fetch settings data', err);
+            logger.error('Failed to fetch settings data', err);
         } finally {
             setLoading(false);
         }

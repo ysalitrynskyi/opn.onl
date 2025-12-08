@@ -3,6 +3,7 @@ import { HelmetProvider } from 'react-helmet-async';
 import { Suspense, lazy, useEffect } from 'react';
 import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
+import { ToastContainer } from './components/Toast';
 import Home from './pages/Home';
 import Login from './pages/Login';
 import Register from './pages/Register';
@@ -55,6 +56,7 @@ function App() {
     <HelmetProvider>
       <ErrorBoundary>
         <ScrollToTop />
+        <ToastContainer />
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/" element={<Layout />}>

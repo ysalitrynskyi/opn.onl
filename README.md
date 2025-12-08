@@ -220,7 +220,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 
 | Variable | Description |
 |----------|-------------|
-| `VITE_GA_ID` | Google Analytics Measurement ID (e.g., G-XXXXXXXXXX) |
+| `GA_ID` | Google Analytics Measurement ID (e.g., G-XXXXXXXXXX) - Runtime ENV |
 | `MAXMIND_ACCOUNT_ID` | MaxMind account ID for GeoIP |
 | `MAXMIND_LICENSE_KEY` | MaxMind license key for GeoIP |
 

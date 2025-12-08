@@ -41,38 +41,34 @@ fn get_webauthn() -> Webauthn {
     let rp_origin = std::env::var("FRONTEND_URL")
         .unwrap_or_else(|_| "http://localhost:5173".to_string());
     
-    let origin_url = match Url::parse(&rp_origin) {
-        Ok(url) => url,
-        Err(e) => {
-            tracing::error!("Invalid FRONTEND_URL for WebAuthn: {}", e);
-            // Fall back to localhost for development
-            Url::parse("http://localhost:5173").unwrap()
-        }
-    };
+    let origin_url = Url::parse(&rp_origin).unwrap_or_else(|e| {
+        tracing::error!("Invalid FRONTEND_URL for WebAuthn: {} - using localhost fallback", e);
+        Url::parse("http://localhost:5173").expect("Hardcoded URL should always parse")
+    });
     
-    match WebauthnBuilder::new(&rp_id, &origin_url) {
-        Ok(builder) => match builder.build() {
-            Ok(webauthn) => webauthn,
-            Err(e) => {
-                tracing::error!("Failed to build WebAuthn: {:?}", e);
-                // Fallback to localhost
-                let fallback_url = Url::parse("http://localhost:5173").unwrap();
-                WebauthnBuilder::new("localhost", &fallback_url)
-                    .unwrap()
-                    .build()
-                    .unwrap()
-            }
-        },
-        Err(e) => {
+    // Extract just the host for rp_id (e.g., "opn.onl" from "https://opn.onl")
+    let effective_rp_id = origin_url.host_str().unwrap_or(&rp_id);
+    
+    WebauthnBuilder::new(effective_rp_id, &origin_url)
+        .map_err(|e| {
             tracing::error!("Failed to create WebAuthn builder: {:?}", e);
-            // Fallback to localhost
-            let fallback_url = Url::parse("http://localhost:5173").unwrap();
+            e
+        })
+        .and_then(|builder| {
+            builder.build().map_err(|e| {
+                tracing::error!("Failed to build WebAuthn: {:?}", e);
+                e
+            })
+        })
+        .unwrap_or_else(|_| {
+            // Last resort fallback for development only
+            tracing::warn!("WebAuthn falling back to localhost - passkeys may not work in production!");
+            let fallback_url = Url::parse("http://localhost:5173").expect("Hardcoded URL");
             WebauthnBuilder::new("localhost", &fallback_url)
-                .unwrap()
+                .expect("Localhost WebAuthn builder")
                 .build()
-                .unwrap()
-        }
-    }
+                .expect("Localhost WebAuthn build")
+        })
 }
 
 #[derive(Deserialize)]
