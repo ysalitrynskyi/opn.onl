@@ -57,13 +57,14 @@
   
   <!-- Main content group - centered -->
   <g transform="translate(600, 240)">
-    <!-- Logo icon - matching favicon.svg exactly -->
+    <!-- Logo icon - matching favicon.svg exactly (512px original scaled to 140px) -->
     <g filter="url(#glow)">
-      <rect x="-70" y="-70" width="140" height="140" rx="28" fill="url(#logoGradient)"/>
-      <rect x="-70" y="-70" width="140" height="140" rx="28" fill="url(#shine)"/>
-      <!-- Interlocking circles - the real logo -->
-      <circle cx="-18" cy="0" r="30" fill="none" stroke="white" stroke-width="15"/>
-      <circle cx="18" cy="0" r="30" fill="none" stroke="white" stroke-width="15"/>
+      <rect x="-70" y="-70" width="140" height="140" rx="26" fill="url(#logoGradient)"/>
+      <rect x="-70" y="-70" width="140" height="140" rx="26" fill="url(#shine)"/>
+      <!-- Interlocking circles - exact proportions from favicon.svg -->
+      <!-- favicon: r=80, cx=±48, stroke=40 on 512px → scaled to 140px -->
+      <circle cx="-13" cy="0" r="22" fill="none" stroke="white" stroke-width="11"/>
+      <circle cx="13" cy="0" r="22" fill="none" stroke="white" stroke-width="11"/>
     </g>
   </g>
   
