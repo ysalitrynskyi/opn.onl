@@ -260,6 +260,7 @@ pub struct LinkResponse {
     pub id: i32,
     pub code: String,
     pub short_url: String,
+    pub api_url: String,
     pub original_url: String,
     pub title: Option<String>,
     pub click_count: i32,
@@ -328,6 +329,11 @@ fn get_base_url() -> String {
     // Use FRONTEND_URL for short links (e.g., https://opn.onl)
     // The frontend proxies short links to the backend API
     std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string())
+}
+
+fn get_api_url() -> String {
+    // Use BASE_URL for direct API/redirect links (e.g., https://l.opn.onl)
+    std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
 }
 
 async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
@@ -547,10 +553,12 @@ pub async fn create_link(
             let tags = get_link_tags(&state.db, link_id).await;
 
             let base_url = get_base_url();
+            let api_url = get_api_url();
             (StatusCode::CREATED, Json(LinkResponse {
                 id: link_id,
                 code: code.clone(),
                 short_url: format!("{}/{}", base_url, code),
+                api_url: format!("{}/{}", api_url, code),
                 original_url: payload.original_url,
                 title: payload.title,
                 click_count: 0,
@@ -1098,6 +1106,7 @@ pub async fn get_user_links(
     let user_links = link_query.all(&state.db).await.unwrap_or_default();
 
     let base_url = get_base_url();
+    let api_url = get_api_url();
     let mut response = Vec::new();
     for l in user_links {
         let tags = get_link_tags(&state.db, l.id).await;
@@ -1105,6 +1114,7 @@ pub async fn get_user_links(
             id: l.id,
             code: l.code.clone(),
             short_url: format!("{}/{}", base_url, l.code),
+            api_url: format!("{}/{}", api_url, l.code),
             original_url: l.original_url.clone(),
             title: l.title.clone(),
             click_count: l.click_count,
@@ -1281,10 +1291,12 @@ pub async fn update_link(
 
                 let tags = get_link_tags(&state.db, updated.id).await;
                 let base_url = get_base_url();
+                let api_url = get_api_url();
                 (StatusCode::OK, Json(LinkResponse {
                     id: updated.id,
                     code: updated.code.clone(),
                     short_url: format!("{}/{}", base_url, updated.code),
+                    api_url: format!("{}/{}", api_url, updated.code),
                     original_url: updated.original_url.clone(),
                     title: updated.title.clone(),
                     click_count: updated.click_count,

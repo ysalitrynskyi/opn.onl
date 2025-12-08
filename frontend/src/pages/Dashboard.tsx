@@ -20,6 +20,7 @@ interface LinkData {
     code: string;
     original_url: string;
     short_url: string;
+    api_url?: string;
     title: string | null;
     click_count: number;
     created_at: string;
@@ -1038,7 +1039,7 @@ export default function Dashboard() {
                         // Calculate link number (bottom to top, 1 = oldest)
                         const linkNumber = filteredLinks.length - ((currentPage - 1) * LINKS_PER_PAGE + index);
                         const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
-                        const apiUrl = link.short_url; // This is the API URL from backend
+                        const apiUrl = link.api_url || link.short_url; // Use api_url from backend
                         
                         return (
                         <motion.div 

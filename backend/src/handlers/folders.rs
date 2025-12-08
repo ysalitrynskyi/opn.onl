@@ -709,7 +709,8 @@ pub async fn get_folder_links(
             )
         })?;
 
-    let base_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let base_url = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let mut responses = Vec::new();
     for l in links_list {
         let link_tags = get_link_tags(&state.db, l.id).await;
@@ -717,6 +718,7 @@ pub async fn get_folder_links(
             id: l.id,
             code: l.code.clone(),
             short_url: format!("{}/{}", base_url, l.code),
+            api_url: format!("{}/{}", api_url, l.code),
             original_url: l.original_url.clone(),
             title: l.title.clone(),
             click_count: l.click_count,

@@ -744,13 +744,15 @@ pub async fn get_links_by_tag(
             )
         })?;
 
-    let base_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let base_url = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let responses: Vec<crate::handlers::links::LinkResponse> = links_list
         .into_iter()
         .map(|l| crate::handlers::links::LinkResponse {
             id: l.id,
             code: l.code.clone(),
             short_url: format!("{}/{}", base_url, l.code),
+            api_url: format!("{}/{}", api_url, l.code),
             original_url: l.original_url.clone(),
             title: l.title.clone(),
             click_count: l.click_count,
