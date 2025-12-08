@@ -20,7 +20,11 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, bcrypt::Bcryp
 }
 
 pub fn create_jwt(user_id: i32, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
-    let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
+        tracing::warn!("JWT_SECRET not set, using default (INSECURE IN PRODUCTION!)");
+        "default-dev-secret-change-in-production-min-32-chars".to_string()
+    });
+    
     let expiration = Utc::now()
         .checked_add_signed(Duration::hours(24))
         .expect("valid timestamp")
@@ -36,7 +40,11 @@ pub fn create_jwt(user_id: i32, email: &str) -> Result<String, jsonwebtoken::err
 }
 
 pub fn decode_jwt(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
-    let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
+        tracing::warn!("JWT_SECRET not set, using default (INSECURE IN PRODUCTION!)");
+        "default-dev-secret-change-in-production-min-32-chars".to_string()
+    });
+    
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
