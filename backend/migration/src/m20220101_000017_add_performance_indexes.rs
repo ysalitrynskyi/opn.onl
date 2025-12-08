@@ -60,14 +60,26 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Index for active links filtering
+        // Index for expiration filtering (for scheduled/expiring links)
         manager
             .create_index(
                 Index::create()
                     .if_not_exists()
-                    .name("idx_links_is_active")
+                    .name("idx_links_expires_at")
                     .table(Links::Table)
-                    .col(Links::IsActive)
+                    .col(Links::ExpiresAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Index for scheduled links (starts_at)
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("idx_links_starts_at")
+                    .table(Links::Table)
+                    .col(Links::StartsAt)
                     .to_owned(),
             )
             .await?;
@@ -311,7 +323,8 @@ impl MigrationTrait for Migration {
             "idx_click_events_created_at",
             "idx_click_events_link_id",
             "idx_links_code_deleted",
-            "idx_links_is_active",
+            "idx_links_starts_at",
+            "idx_links_expires_at",
             "idx_links_original_url",
             "idx_links_user_created_deleted",
             "idx_links_deleted_at",
@@ -337,7 +350,8 @@ enum Links {
     DeletedAt,
     CreatedAt,
     OriginalUrl,
-    IsActive,
+    ExpiresAt,
+    StartsAt,
     Code,
 }
 
