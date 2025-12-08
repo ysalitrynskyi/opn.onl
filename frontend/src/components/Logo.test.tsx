@@ -6,15 +6,20 @@ describe('Logo', () => {
   it('renders the logo text by default (full version: OPeN.ONLine)', () => {
     render(<Logo />);
     // Default is showFull=true, so it shows OPeN.ONLine
-    // Check for the presence of "OP" which is part of "OPeN"
-    expect(screen.getByText('OP')).toBeInTheDocument();
-    expect(screen.getByText('ONL')).toBeInTheDocument();
+    expect(screen.getByText('OPeN')).toBeInTheDocument();
+    expect(screen.getByText('ONLine')).toBeInTheDocument();
+  });
+
+  it('renders short version when showFull is false', () => {
+    render(<Logo showFull={false} />);
+    expect(screen.getByText('opn')).toBeInTheDocument();
+    expect(screen.getByText('onl')).toBeInTheDocument();
   });
 
   it('hides text when iconOnly is true', () => {
     render(<Logo iconOnly />);
     // With iconOnly, no text should be visible
-    expect(screen.queryByText('OP')).not.toBeInTheDocument();
+    expect(screen.queryByText('OPeN')).not.toBeInTheDocument();
   });
 
   it('applies custom className', () => {
@@ -22,10 +27,13 @@ describe('Logo', () => {
     expect(container.firstChild).toHaveClass('custom-class');
   });
 
-  it('contains SVG icon', () => {
+  it('contains SVG icon with gradient', () => {
     const { container } = render(<Logo />);
     const svg = container.querySelector('svg');
     expect(svg).toBeInTheDocument();
+    // Check for gradient definitions
+    const gradients = container.querySelectorAll('linearGradient');
+    expect(gradients.length).toBe(2);
   });
 });
 
