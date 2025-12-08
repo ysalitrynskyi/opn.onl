@@ -69,6 +69,9 @@ tracing-appender = "0.2"
 # HTTP client for health checks
 reqwest = { version = "0.12", features = ["json"] }
 
+# Regex for HTML parsing
+regex = "1.10"
+
 [dev-dependencies]
 axum-test = "16"
 tower = { version = "0.4", features = ["util"] }

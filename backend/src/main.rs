@@ -277,6 +277,8 @@ async fn main() {
         .route("/links/check-code", get(handlers::links::check_code_availability))
         .route("/links/health-check", post(handlers::links::check_url_health))
         .route("/links/build-utm", post(handlers::links::build_utm_url))
+        .route("/links/sparklines", get(handlers::links::get_sparklines))
+        .route("/links/preview-metadata", post(handlers::links::get_link_preview_metadata))
         .route("/links/:id", put(handlers::links::update_link).delete(handlers::links::delete_link))
         .route("/links/:id/qr", get(handlers::links::get_qr_code))
         .route("/links/:id/clone", post(handlers::links::clone_link))

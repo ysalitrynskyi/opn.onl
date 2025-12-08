@@ -14,7 +14,7 @@ use bcrypt::{hash, DEFAULT_COST};
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::entity::{links, link_tags, tags, blocked_links, blocked_domains, users};
+use crate::entity::{links, link_tags, tags, blocked_links, blocked_domains, users, click_events};
 use crate::utils::jwt::decode_jwt;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::handlers::websocket::ClickEvent;
@@ -1975,4 +1975,316 @@ pub async fn build_utm_url(
         url_with_utm: parsed.to_string(),
         utm_params,
     })).into_response()
+}
+
+// ============= New Feature: Sparkline Data =============
+
+#[derive(Serialize, ToSchema)]
+pub struct SparklineData {
+    pub link_id: i32,
+    pub data: Vec<i64>,  // Click counts for each day
+    pub labels: Vec<String>,  // Date labels
+    pub total: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SparklineResponse {
+    pub sparklines: Vec<SparklineData>,
+}
+
+/// Get sparkline data (last 7 days) for multiple links
+#[utoipa::path(
+    get,
+    path = "/links/sparklines",
+    params(
+        ("ids" = String, Query, description = "Comma-separated link IDs")
+    ),
+    responses(
+        (status = 200, description = "Sparkline data", body = SparklineResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    tag = "Links"
+)]
+pub async fn get_sparklines(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+    };
+
+    // Parse link IDs
+    let ids_str = params.get("ids").cloned().unwrap_or_default();
+    let link_ids: Vec<i32> = ids_str
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    if link_ids.is_empty() {
+        return (StatusCode::OK, Json(SparklineResponse { sparklines: vec![] })).into_response();
+    }
+
+    // Verify user owns these links
+    let user_links = links::Entity::find()
+        .filter(links::Column::Id.is_in(link_ids.clone()))
+        .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::DeletedAt.is_null())
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let owned_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
+
+    // Get last 7 days
+    let now = chrono::Utc::now().naive_utc();
+    let seven_days_ago = now - chrono::Duration::days(7);
+
+    // Generate date labels
+    let mut labels: Vec<String> = Vec::new();
+    for i in (0..7).rev() {
+        let date = now - chrono::Duration::days(i);
+        labels.push(date.format("%m/%d").to_string());
+    }
+
+    // Fetch click events
+    let events = click_events::Entity::find()
+        .filter(click_events::Column::LinkId.is_in(owned_ids.clone()))
+        .filter(click_events::Column::CreatedAt.gte(seven_days_ago))
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    // Group clicks by link and day
+    let mut sparklines: Vec<SparklineData> = Vec::new();
+    
+    for link_id in owned_ids {
+        let mut daily_counts: Vec<i64> = vec![0; 7];
+        let mut total: i64 = 0;
+        
+        for event in &events {
+            if event.link_id == link_id {
+                let duration = now.signed_duration_since(event.created_at);
+                let days_ago = duration.num_days();
+                if days_ago >= 0 && days_ago < 7 {
+                    let idx = (6 - days_ago) as usize;
+                    daily_counts[idx] += 1;
+                    total += 1;
+                }
+            }
+        }
+        
+        sparklines.push(SparklineData {
+            link_id,
+            data: daily_counts,
+            labels: labels.clone(),
+            total,
+        });
+    }
+
+    (StatusCode::OK, Json(SparklineResponse { sparklines })).into_response()
+}
+
+// ============= New Feature: Link Preview (OG Metadata) =============
+
+#[derive(Serialize, ToSchema)]
+pub struct LinkPreviewData {
+    pub url: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub image: Option<String>,
+    pub site_name: Option<String>,
+    pub favicon: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct PreviewMetadataRequest {
+    pub url: String,
+}
+
+/// Fetch Open Graph preview data for a URL
+#[utoipa::path(
+    post,
+    path = "/links/preview-metadata",
+    request_body = PreviewMetadataRequest,
+    responses(
+        (status = 200, description = "Link preview data", body = LinkPreviewData),
+        (status = 400, description = "Invalid URL"),
+    ),
+    tag = "Links"
+)]
+pub async fn get_link_preview_metadata(
+    Json(payload): Json<PreviewMetadataRequest>,
+) -> impl IntoResponse {
+    // Validate URL
+    let parsed = match url::Url::parse(&payload.url) {
+        Ok(u) => u,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid URL"}))).into_response(),
+    };
+
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Only HTTP/HTTPS URLs supported"}))).into_response();
+    }
+
+    // Fetch page content
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .user_agent("Mozilla/5.0 (compatible; OPN.ONL LinkPreview/1.0)")
+        .build() 
+    {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to create HTTP client"}))).into_response(),
+    };
+
+    match client.get(&payload.url).send().await {
+        Ok(response) => {
+            if !response.status().is_success() {
+                return (StatusCode::OK, Json(LinkPreviewData {
+                    url: payload.url,
+                    title: None,
+                    description: None,
+                    image: None,
+                    site_name: None,
+                    favicon: None,
+                })).into_response();
+            }
+
+            let html = match response.text().await {
+                Ok(text) => text,
+                Err(_) => {
+                    return (StatusCode::OK, Json(LinkPreviewData {
+                        url: payload.url,
+                        title: None,
+                        description: None,
+                        image: None,
+                        site_name: None,
+                        favicon: None,
+                    })).into_response();
+                }
+            };
+
+            // Parse OG tags and meta tags
+            let title = extract_meta_content(&html, "og:title")
+                .or_else(|| extract_meta_content(&html, "twitter:title"))
+                .or_else(|| extract_title_tag(&html));
+            
+            let description = extract_meta_content(&html, "og:description")
+                .or_else(|| extract_meta_content(&html, "twitter:description"))
+                .or_else(|| extract_meta_content(&html, "description"));
+            
+            let image = extract_meta_content(&html, "og:image")
+                .or_else(|| extract_meta_content(&html, "twitter:image"))
+                .map(|img| resolve_url(&payload.url, &img));
+            
+            let site_name = extract_meta_content(&html, "og:site_name");
+            
+            let favicon = extract_favicon(&html)
+                .map(|fav| resolve_url(&payload.url, &fav))
+                .or_else(|| Some(format!("{}://{}/favicon.ico", parsed.scheme(), parsed.host_str().unwrap_or(""))));
+
+            (StatusCode::OK, Json(LinkPreviewData {
+                url: payload.url,
+                title,
+                description,
+                image,
+                site_name,
+                favicon,
+            })).into_response()
+        }
+        Err(e) => {
+            (StatusCode::OK, Json(LinkPreviewData {
+                url: payload.url,
+                title: None,
+                description: None,
+                image: None,
+                site_name: None,
+                favicon: Some(format!("Error: {}", e)),
+            })).into_response()
+        }
+    }
+}
+
+// Helper functions for HTML parsing
+fn extract_meta_content(html: &str, property: &str) -> Option<String> {
+    // Try property attribute (og: tags)
+    let property_pattern = format!(r#"<meta[^>]*property=["']{}["'][^>]*content=["']([^"']+)["']"#, regex::escape(property));
+    if let Ok(re) = regex::Regex::new(&property_pattern) {
+        if let Some(caps) = re.captures(html) {
+            return caps.get(1).map(|m| html_decode(m.as_str()));
+        }
+    }
+    
+    // Try content before property
+    let property_pattern2 = format!(r#"<meta[^>]*content=["']([^"']+)["'][^>]*property=["']{}["']"#, regex::escape(property));
+    if let Ok(re) = regex::Regex::new(&property_pattern2) {
+        if let Some(caps) = re.captures(html) {
+            return caps.get(1).map(|m| html_decode(m.as_str()));
+        }
+    }
+    
+    // Try name attribute (description, etc.)
+    let name_pattern = format!(r#"<meta[^>]*name=["']{}["'][^>]*content=["']([^"']+)["']"#, regex::escape(property));
+    if let Ok(re) = regex::Regex::new(&name_pattern) {
+        if let Some(caps) = re.captures(html) {
+            return caps.get(1).map(|m| html_decode(m.as_str()));
+        }
+    }
+    
+    // Try content before name
+    let name_pattern2 = format!(r#"<meta[^>]*content=["']([^"']+)["'][^>]*name=["']{}["']"#, regex::escape(property));
+    if let Ok(re) = regex::Regex::new(&name_pattern2) {
+        if let Some(caps) = re.captures(html) {
+            return caps.get(1).map(|m| html_decode(m.as_str()));
+        }
+    }
+    
+    None
+}
+
+fn extract_title_tag(html: &str) -> Option<String> {
+    let re = regex::Regex::new(r"<title[^>]*>([^<]+)</title>").ok()?;
+    re.captures(html).and_then(|caps| caps.get(1).map(|m| html_decode(m.as_str().trim())))
+}
+
+fn extract_favicon(html: &str) -> Option<String> {
+    // Try various favicon link patterns
+    let patterns = [
+        r#"<link[^>]*rel=["'](?:shortcut )?icon["'][^>]*href=["']([^"']+)["']"#,
+        r#"<link[^>]*href=["']([^"']+)["'][^>]*rel=["'](?:shortcut )?icon["']"#,
+        r#"<link[^>]*rel=["']apple-touch-icon["'][^>]*href=["']([^"']+)["']"#,
+    ];
+    
+    for pattern in patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            if let Some(caps) = re.captures(html) {
+                return caps.get(1).map(|m| m.as_str().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_url(base: &str, relative: &str) -> String {
+    if relative.starts_with("http://") || relative.starts_with("https://") {
+        return relative.to_string();
+    }
+    
+    if let Ok(base_url) = url::Url::parse(base) {
+        if let Ok(resolved) = base_url.join(relative) {
+            return resolved.to_string();
+        }
+    }
+    
+    relative.to_string()
+}
+
+fn html_decode(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
 }

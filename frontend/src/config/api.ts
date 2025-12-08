@@ -38,6 +38,8 @@ export const API_ENDPOINTS = {
     checkCode: `${API_BASE_URL}/links/check-code`,
     healthCheck: `${API_BASE_URL}/links/health-check`,
     buildUtm: `${API_BASE_URL}/links/build-utm`,
+    sparklines: `${API_BASE_URL}/links/sparklines`,
+    previewMetadata: `${API_BASE_URL}/links/preview-metadata`,
     linkStats: (id: number) => `${API_BASE_URL}/links/${id}/stats`,
     linkQr: (id: number) => `${API_BASE_URL}/links/${id}/qr`,
     linkDelete: (id: number) => `${API_BASE_URL}/links/${id}`,

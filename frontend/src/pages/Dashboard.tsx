@@ -1,11 +1,12 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { 
     Copy, Plus, Trash2, BarChart2, 
     QrCode, Download, Lock, Clock, Edit2, X, Check,
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
     TrendingUp, MousePointer, SortAsc, SortDesc,
-    Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus, Heart, Activity
+    Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus, Heart, Activity,
+    Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
@@ -14,6 +15,8 @@ import logger from '../utils/logger';
 import { toast } from '../components/Toast';
 import ShareModal from '../components/ShareModal';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import Sparkline from '../components/Sparkline';
+import LinkPreviewCard from '../components/LinkPreviewCard';
 
 interface LinkData {
     id: number;
@@ -352,11 +355,13 @@ export default function Dashboard() {
     const [currentPage, setCurrentPage] = useState(1);
     const [sortBy, setSortBy] = useState<'date' | 'clicks'>('date');
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-    const [appSettings, setAppSettings] = useState<AppSettings>({ 
-        custom_aliases_enabled: true, 
-        min_alias_length: 5, 
-        max_alias_length: 50 
+    const [appSettings, setAppSettings] = useState<AppSettings>({
+        custom_aliases_enabled: true,
+        min_alias_length: 5,
+        max_alias_length: 50
     });
+    const [sparklineData, setSparklineData] = useState<Record<number, { data: number[]; labels: string[] }>>({});
+    const [previewLink, setPreviewLink] = useState<LinkData | null>(null);
     const [showBulkImport, setShowBulkImport] = useState(false);
     const [bulkUrls, setBulkUrls] = useState('');
     const [bulkImporting, setBulkImporting] = useState(false);
@@ -558,6 +563,34 @@ export default function Dashboard() {
             setLoading(false);
         }
     };
+
+    // Fetch sparkline data for all links
+    const fetchSparklines = useCallback(async (linkIds: number[]) => {
+        if (linkIds.length === 0) return;
+        try {
+            const res = await fetch(`${API_ENDPOINTS.sparklines}?ids=${linkIds.join(',')}`, {
+                headers: getAuthHeaders()
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const sparklines: Record<number, { data: number[]; labels: string[] }> = {};
+                for (const item of data.sparklines) {
+                    sparklines[item.link_id] = { data: item.data, labels: item.labels };
+                }
+                setSparklineData(sparklines);
+            }
+        } catch (error) {
+            logger.error('Failed to fetch sparklines', error);
+        }
+    }, []);
+
+    // Fetch sparklines when links change
+    useEffect(() => {
+        if (links.length > 0) {
+            const linkIds = links.map(l => l.id);
+            fetchSparklines(linkIds);
+        }
+    }, [links, fetchSparklines]);
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -798,11 +831,59 @@ export default function Dashboard() {
                     <QRModal link={qrLink} onClose={() => setQrLink(null)} />
                 )}
                 {shareLink && (
-                    <ShareModal 
+                    <ShareModal
                         url={`${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${shareLink.code}`}
                         title={shareLink.title || `Check out this link`}
-                        onClose={() => setShareLink(null)} 
+                        onClose={() => setShareLink(null)}
                     />
+                )}
+                {previewLink && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+                        onClick={() => setPreviewLink(null)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.95, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.95, opacity: 0 }}
+                            className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6"
+                            onClick={e => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-lg font-bold text-slate-900">Link Preview</h3>
+                                <button onClick={() => setPreviewLink(null)} className="text-slate-400 hover:text-slate-600">
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+                            <div className="mb-4">
+                                <p className="text-sm text-slate-500 mb-2">Short URL</p>
+                                <code className="text-sm bg-slate-100 px-2 py-1 rounded font-mono text-primary-600">
+                                    {previewLink.short_url}
+                                </code>
+                            </div>
+                            <div className="mb-4">
+                                <p className="text-sm text-slate-500 mb-2">Destination Preview</p>
+                                <LinkPreviewCard url={previewLink.original_url} />
+                            </div>
+                            {sparklineData[previewLink.id] && (
+                                <div className="border-t pt-4">
+                                    <p className="text-sm text-slate-500 mb-2">Clicks (Last 7 days)</p>
+                                    <div className="bg-slate-50 rounded-lg p-3">
+                                        <Sparkline 
+                                            data={sparklineData[previewLink.id].data}
+                                            labels={sparklineData[previewLink.id].labels}
+                                            width={320}
+                                            height={60}
+                                            strokeWidth={2}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                        </motion.div>
+                    </motion.div>
                 )}
             </AnimatePresence>
 
@@ -1206,7 +1287,18 @@ export default function Dashboard() {
                                 </div>
 
                                 <div className="flex items-center gap-2 sm:gap-4">
-                                    <Link 
+                                    {/* Sparkline Chart */}
+                                    {sparklineData[link.id] && (
+                                        <div className="hidden sm:block">
+                                            <Sparkline 
+                                                data={sparklineData[link.id].data} 
+                                                labels={sparklineData[link.id].labels}
+                                                width={70}
+                                                height={24}
+                                            />
+                                        </div>
+                                    )}
+                                    <Link
                                         to={`/analytics/${link.id}`}
                                         className="flex items-center gap-1.5 text-slate-600 hover:text-primary-600 text-sm font-medium transition-colors"
                                     >
@@ -1214,6 +1306,13 @@ export default function Dashboard() {
                                         <span className="font-bold">{link.click_count.toLocaleString()}</span>
                                     </Link>
                                     <div className="flex items-center gap-1">
+                                        <button
+                                            onClick={() => setPreviewLink(link)}
+                                            className="p-2 text-slate-400 hover:text-blue-500 transition-colors"
+                                            title="Preview destination"
+                                        >
+                                            <Eye className="h-4 w-4" />
+                                        </button>
                                         <button
                                             onClick={() => handlePin(link)}
                                             className={`p-2 transition-colors ${link.is_pinned ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-500'}`}

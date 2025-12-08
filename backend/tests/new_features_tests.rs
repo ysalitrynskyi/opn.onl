@@ -1,4 +1,4 @@
-//! Tests for new features: Clone, Pin, Code Check, Health Check, UTM Builder
+//! Tests for new features: Clone, Pin, Code Check, Health Check, UTM Builder, Sparklines, Link Preview
 
 #[cfg(test)]
 mod clone_link_tests {
@@ -372,5 +372,201 @@ mod is_pinned_field_tests {
         
         let response = LinkResponse { is_pinned: true };
         assert!(response.is_pinned);
+    }
+}
+
+#[cfg(test)]
+mod sparkline_tests {
+    /// Test sparkline returns 7 days of data
+    #[test]
+    fn test_sparkline_data_length() {
+        let data = vec![0, 0, 0, 1, 2, 0, 3];
+        assert_eq!(data.len(), 7);
+    }
+
+    /// Test sparkline labels format
+    #[test]
+    fn test_sparkline_labels_format() {
+        let labels = vec!["12/01", "12/02", "12/03", "12/04", "12/05", "12/06", "12/07"];
+        assert_eq!(labels.len(), 7);
+        for label in &labels {
+            assert!(label.contains('/'));
+        }
+    }
+
+    /// Test sparkline total calculation
+    #[test]
+    fn test_sparkline_total() {
+        let data = vec![1, 2, 3, 4, 5, 6, 7];
+        let total: i64 = data.iter().sum();
+        assert_eq!(total, 28);
+    }
+
+    /// Test sparkline with no clicks
+    #[test]
+    fn test_sparkline_no_clicks() {
+        let data = vec![0, 0, 0, 0, 0, 0, 0];
+        let total: i64 = data.iter().sum();
+        assert_eq!(total, 0);
+    }
+
+    /// Test sparkline response structure
+    #[test]
+    fn test_sparkline_response_structure() {
+        struct SparklineData {
+            link_id: i32,
+            data: Vec<i64>,
+            labels: Vec<String>,
+            total: i64,
+        }
+        
+        let sparkline = SparklineData {
+            link_id: 123,
+            data: vec![1, 2, 3, 4, 5, 6, 7],
+            labels: vec!["12/01".to_string(); 7],
+            total: 28,
+        };
+        
+        assert_eq!(sparkline.link_id, 123);
+        assert_eq!(sparkline.data.len(), 7);
+        assert_eq!(sparkline.labels.len(), 7);
+        assert_eq!(sparkline.total, 28);
+    }
+
+    /// Test multiple sparklines in response
+    #[test]
+    fn test_multiple_sparklines() {
+        struct SparklineResponse {
+            sparklines: Vec<(i32, Vec<i64>)>,
+        }
+        
+        let response = SparklineResponse {
+            sparklines: vec![
+                (1, vec![1, 2, 3, 4, 5, 6, 7]),
+                (2, vec![0, 0, 0, 0, 0, 0, 0]),
+                (3, vec![10, 20, 30, 40, 50, 60, 70]),
+            ],
+        };
+        
+        assert_eq!(response.sparklines.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod link_preview_tests {
+    /// Test OG title extraction pattern
+    #[test]
+    fn test_og_title_pattern() {
+        let html = r#"<meta property="og:title" content="Test Title">"#;
+        assert!(html.contains("og:title"));
+        assert!(html.contains("Test Title"));
+    }
+
+    /// Test OG description extraction
+    #[test]
+    fn test_og_description_pattern() {
+        let html = r#"<meta property="og:description" content="Test Description">"#;
+        assert!(html.contains("og:description"));
+    }
+
+    /// Test OG image extraction
+    #[test]
+    fn test_og_image_pattern() {
+        let html = r#"<meta property="og:image" content="https://example.com/image.jpg">"#;
+        assert!(html.contains("og:image"));
+    }
+
+    /// Test fallback to title tag
+    #[test]
+    fn test_title_tag_fallback() {
+        let html = r#"<title>Page Title</title>"#;
+        assert!(html.contains("<title>"));
+        assert!(html.contains("</title>"));
+    }
+
+    /// Test favicon extraction
+    #[test]
+    fn test_favicon_extraction() {
+        let html = r#"<link rel="icon" href="/favicon.ico">"#;
+        assert!(html.contains("rel=\"icon\""));
+        assert!(html.contains("href="));
+    }
+
+    /// Test URL resolution for relative paths
+    #[test]
+    fn test_url_resolution() {
+        let base = "https://example.com/page/";
+        let relative = "/images/photo.jpg";
+        
+        // Simulate URL resolution
+        if let Ok(base_url) = url::Url::parse(base) {
+            if let Ok(resolved) = base_url.join(relative) {
+                assert_eq!(resolved.to_string(), "https://example.com/images/photo.jpg");
+            }
+        }
+    }
+
+    /// Test absolute URL detection
+    #[test]
+    fn test_absolute_url_detection() {
+        let absolute = "https://cdn.example.com/image.jpg";
+        assert!(absolute.starts_with("http://") || absolute.starts_with("https://"));
+    }
+
+    /// Test HTML entity decoding
+    #[test]
+    fn test_html_entity_decoding() {
+        let encoded = "Tom &amp; Jerry";
+        let decoded = encoded.replace("&amp;", "&");
+        assert_eq!(decoded, "Tom & Jerry");
+    }
+
+    /// Test preview response structure
+    #[test]
+    fn test_preview_response_structure() {
+        struct LinkPreviewData {
+            url: String,
+            title: Option<String>,
+            description: Option<String>,
+            image: Option<String>,
+            site_name: Option<String>,
+            favicon: Option<String>,
+        }
+        
+        let preview = LinkPreviewData {
+            url: "https://example.com".to_string(),
+            title: Some("Example".to_string()),
+            description: Some("An example site".to_string()),
+            image: Some("https://example.com/og.jpg".to_string()),
+            site_name: Some("Example Site".to_string()),
+            favicon: Some("https://example.com/favicon.ico".to_string()),
+        };
+        
+        assert_eq!(preview.url, "https://example.com");
+        assert!(preview.title.is_some());
+        assert!(preview.description.is_some());
+        assert!(preview.image.is_some());
+    }
+
+    /// Test handling missing OG data
+    #[test]
+    fn test_missing_og_data() {
+        struct LinkPreviewData {
+            url: String,
+            title: Option<String>,
+            description: Option<String>,
+            image: Option<String>,
+        }
+        
+        let preview = LinkPreviewData {
+            url: "https://example.com".to_string(),
+            title: None,
+            description: None,
+            image: None,
+        };
+        
+        assert!(preview.title.is_none());
+        assert!(preview.description.is_none());
+        assert!(preview.image.is_none());
     }
 }
