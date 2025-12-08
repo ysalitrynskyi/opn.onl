@@ -5,7 +5,7 @@ import {
     QrCode, Download, Lock, Clock, Edit2, X, Check,
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
     TrendingUp, MousePointer, SortAsc, SortDesc,
-    Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus, Heart, Activity,
+    Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus,
     Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
