@@ -174,6 +174,7 @@ pub struct CreateLinkRequest {
     #[serde(default)]
     pub original_url: String,
     pub custom_alias: Option<String>,
+    pub title: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub password: Option<String>,
     pub notes: Option<String>,

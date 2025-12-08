@@ -15,6 +15,7 @@ pub struct Model {
     pub expires_at: Option<DateTime>,
     pub password_hash: Option<String>,
     // New fields
+    pub title: Option<String>,
     pub notes: Option<String>,
     pub folder_id: Option<i32>,
     pub org_id: Option<i32>,

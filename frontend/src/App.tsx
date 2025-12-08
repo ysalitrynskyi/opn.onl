@@ -1,12 +1,23 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import { HelmetProvider } from 'react-helmet-async';
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import Home from './pages/Home';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import NotFound from './pages/NotFound';
+
+// Scroll to top on route change
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+  
+  return null;
+}
 
 // Lazy load heavier pages for better initial load
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -25,6 +36,7 @@ const Preview = lazy(() => import('./pages/Preview'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Admin = lazy(() => import('./pages/Admin'));
+const Docs = lazy(() => import('./pages/Docs'));
 
 // Loading fallback component
 function PageLoader() {
@@ -42,6 +54,7 @@ function App() {
   return (
     <HelmetProvider>
       <ErrorBoundary>
+        <ScrollToTop />
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/" element={<Layout />}>
@@ -59,6 +72,7 @@ function App() {
               <Route path="terms" element={<Terms />} />
               <Route path="contact" element={<Contact />} />
               <Route path="faq" element={<Faq />} />
+              <Route path="docs" element={<Docs />} />
               <Route path="verify-email" element={<VerifyEmail />} />
               <Route path="forgot-password" element={<ForgotPassword />} />
               <Route path="reset-password" element={<ResetPassword />} />

@@ -14,6 +14,7 @@ mod m20220101_000011_create_audit_log;
 mod m20220101_000012_add_email_verification;
 mod m20220101_000013_create_blocked_tables;
 mod m20220101_000014_add_passkey_name;
+mod m20220101_000015_add_link_title;
 
 pub struct Migrator;
 
@@ -35,6 +36,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000012_add_email_verification::Migration),
             Box::new(m20220101_000013_create_blocked_tables::Migration),
             Box::new(m20220101_000014_add_passkey_name::Migration),
+            Box::new(m20220101_000015_add_link_title::Migration),
         ]
     }
 }
