@@ -73,6 +73,7 @@ services:
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-noreply@opn.onl}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-opn.onl}
       SMTP_TLS: ${SMTP_TLS:-starttls}
+      EMAIL_RATE_LIMIT_PER_HOUR: ${EMAIL_RATE_LIMIT_PER_HOUR:-500}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@opn.onl}
       BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
       BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}

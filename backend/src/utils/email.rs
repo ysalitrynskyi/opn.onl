@@ -3,7 +3,89 @@ use lettre::{
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
-use tracing::{error, info};
+use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{error, info, warn};
+
+/// Global email rate limiter to prevent abuse and control costs
+/// Uses a sliding window approach: tracks emails sent in the current hour
+struct GlobalEmailRateLimiter {
+    /// Number of emails sent in the current hour window
+    count: AtomicU64,
+    /// Start of the current hour window (Unix timestamp)
+    window_start: Mutex<u64>,
+    /// Maximum emails per hour (configurable via EMAIL_RATE_LIMIT_PER_HOUR)
+    limit: u64,
+}
+
+impl GlobalEmailRateLimiter {
+    fn new() -> Self {
+        let limit = std::env::var("EMAIL_RATE_LIMIT_PER_HOUR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500); // Default: 500 emails per hour
+        
+        info!("Email rate limit configured: {} emails/hour", limit);
+        
+        Self {
+            count: AtomicU64::new(0),
+            window_start: Mutex::new(Self::current_hour()),
+            limit,
+        }
+    }
+    
+    fn current_hour() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() / 3600
+    }
+    
+    /// Try to acquire a permit to send an email
+    /// Returns Ok(()) if allowed, Err with message if rate limited
+    fn try_acquire(&self) -> Result<(), String> {
+        let current_hour = Self::current_hour();
+        
+        // Check if we need to reset the window
+        {
+            let mut window = self.window_start.lock();
+            if *window < current_hour {
+                // New hour, reset counter
+                *window = current_hour;
+                self.count.store(0, Ordering::SeqCst);
+                info!("Email rate limit window reset");
+            }
+        }
+        
+        // Try to increment counter
+        let current = self.count.fetch_add(1, Ordering::SeqCst);
+        
+        if current >= self.limit {
+            // We're over the limit, decrement back
+            self.count.fetch_sub(1, Ordering::SeqCst);
+            warn!(
+                "Email rate limit exceeded: {}/{} emails this hour",
+                current, self.limit
+            );
+            Err(format!(
+                "Email rate limit exceeded ({}/hour). Please try again later.",
+                self.limit
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    
+    /// Get current usage stats
+    fn stats(&self) -> (u64, u64) {
+        (self.count.load(Ordering::SeqCst), self.limit)
+    }
+}
+
+/// Global singleton for email rate limiting
+static EMAIL_RATE_LIMITER: once_cell::sync::Lazy<GlobalEmailRateLimiter> =
+    once_cell::sync::Lazy::new(GlobalEmailRateLimiter::new);
 
 pub struct EmailService {
     mailer: Option<AsyncSmtpTransport<Tokio1Executor>>,
@@ -145,6 +227,12 @@ impl EmailService {
 
     async fn send_email_internal(&self, to: &str, subject: &str, html_body: &str, reply_to: Option<&str>) -> Result<(), String> {
         let mailer = self.mailer.as_ref().ok_or("Email service not configured")?;
+        
+        // Check global rate limit before sending
+        EMAIL_RATE_LIMITER.try_acquire()?;
+        
+        let (used, limit) = EMAIL_RATE_LIMITER.stats();
+        info!("Sending email to {} ({}/{} this hour)", to, used, limit);
 
         let mut builder = Message::builder()
             .from(format!("{} <{}>", self.from_name, self.from_email).parse().map_err(|e| format!("Invalid from address: {}", e))?)
