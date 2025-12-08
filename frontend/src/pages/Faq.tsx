@@ -63,7 +63,7 @@ const faqs = [
             },
             {
                 q: "Can I delete my data?",
-                a: "Yes! You can delete individual links at any time from your dashboard. You can also delete your entire account and all associated data from Settings. Deletion requests are processed immediately."
+                a: "Yes! You can delete individual links at any time from your dashboard. Link deletions are processed immediately. Account deletion is currently disabled on the hosted version, but if you need your account removed, please contact us at ys@opn.onl."
             }
         ]
     },
