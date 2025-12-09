@@ -75,10 +75,10 @@ export default function Admin() {
         
         try {
             const [statsRes, linksRes, domainsRes, usersRes] = await Promise.all([
-                fetch(`${API_ENDPOINTS.base}/admin/stats`, { headers: getAuthHeaders() }),
-                fetch(`${API_ENDPOINTS.base}/admin/blocked/links`, { headers: getAuthHeaders() }),
-                fetch(`${API_ENDPOINTS.base}/admin/blocked/domains`, { headers: getAuthHeaders() }),
-                fetch(`${API_ENDPOINTS.base}/admin/users`, { headers: getAuthHeaders() }),
+                authFetch(`${API_ENDPOINTS.base}/admin/stats`),
+                authFetch(`${API_ENDPOINTS.base}/admin/blocked/links`),
+                authFetch(`${API_ENDPOINTS.base}/admin/blocked/domains`),
+                authFetch(`${API_ENDPOINTS.base}/admin/users`),
             ]);
 
             if (statsRes.status === 403) {

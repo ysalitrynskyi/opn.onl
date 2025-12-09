@@ -119,3 +119,4 @@ describe('Sparkline utility calculations', () => {
     });
 });
 
+

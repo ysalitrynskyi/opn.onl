@@ -9,7 +9,7 @@ import {
     Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, getAuthHeaders, authFetch } from '../config/api';
+import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
