@@ -6,7 +6,7 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X
 } from 'lucide-react';
-import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
+import { API_ENDPOINTS, getAuthHeaders, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 
@@ -89,9 +89,9 @@ export default function Settings() {
         try {
             setLoading(true);
             const [profileRes, settingsRes, passkeysRes] = await Promise.all([
-                fetch(API_ENDPOINTS.userProfile, { headers: getAuthHeaders() }),
+                authFetch(API_ENDPOINTS.userProfile),
                 fetch(API_ENDPOINTS.appSettings),
-                fetch(API_ENDPOINTS.passkeys, { headers: getAuthHeaders() }),
+                authFetch(API_ENDPOINTS.passkeys),
             ]);
 
             if (profileRes.ok) {
@@ -193,9 +193,8 @@ export default function Settings() {
         if (!confirm('Are you sure you want to delete this passkey?')) return;
         
         try {
-            const res = await fetch(API_ENDPOINTS.passkeyDelete, {
+            const res = await authFetch(API_ENDPOINTS.passkeyDelete, {
                 method: 'POST',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({ passkey_id: passkeyId }),
             });
             
@@ -215,9 +214,8 @@ export default function Settings() {
         if (!newPasskeyName.trim()) return;
         
         try {
-            const res = await fetch(API_ENDPOINTS.passkeyRename, {
+            const res = await authFetch(API_ENDPOINTS.passkeyRename, {
                 method: 'POST',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({ passkey_id: passkeyId, name: newPasskeyName }),
             });
             
@@ -246,9 +244,8 @@ export default function Settings() {
         setError('');
 
         try {
-            const res = await fetch(API_ENDPOINTS.changePassword, {
+            const res = await authFetch(API_ENDPOINTS.changePassword, {
                 method: 'POST',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({
                     current_password: currentPassword,
                     new_password: newPassword,
@@ -280,9 +277,8 @@ export default function Settings() {
         setError('');
 
         try {
-            const res = await fetch(API_ENDPOINTS.deleteAccount, {
+            const res = await authFetch(API_ENDPOINTS.deleteAccount, {
                 method: 'POST',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({
                     email: profile?.email,
                     password: deletePassword,
@@ -325,9 +321,7 @@ export default function Settings() {
 
     const handleExportData = async () => {
         try {
-            const response = await fetch(API_ENDPOINTS.exportLinks, {
-                headers: getAuthHeaders(),
-            });
+            const response = await authFetch(API_ENDPOINTS.exportLinks);
             
             if (!response.ok) throw new Error('Failed to export data');
             
@@ -359,9 +353,8 @@ export default function Settings() {
         setError('');
 
         try {
-            const res = await fetch(API_ENDPOINTS.updateProfile, {
+            const res = await authFetch(API_ENDPOINTS.updateProfile, {
                 method: 'PUT',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({
                     display_name: displayName || undefined,
                     bio: bio || undefined,

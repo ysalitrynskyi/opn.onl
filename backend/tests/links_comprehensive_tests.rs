@@ -562,3 +562,4 @@ mod bulk_operations_tests {
         assert_eq!(unique.len(), 2);
     }
 }
+

@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
+import { API_ENDPOINTS, authFetch } from '../config/api';
 import logger from '../utils/logger';
 
 interface DayStats {
@@ -163,16 +163,11 @@ export default function Analytics() {
     const fetchStats = async () => {
         try {
             setLoading(true);
-            const res = await fetch(`${API_ENDPOINTS.linkStats(Number(id))}?days=${days}`, {
-                headers: getAuthHeaders()
-            });
-            
+            const res = await authFetch(`${API_ENDPOINTS.linkStats(Number(id))}?days=${days}`);
+
             if (res.ok) {
                 const data = await res.json();
                 setStats(data);
-            } else if (res.status === 401) {
-                localStorage.removeItem('token');
-                navigate('/login');
             } else if (res.status === 403) {
                 setError('You do not have permission to view this link\'s analytics.');
             } else if (res.status === 404) {

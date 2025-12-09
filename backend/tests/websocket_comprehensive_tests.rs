@@ -480,3 +480,4 @@ mod ws_auth_tests {
         assert!(result.is_err());
     }
 }
+

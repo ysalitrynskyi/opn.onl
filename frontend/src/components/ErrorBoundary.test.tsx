@@ -188,3 +188,4 @@ describe('ErrorBoundary Edge Cases', () => {
         expect(screen.getByText('Async component')).toBeInTheDocument();
     });
 });
+

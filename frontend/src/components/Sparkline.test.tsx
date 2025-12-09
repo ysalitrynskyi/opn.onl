@@ -118,3 +118,4 @@ describe('Sparkline utility calculations', () => {
         expect(max - min).toBe(6);
     });
 });
+

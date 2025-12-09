@@ -9,7 +9,7 @@ import {
     Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
+import { API_ENDPOINTS, getAuthHeaders, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -184,9 +184,7 @@ function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
     useEffect(() => {
         const fetchQR = async () => {
             try {
-                const res = await fetch(API_ENDPOINTS.linkQr(link.id), {
-                    headers: getAuthHeaders()
-                });
+                const res = await authFetch(API_ENDPOINTS.linkQr(link.id));
                 if (res.ok) {
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);
@@ -465,9 +463,8 @@ export default function Dashboard() {
         setError('');
 
         try {
-            const res = await fetch(API_ENDPOINTS.bulkLinks, {
+            const res = await authFetch(API_ENDPOINTS.bulkLinks, {
                 method: 'POST',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({ urls }),
             });
 
@@ -546,15 +543,10 @@ export default function Dashboard() {
 
     const fetchLinks = async () => {
         try {
-            const res = await fetch(API_ENDPOINTS.links, {
-                headers: getAuthHeaders()
-            });
+            const res = await authFetch(API_ENDPOINTS.links);
             if (res.ok) {
                 const data = await res.json();
                 setLinks(data);
-            } else if (res.status === 401) {
-                localStorage.removeItem('token');
-                navigate('/login');
             }
         } catch (error) {
             logger.error('Failed to fetch links', error);
@@ -568,9 +560,7 @@ export default function Dashboard() {
     const fetchSparklines = useCallback(async (linkIds: number[]) => {
         if (linkIds.length === 0) return;
         try {
-            const res = await fetch(`${API_ENDPOINTS.sparklines}?ids=${linkIds.join(',')}`, {
-                headers: getAuthHeaders()
-            });
+            const res = await authFetch(`${API_ENDPOINTS.sparklines}?ids=${linkIds.join(',')}`);
             if (res.ok) {
                 const data = await res.json();
                 const sparklines: Record<number, { data: number[]; labels: string[] }> = {};
@@ -631,9 +621,8 @@ export default function Dashboard() {
                 expirationDate = new Date(dateTime).toISOString();
             }
             
-            const res = await fetch(API_ENDPOINTS.links, {
+            const res = await authFetch(API_ENDPOINTS.links, {
                 method: 'POST',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({
                     original_url: newUrl,
                     custom_alias: alias || undefined,
@@ -668,9 +657,8 @@ export default function Dashboard() {
         if (!confirm('Are you sure you want to delete this link?')) return;
         
         try {
-            const res = await fetch(API_ENDPOINTS.linkDelete(id), {
+            const res = await authFetch(API_ENDPOINTS.linkDelete(id), {
                 method: 'DELETE',
-                headers: getAuthHeaders()
             });
             if (res.ok) {
                 setLinks(links.filter(l => l.id !== id));
@@ -685,9 +673,8 @@ export default function Dashboard() {
 
     const handleUpdate = async (id: number, data: any) => {
         try {
-            const res = await fetch(API_ENDPOINTS.linkUpdate(id), {
+            const res = await authFetch(API_ENDPOINTS.linkUpdate(id), {
                 method: 'PUT',
-                headers: getAuthHeaders(),
                 body: JSON.stringify(data),
             });
             if (res.ok) {
@@ -726,9 +713,8 @@ export default function Dashboard() {
 
     const handlePin = async (link: LinkData) => {
         try {
-            const res = await fetch(API_ENDPOINTS.linkPin(link.id), {
+            const res = await authFetch(API_ENDPOINTS.linkPin(link.id), {
                 method: 'POST',
-                headers: getAuthHeaders()
             });
             if (res.ok) {
                 const data = await res.json();
@@ -744,9 +730,8 @@ export default function Dashboard() {
 
     const handleClone = async (link: LinkData) => {
         try {
-            const res = await fetch(API_ENDPOINTS.linkClone(link.id), {
+            const res = await authFetch(API_ENDPOINTS.linkClone(link.id), {
                 method: 'POST',
-                headers: getAuthHeaders()
             });
             if (res.ok) {
                 const data = await res.json();
@@ -763,9 +748,7 @@ export default function Dashboard() {
 
     const handleExport = async () => {
         try {
-            const response = await fetch(API_ENDPOINTS.exportLinks, {
-                headers: getAuthHeaders(),
-            });
+            const response = await authFetch(API_ENDPOINTS.exportLinks);
             
             if (!response.ok) throw new Error('Failed to export links');
             

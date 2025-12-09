@@ -451,3 +451,4 @@ test.describe('Performance', () => {
         expect(loadTime).toBeLessThan(3000);
     });
 });
+

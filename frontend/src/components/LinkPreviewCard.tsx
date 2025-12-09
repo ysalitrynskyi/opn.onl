@@ -173,3 +173,4 @@ export const LinkPreviewCard = ({ url, className = '', compact = false }: LinkPr
 };
 
 export default LinkPreviewCard;
+

@@ -5,7 +5,7 @@ import {
     Shield, Users, Link2, Ban, Globe, Trash2, Plus, 
     RefreshCw, AlertTriangle, Check, X, Database, BarChart2
 } from 'lucide-react';
-import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
+import { API_ENDPOINTS, authFetch } from '../config/api';
 
 interface AdminStats {
     total_users: number;
@@ -101,11 +101,10 @@ export default function Admin() {
         if (!newBlockedUrl.trim()) return;
         
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/blocked/links`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/blocked/links`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
-                body: JSON.stringify({ 
-                    url: newBlockedUrl.trim(), 
+                body: JSON.stringify({
+                    url: newBlockedUrl.trim(),
                     reason: newBlockedUrlReason.trim() || null 
                 }),
             });
@@ -126,9 +125,8 @@ export default function Admin() {
 
     const unblockUrl = async (id: number) => {
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/blocked/links/${id}`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/blocked/links/${id}`, {
                 method: 'DELETE',
-                headers: getAuthHeaders(),
             });
             
             if (res.ok) {
@@ -144,11 +142,10 @@ export default function Admin() {
         if (!newBlockedDomain.trim()) return;
         
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/blocked/domains`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/blocked/domains`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
-                body: JSON.stringify({ 
-                    domain: newBlockedDomain.trim(), 
+                body: JSON.stringify({
+                    domain: newBlockedDomain.trim(),
                     reason: newBlockedDomainReason.trim() || null 
                 }),
             });
@@ -169,9 +166,8 @@ export default function Admin() {
 
     const unblockDomain = async (id: number) => {
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/blocked/domains/${id}`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/blocked/domains/${id}`, {
                 method: 'DELETE',
-                headers: getAuthHeaders(),
             });
             
             if (res.ok) {
@@ -187,9 +183,8 @@ export default function Admin() {
         const endpoint = isCurrentlyAdmin ? 'remove-admin' : 'make-admin';
         
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/users/${userId}/${endpoint}`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/users/${userId}/${endpoint}`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
             });
             
             if (res.ok) {
@@ -208,9 +203,8 @@ export default function Admin() {
         if (!confirm('Are you sure you want to delete this user?')) return;
         
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/users/${userId}`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/users/${userId}`, {
                 method: 'DELETE',
-                headers: getAuthHeaders(),
             });
             
             if (res.ok) {
@@ -224,9 +218,8 @@ export default function Admin() {
 
     const restoreUser = async (userId: number) => {
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/users/${userId}/restore`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/users/${userId}/restore`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
             });
             
             if (res.ok) {
@@ -240,9 +233,8 @@ export default function Admin() {
 
     const createBackup = async () => {
         try {
-            const res = await fetch(`${API_ENDPOINTS.base}/admin/backup`, {
+            const res = await authFetch(`${API_ENDPOINTS.base}/admin/backup`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
             });
             
             const data = await res.json();
@@ -582,6 +574,7 @@ function StatCard({
         </div>
     );
 }
+
 
 
 

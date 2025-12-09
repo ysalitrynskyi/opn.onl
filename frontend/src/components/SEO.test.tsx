@@ -155,3 +155,4 @@ describe('SEO Best Practices', () => {
         expect(keywords.length).toBeGreaterThan(0);
     });
 });
+

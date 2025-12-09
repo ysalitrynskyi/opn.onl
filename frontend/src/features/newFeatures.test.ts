@@ -361,3 +361,4 @@ describe('API Endpoints Configuration', () => {
         expect(buildUtm).toBe('http://localhost:3000/links/build-utm');
     });
 });
+

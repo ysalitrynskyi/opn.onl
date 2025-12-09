@@ -627,3 +627,4 @@ mod user_agent_tests {
         assert_eq!(info.device.as_deref(), Some("Mobile"));
     }
 }
+

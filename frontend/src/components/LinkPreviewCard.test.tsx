@@ -183,3 +183,4 @@ describe('URL parsing', () => {
         expect(getDomain('not-a-url')).toBe('not-a-url');
     });
 });
+

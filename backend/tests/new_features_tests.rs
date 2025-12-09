@@ -570,3 +570,4 @@ mod link_preview_tests {
         assert!(preview.image.is_none());
     }
 }
+

@@ -5,7 +5,7 @@ import {
     ArrowRight, BarChart2, Link2, Lock, Shield, Zap,
     QrCode, Clock, Check, Sparkles
 } from 'lucide-react';
-import { API_ENDPOINTS, getAuthHeaders } from '../config/api';
+import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 
 export default function Home() {
@@ -31,9 +31,8 @@ export default function Home() {
         }
 
         try {
-            const res = await fetch(API_ENDPOINTS.links, {
+            const res = await authFetch(API_ENDPOINTS.links, {
                 method: 'POST',
-                headers: getAuthHeaders(),
                 body: JSON.stringify({ original_url: url }),
             });
 

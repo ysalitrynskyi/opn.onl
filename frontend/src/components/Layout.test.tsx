@@ -207,3 +207,4 @@ describe('Layout Mobile Responsiveness', () => {
         expect(footer).toBeInTheDocument();
     });
 });
+

@@ -726,3 +726,4 @@ mod audit_log_entity_tests {
         assert!(log.user_id.is_none());
     }
 }
+

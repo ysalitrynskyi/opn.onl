@@ -116,6 +116,36 @@ export const getAuthHeaders = (): HeadersInit => {
     };
 };
 
+// Handle unauthorized - clear token and redirect to login
+const handleUnauthorized = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('is_admin');
+    // Redirect to login page
+    window.location.href = '/login';
+};
+
+// Authenticated fetch wrapper - handles 401 automatically
+export async function authFetch(
+    url: string,
+    options: RequestInit = {}
+): Promise<Response> {
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            ...getAuthHeaders(),
+            ...options.headers,
+        },
+    });
+
+    // Handle unauthorized - logout user
+    if (response.status === 401) {
+        handleUnauthorized();
+        throw new Error('Session expired. Please log in again.');
+    }
+
+    return response;
+}
+
 // Helper for API calls with error handling
 export async function apiCall<T>(
     url: string,
@@ -129,6 +159,12 @@ export async function apiCall<T>(
                 ...options.headers,
             },
         });
+
+        // Handle unauthorized - logout user
+        if (response.status === 401) {
+            handleUnauthorized();
+            return { error: 'Session expired. Please log in again.' };
+        }
 
         // Handle rate limiting
         if (response.status === 429) {
