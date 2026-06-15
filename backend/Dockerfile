@@ -1,7 +1,10 @@
 # Stage 1: Chef - prepare recipe
 FROM rust:1.85-alpine AS chef
 RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl
-RUN cargo install cargo-chef
+# Pin cargo-chef and use its locked deps. Newer cargo-chef releases pull in
+# transitive crates whose MSRV exceeds this base image's Rust, which breaks
+# `cargo install cargo-chef` (compile error). Pinning keeps the build reproducible.
+RUN cargo install cargo-chef --version 0.1.71 --locked
 WORKDIR /app
 
 # Stage 2: Planner - create recipe.json
