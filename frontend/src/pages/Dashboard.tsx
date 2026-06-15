@@ -481,7 +481,7 @@ export default function Dashboard() {
                 const data = await res.json();
                 setError(data.error || 'Failed to import links');
             }
-        } catch (err) {
+        } catch {
             setError('Network error during import');
         } finally {
             setBulkImporting(false);
