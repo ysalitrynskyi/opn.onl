@@ -111,22 +111,12 @@ pub async fn create_folder(
         )
     })?;
 
-    // If org_id is provided, verify user is a member
+    // Org folders can only be created by members with edit rights (not viewers).
     if let Some(org_id) = payload.org_id {
-        use crate::entity::org_members;
-        let is_member = org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some();
-        
-        if !is_member {
+        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
             return Err((
                 StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Not a member of this organization"})),
+                Json(serde_json::json!({"error": "Insufficient permissions to create an organization folder"})),
             ));
         }
     }
@@ -397,6 +387,16 @@ pub async fn update_folder(
         ));
     }
 
+    // Org folders may only be modified by editors and above; viewers are read-only.
+    if let Some(org_id) = folder.org_id {
+        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Insufficient permissions"})),
+            ));
+        }
+    }
+
     let mut folder: folders::ActiveModel = folder.into();
 
     if let Some(name) = payload.name {
@@ -496,6 +496,16 @@ pub async fn delete_folder(
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
         ));
+    }
+
+    // Org folders may only be deleted by editors and above; viewers are read-only.
+    if let Some(org_id) = folder.org_id {
+        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Insufficient permissions"})),
+            ));
+        }
     }
 
     // Clear folder_id on all links in this folder before deleting

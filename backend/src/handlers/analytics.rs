@@ -503,22 +503,48 @@ pub async fn get_dashboard_stats(
 pub async fn get_realtime_clicks(
     State(state): State<AppState>,
     Path(id): Path<i32>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    let link = links::Entity::find_by_id(id)
+    let user_id = match get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+    };
+
+    let link = match links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
-        .ok()
-        .flatten();
+    {
+        Ok(Some(link)) => link,
+        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Link not found"}))).into_response(),
+    };
 
-    if let Some(link) = link {
-        (StatusCode::OK, Json(serde_json::json!({
-            "link_id": link.id,
-            "click_count": link.click_count,
-            "timestamp": chrono::Utc::now().to_rfc3339()
-        }))).into_response()
+    // Ownership: must own the link, or be a member of the org that owns it.
+    let has_access = if link.user_id == Some(user_id) {
+        true
+    } else if let Some(org_id) = link.org_id {
+        use crate::entity::org_members;
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
     } else {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Link not found"}))).into_response()
+        false
+    };
+
+    if !has_access {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Access denied"}))).into_response();
     }
+
+    (StatusCode::OK, Json(serde_json::json!({
+        "link_id": link.id,
+        "click_count": link.click_count,
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }))).into_response()
 }
 
 // Helper function to extract domain from URL
