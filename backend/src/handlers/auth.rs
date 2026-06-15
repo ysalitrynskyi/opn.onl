@@ -130,7 +130,7 @@ pub async fn register(
                 }
             }
 
-            let token = match create_jwt(user_res.last_insert_id, &payload.email) {
+            let token = match create_jwt(user_res.last_insert_id, &payload.email, 0) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to create JWT: {}", e);
@@ -182,7 +182,7 @@ pub async fn login(
 
     if let Some(user) = user {
         if verify_password(&payload.password, &user.password_hash).unwrap_or(false) {
-            let token = match create_jwt(user.id, &user.email) {
+            let token = match create_jwt(user.id, &user.email, user.token_version) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to create JWT: {}", e);
@@ -411,10 +411,13 @@ pub async fn reset_password(
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response(),
         };
 
+        // Bump token_version to revoke any JWTs issued before this reset.
+        let next_token_version = user.token_version + 1;
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
         active_user.password_reset_token = Set(None);
         active_user.password_reset_expires = Set(None);
+        active_user.token_version = Set(next_token_version);
 
         if let Err(_) = active_user.update(&state.db).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to reset password".to_string() })).into_response();
@@ -457,7 +460,7 @@ pub async fn change_password(
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
     }
 
-    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -490,9 +493,11 @@ pub async fn change_password(
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response(),
         };
 
-        // Update password
+        // Update password and bump token_version to revoke prior JWTs.
+        let next_token_version = user.token_version + 1;
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
+        active_user.token_version = Set(next_token_version);
 
         if let Err(_) = active_user.update(&state.db).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to change password".to_string() })).into_response();
@@ -542,7 +547,7 @@ pub async fn delete_account(
         })).into_response();
     }
 
-    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -704,7 +709,7 @@ pub async fn get_current_user(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -768,7 +773,7 @@ pub async fn update_profile(
     headers: HeaderMap,
     Json(payload): Json<UpdateProfileRequest>,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };

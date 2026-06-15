@@ -23,6 +23,9 @@ pub struct Model {
     pub website: Option<String>,
     pub avatar_url: Option<String>,
     pub location: Option<String>,
+    /// Bumped on credential changes to revoke previously issued JWTs.
+    #[sea_orm(default_value = 0)]
+    pub token_version: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

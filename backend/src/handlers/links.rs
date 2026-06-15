@@ -461,18 +461,24 @@ fn generate_short_code() -> String {
         .collect()
 }
 
-pub fn get_user_id_from_header(headers: &HeaderMap) -> Option<i32> {
-    if let Some(auth_header) = headers.get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Bearer ") {
-                let token = &auth_str[7..];
-                if let Ok(claims) = decode_jwt(token) {
-                    return Some(claims.user_id);
-                }
-            }
-        }
+/// Authenticate a request from its bearer token AND verify it against the DB:
+/// the user must exist, must not be soft-deleted, and the token's `token_version`
+/// must match the user's current version. This is what makes JWTs revocable
+/// (a password change / reset / account-delete / passkey-revoke bumps the version).
+pub async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
+    let auth_header = headers.get("Authorization")?.to_str().ok()?;
+    let token = auth_header.strip_prefix("Bearer ")?;
+    let claims = decode_jwt(token).ok()?;
+    let user = users::Entity::find_by_id(claims.user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(db)
+        .await
+        .ok()??;
+    if user.token_version == claims.token_version {
+        Some(user.id)
+    } else {
+        None
     }
-    None
 }
 
 fn get_base_url() -> String {
@@ -537,7 +543,7 @@ pub async fn create_link(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
-    let user_id = get_user_id_from_header(&headers);
+    let user_id = get_user_id_from_header(&state.db, &headers).await;
 
     // Check email verification for authenticated users
     if let Some(uid) = user_id {
@@ -1142,7 +1148,7 @@ pub async fn get_qr_code(
     use std::io::Cursor;
 
     // Verify authentication
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
@@ -1215,7 +1221,7 @@ pub async fn get_user_links(
     headers: HeaderMap,
     Query(query): Query<LinksQuery>,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -1325,7 +1331,7 @@ pub async fn delete_link(
     Path(id): Path<i32>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -1384,7 +1390,7 @@ pub async fn update_link(
     headers: HeaderMap,
     Json(payload): Json<UpdateLinkRequest>,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -1509,7 +1515,7 @@ pub async fn bulk_create_links(
     headers: HeaderMap,
     Json(payload): Json<BulkCreateLinkRequest>,
 ) -> impl IntoResponse {
-    let user_id = get_user_id_from_header(&headers);
+    let user_id = get_user_id_from_header(&state.db, &headers).await;
 
     // Cap batch size to avoid unbounded per-item work / DoS.
     if payload.urls.len() > 500 {
@@ -1629,7 +1635,7 @@ pub async fn bulk_delete_links(
     headers: HeaderMap,
     Json(payload): Json<BulkDeleteRequest>,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -1679,7 +1685,7 @@ pub async fn bulk_update_links(
     headers: HeaderMap,
     Json(payload): Json<BulkUpdateRequest>,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -1738,7 +1744,7 @@ pub async fn export_links_csv(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
@@ -1824,7 +1830,7 @@ pub async fn clone_link(
     Path(id): Path<i32>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -1926,7 +1932,7 @@ pub async fn toggle_pin(
     Path(id): Path<i32>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
@@ -2058,11 +2064,12 @@ pub struct UrlHealthResponse {
     tag = "Links"
 )]
 pub async fn check_url_health(
+    State(state): State<AppState>,
     headers: HeaderMap,
     Json(payload): Json<HealthCheckRequest>,
 ) -> impl IntoResponse {
     // Require authentication: this performs a server-side fetch of a user-supplied URL.
-    if get_user_id_from_header(&headers).is_none() {
+    if get_user_id_from_header(&state.db, &headers).await.is_none() {
         return (StatusCode::UNAUTHORIZED, Json(UrlHealthResponse {
             url: payload.url,
             reachable: false,
@@ -2236,7 +2243,7 @@ pub async fn get_sparklines(
     headers: HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
@@ -2341,11 +2348,12 @@ pub struct PreviewMetadataRequest {
     tag = "Links"
 )]
 pub async fn get_link_preview_metadata(
+    State(state): State<AppState>,
     headers: HeaderMap,
     Json(payload): Json<PreviewMetadataRequest>,
 ) -> impl IntoResponse {
     // Require authentication: this performs a server-side fetch of a user-supplied URL.
-    if get_user_id_from_header(&headers).is_none() {
+    if get_user_id_from_header(&state.db, &headers).await.is_none() {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
     }
 
