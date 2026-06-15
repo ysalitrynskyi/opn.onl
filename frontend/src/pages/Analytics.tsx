@@ -4,6 +4,7 @@ import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lu
 import { motion } from 'framer-motion';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { API_ENDPOINTS, authFetch } from '../config/api';
+import SEO from '../components/SEO';
 import logger from '../utils/logger';
 
 interface DayStats {
@@ -75,78 +76,75 @@ interface LinkStats {
     recent_clicks: RecentClick[];
 }
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+// Editorial cobalt — a single accent rendered at descending opacity for ranked
+// bars, never a rainbow. Index 0 is the strongest, fading down the list.
+const ACCENT = 'oklch(0.502 0.176 263)';
+const barOpacity = (i: number) => Math.max(0.25, 1 - i * 0.085);
 
 function Skeleton() {
     return (
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-pulse">
-            <div className="h-8 bg-slate-200 rounded w-64 mb-8" />
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10 animate-pulse">
+            <div className="h-8 w-64 rounded bg-line2/70 mb-8" />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-line border border-line rounded-2xl overflow-hidden mb-8">
                 {[1, 2, 3].map(i => (
-                    <div key={i} className="bg-white p-6 rounded-xl border border-slate-200">
-                        <div className="h-4 bg-slate-200 rounded w-24 mb-2" />
-                        <div className="h-8 bg-slate-200 rounded w-16" />
+                    <div key={i} className="bg-surface p-6">
+                        <div className="h-4 w-24 rounded bg-line2/70 mb-3" />
+                        <div className="h-8 w-16 rounded bg-line" />
                     </div>
                 ))}
             </div>
-            <div className="bg-white p-6 rounded-xl border border-slate-200 h-80" />
+            <div className="h-80 rounded-2xl border border-line bg-surface" />
         </div>
     );
 }
 
-function StatCard({ title, value, icon: Icon, trend }: { title: string; value: string | number; icon: React.ComponentType<{className?: string}>; trend?: string }) {
+function StatCard({ title, value, icon: Icon }: { title: string; value: string | number; icon: React.ComponentType<{ className?: string }>; }) {
     return (
-        <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm"
-        >
+        <div className="bg-surface p-6">
             <div className="flex items-center justify-between mb-2">
-                <span className="text-slate-500 text-sm font-medium">{title}</span>
-                <Icon className="h-5 w-5 text-slate-400" />
+                <span className="font-mono text-xs uppercase tracking-[0.14em] text-faint">{title}</span>
+                <Icon className="h-4 w-4 text-faint" />
             </div>
-            <div className="text-3xl font-bold text-slate-900">{typeof value === 'number' ? value.toLocaleString() : value}</div>
-            {trend && <div className="text-sm text-green-600 mt-1">{trend}</div>}
-        </motion.div>
+            <div className="font-display text-3xl font-extrabold text-ink tracking-tight tabular-nums">
+                {typeof value === 'number' ? value.toLocaleString() : value}
+            </div>
+        </div>
     );
 }
 
-function StatsTable({ title, data, labelKey, valueKey }: { title: string; data: any[]; labelKey: string; valueKey: string }) {
+function StatsTable<T extends object>({ title, data, labelKey, valueKey }: { title: string; data: T[]; labelKey: keyof T; valueKey: keyof T }) {
     if (data.length === 0) return null;
-    
-    const sortedData = [...data].sort((a, b) => b[valueKey] - a[valueKey]).slice(0, 10);
-    const total = data.reduce((sum, item) => sum + item[valueKey], 0);
-    
+
+    const sortedData = [...data].sort((a, b) => Number(b[valueKey]) - Number(a[valueKey])).slice(0, 10);
+    const total = data.reduce((sum, item) => sum + Number(item[valueKey]), 0);
+
     return (
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">{title}</h3>
+        <div className="rounded-2xl border border-line2 bg-surface p-6 shadow-subtle">
+            <h3 className="font-display text-lg font-bold text-ink tracking-tight mb-4">{title}</h3>
             <div className="space-y-3">
-                {sortedData.map((item, i) => (
-                    <div key={i} className="flex items-center justify-between">
-                        <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div 
-                                className="w-3 h-3 rounded-full flex-shrink-0" 
-                                style={{ backgroundColor: COLORS[i % COLORS.length] }}
-                            />
-                            <span className="text-slate-700 truncate">{item[labelKey] || 'Unknown'}</span>
-                        </div>
-                        <div className="flex items-center gap-3 flex-shrink-0">
-                            <span className="text-slate-500 text-sm">{item[valueKey].toLocaleString()}</span>
-                            <div className="w-24 bg-slate-100 rounded-full h-2">
-                                <div 
-                                    className="h-2 rounded-full" 
-                                    style={{ 
-                                        width: `${(item[valueKey] / total) * 100}%`,
-                                        backgroundColor: COLORS[i % COLORS.length]
-                                    }}
-                                />
+                {sortedData.map((item, i) => {
+                    const value = Number(item[valueKey]);
+                    const pct = total > 0 ? (value / total) * 100 : 0;
+                    return (
+                        <div key={i} className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                                <span className="truncate text-sm text-ink">{String(item[labelKey] ?? 'Unknown')}</span>
                             </div>
-                            <span className="text-slate-400 text-xs w-12 text-right">
-                                {((item[valueKey] / total) * 100).toFixed(1)}%
-                            </span>
+                            <div className="flex items-center gap-3 flex-shrink-0">
+                                <span className="font-mono text-sm text-muted tabular-nums">{value.toLocaleString()}</span>
+                                <div className="w-24 h-1.5 rounded-full bg-line overflow-hidden">
+                                    <div
+                                        className="h-full rounded-full"
+                                        style={{ width: `${pct}%`, backgroundColor: ACCENT, opacity: barOpacity(i) }}
+                                    />
+                                </div>
+                                <span className="w-12 text-right font-mono text-xs text-faint tabular-nums">
+                                    {pct.toFixed(1)}%
+                                </span>
+                            </div>
                         </div>
-                    </div>
-                ))}
+                    );
+                })}
             </div>
         </div>
     );
@@ -198,12 +196,13 @@ export default function Analytics() {
 
     if (error) {
         return (
-            <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <Link to="/dashboard" className="inline-flex items-center gap-2 text-slate-600 hover:text-slate-900 mb-8">
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+                <SEO title="Analytics" noIndex />
+                <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm text-muted transition-colors hover:text-ink mb-8">
                     <ArrowLeft className="h-4 w-4" />
                     Back to Dashboard
                 </Link>
-                <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-red-700">
+                <div className="rounded-2xl border border-danger/30 bg-danger/5 p-6 text-danger">
                     {error}
                 </div>
             </div>
@@ -215,7 +214,7 @@ export default function Analytics() {
     // Calculate today and this week clicks
     const today = new Date().toISOString().split('T')[0];
     const todayClicks = stats.clicks_by_day.find(d => d.date === today)?.count || 0;
-    
+
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 7);
     const weekClicks = stats.clicks_by_day
@@ -229,17 +228,19 @@ export default function Analytics() {
     }));
 
     return (
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+            <SEO title={`Analytics — /${stats.code}`} noIndex />
             <div className="flex items-center justify-between mb-8">
-                <Link to="/dashboard" className="inline-flex items-center gap-2 text-slate-600 hover:text-slate-900">
+                <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm text-muted transition-colors hover:text-ink">
                     <ArrowLeft className="h-4 w-4" />
                     Back to Dashboard
                 </Link>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
                     <select
                         value={days}
                         onChange={(e) => setDays(Number(e.target.value))}
-                        className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-primary-500 focus:border-primary-500"
+                        aria-label="Time range"
+                        className="rounded-lg border border-line2 bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                     >
                         <option value={7}>Last 7 days</option>
                         <option value={30}>Last 30 days</option>
@@ -248,8 +249,9 @@ export default function Analytics() {
                     </select>
                     <button
                         onClick={fetchStats}
-                        className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg"
+                        className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30"
                         title="Refresh"
+                        aria-label="Refresh"
                     >
                         <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                     </button>
@@ -257,74 +259,61 @@ export default function Analytics() {
             </div>
 
             <motion.div
-                initial={{ opacity: 0, y: 20 }}
+                initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
                 className="mb-8"
             >
-                <h1 className="text-2xl font-bold text-slate-900 mb-2">
-                    Analytics for /{stats.code}
+                <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600">Analytics</p>
+                <h1 className="mt-2 font-display text-3xl sm:text-4xl font-extrabold text-ink tracking-tight">
+                    <span className="font-mono text-muted">opn.onl/</span><span className="font-mono">{stats.code}</span>
                 </h1>
-                <p className="text-slate-500 text-sm truncate max-w-2xl">{stats.original_url}</p>
+                <p className="mt-2 truncate max-w-2xl font-mono text-sm text-faint">{stats.original_url}</p>
             </motion.div>
 
             {/* Key Metrics */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                <StatCard 
-                    title="Total Clicks" 
-                    value={stats.total_clicks} 
-                    icon={MousePointer}
-                />
-                <StatCard 
-                    title="Unique Visitors" 
-                    value={stats.unique_visitors} 
-                    icon={Globe}
-                />
-                <StatCard 
-                    title="Today" 
-                    value={todayClicks} 
-                    icon={Clock}
-                />
-                <StatCard 
-                    title="This Week" 
-                    value={weekClicks} 
-                    icon={TrendingUp}
-                />
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-line border border-line rounded-2xl overflow-hidden mb-8">
+                <StatCard title="Total Clicks" value={stats.total_clicks} icon={MousePointer} />
+                <StatCard title="Unique Visitors" value={stats.unique_visitors} icon={Globe} />
+                <StatCard title="Today" value={todayClicks} icon={Clock} />
+                <StatCard title="This Week" value={weekClicks} icon={TrendingUp} />
             </div>
 
             {/* Clicks Over Time Chart */}
             {chartData.length > 0 && (
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
+                <motion.div
+                    initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.1 }}
-                    className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-8"
+                    transition={{ delay: 0.05 }}
+                    className="rounded-2xl border border-line2 bg-surface p-6 shadow-subtle mb-8"
                 >
-                    <h3 className="text-lg font-semibold text-slate-900 mb-4">Clicks Over Time</h3>
+                    <h3 className="font-display text-lg font-bold text-ink tracking-tight mb-4">Clicks over time</h3>
                     <ResponsiveContainer width="100%" height={300}>
                         <AreaChart data={chartData}>
                             <defs>
                                 <linearGradient id="colorClicks" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                                    <stop offset="5%" stopColor={ACCENT} stopOpacity={0.22} />
+                                    <stop offset="95%" stopColor={ACCENT} stopOpacity={0} />
                                 </linearGradient>
                             </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                            <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} />
-                            <YAxis stroke="#94a3b8" fontSize={12} />
-                            <Tooltip 
-                                contentStyle={{ 
-                                    backgroundColor: 'white', 
-                                    border: '1px solid #e2e8f0',
-                                    borderRadius: '8px'
+                            <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.916 0.008 266)" />
+                            <XAxis dataKey="date" stroke="oklch(0.598 0.014 266)" fontSize={12} />
+                            <YAxis stroke="oklch(0.598 0.014 266)" fontSize={12} />
+                            <Tooltip
+                                contentStyle={{
+                                    backgroundColor: 'oklch(0.999 0.001 266)',
+                                    border: '1px solid oklch(0.852 0.010 266)',
+                                    borderRadius: '12px',
+                                    fontSize: '13px'
                                 }}
                             />
-                            <Area 
-                                type="monotone" 
-                                dataKey="clicks" 
-                                stroke="#3b82f6" 
+                            <Area
+                                type="monotone"
+                                dataKey="clicks"
+                                stroke={ACCENT}
                                 strokeWidth={2}
-                                fillOpacity={1} 
-                                fill="url(#colorClicks)" 
+                                fillOpacity={1}
+                                fill="url(#colorClicks)"
                             />
                         </AreaChart>
                     </ResponsiveContainer>
@@ -333,127 +322,72 @@ export default function Analytics() {
 
             {/* Location Stats */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.2 }}
-                >
-                    <StatsTable 
-                        title="Top Countries" 
-                        data={stats.clicks_by_country} 
-                        labelKey="country" 
-                        valueKey="count" 
-                    />
+                <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+                    <StatsTable title="Top Countries" data={stats.clicks_by_country} labelKey="country" valueKey="count" />
                 </motion.div>
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.25 }}
-                >
-                    <StatsTable 
-                        title="Top Cities" 
-                        data={stats.clicks_by_city} 
-                        labelKey="city" 
-                        valueKey="count" 
-                    />
+                <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}>
+                    <StatsTable title="Top Cities" data={stats.clicks_by_city} labelKey="city" valueKey="count" />
                 </motion.div>
             </div>
 
             {/* Device & Browser Stats */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.3 }}
-                >
-                    <StatsTable 
-                        title="Devices" 
-                        data={stats.clicks_by_device} 
-                        labelKey="device" 
-                        valueKey="count" 
-                    />
+                <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.14 }}>
+                    <StatsTable title="Devices" data={stats.clicks_by_device} labelKey="device" valueKey="count" />
                 </motion.div>
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.35 }}
-                >
-                    <StatsTable 
-                        title="Browsers" 
-                        data={stats.clicks_by_browser} 
-                        labelKey="browser" 
-                        valueKey="count" 
-                    />
+                <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.16 }}>
+                    <StatsTable title="Browsers" data={stats.clicks_by_browser} labelKey="browser" valueKey="count" />
                 </motion.div>
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.4 }}
-                >
-                    <StatsTable 
-                        title="Operating Systems" 
-                        data={stats.clicks_by_os} 
-                        labelKey="os" 
-                        valueKey="count" 
-                    />
+                <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.18 }}>
+                    <StatsTable title="Operating Systems" data={stats.clicks_by_os} labelKey="os" valueKey="count" />
                 </motion.div>
             </div>
 
             {/* Referrers */}
-            <motion.div 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.45 }}
-                className="mb-8"
-            >
-                <StatsTable 
-                    title="Top Referrers" 
-                    data={stats.clicks_by_referer} 
-                    labelKey="referer" 
-                    valueKey="count" 
-                />
+            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="mb-8">
+                <StatsTable title="Top Referrers" data={stats.clicks_by_referer} labelKey="referer" valueKey="count" />
             </motion.div>
 
             {/* Recent Clicks */}
             {stats.recent_clicks.length > 0 && (
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
+                <motion.div
+                    initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.5 }}
-                    className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+                    transition={{ delay: 0.22 }}
+                    className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
                 >
-                    <div className="p-6 border-b border-slate-200">
-                        <h3 className="text-lg font-semibold text-slate-900">Recent Clicks</h3>
+                    <div className="px-6 py-5 border-b border-line">
+                        <h3 className="font-display text-lg font-bold text-ink tracking-tight">Recent clicks</h3>
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full">
-                            <thead className="bg-slate-50">
-                                <tr>
-                                    <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase">Time</th>
-                                    <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase">Location</th>
-                                    <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase">Device</th>
-                                    <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase">Browser</th>
-                                    <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase">Referrer</th>
+                            <thead>
+                                <tr className="border-b border-line">
+                                    <th className="text-left px-6 py-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-faint">Time</th>
+                                    <th className="text-left px-6 py-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-faint">Location</th>
+                                    <th className="text-left px-6 py-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-faint">Device</th>
+                                    <th className="text-left px-6 py-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-faint">Browser</th>
+                                    <th className="text-left px-6 py-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-faint">Referrer</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-slate-200">
+                            <tbody className="divide-y divide-line">
                                 {stats.recent_clicks.slice(0, 20).map((click) => (
-                                    <tr key={click.id} className="hover:bg-slate-50">
-                                        <td className="px-6 py-4 text-sm text-slate-600 whitespace-nowrap">
+                                    <tr key={click.id} className="transition-colors hover:bg-primary-50/40">
+                                        <td className="px-6 py-4 text-sm text-muted whitespace-nowrap">
                                             {new Date(click.timestamp).toLocaleString()}
                                         </td>
-                                        <td className="px-6 py-4 text-sm text-slate-600">
-                                            {click.city && click.country 
+                                        <td className="px-6 py-4 text-sm text-ink">
+                                            {click.city && click.country
                                                 ? `${click.city}, ${click.country}`
                                                 : click.country || 'Unknown'}
                                         </td>
-                                        <td className="px-6 py-4 text-sm text-slate-600">
+                                        <td className="px-6 py-4 text-sm text-muted">
                                             {click.device || 'Unknown'}
                                         </td>
-                                        <td className="px-6 py-4 text-sm text-slate-600">
+                                        <td className="px-6 py-4 text-sm text-muted">
                                             {click.browser ? `${click.browser}${click.os ? ` / ${click.os}` : ''}` : 'Unknown'}
                                         </td>
-                                        <td className="px-6 py-4 text-sm text-slate-500 max-w-xs truncate">
+                                        <td className="px-6 py-4 max-w-xs truncate font-mono text-sm text-faint">
                                             {click.referer || 'Direct'}
                                         </td>
                                     </tr>
@@ -466,14 +400,16 @@ export default function Analytics() {
 
             {/* No data message */}
             {stats.total_clicks === 0 && (
-                <motion.div 
+                <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="text-center py-16 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200"
+                    className="rounded-2xl border border-dashed border-line2 bg-paper py-16 text-center"
                 >
-                    <MousePointer className="h-12 w-12 text-slate-300 mx-auto mb-4" />
-                    <h3 className="text-lg font-semibold text-slate-700 mb-1">No clicks yet</h3>
-                    <p className="text-slate-500">Share your link to start seeing analytics!</p>
+                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-line bg-surface">
+                        <MousePointer className="h-6 w-6 text-faint" />
+                    </div>
+                    <h3 className="font-display text-lg font-bold text-ink">No clicks yet</h3>
+                    <p className="mt-1 text-muted">Share your link to start seeing analytics.</p>
                 </motion.div>
             )}
         </div>

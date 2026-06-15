@@ -1,12 +1,12 @@
-import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { 
-    Copy, Plus, Trash2, BarChart2, 
+import {
+    Copy, Plus, Trash2, BarChart2,
     QrCode, Download, Lock, Clock, Edit2, X, Check,
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
-    TrendingUp, MousePointer, SortAsc, SortDesc,
+    MousePointer, SortAsc, SortDesc,
     Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus,
-    Eye
+    Eye, ArrowRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_ENDPOINTS, authFetch } from '../config/api';
@@ -17,23 +17,11 @@ import ShareModal from '../components/ShareModal';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import Sparkline from '../components/Sparkline';
 import LinkPreviewCard from '../components/LinkPreviewCard';
-
-interface LinkData {
-    id: number;
-    code: string;
-    original_url: string;
-    short_url: string;
-    api_url?: string;
-    title: string | null;
-    click_count: number;
-    created_at: string;
-    expires_at: string | null;
-    has_password: boolean;
-    notes: string | null;
-    is_active: boolean;
-    is_pinned: boolean;
-    tags: { id: number; name: string; color: string }[];
-}
+import EditModal from '../components/dashboard/EditModal';
+import QRModal from '../components/dashboard/QRModal';
+import Skeleton from '../components/dashboard/Skeleton';
+import MiniStats from '../components/dashboard/MiniStats';
+import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
 
 interface AppSettings {
     custom_aliases_enabled: boolean;
@@ -41,296 +29,9 @@ interface AppSettings {
     max_alias_length: number;
 }
 
-interface EditModalProps {
-    link: LinkData;
-    onClose: () => void;
-    onSave: (id: number, data: any) => Promise<void>;
-}
-
-function EditModal({ link, onClose, onSave }: EditModalProps) {
-    const [url, setUrl] = useState(link.original_url);
-    const [password, setPassword] = useState('');
-    const [expiresAt, setExpiresAt] = useState(link.expires_at?.split('T')[0] || '');
-    const [removePassword, setRemovePassword] = useState(false);
-    const [removeExpiration, setRemoveExpiration] = useState(false);
-    const [saving, setSaving] = useState(false);
-
-    const handleSave = async () => {
-        setSaving(true);
-        await onSave(link.id, {
-            original_url: url !== link.original_url ? url : undefined,
-            password: password || undefined,
-            expires_at: expiresAt && !removeExpiration ? new Date(expiresAt).toISOString() : undefined,
-            remove_password: removePassword || undefined,
-            remove_expiration: removeExpiration || undefined,
-        });
-        setSaving(false);
-        onClose();
-    };
-
-    return (
-        <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-            onClick={onClose}
-        >
-            <motion.div
-                initial={{ scale: 0.95, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.95, opacity: 0 }}
-                className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6"
-                onClick={e => e.stopPropagation()}
-            >
-                <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold text-slate-900">Edit Link</h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
-                        <X className="h-5 w-5" />
-                    </button>
-                </div>
-
-                <div className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Short URL</label>
-                        <div className="px-4 py-2 bg-slate-100 rounded-lg text-slate-600 text-sm font-mono">
-                            {link.code}
-                        </div>
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Destination URL</label>
-                        <input
-                            type="url"
-                            value={url}
-                            onChange={(e) => setUrl(e.target.value)}
-                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                        />
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">
-                            {link.has_password ? 'Change Password' : 'Add Password'}
-                        </label>
-                        <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder={link.has_password ? 'Leave empty to keep current' : 'Optional'}
-                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                        />
-                        {link.has_password && (
-                            <label className="flex items-center gap-2 mt-2 text-sm text-slate-600">
-                                <input
-                                    type="checkbox"
-                                    checked={removePassword}
-                                    onChange={(e) => setRemovePassword(e.target.checked)}
-                                    className="rounded border-slate-300"
-                                />
-                                Remove password protection
-                            </label>
-                        )}
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Expiration Date</label>
-                        <input
-                            type="date"
-                            value={expiresAt}
-                            onChange={(e) => setExpiresAt(e.target.value)}
-                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                            min={new Date().toISOString().split('T')[0]}
-                        />
-                        {link.expires_at && (
-                            <label className="flex items-center gap-2 mt-2 text-sm text-slate-600">
-                                <input
-                                    type="checkbox"
-                                    checked={removeExpiration}
-                                    onChange={(e) => setRemoveExpiration(e.target.checked)}
-                                    className="rounded border-slate-300"
-                                />
-                                Remove expiration date
-                            </label>
-                        )}
-                    </div>
-                </div>
-
-                <div className="flex gap-3 mt-6">
-                    <button
-                        onClick={onClose}
-                        className="flex-1 px-4 py-2 text-slate-600 hover:text-slate-800 font-medium"
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        onClick={handleSave}
-                        disabled={saving}
-                        className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-70"
-                    >
-                        {saving ? 'Saving...' : 'Save Changes'}
-                    </button>
-                </div>
-            </motion.div>
-        </motion.div>
-    );
-}
-
-function QRModal({ link, onClose }: { link: LinkData; onClose: () => void }) {
-    const [qrUrl, setQrUrl] = useState<string | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
-    const qrUrlRef = useRef<string | null>(null);
-
-    useEffect(() => {
-        const fetchQR = async () => {
-            try {
-                const res = await authFetch(API_ENDPOINTS.linkQr(link.id));
-                if (res.ok) {
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    qrUrlRef.current = url;
-                    setQrUrl(url);
-                } else {
-                    setError('Failed to load QR code');
-                }
-            } catch {
-                setError('Failed to load QR code');
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchQR();
-        return () => { 
-            if (qrUrlRef.current) {
-                URL.revokeObjectURL(qrUrlRef.current);
-                qrUrlRef.current = null;
-            }
-        };
-    }, [link.id]);
-
-    const downloadQR = () => {
-        if (!qrUrl) return;
-        const a = document.createElement('a');
-        a.href = qrUrl;
-        a.download = `qr-${link.code}.png`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    };
-
-    return (
-        <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-            onClick={onClose}
-        >
-            <motion.div
-                initial={{ scale: 0.95, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.95, opacity: 0 }}
-                className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 text-center"
-                onClick={e => e.stopPropagation()}
-            >
-                <h3 className="text-xl font-bold text-slate-900 mb-4">QR Code</h3>
-                <div className="bg-white p-4 rounded-xl border border-slate-200 inline-block mb-4">
-                    {loading ? (
-                        <div className="w-48 h-48 flex items-center justify-center">
-                            <div className="h-8 w-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
-                        </div>
-                    ) : error ? (
-                        <div className="w-48 h-48 flex items-center justify-center text-red-500 text-sm">
-                            {error}
-                        </div>
-                    ) : (
-                        <img 
-                            src={qrUrl || ''} 
-                            alt="QR Code" 
-                            className="w-48 h-48"
-                        />
-                    )}
-                </div>
-                <p className="text-sm text-slate-500 mb-4 font-mono">{link.code}</p>
-                <div className="flex gap-3 justify-center">
-                    <button
-                        onClick={onClose}
-                        className="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium"
-                    >
-                        Close
-                    </button>
-                    <button
-                        onClick={downloadQR}
-                        disabled={!qrUrl}
-                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-50 flex items-center gap-2"
-                    >
-                        <Download className="h-4 w-4" />
-                        Download
-                    </button>
-                </div>
-            </motion.div>
-        </motion.div>
-    );
-}
-
-function Skeleton() {
-    return (
-        <div className="animate-pulse space-y-4">
-            {[1, 2, 3].map(i => (
-                <div key={i} className="bg-white p-6 rounded-xl border border-slate-200">
-                    <div className="flex items-center justify-between">
-                        <div className="space-y-3 flex-1">
-                            <div className="h-5 bg-slate-200 rounded w-48" />
-                            <div className="h-4 bg-slate-100 rounded w-72" />
-                        </div>
-                        <div className="flex items-center gap-4">
-                            <div className="h-8 w-20 bg-slate-100 rounded" />
-                            <div className="h-8 w-8 bg-slate-100 rounded" />
-                        </div>
-                    </div>
-                </div>
-            ))}
-        </div>
-    );
-}
-
-// Mini stats component for each link
-function MiniStats({ link }: { link: LinkData }) {
-    const createdDate = new Date(link.created_at);
-    const daysSinceCreation = Math.max(1, Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24)));
-    const avgClicksPerDay = (link.click_count / daysSinceCreation).toFixed(1);
-    
-    return (
-        <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
-            <span className="flex items-center gap-1">
-                <TrendingUp className="h-3 w-3" />
-                {avgClicksPerDay}/day avg
-            </span>
-            <span className="flex items-center gap-1">
-                <Calendar className="h-3 w-3" />
-                {createdDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-            </span>
-            {link.tags && link.tags.length > 0 && (
-                <div className="flex gap-1">
-                    {link.tags.slice(0, 2).map(tag => (
-                        <span 
-                            key={tag.id}
-                            className="px-1.5 py-0.5 rounded text-xs"
-                            style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
-                        >
-                            {tag.name}
-                        </span>
-                    ))}
-                    {link.tags.length > 2 && (
-                        <span className="text-slate-400">+{link.tags.length - 2}</span>
-                    )}
-                </div>
-            )}
-        </div>
-    );
-}
-
 const LINKS_PER_PAGE = 20;
+
+const ease = [0.16, 1, 0.3, 1] as const;
 
 export default function Dashboard() {
     const [links, setLinks] = useState<LinkData[]>([]);
@@ -391,13 +92,13 @@ export default function Dashboard() {
     // Check clipboard for URL on focus
     useEffect(() => {
         let isMounted = true;
-        
+
         const checkClipboard = async () => {
             try {
                 const text = await navigator.clipboard.readText();
                 // Only update state if component is still mounted
                 if (!isMounted) return;
-                
+
                 if (text && /^https?:\/\/.+/.test(text.trim())) {
                     setClipboardUrl(text.trim());
                 } else {
@@ -453,7 +154,7 @@ export default function Dashboard() {
     // Bulk import handler
     const handleBulkImport = async () => {
         const urls = bulkUrls.split('\n').map(u => u.trim()).filter(u => u && /^https?:\/\/.+/.test(u));
-        
+
         if (urls.length === 0) {
             setError('No valid URLs found. Each line should contain a valid URL starting with http:// or https://');
             return;
@@ -473,7 +174,7 @@ export default function Dashboard() {
                 setShowBulkImport(false);
                 setBulkUrls('');
                 fetchLinks();
-                
+
                 if (data.errors && data.errors.length > 0) {
                     setError(`Created ${data.links.length} links. ${data.errors.length} failed: ${data.errors.slice(0, 3).join(', ')}${data.errors.length > 3 ? '...' : ''}`);
                 }
@@ -481,7 +182,7 @@ export default function Dashboard() {
                 const data = await res.json();
                 setError(data.error || 'Failed to import links');
             }
-        } catch (err) {
+        } catch {
             setError('Network error during import');
         } finally {
             setBulkImporting(false);
@@ -499,24 +200,24 @@ export default function Dashboard() {
     // Filter and sort links
     const filteredLinks = useMemo(() => {
         let result = [...links];
-        
+
         // Search filter
         if (searchQuery) {
             const query = searchQuery.toLowerCase();
-            result = result.filter(link => 
+            result = result.filter(link =>
                 link.code.toLowerCase().includes(query) ||
                 link.original_url.toLowerCase().includes(query) ||
                 link.notes?.toLowerCase().includes(query) ||
                 link.tags.some(t => t.name.toLowerCase().includes(query))
             );
         }
-        
+
         // Sort - pinned items first, then by selected sort
         result.sort((a, b) => {
             // Pinned items always first
             if (a.is_pinned && !b.is_pinned) return -1;
             if (!a.is_pinned && b.is_pinned) return 1;
-            
+
             let comparison = 0;
             if (sortBy === 'date') {
                 comparison = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
@@ -525,7 +226,7 @@ export default function Dashboard() {
             }
             return sortOrder === 'asc' ? comparison : -comparison;
         });
-        
+
         return result;
     }, [links, searchQuery, sortBy, sortOrder]);
 
@@ -586,7 +287,7 @@ export default function Dashboard() {
         e.preventDefault();
         setCreating(true);
         setError('');
-        
+
         // Validate alias length if provided
         if (alias) {
             if (alias.length < appSettings.min_alias_length) {
@@ -612,7 +313,7 @@ export default function Dashboard() {
                 return;
             }
         }
-        
+
         try {
             // Build expiration datetime with timezone
             let expirationDate: string | undefined;
@@ -620,7 +321,7 @@ export default function Dashboard() {
                 const dateTime = `${expiresAt}T${expiresTime || '23:59'}:00`;
                 expirationDate = new Date(dateTime).toISOString();
             }
-            
+
             const res = await authFetch(API_ENDPOINTS.links, {
                 method: 'POST',
                 body: JSON.stringify({
@@ -655,7 +356,7 @@ export default function Dashboard() {
 
     const handleDelete = async (id: number) => {
         if (!confirm('Are you sure you want to delete this link?')) return;
-        
+
         try {
             const res = await authFetch(API_ENDPOINTS.linkDelete(id), {
                 method: 'DELETE',
@@ -671,7 +372,7 @@ export default function Dashboard() {
         }
     };
 
-    const handleUpdate = async (id: number, data: any) => {
+    const handleUpdate = async (id: number, data: LinkUpdatePayload) => {
         try {
             const res = await authFetch(API_ENDPOINTS.linkUpdate(id), {
                 method: 'PUT',
@@ -749,9 +450,9 @@ export default function Dashboard() {
     const handleExport = async () => {
         try {
             const response = await authFetch(API_ENDPOINTS.exportLinks);
-            
+
             if (!response.ok) throw new Error('Failed to export links');
-            
+
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -761,8 +462,8 @@ export default function Dashboard() {
             a.click();
             a.remove();
             window.URL.revokeObjectURL(url);
-        } catch (err: any) {
-            setError(err.message || 'Failed to export links');
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to export links');
         }
     };
 
@@ -788,10 +489,10 @@ export default function Dashboard() {
 
     if (loading) {
         return (
-            <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
                 <SEO title="Dashboard" noIndex />
                 <div className="mb-8">
-                    <div className="h-8 bg-slate-200 rounded w-48 animate-pulse" />
+                    <div className="h-9 w-48 rounded bg-line2/70 animate-pulse" />
                 </div>
                 <Skeleton />
             </div>
@@ -799,14 +500,14 @@ export default function Dashboard() {
     }
 
     return (
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
             <SEO title="Dashboard" noIndex />
-            
+
             <AnimatePresence>
                 {editingLink && (
-                    <EditModal 
-                        link={editingLink} 
-                        onClose={() => setEditingLink(null)} 
+                    <EditModal
+                        link={editingLink}
+                        onClose={() => setEditingLink(null)}
                         onSave={handleUpdate}
                     />
                 )}
@@ -825,37 +526,38 @@ export default function Dashboard() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+                        className="fixed inset-0 bg-ink/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
                         onClick={() => setPreviewLink(null)}
                     >
                         <motion.div
-                            initial={{ scale: 0.95, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            exit={{ scale: 0.95, opacity: 0 }}
-                            className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6"
+                            initial={{ scale: 0.97, opacity: 0, y: 8 }}
+                            animate={{ scale: 1, opacity: 1, y: 0 }}
+                            exit={{ scale: 0.97, opacity: 0, y: 8 }}
+                            transition={{ duration: 0.18, ease }}
+                            className="bg-surface rounded-2xl border border-line2 shadow-lift max-w-md w-full p-6"
                             onClick={e => e.stopPropagation()}
                         >
-                            <div className="flex items-center justify-between mb-4">
-                                <h3 className="text-lg font-bold text-slate-900">Link Preview</h3>
-                                <button onClick={() => setPreviewLink(null)} className="text-slate-400 hover:text-slate-600">
+                            <div className="flex items-center justify-between mb-5">
+                                <h3 className="font-display text-lg font-bold text-ink tracking-tight">Link preview</h3>
+                                <button onClick={() => setPreviewLink(null)} aria-label="Close" className="text-faint transition-colors hover:text-ink">
                                     <X className="h-5 w-5" />
                                 </button>
                             </div>
                             <div className="mb-4">
-                                <p className="text-sm text-slate-500 mb-2">Short URL</p>
-                                <code className="text-sm bg-slate-100 px-2 py-1 rounded font-mono text-primary-600">
+                                <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint mb-2">Short URL</p>
+                                <code className="rounded-md bg-paper border border-line px-2 py-1 font-mono text-sm text-primary-600">
                                     {previewLink.short_url}
                                 </code>
                             </div>
                             <div className="mb-4">
-                                <p className="text-sm text-slate-500 mb-2">Destination Preview</p>
+                                <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint mb-2">Destination preview</p>
                                 <LinkPreviewCard url={previewLink.original_url} />
                             </div>
                             {sparklineData[previewLink.id] && (
-                                <div className="border-t pt-4">
-                                    <p className="text-sm text-slate-500 mb-2">Clicks (Last 7 days)</p>
-                                    <div className="bg-slate-50 rounded-lg p-3">
-                                        <Sparkline 
+                                <div className="border-t border-line pt-4">
+                                    <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint mb-2">Clicks (last 7 days)</p>
+                                    <div className="rounded-lg border border-line bg-paper p-3">
+                                        <Sparkline
                                             data={sparklineData[previewLink.id].data}
                                             labels={sparklineData[previewLink.id].labels}
                                             width={320}
@@ -871,20 +573,20 @@ export default function Dashboard() {
             </AnimatePresence>
 
             {/* Header with Stats */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
                 <div>
-                    <h1 className="text-3xl font-bold text-slate-900">Dashboard</h1>
-                    <div className="flex items-center gap-4 mt-2 text-sm text-slate-500">
-                        <span className="flex items-center gap-1">
-                            <Link2 className="h-4 w-4" />
+                    <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-ink tracking-tight">Dashboard</h1>
+                    <div className="flex items-center gap-4 mt-3 text-sm text-muted">
+                        <span className="inline-flex items-center gap-1.5">
+                            <Link2 className="h-4 w-4 text-faint" />
                             {links.length} links
                         </span>
-                        <span className="flex items-center gap-1">
-                            <Zap className="h-4 w-4 text-green-500" />
+                        <span className="inline-flex items-center gap-1.5">
+                            <Zap className="h-4 w-4 text-success" />
                             {activeLinks} active
                         </span>
-                        <span className="flex items-center gap-1">
-                            <MousePointer className="h-4 w-4" />
+                        <span className="inline-flex items-center gap-1.5">
+                            <MousePointer className="h-4 w-4 text-faint" />
                             {totalClicks.toLocaleString()} clicks
                         </span>
                     </div>
@@ -892,16 +594,16 @@ export default function Dashboard() {
                 <div className="flex gap-2">
                     <button
                         onClick={() => setShowBulkImport(true)}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-primary-50 text-primary-700 rounded-lg font-medium hover:bg-primary-100 transition-colors"
+                        className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
                     >
-                        <Upload className="h-4 w-4" />
+                        <Upload className="h-4 w-4 text-muted" />
                         Bulk Import
                     </button>
                     <button
                         onClick={handleExport}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-medium hover:bg-slate-200 transition-colors"
+                        className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
                     >
-                        <Download className="h-4 w-4" />
+                        <Download className="h-4 w-4 text-muted" />
                         Export CSV
                     </button>
                 </div>
@@ -913,25 +615,26 @@ export default function Dashboard() {
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
-                    className="mb-6 p-4 bg-primary-50 border border-primary-200 rounded-xl flex items-center justify-between"
+                    className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-line2 bg-surface px-4 py-3 shadow-subtle"
                 >
-                    <div className="flex items-center gap-3">
-                        <Clipboard className="h-5 w-5 text-primary-600" />
-                        <div>
-                            <p className="text-sm font-medium text-primary-800">URL detected in clipboard</p>
-                            <p className="text-xs text-primary-600 truncate max-w-md">{clipboardUrl}</p>
+                    <div className="flex items-center gap-3 min-w-0">
+                        <Clipboard className="h-5 w-5 shrink-0 text-primary-600" />
+                        <div className="min-w-0">
+                            <p className="text-sm font-medium text-ink">URL detected in clipboard</p>
+                            <p className="truncate font-mono text-xs text-faint max-w-md">{clipboardUrl}</p>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                         <button
                             onClick={() => setClipboardUrl(null)}
-                            className="p-1 text-primary-400 hover:text-primary-600"
+                            aria-label="Dismiss"
+                            className="p-1 text-faint transition-colors hover:text-ink"
                         >
                             <X className="h-4 w-4" />
                         </button>
                         <button
                             onClick={handleClipboardCreate}
-                            className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700"
+                            className="rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
                         >
                             Shorten it
                         </button>
@@ -946,49 +649,50 @@ export default function Dashboard() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+                        className="fixed inset-0 bg-ink/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
                         onClick={() => setShowBulkImport(false)}
                     >
                         <motion.div
-                            initial={{ scale: 0.95, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            exit={{ scale: 0.95, opacity: 0 }}
-                            className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6"
+                            initial={{ scale: 0.97, opacity: 0, y: 8 }}
+                            animate={{ scale: 1, opacity: 1, y: 0 }}
+                            exit={{ scale: 0.97, opacity: 0, y: 8 }}
+                            transition={{ duration: 0.18, ease }}
+                            className="bg-surface rounded-2xl border border-line2 shadow-lift max-w-lg w-full p-6"
                             onClick={e => e.stopPropagation()}
                         >
                             <div className="flex items-center justify-between mb-4">
-                                <h3 className="text-xl font-bold text-slate-900">Bulk Import URLs</h3>
-                                <button onClick={() => setShowBulkImport(false)} className="text-slate-400 hover:text-slate-600">
+                                <h3 className="font-display text-xl font-bold text-ink tracking-tight">Bulk import URLs</h3>
+                                <button onClick={() => setShowBulkImport(false)} aria-label="Close" className="text-faint transition-colors hover:text-ink">
                                     <X className="h-5 w-5" />
                                 </button>
                             </div>
-                            <p className="text-sm text-slate-600 mb-4">
+                            <p className="text-sm text-muted mb-4">
                                 Paste one URL per line. Each URL will be shortened automatically.
                             </p>
                             <textarea
                                 value={bulkUrls}
                                 onChange={(e) => setBulkUrls(e.target.value)}
-                                className="w-full h-48 px-4 py-3 border border-slate-300 rounded-lg focus:border-primary-500 focus:ring-1 focus:ring-primary-500 font-mono text-sm"
+                                className="w-full h-48 rounded-lg border border-line2 bg-surface px-4 py-3 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                                 placeholder="https://example.com/page1&#10;https://example.com/page2&#10;https://example.com/page3"
                             />
                             <div className="flex justify-between items-center mt-4">
-                                <span className="text-sm text-slate-500">
+                                <span className="text-sm text-faint">
                                     {bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length} valid URLs
                                 </span>
                                 <div className="flex gap-3">
                                     <button
                                         onClick={() => setShowBulkImport(false)}
-                                        className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                                        className="rounded-lg border border-line2 px-4 py-2 font-medium text-muted transition-colors hover:text-ink hover:border-ink/30"
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         onClick={handleBulkImport}
                                         disabled={bulkImporting}
-                                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-70 flex items-center gap-2"
+                                        className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-70"
                                     >
                                         {bulkImporting ? (
-                                            <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                            <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                                         ) : (
                                             <Upload className="h-4 w-4" />
                                         )}
@@ -1002,28 +706,29 @@ export default function Dashboard() {
             </AnimatePresence>
 
             {error && (
-                <motion.div 
+                <motion.div
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm flex items-center justify-between"
+                    role="alert"
+                    className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
                 >
                     {error}
-                    <button onClick={() => setError('')} className="text-red-500 hover:text-red-700">
+                    <button onClick={() => setError('')} aria-label="Dismiss error" className="text-danger/70 transition-colors hover:text-danger">
                         <X className="h-4 w-4" />
                     </button>
                 </motion.div>
             )}
 
             {/* Create Link Form */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8">
-                <h2 className="text-lg font-semibold mb-4">Create new link</h2>
+            <div className="rounded-2xl border border-line2 bg-surface p-6 shadow-subtle mb-8">
+                <h2 className="font-display text-lg font-bold text-ink tracking-tight mb-4">Create new link</h2>
                 <form onSubmit={handleCreate}>
-                    <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="flex flex-col sm:flex-row gap-3">
                         <input
                             type="url"
                             required
                             placeholder="https://example.com/long-url"
-                            className="flex-1 rounded-lg border border-slate-300 px-4 py-2.5 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                            className="flex-1 rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                             value={newUrl}
                             onChange={(e) => setNewUrl(e.target.value)}
                         />
@@ -1031,7 +736,7 @@ export default function Dashboard() {
                             <input
                                 type="text"
                                 placeholder={`alias (${appSettings.min_alias_length}-${appSettings.max_alias_length} chars)`}
-                                className="sm:w-48 rounded-lg border border-slate-300 px-4 py-2.5 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                className="sm:w-48 rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                                 value={alias}
                                 onChange={(e) => setAlias(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
                                 minLength={appSettings.min_alias_length}
@@ -1041,10 +746,10 @@ export default function Dashboard() {
                         <button
                             type="submit"
                             disabled={creating}
-                            className="bg-primary-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-primary-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-70"
+                            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 px-6 py-2.5 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-70"
                         >
                             {creating ? (
-                                <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                             ) : (
                                 <Plus className="h-4 w-4" />
                             )}
@@ -1055,7 +760,7 @@ export default function Dashboard() {
                     <button
                         type="button"
                         onClick={() => setShowAdvanced(!showAdvanced)}
-                        className="mt-3 text-sm text-slate-500 hover:text-slate-700 flex items-center gap-1"
+                        className="mt-3 inline-flex items-center gap-1 text-sm text-muted transition-colors hover:text-ink"
                     >
                         <ChevronDown className={`h-4 w-4 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
                         Advanced options
@@ -1069,57 +774,61 @@ export default function Dashboard() {
                                 exit={{ height: 0, opacity: 0 }}
                                 className="overflow-hidden"
                             >
-                                <div className="space-y-4 mt-4 pt-4 border-t border-slate-100">
+                                <div className="space-y-4 mt-4 pt-4 border-t border-line">
                                     {/* Title - full width */}
                                     <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                                        <label htmlFor="create-title" className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
                                             Title (private, only visible to you)
                                         </label>
                                         <input
+                                            id="create-title"
                                             type="text"
                                             placeholder="e.g. Marketing campaign Q1"
-                                            className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                            className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                                             value={title}
                                             onChange={(e) => setTitle(e.target.value)}
                                             maxLength={100}
                                         />
                                     </div>
-                                    
+
                                     <div className="grid sm:grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">
-                                                <Lock className="h-3.5 w-3.5 inline mr-1" />
+                                            <label htmlFor="create-password" className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
+                                                <Lock className="h-3.5 w-3.5" />
                                                 Password Protection
                                             </label>
                                             <input
+                                                id="create-password"
                                                 type="password"
                                                 placeholder="Leave empty for no password"
-                                                className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                                className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                                                 value={password}
                                                 onChange={(e) => setPassword(e.target.value)}
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">
-                                                <Calendar className="h-3.5 w-3.5 inline mr-1" />
+                                            <label htmlFor="create-expires" className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
+                                                <Calendar className="h-3.5 w-3.5" />
                                                 Expiration
                                             </label>
                                             <div className="flex gap-2">
                                                 <input
+                                                    id="create-expires"
                                                     type="date"
-                                                    className="flex-1 rounded-lg border border-slate-300 px-4 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                                    className="flex-1 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                                                     value={expiresAt}
                                                     onChange={(e) => setExpiresAt(e.target.value)}
                                                     min={new Date().toISOString().split('T')[0]}
                                                 />
                                                 <input
                                                     type="time"
-                                                    className="w-28 rounded-lg border border-slate-300 px-3 py-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                                    aria-label="Expiration time"
+                                                    className="w-28 rounded-lg border border-line2 bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                                                     value={expiresTime}
                                                     onChange={(e) => setExpiresTime(e.target.value)}
                                                 />
                                             </div>
-                                            <p className="text-xs text-slate-500 mt-1">
+                                            <p className="text-xs text-faint mt-1.5">
                                                 Your timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}
                                                 {expiresAt && expiresTime && (
                                                     <span className="ml-2">
@@ -1138,13 +847,13 @@ export default function Dashboard() {
 
             {/* Search and Filter */}
             {links.length > 0 && (
-                <div className="mb-6 flex flex-col sm:flex-row gap-4">
+                <div className="mb-6 flex flex-col sm:flex-row gap-3">
                     <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-faint" />
                         <input
                             type="text"
                             placeholder="Search links, notes, tags..."
-                            className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                            className="w-full rounded-lg border border-line2 bg-surface pl-10 pr-4 py-2.5 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                             value={searchQuery}
                             onChange={e => setSearchQuery(e.target.value)}
                         />
@@ -1153,15 +862,17 @@ export default function Dashboard() {
                         <select
                             value={sortBy}
                             onChange={(e) => setSortBy(e.target.value as 'date' | 'clicks')}
-                            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                            aria-label="Sort links by"
+                            className="rounded-lg border border-line2 bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                         >
                             <option value="date">Sort by Date</option>
                             <option value="clicks">Sort by Clicks</option>
                         </select>
                         <button
                             onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                            className="p-2.5 border border-slate-300 rounded-lg hover:bg-slate-50"
+                            className="rounded-lg border border-line2 bg-surface p-2.5 text-muted transition-colors hover:text-ink hover:border-ink/30"
                             title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+                            aria-label={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
                         >
                             {sortOrder === 'asc' ? <SortAsc className="h-4 w-4" /> : <SortDesc className="h-4 w-4" />}
                         </button>
@@ -1170,202 +881,218 @@ export default function Dashboard() {
             )}
 
             {/* Links List */}
-            <div className="space-y-4">
-                <AnimatePresence mode="popLayout">
-                    {paginatedLinks.map((link, index) => {
-                        // Calculate link number (bottom to top, 1 = oldest)
-                        const linkNumber = filteredLinks.length - ((currentPage - 1) * LINKS_PER_PAGE + index);
-                        const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
-                        const apiUrl = link.api_url || link.short_url; // Use api_url from backend
-                        
-                        return (
-                        <motion.div 
-                            key={link.id}
-                            layout
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, scale: 0.95 }}
-                            className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition-shadow"
-                        >
-                            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                                <div className="space-y-1 min-w-0 flex-1">
-                                    {/* Link number and title */}
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <span className="text-xs font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
-                                            #{linkNumber}
-                                        </span>
-                                        {link.title && (
-                                            <span className="text-sm font-medium text-slate-700 truncate">
-                                                {link.title}
-                                            </span>
-                                        )}
-                                    </div>
-                                    
-                                    {/* Primary short URL → Destination */}
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                        <a 
-                                            href={mainUrl}
-                                            target="_blank" 
-                                            rel="noreferrer" 
-                                            className="text-lg font-bold text-primary-600 hover:underline"
-                                        >
-                                            {mainUrl.replace(/^https?:\/\//, '')}
-                                        </a>
-                                        <button
-                                            onClick={() => handleCopy(link)}
-                                            className="p-1 text-slate-400 hover:text-primary-600 transition-colors rounded hover:bg-primary-50"
-                                            title="Copy short URL"
-                                        >
-                                            {copiedId === link.id ? (
-                                                <Check className="h-4 w-4 text-green-500" />
-                                            ) : (
-                                                <Copy className="h-4 w-4" />
-                                            )}
-                                        </button>
-                                        <span className="text-slate-400">→</span>
-                                        <a 
-                                            href={link.original_url}
-                                            target="_blank" 
-                                            rel="noreferrer" 
-                                            className="text-sm text-slate-500 hover:text-slate-700 hover:underline truncate max-w-[300px]"
-                                            title={link.original_url}
-                                        >
-                                            {link.original_url.replace(/^https?:\/\//, '').substring(0, 50)}{link.original_url.length > 60 ? '...' : ''}
-                                        </a>
-                                        <button
-                                            onClick={() => handleCopySource(link)}
-                                            className="p-1 text-slate-400 hover:text-slate-600 transition-colors rounded hover:bg-slate-100"
-                                            title="Copy source URL"
-                                        >
-                                            {copiedSourceId === link.id ? (
-                                                <Check className="h-4 w-4 text-green-500" />
-                                            ) : (
-                                                <Link2 className="h-4 w-4" />
-                                            )}
-                                        </button>
-                                        {link.has_password && (
-                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs font-medium">
-                                                <Lock className="h-3 w-3" />
-                                                Protected
-                                            </span>
-                                        )}
-                                        {link.expires_at && (
-                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
-                                                <Clock className="h-3 w-3" />
-                                                {new Date(link.expires_at).toLocaleDateString()}
-                                            </span>
-                                        )}
-                                        {!link.is_active && (
-                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs font-medium">
-                                                Inactive
-                                            </span>
-                                        )}
-                                    </div>
-                                    {/* API URL */}
-                                    <p className="text-xs text-slate-400">
-                                        API: <a href={apiUrl} target="_blank" rel="noreferrer" className="hover:underline">{apiUrl}</a>
-                                    </p>
-                                    {/* Mini stats */}
-                                    <MiniStats link={link} />
-                                </div>
+            <div>
+                <div className="divide-y divide-line border-y border-line">
+                    <AnimatePresence mode="popLayout">
+                        {paginatedLinks.map((link, index) => {
+                            // Calculate link number (bottom to top, 1 = oldest)
+                            const linkNumber = filteredLinks.length - ((currentPage - 1) * LINKS_PER_PAGE + index);
+                            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+                            const apiUrl = link.api_url || link.short_url; // Use api_url from backend
 
-                                <div className="flex items-center gap-2 sm:gap-4">
-                                    {/* Sparkline Chart */}
-                                    {sparklineData[link.id] && (
-                                        <div className="hidden sm:block">
-                                            <Sparkline 
-                                                data={sparklineData[link.id].data} 
-                                                labels={sparklineData[link.id].labels}
-                                                width={70}
-                                                height={24}
-                                            />
+                            return (
+                            <motion.div
+                                key={link.id}
+                                layout
+                                initial={{ opacity: 0, y: 16 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.98 }}
+                                className="group py-5 transition-colors hover:bg-primary-50/40"
+                            >
+                                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                                    <div className="space-y-1 min-w-0 flex-1">
+                                        {/* Link number and title */}
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className="font-mono text-xs font-semibold text-faint">
+                                                #{linkNumber}
+                                            </span>
+                                            {link.is_pinned && (
+                                                <Pin className="h-3 w-3 text-primary-600 fill-current" aria-label="Pinned" />
+                                            )}
+                                            {link.title && (
+                                                <span className="text-sm font-medium text-ink truncate">
+                                                    {link.title}
+                                                </span>
+                                            )}
                                         </div>
-                                    )}
-                                    <Link
-                                        to={`/analytics/${link.id}`}
-                                        className="flex items-center gap-1.5 text-slate-600 hover:text-primary-600 text-sm font-medium transition-colors"
-                                    >
-                                        <BarChart2 className="h-4 w-4" />
-                                        <span className="font-bold">{link.click_count.toLocaleString()}</span>
-                                    </Link>
-                                    <div className="flex items-center gap-1">
-                                        <button
-                                            onClick={() => setPreviewLink(link)}
-                                            className="p-2 text-slate-400 hover:text-blue-500 transition-colors"
-                                            title="Preview destination"
+
+                                        {/* Primary short URL → Destination */}
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <a
+                                                href={mainUrl}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="font-mono text-lg font-bold text-primary-600 hover:underline"
+                                            >
+                                                {mainUrl.replace(/^https?:\/\//, '')}
+                                            </a>
+                                            <button
+                                                onClick={() => handleCopy(link)}
+                                                className="rounded p-1 text-faint transition-colors hover:bg-primary-50 hover:text-primary-600"
+                                                title="Copy short URL"
+                                                aria-label="Copy short URL"
+                                            >
+                                                {copiedId === link.id ? (
+                                                    <Check className="h-4 w-4 text-success" />
+                                                ) : (
+                                                    <Copy className="h-4 w-4" />
+                                                )}
+                                            </button>
+                                            <span className="text-faint" aria-hidden="true">→</span>
+                                            <a
+                                                href={link.original_url}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="truncate max-w-[300px] font-mono text-sm text-muted transition-colors hover:text-ink hover:underline"
+                                                title={link.original_url}
+                                            >
+                                                {link.original_url.replace(/^https?:\/\//, '').substring(0, 50)}{link.original_url.length > 60 ? '...' : ''}
+                                            </a>
+                                            <button
+                                                onClick={() => handleCopySource(link)}
+                                                className="rounded p-1 text-faint transition-colors hover:bg-line hover:text-ink"
+                                                title="Copy source URL"
+                                                aria-label="Copy source URL"
+                                            >
+                                                {copiedSourceId === link.id ? (
+                                                    <Check className="h-4 w-4 text-success" />
+                                                ) : (
+                                                    <Link2 className="h-4 w-4" />
+                                                )}
+                                            </button>
+                                            {link.has_password && (
+                                                <span className="inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted">
+                                                    <Lock className="h-3 w-3" />
+                                                    Protected
+                                                </span>
+                                            )}
+                                            {link.expires_at && (
+                                                <span className="inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted">
+                                                    <Clock className="h-3 w-3" />
+                                                    {new Date(link.expires_at).toLocaleDateString()}
+                                                </span>
+                                            )}
+                                            {!link.is_active && (
+                                                <span className="inline-flex items-center gap-1 rounded border border-danger/30 bg-danger/5 px-2 py-0.5 text-xs font-medium text-danger">
+                                                    Inactive
+                                                </span>
+                                            )}
+                                        </div>
+                                        {/* API URL */}
+                                        <p className="font-mono text-xs text-faint">
+                                            API: <a href={apiUrl} target="_blank" rel="noreferrer" className="hover:text-muted hover:underline">{apiUrl}</a>
+                                        </p>
+                                        {/* Mini stats */}
+                                        <MiniStats link={link} />
+                                    </div>
+
+                                    <div className="flex items-center gap-2 sm:gap-3">
+                                        {/* Sparkline Chart */}
+                                        {sparklineData[link.id] && (
+                                            <div className="hidden sm:block">
+                                                <Sparkline
+                                                    data={sparklineData[link.id].data}
+                                                    labels={sparklineData[link.id].labels}
+                                                    width={70}
+                                                    height={24}
+                                                />
+                                            </div>
+                                        )}
+                                        <Link
+                                            to={`/analytics/${link.id}`}
+                                            className="inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary-600"
                                         >
-                                            <Eye className="h-4 w-4" />
-                                        </button>
-                                        <button
-                                            onClick={() => handlePin(link)}
-                                            className={`p-2 transition-colors ${link.is_pinned ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-500'}`}
-                                            title={link.is_pinned ? 'Unpin' : 'Pin'}
-                                        >
-                                            <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
-                                        </button>
-                                        <button
-                                            onClick={() => handleClone(link)}
-                                            className="p-2 text-slate-400 hover:text-primary-600 transition-colors"
-                                            title="Clone"
-                                        >
-                                            <CopyPlus className="h-4 w-4" />
-                                        </button>
-                                        <button
-                                            onClick={() => handleShare(link)}
-                                            className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
-                                            title="Share"
-                                        >
-                                            <Share2 className="h-4 w-4" />
-                                        </button>
-                                        <button
-                                            onClick={() => setQrLink(link)}
-                                            className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
-                                            title="QR Code"
-                                        >
-                                            <QrCode className="h-4 w-4" />
-                                        </button>
-                                        <button
-                                            onClick={() => setEditingLink(link)}
-                                            className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
-                                            title="Edit"
-                                        >
-                                            <Edit2 className="h-4 w-4" />
-                                        </button>
-                                        <button
-                                            onClick={() => handleDelete(link.id)}
-                                            className="p-2 text-slate-400 hover:text-red-600 transition-colors"
-                                            title="Delete"
-                                        >
-                                            <Trash2 className="h-4 w-4" />
-                                        </button>
+                                            <BarChart2 className="h-4 w-4" />
+                                            <span className="font-mono font-bold tabular-nums">{link.click_count.toLocaleString()}</span>
+                                        </Link>
+                                        <div className="flex items-center gap-0.5">
+                                            <button
+                                                onClick={() => setPreviewLink(link)}
+                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                                title="Preview destination"
+                                                aria-label="Preview destination"
+                                            >
+                                                <Eye className="h-4 w-4" />
+                                            </button>
+                                            <button
+                                                onClick={() => handlePin(link)}
+                                                className={`rounded-md p-2 transition-colors hover:bg-line ${link.is_pinned ? 'text-primary-600' : 'text-faint hover:text-ink'}`}
+                                                title={link.is_pinned ? 'Unpin' : 'Pin'}
+                                                aria-label={link.is_pinned ? 'Unpin' : 'Pin'}
+                                            >
+                                                <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleClone(link)}
+                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                                title="Clone"
+                                                aria-label="Clone link"
+                                            >
+                                                <CopyPlus className="h-4 w-4" />
+                                            </button>
+                                            <button
+                                                onClick={() => handleShare(link)}
+                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                                title="Share"
+                                                aria-label="Share link"
+                                            >
+                                                <Share2 className="h-4 w-4" />
+                                            </button>
+                                            <button
+                                                onClick={() => setQrLink(link)}
+                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                                title="QR Code"
+                                                aria-label="Show QR code"
+                                            >
+                                                <QrCode className="h-4 w-4" />
+                                            </button>
+                                            <button
+                                                onClick={() => setEditingLink(link)}
+                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                                title="Edit"
+                                                aria-label="Edit link"
+                                            >
+                                                <Edit2 className="h-4 w-4" />
+                                            </button>
+                                            <button
+                                                onClick={() => handleDelete(link.id)}
+                                                className="rounded-md p-2 text-faint transition-colors hover:bg-danger/5 hover:text-danger"
+                                                title="Delete"
+                                                aria-label="Delete link"
+                                            >
+                                                <Trash2 className="h-4 w-4" />
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        </motion.div>
-                    );})}
-                </AnimatePresence>
+                            </motion.div>
+                        );})}
+                    </AnimatePresence>
+                </div>
 
                 {/* Pagination */}
                 {totalPages > 1 && (
-                    <div className="flex items-center justify-between pt-4 border-t border-slate-200">
-                        <p className="text-sm text-slate-500">
+                    <div className="flex items-center justify-between pt-5 mt-1">
+                        <p className="text-sm text-faint">
                             Showing {((currentPage - 1) * LINKS_PER_PAGE) + 1}-{Math.min(currentPage * LINKS_PER_PAGE, filteredLinks.length)} of {filteredLinks.length}
                         </p>
                         <div className="flex items-center gap-2">
                             <button
                                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                                 disabled={currentPage === 1}
-                                className="p-2 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                aria-label="Previous page"
+                                className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <ChevronLeft className="h-4 w-4" />
                             </button>
-                            <span className="px-3 py-1 text-sm font-medium">
+                            <span className="px-3 py-1 font-mono text-sm font-medium text-ink tabular-nums">
                                 {currentPage} / {totalPages}
                             </span>
                             <button
                                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                                 disabled={currentPage === totalPages}
-                                className="p-2 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                aria-label="Next page"
+                                className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <ChevronRight className="h-4 w-4" />
                             </button>
@@ -1374,22 +1101,32 @@ export default function Dashboard() {
                 )}
 
                 {filteredLinks.length === 0 && searchQuery && (
-                    <div className="text-center py-12 text-slate-500">
+                    <div className="py-12 text-center text-muted">
                         No links found matching "{searchQuery}"
                     </div>
                 )}
 
                 {links.length === 0 && (
-                    <motion.div 
+                    <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
-                        className="text-center py-16 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200"
+                        className="rounded-2xl border border-dashed border-line2 bg-paper py-16 text-center"
                     >
-                        <div className="h-12 w-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <Plus className="h-6 w-6 text-slate-400" />
+                        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-line bg-surface">
+                            <Plus className="h-6 w-6 text-faint" />
                         </div>
-                        <h3 className="text-lg font-semibold text-slate-700 mb-1">No links yet</h3>
-                        <p className="text-slate-500">Create your first shortened link above!</p>
+                        <h3 className="font-display text-lg font-bold text-ink">No links yet</h3>
+                        <p className="mt-1 text-muted">Create your first shortened link above.</p>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const input = document.querySelector('input[placeholder*="example.com"]') as HTMLInputElement;
+                                if (input) input.focus();
+                            }}
+                            className="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 transition-colors hover:text-primary-700"
+                        >
+                            Start shortening <ArrowRight className="h-4 w-4" />
+                        </button>
                     </motion.div>
                 )}
             </div>

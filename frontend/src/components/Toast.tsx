@@ -95,7 +95,8 @@ export function ToastContainer() {
     );
 }
 
-// Global toast function
+// Global toast function (intentionally colocated with the provider component)
+// eslint-disable-next-line react-refresh/only-export-components
 export function toast(message: string, type: ToastType = 'success') {
     if (addToastFn) {
         addToastFn(message, type);

@@ -90,7 +90,7 @@ export default function Admin() {
             if (linksRes.ok) setBlockedLinks(await linksRes.json());
             if (domainsRes.ok) setBlockedDomains(await domainsRes.json());
             if (usersRes.ok) setUsers(await usersRes.json());
-        } catch (err) {
+        } catch {
             setError('Failed to load admin data');
         } finally {
             setLoading(false);

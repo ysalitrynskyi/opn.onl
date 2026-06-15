@@ -10,44 +10,44 @@ describe('Features Page', () => {
     describe('Page Header', () => {
         it('displays features title', () => {
             render(<Features />);
-            expect(screen.getByText(/features/i)).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /everything you need to\s*manage your links/i })).toBeInTheDocument();
         });
 
         it('displays descriptive subtitle', () => {
             render(<Features />);
-            // Check for any subtitle or description
+            expect(screen.getByText(/powerful features, simple interface/i)).toBeInTheDocument();
         });
     });
 
     describe('Core Features', () => {
         it('displays link shortening feature', () => {
             render(<Features />);
-            expect(screen.getByText(/shorten|short link/i)).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /custom short links/i })).toBeInTheDocument();
         });
 
         it('displays analytics feature', () => {
             render(<Features />);
-            expect(screen.getByText(/analytics/i)).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /advanced analytics/i })).toBeInTheDocument();
         });
 
         it('displays custom alias feature', () => {
             render(<Features />);
-            expect(screen.getByText(/custom|alias/i)).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /custom short links/i })).toBeInTheDocument();
         });
 
         it('displays QR code feature', () => {
             render(<Features />);
-            expect(screen.getByText(/qr code/i)).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /qr code generation/i })).toBeInTheDocument();
         });
 
         it('displays password protection feature', () => {
             render(<Features />);
-            expect(screen.getByText(/password|protected/i)).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /password protection/i })).toBeInTheDocument();
         });
 
         it('displays expiration feature', () => {
             render(<Features />);
-            expect(screen.getByText(/expir|time limit/i)).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /link expiration/i })).toBeInTheDocument();
         });
     });
 
@@ -69,7 +69,7 @@ describe('Features Page', () => {
 
         it('displays bulk operations feature', () => {
             render(<Features />);
-            expect(screen.queryByText(/bulk|multiple/i)).toBeDefined();
+            expect(screen.getByRole('heading', { name: /bulk operations/i })).toBeInTheDocument();
         });
 
         it('displays API access feature', () => {
@@ -81,7 +81,7 @@ describe('Features Page', () => {
     describe('Security Features', () => {
         it('displays passkeys feature', () => {
             render(<Features />);
-            expect(screen.queryByText(/passkey|webauthn|biometric/i)).toBeDefined();
+            expect(screen.getByRole('heading', { name: /passkey authentication/i })).toBeInTheDocument();
         });
 
         it('displays rate limiting feature', () => {
@@ -98,7 +98,7 @@ describe('Features Page', () => {
     describe('Privacy Features', () => {
         it('displays privacy-focused messaging', () => {
             render(<Features />);
-            expect(screen.queryByText(/privacy|no tracking/i)).toBeDefined();
+            expect(screen.getByRole('heading', { name: /privacy first/i })).toBeInTheDocument();
         });
 
         it('displays data export feature', () => {

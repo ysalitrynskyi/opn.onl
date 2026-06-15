@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '../test/test-utils';
 import ShareModal from './ShareModal';
+import { ToastContainer } from './Toast';
 
 describe('ShareModal Component', () => {
     const defaultProps = {
@@ -31,7 +32,8 @@ describe('ShareModal Component', () => {
 
         it('renders copy button', () => {
             render(<ShareModal {...defaultProps} />);
-            expect(screen.getByRole('button', { name: /copy/i })).toBeInTheDocument();
+            // Two copy controls exist: the URL-row icon button and the grid "Copy Link" button.
+            expect(screen.getAllByRole('button', { name: /copy/i }).length).toBeGreaterThan(0);
         });
     });
 
@@ -63,23 +65,31 @@ describe('ShareModal Component', () => {
 
         it('copies URL to clipboard when copy button is clicked', async () => {
             render(<ShareModal {...defaultProps} />);
-            
-            const copyButton = screen.getByRole('button', { name: /copy/i });
+
+            const [copyButton] = screen.getAllByRole('button', { name: /copy/i });
             fireEvent.click(copyButton);
 
-            await waitFor(() => {
-                expect(navigator.clipboard.writeText).toHaveBeenCalledWith(defaultProps.url);
+            // customRender() calls userEvent.setup(), which installs its own clipboard
+            // stub, so assert on the actual copied contents rather than a spy.
+            await waitFor(async () => {
+                expect(await navigator.clipboard.readText()).toBe(defaultProps.url);
             });
         });
 
         it('shows copied feedback after copying', async () => {
-            render(<ShareModal {...defaultProps} />);
-            
-            const copyButton = screen.getByRole('button', { name: /copy/i });
+            // The modal signals success via a global toast, so mount the container too.
+            render(
+                <>
+                    <ShareModal {...defaultProps} />
+                    <ToastContainer />
+                </>
+            );
+
+            const [copyButton] = screen.getAllByRole('button', { name: /copy/i });
             fireEvent.click(copyButton);
 
             await waitFor(() => {
-                expect(screen.getByText(/copied/i)).toBeInTheDocument();
+                expect(screen.getByText(/link copied/i)).toBeInTheDocument();
             });
         });
     });
@@ -119,18 +129,26 @@ describe('ShareModal Component', () => {
             }
         });
 
-        it('share links open in new tab', () => {
+        it('share buttons open social sharers in a new tab', () => {
+            const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
             render(<ShareModal {...defaultProps} />);
-            
-            const shareLinks = document.querySelectorAll('a[target="_blank"]');
-            expect(shareLinks.length).toBeGreaterThan(0);
+
+            // Sharing is handled by <button> elements that call window.open(url, '_blank').
+            fireEvent.click(screen.getByRole('button', { name: /twitter/i }));
+
+            expect(openSpy).toHaveBeenCalledWith(
+                expect.stringContaining('twitter.com'),
+                '_blank'
+            );
+            openSpy.mockRestore();
         });
 
-        it('share links have rel="noreferrer" for security', () => {
+        it('social share buttons are rendered for each network', () => {
             render(<ShareModal {...defaultProps} />);
-            
-            const shareLinks = document.querySelectorAll('a[rel="noreferrer"]');
-            expect(shareLinks.length).toBeGreaterThan(0);
+
+            expect(screen.getByRole('button', { name: /twitter/i })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /facebook/i })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /linkedin/i })).toBeInTheDocument();
         });
     });
 
@@ -144,11 +162,11 @@ describe('ShareModal Component', () => {
 
         it('URL input can be selected', () => {
             render(<ShareModal {...defaultProps} />);
-            
+
             const input = screen.getByDisplayValue(defaultProps.url) as HTMLInputElement;
-            fireEvent.focus(input);
-            
-            // Input should be focusable
+            input.focus();
+
+            // A readonly input is still focusable.
             expect(document.activeElement).toBe(input);
         });
     });
