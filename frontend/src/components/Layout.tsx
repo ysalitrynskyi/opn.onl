@@ -18,7 +18,6 @@ export default function Layout() {
     }, [location]);
 
     useEffect(() => {
-        // Close mobile menu on route change
         setMobileMenuOpen(false);
         setUserMenuOpen(false);
     }, [location.pathname]);
@@ -39,16 +38,14 @@ export default function Layout() {
     ];
 
     return (
-        <div className="min-h-screen flex flex-col bg-slate-50">
-            <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
+        <div className="min-h-screen flex flex-col bg-paper">
+            <header className="sticky top-0 z-50 border-b border-line bg-surface/85 backdrop-blur-md">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="h-16 flex items-center justify-between">
-                        {/* Logo */}
-                        <Link to="/" className="hover:opacity-80 transition-opacity">
+                        <Link to="/" className="transition-opacity hover:opacity-80">
                             <Logo />
                         </Link>
 
-                        {/* Desktop Navigation */}
                         <nav className="hidden md:flex items-center gap-8">
                             {navLinks.map(link => (
                                 <Link
@@ -57,7 +54,7 @@ export default function Layout() {
                                     className={`text-sm font-medium transition-colors ${
                                         location.pathname === link.href
                                             ? 'text-primary-600'
-                                            : 'text-slate-600 hover:text-slate-900'
+                                            : 'text-muted hover:text-ink'
                                     }`}
                                 >
                                     {link.label}
@@ -65,77 +62,58 @@ export default function Layout() {
                             ))}
                         </nav>
 
-                        {/* Desktop Auth */}
-                        <div className="hidden md:flex items-center gap-4">
+                        <div className="hidden md:flex items-center gap-5">
                             <a
                                 href="https://github.com/ysalitrynskyi/opn.onl"
                                 target="_blank"
                                 rel="noreferrer"
-                                className="text-slate-500 hover:text-slate-900 transition-colors"
+                                aria-label="View source on GitHub"
+                                className="text-faint transition-colors hover:text-ink"
                             >
                                 <Github className="h-5 w-5" />
                             </a>
-                            
+
                             {token ? (
                                 <div className="relative">
                                     <button
                                         onClick={() => setUserMenuOpen(!userMenuOpen)}
-                                        className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors"
+                                        aria-label="Account menu"
+                                        className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-50 ring-1 ring-line transition-colors hover:ring-primary-300"
                                     >
-                                        <div className="h-8 w-8 bg-primary-100 rounded-full flex items-center justify-center">
-                                            <User className="h-4 w-4 text-primary-600" />
-                                        </div>
+                                        <User className="h-4 w-4 text-primary-600" />
                                     </button>
-                                    
+
                                     <AnimatePresence>
                                         {userMenuOpen && (
                                             <>
-                                                <div 
-                                                    className="fixed inset-0 z-10" 
-                                                    onClick={() => setUserMenuOpen(false)} 
-                                                />
+                                                <div className="fixed inset-0 z-10" onClick={() => setUserMenuOpen(false)} />
                                                 <motion.div
-                                                    initial={{ opacity: 0, y: 10 }}
+                                                    initial={{ opacity: 0, y: 8 }}
                                                     animate={{ opacity: 1, y: 0 }}
-                                                    exit={{ opacity: 0, y: 10 }}
-                                                    className="absolute right-0 top-full mt-2 w-48 bg-white rounded-xl shadow-lg border border-slate-200 py-2 z-20"
+                                                    exit={{ opacity: 0, y: 8 }}
+                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                                                    className="absolute right-0 top-full mt-2 w-52 rounded-xl border border-line bg-surface py-1.5 shadow-lift z-20"
                                                 >
                                                     <Link
                                                         to="/dashboard"
                                                         onClick={(e) => {
-                                                            if (location.pathname === '/dashboard') {
-                                                                e.preventDefault();
-                                                                window.location.reload();
-                                                            }
+                                                            if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); }
                                                         }}
-                                                        className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                                                        className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60"
                                                     >
-                                                        <LayoutDashboard className="h-4 w-4" />
-                                                        Dashboard
+                                                        <LayoutDashboard className="h-4 w-4 text-muted" /> Dashboard
                                                     </Link>
-                                                    <Link
-                                                        to="/settings"
-                                                        className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                                                    >
-                                                        <Settings className="h-4 w-4" />
-                                                        Settings
+                                                    <Link to="/settings" className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60">
+                                                        <Settings className="h-4 w-4 text-muted" /> Settings
                                                     </Link>
                                                     {isAdmin && (
-                                                        <Link
-                                                            to="/admin"
-                                                            className="flex items-center gap-2 px-4 py-2 text-sm text-primary-700 hover:bg-primary-50"
-                                                        >
-                                                            <Shield className="h-4 w-4" />
-                                                            Admin Panel
+                                                        <Link to="/admin" className="flex items-center gap-2.5 px-4 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50/60">
+                                                            <Shield className="h-4 w-4" /> Admin Panel
                                                         </Link>
                                                     )}
-                                                    <hr className="my-2 border-slate-100" />
-                                                    <button
-                                                        onClick={handleLogout}
-                                                        className="flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 w-full"
-                                                    >
-                                                        <LogOut className="h-4 w-4" />
-                                                        Logout
+                                                    <hr className="my-1.5 border-line" />
+                                                    <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-danger hover:bg-danger/5">
+                                                        <LogOut className="h-4 w-4" /> Log out
                                                     </button>
                                                 </motion.div>
                                             </>
@@ -143,117 +121,69 @@ export default function Layout() {
                                     </AnimatePresence>
                                 </div>
                             ) : (
-                                <div className="flex items-center gap-3">
-                                    <Link 
-                                        to="/login" 
-                                        className="text-sm font-medium text-slate-700 hover:text-primary-600 transition-colors"
-                                    >
+                                <div className="flex items-center gap-2">
+                                    <Link to="/login" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition-colors hover:text-ink">
                                         Log in
                                     </Link>
-                                    <Link
-                                        to="/register"
-                                        className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-700 transition-colors"
-                                    >
+                                    <Link to="/register" className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary-700">
                                         Sign up
                                     </Link>
                                 </div>
                             )}
                         </div>
 
-                        {/* Mobile Menu Button */}
                         <button
                             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                            className="md:hidden p-2 text-slate-600 hover:text-slate-900"
+                            aria-label="Toggle menu"
+                            className="md:hidden p-2 text-muted hover:text-ink"
                         >
                             {mobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
                         </button>
                     </div>
                 </div>
 
-                {/* Mobile Menu */}
                 <AnimatePresence>
                     {mobileMenuOpen && (
                         <motion.div
                             initial={{ opacity: 0, height: 0 }}
                             animate={{ opacity: 1, height: 'auto' }}
                             exit={{ opacity: 0, height: 0 }}
-                            className="md:hidden border-t border-slate-200 bg-white overflow-hidden"
+                            className="md:hidden overflow-hidden border-t border-line bg-surface"
                         >
-                            <div className="px-4 py-4 space-y-3">
+                            <div className="px-4 py-4 space-y-1">
                                 {navLinks.map(link => (
                                     <Link
                                         key={link.href}
                                         to={link.href}
-                                        className={`block py-2 text-base font-medium ${
-                                            location.pathname === link.href
-                                                ? 'text-primary-600'
-                                                : 'text-slate-600'
+                                        className={`block rounded-lg px-2 py-2.5 text-base font-medium ${
+                                            location.pathname === link.href ? 'text-primary-600' : 'text-muted'
                                         }`}
                                     >
                                         {link.label}
                                     </Link>
                                 ))}
-                                
-                                <hr className="border-slate-200" />
-                                
+                                <hr className="my-2 border-line" />
                                 {token ? (
                                     <>
-                                        <Link
-                                            to="/dashboard"
-                                            onClick={(e) => {
-                                                if (location.pathname === '/dashboard') {
-                                                    e.preventDefault();
-                                                    window.location.reload();
-                                                }
-                                            }}
-                                            className="flex items-center gap-2 py-2 text-base font-medium text-slate-600"
-                                        >
-                                            <LayoutDashboard className="h-5 w-5" />
-                                            Dashboard
+                                        <Link to="/dashboard" onClick={(e) => { if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); } }} className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
+                                            <LayoutDashboard className="h-5 w-5 text-muted" /> Dashboard
                                         </Link>
-                                        <Link
-                                            to="/settings"
-                                            className="flex items-center gap-2 py-2 text-base font-medium text-slate-600"
-                                        >
-                                            <Settings className="h-5 w-5" />
-                                            Settings
+                                        <Link to="/settings" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
+                                            <Settings className="h-5 w-5 text-muted" /> Settings
                                         </Link>
-                                        <button
-                                            onClick={handleLogout}
-                                            className="flex items-center gap-2 py-2 text-base font-medium text-red-600 w-full"
-                                        >
-                                            <LogOut className="h-5 w-5" />
-                                            Logout
+                                        <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-2 py-2.5 text-base font-medium text-danger">
+                                            <LogOut className="h-5 w-5" /> Log out
                                         </button>
                                     </>
                                 ) : (
-                                    <div className="flex flex-col gap-3 pt-2">
-                                        <Link
-                                            to="/login"
-                                            className="text-center py-2.5 text-base font-medium text-slate-700 border border-slate-300 rounded-lg"
-                                        >
-                                            Log in
-                                        </Link>
-                                        <Link
-                                            to="/register"
-                                            className="text-center py-2.5 text-base font-medium text-white bg-primary-600 rounded-lg"
-                                        >
-                                            Sign up
-                                        </Link>
+                                    <div className="flex flex-col gap-2 pt-1">
+                                        <Link to="/login" className="rounded-xl border border-line2 px-4 py-2.5 text-center text-base font-medium text-ink">Log in</Link>
+                                        <Link to="/register" className="rounded-xl bg-primary-600 px-4 py-2.5 text-center text-base font-semibold text-white">Sign up</Link>
                                     </div>
                                 )}
-
-                                <div className="pt-4">
-                                    <a
-                                        href="https://github.com/ysalitrynskyi/opn.onl"
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="flex items-center gap-2 text-slate-500"
-                                    >
-                                        <Github className="h-5 w-5" />
-                                        <span className="text-sm">View on GitHub</span>
-                                    </a>
-                                </div>
+                                <a href="https://github.com/ysalitrynskyi/opn.onl" target="_blank" rel="noreferrer" className="flex items-center gap-2 px-2 pt-3 text-sm text-faint">
+                                    <Github className="h-5 w-5" /> View on GitHub
+                                </a>
                             </div>
                         </motion.div>
                     )}
@@ -264,55 +194,42 @@ export default function Layout() {
                 <Outlet />
             </main>
 
-            <footer className="bg-white border-t border-slate-200 py-12">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <footer className="border-t border-line bg-surface">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
                         <div className="col-span-2 md:col-span-1">
-                            <Logo className="h-6 mb-4" />
-                            <p className="text-sm text-slate-500">
-                                Open source, privacy-focused URL shortener for the modern web.
+                            <Logo className="mb-4" />
+                            <p className="text-sm text-muted leading-relaxed max-w-[28ch]">
+                                Open source, privacy-first URL shortening you can host yourself.
                             </p>
                         </div>
-                        <div>
-                            <h3 className="text-sm font-semibold text-slate-900 tracking-wider uppercase mb-4">Product</h3>
-                            <ul className="space-y-3">
-                                <li><Link to="/features" className="text-sm text-slate-600 hover:text-primary-600">Features</Link></li>
-                                <li><Link to="/pricing" className="text-sm text-slate-600 hover:text-primary-600">Pricing</Link></li>
-                                <li><Link to="/faq" className="text-sm text-slate-600 hover:text-primary-600">FAQ</Link></li>
-                            </ul>
-                        </div>
-                        <div>
-                            <h3 className="text-sm font-semibold text-slate-900 tracking-wider uppercase mb-4">Company</h3>
-                            <ul className="space-y-3">
-                                <li><Link to="/about" className="text-sm text-slate-600 hover:text-primary-600">About</Link></li>
-                                <li><Link to="/contact" className="text-sm text-slate-600 hover:text-primary-600">Contact</Link></li>
-                            </ul>
-                        </div>
-                        <div>
-                            <h3 className="text-sm font-semibold text-slate-900 tracking-wider uppercase mb-4">Legal</h3>
-                            <ul className="space-y-3">
-                                <li><Link to="/privacy" className="text-sm text-slate-600 hover:text-primary-600">Privacy</Link></li>
-                                <li><Link to="/terms" className="text-sm text-slate-600 hover:text-primary-600">Terms</Link></li>
-                            </ul>
-                        </div>
+                        {[
+                            { h: 'Product', links: [['Features', '/features'], ['Pricing', '/pricing'], ['FAQ', '/faq']] },
+                            { h: 'Company', links: [['About', '/about'], ['Contact', '/contact']] },
+                            { h: 'Legal', links: [['Privacy', '/privacy'], ['Terms', '/terms']] },
+                        ].map(col => (
+                            <div key={col.h}>
+                                <h3 className="font-mono text-xs uppercase tracking-[0.18em] text-faint mb-4">{col.h}</h3>
+                                <ul className="space-y-2.5">
+                                    {col.links.map(([label, href]) => (
+                                        <li key={href}>
+                                            <Link to={href} className="text-sm text-muted transition-colors hover:text-ink">{label}</Link>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        ))}
                     </div>
-                    <div className="mt-12 pt-8 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
-                        <p className="text-sm text-slate-400">
-                            &copy; {new Date().getFullYear()} opn.onl. All rights reserved.
-                        </p>
+                    <div className="mt-12 pt-8 border-t border-line flex flex-col sm:flex-row items-center justify-between gap-4">
+                        <p className="font-mono text-xs text-faint">© {new Date().getFullYear()} opn.onl — AGPL-3.0</p>
                         <div className="flex items-center gap-6">
-                            <a 
-                                href="https://github.com/sponsors/ysalitrynskyi" 
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-2 text-pink-500 hover:text-pink-600 text-sm font-medium"
-                            >
-                                <svg className="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
-                                    <path fillRule="evenodd" d="M4.25 2.5c-1.336 0-2.75 1.164-2.75 3 0 2.15 1.58 4.144 3.365 5.682A20.565 20.565 0 008 13.393a20.561 20.561 0 003.135-2.211C12.92 9.644 14.5 7.65 14.5 5.5c0-1.836-1.414-3-2.75-3-1.373 0-2.609.986-3.029 2.456a.75.75 0 01-1.442 0C6.859 3.486 5.623 2.5 4.25 2.5zM8 14.25l-.345.666-.002-.001-.006-.003-.018-.01a7.643 7.643 0 01-.31-.17 22.075 22.075 0 01-3.434-2.414C2.045 10.731 0 8.35 0 5.5 0 2.836 2.086 1 4.25 1 5.797 1 7.153 1.802 8 3.02 8.847 1.802 10.203 1 11.75 1 13.914 1 16 2.836 16 5.5c0 2.85-2.045 5.231-3.885 6.818a22.08 22.08 0 01-3.744 2.584l-.018.01-.006.003h-.002L8 14.25zm0 0l.345.666a.752.752 0 01-.69 0L8 14.25z"/>
+                            <a href="https://github.com/sponsors/ysalitrynskyi" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-500 hover:text-rose-600">
+                                <svg className="h-4 w-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                                    <path fillRule="evenodd" d="M4.25 2.5c-1.336 0-2.75 1.164-2.75 3 0 2.15 1.58 4.144 3.365 5.682A20.565 20.565 0 008 13.393a20.561 20.561 0 003.135-2.211C12.92 9.644 14.5 7.65 14.5 5.5c0-1.836-1.414-3-2.75-3-1.373 0-2.609.986-3.029 2.456a.75.75 0 01-1.442 0C6.859 3.486 5.623 2.5 4.25 2.5z" />
                                 </svg>
                                 Sponsor
                             </a>
-                            <a href="https://github.com/ysalitrynskyi/opn.onl" target="_blank" rel="noreferrer" className="text-slate-400 hover:text-slate-600">
+                            <a href="https://github.com/ysalitrynskyi/opn.onl" target="_blank" rel="noreferrer" aria-label="GitHub" className="text-faint hover:text-ink">
                                 <Github className="h-5 w-5" />
                             </a>
                         </div>
