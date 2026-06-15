@@ -406,7 +406,13 @@ async fn main() {
     tracing::info!("Swagger UI available at http://localhost:{}/swagger-ui/", port);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // Serve with ConnectInfo so the rate limiter can use the real socket peer IP.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 /// Health check endpoint

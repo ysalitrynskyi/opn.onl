@@ -1,13 +1,13 @@
 use axum::{
     body::Body,
-    extract::State,
+    extract::{State, ConnectInfo},
     http::{Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -174,30 +174,44 @@ impl RateLimiters {
     }
 }
 
-/// Extract IP address from request
+/// Extract the client IP used as the rate-limit key.
+///
+/// `X-Forwarded-For` / `X-Real-IP` are client-controlled and are only trusted
+/// when `TRUST_PROXY_HEADERS` is enabled - set that ONLY when the app runs
+/// behind a trusted reverse proxy (e.g. Cloudflare Tunnel, nginx) that
+/// overwrites those headers. Otherwise the real socket peer address is used,
+/// so a client cannot spoof its IP to bypass the auth/brute-force limits.
 pub fn extract_ip(req: &Request<Body>) -> String {
-    // Try X-Forwarded-For header first (for proxied requests)
-    if let Some(xff) = req.headers().get("x-forwarded-for") {
-        if let Ok(xff_str) = xff.to_str() {
-            if let Some(first_ip) = xff_str.split(',').next() {
-                let ip = first_ip.trim();
-                if ip.parse::<IpAddr>().is_ok() {
-                    return ip.to_string();
+    let trust_proxy = std::env::var("TRUST_PROXY_HEADERS")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    if trust_proxy {
+        if let Some(xff) = req.headers().get("x-forwarded-for") {
+            if let Ok(xff_str) = xff.to_str() {
+                if let Some(first_ip) = xff_str.split(',').next() {
+                    let ip = first_ip.trim();
+                    if ip.parse::<IpAddr>().is_ok() {
+                        return ip.to_string();
+                    }
+                }
+            }
+        }
+
+        if let Some(real_ip) = req.headers().get("x-real-ip") {
+            if let Ok(ip_str) = real_ip.to_str() {
+                if ip_str.parse::<IpAddr>().is_ok() {
+                    return ip_str.to_string();
                 }
             }
         }
     }
 
-    // Try X-Real-IP header
-    if let Some(real_ip) = req.headers().get("x-real-ip") {
-        if let Ok(ip_str) = real_ip.to_str() {
-            if ip_str.parse::<IpAddr>().is_ok() {
-                return ip_str.to_string();
-            }
-        }
+    // Real socket peer address (requires serving with ConnectInfo<SocketAddr>).
+    if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        return addr.ip().to_string();
     }
 
-    // Fallback to connection info or default
     "unknown".to_string()
 }
 

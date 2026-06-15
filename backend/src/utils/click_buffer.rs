@@ -40,6 +40,8 @@ pub struct ClickBuffer {
     max_buffer_size: usize,
     /// Flush interval in seconds
     flush_interval_secs: u64,
+    /// Signals the flush task to flush early once the buffer reaches max_buffer_size.
+    flush_notify: Arc<tokio::sync::Notify>,
 }
 
 impl ClickBuffer {
@@ -59,19 +61,21 @@ impl ClickBuffer {
             counters: Arc::new(RwLock::new(HashMap::new())),
             max_buffer_size,
             flush_interval_secs,
+            flush_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     /// Add a click event to the buffer
     pub fn add_click(&self, data: ClickData) {
         let link_id = data.link_id;
-        
+
         // Add to events buffer
-        {
+        let should_flush = {
             let mut events = self.events.write();
             events.push(data);
-        }
-        
+            events.len() >= self.max_buffer_size
+        };
+
         // Increment counter
         {
             let mut counters = self.counters.write();
@@ -79,6 +83,12 @@ impl ClickBuffer {
                 .entry(link_id)
                 .and_modify(|c| c.count += 1)
                 .or_insert(ClickCounter { count: 1 });
+        }
+
+        // Trigger an early flush when the buffer is full so it can't grow
+        // unbounded between timer ticks under load.
+        if should_flush {
+            self.flush_notify.notify_one();
         }
     }
 
@@ -158,9 +168,13 @@ impl ClickBuffer {
         
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(interval_secs));
-            
+
             loop {
-                ticker.tick().await;
+                // Flush on the timer, or early when the buffer signals it is full.
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = self.flush_notify.notified() => {}
+                }
                 self.flush(&db).await;
             }
         });
@@ -174,6 +188,7 @@ impl Clone for ClickBuffer {
             counters: self.counters.clone(),
             max_buffer_size: self.max_buffer_size,
             flush_interval_secs: self.flush_interval_secs,
+            flush_notify: self.flush_notify.clone(),
         }
     }
 }
