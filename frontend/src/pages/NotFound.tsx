@@ -12,7 +12,7 @@ export default function NotFound() {
         <meta name="robots" content="noindex, nofollow" />
       </Helmet>
 
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-ink flex items-center justify-center p-4">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -26,8 +26,8 @@ export default function NotFound() {
             className="mb-8"
           >
             <div className="relative inline-block">
-              <span 
-                className="text-[150px] md:text-[200px] font-black text-transparent bg-clip-text bg-gradient-to-b from-slate-600 to-slate-800 leading-none select-none"
+              <span
+                className="text-[150px] md:text-[200px] font-display font-black text-white/15 leading-none select-none"
                 aria-hidden="true"
               >
                 404

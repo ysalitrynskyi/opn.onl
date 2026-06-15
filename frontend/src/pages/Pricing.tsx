@@ -101,7 +101,7 @@ export default function Pricing() {
                     </div>
                     <h1 className="text-4xl sm:text-6xl font-extrabold text-slate-900 tracking-tight mb-6">
                         Simple pricing.<br />
-                        <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-600">
+                        <span className="text-primary-600">
                             Actually free.
                         </span>
                     </h1>

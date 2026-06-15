@@ -91,7 +91,7 @@ export default function Features() {
     return (
         <div className="pb-24">
             {/* Hero */}
-            <section className="relative overflow-hidden bg-gradient-to-b from-slate-900 to-slate-800 text-white py-24">
+            <section className="relative overflow-hidden bg-ink text-white py-24">
                 <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4wNSI+PHBhdGggZD0iTTM2IDM0djItSDI0di0yaDEyek0zNiAyNHYySDI0di0yaDEyeiIvPjwvZz48L2c+PC9zdmc+')] opacity-40" />
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative">
                     <motion.div 
@@ -105,7 +105,7 @@ export default function Features() {
                         </div>
                         <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight mb-6">
                             Everything you need to<br />
-                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary-400 to-cyan-400">
+                            <span className="text-primary-300">
                                 manage your links
                             </span>
                         </h1>
