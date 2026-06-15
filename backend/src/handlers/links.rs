@@ -21,35 +21,67 @@ use crate::handlers::websocket::ClickEvent;
 
 /// Check if URL or its domain is blocked
 async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String> {
-    // Parse URL to get domain
     let parsed_url = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
-    let domain = parsed_url.host_str().unwrap_or("");
-    
-    // Check if exact URL is blocked
+    // Normalized host: lowercase + strip trailing dot (defeats simple casing / FQDN-dot bypass).
+    let host = parsed_url.host_str().unwrap_or("").trim_end_matches('.').to_lowercase();
+
+    // Exact-URL block. Also check the trailing-slash-trimmed form so a "/" tweak can't bypass.
+    let mut url_candidates = vec![url.to_string()];
+    let trimmed = url.trim_end_matches('/').to_string();
+    if !url_candidates.contains(&trimmed) {
+        url_candidates.push(trimmed);
+    }
     let blocked_url = blocked_links::Entity::find()
-        .filter(blocked_links::Column::Url.eq(url))
+        .filter(blocked_links::Column::Url.is_in(url_candidates))
         .one(db)
         .await
         .ok()
         .flatten();
-    
     if let Some(blocked) = blocked_url {
         return Err(format!("This URL is blocked: {}", blocked.reason.unwrap_or_else(|| "Policy violation".to_string())));
     }
-    
-    // Check if domain is blocked (including subdomains)
-    let blocked_domain = blocked_domains::Entity::find()
-        .all(db)
-        .await
-        .unwrap_or_default();
-    
-    for bd in blocked_domain {
-        if domain == bd.domain || domain.ends_with(&format!(".{}", bd.domain)) {
-            return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
+
+    // Domain block (host + subdomains), with both sides normalized.
+    if !host.is_empty() {
+        let blocked_domain = blocked_domains::Entity::find().all(db).await.unwrap_or_default();
+        for bd in blocked_domain {
+            let bd_domain = bd.domain.trim().to_lowercase().replace("https://", "").replace("http://", "");
+            let bd_domain = bd_domain.trim_end_matches('/').trim_end_matches('.');
+            if bd_domain.is_empty() {
+                continue;
+            }
+            if host == bd_domain || host.ends_with(&format!(".{}", bd_domain)) {
+                return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
+            }
         }
     }
-    
+
     Ok(())
+}
+
+/// Returns true if the folder exists and the user may place links in it: either
+/// they personally own it, or it belongs to an organization they are a member
+/// of. Prevents assigning a link into another user's folder (cross-tenant IDOR).
+async fn user_can_use_folder(db: &DatabaseConnection, folder_id: i32, user_id: i32) -> bool {
+    use crate::entity::{folders, org_members};
+    let folder = match folders::Entity::find_by_id(folder_id).one(db).await.ok().flatten() {
+        Some(f) => f,
+        None => return false,
+    };
+    if folder.user_id == Some(user_id) {
+        return true;
+    }
+    if let Some(org_id) = folder.org_id {
+        return org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+    }
+    false
 }
 
 // ============= Configuration =============
@@ -141,6 +173,112 @@ fn validate_url(url: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+// ============= SSRF guard =============
+
+/// Returns true if the address must never be reachable by server-side fetches
+/// (loopback, private, link-local incl. the 169.254.169.254 cloud-metadata
+/// endpoint, CGNAT, reserved, etc.). Used to block SSRF on user-supplied URLs.
+fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()      // 169.254.0.0/16 (cloud metadata lives here)
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.octets()[0] == 0                                        // 0.0.0.0/8
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)   // 100.64.0.0/10 CGNAT
+                || v4.octets()[0] >= 240                                      // 240.0.0.0/4 reserved
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_disallowed_ip(&std::net::IpAddr::V4(v4));
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00   // fc00::/7 unique local
+                || (v6.segments()[0] & 0xffc0) == 0xfe80   // fe80::/10 link-local
+        }
+    }
+}
+
+/// SSRF guard: reject a URL whose host is, or resolves to, a private/internal
+/// address. Resolves hostnames so DNS pointing at internal IPs is also caught.
+async fn assert_public_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err("Only http/https URLs are allowed".to_string()),
+    }
+    let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+
+    let ips: Vec<std::net::IpAddr> = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        vec![ip]
+    } else {
+        tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|_| "Could not resolve host".to_string())?
+            .map(|sa| sa.ip())
+            .collect()
+    };
+
+    if ips.is_empty() {
+        return Err("Host did not resolve".to_string());
+    }
+    if ips.iter().any(is_disallowed_ip) {
+        return Err("URL resolves to a disallowed (internal/private) address".to_string());
+    }
+    Ok(())
+}
+
+/// Perform an HTTP request with the SSRF guard applied to the initial URL and to
+/// every redirect hop. Redirects are followed manually (Policy::none) so each
+/// `Location` is re-validated, defeating redirect-based SSRF and DNS rebinding
+/// of the first hop. Returns the final response.
+async fn ssrf_guarded_fetch(
+    method: reqwest::Method,
+    start_url: &str,
+    user_agent: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(ua) = user_agent {
+        builder = builder.user_agent(ua);
+    }
+    let client = builder.build().map_err(|_| "Failed to build HTTP client".to_string())?;
+
+    let mut current = start_url.to_string();
+    // Initial request plus up to 5 redirects.
+    for _ in 0..6 {
+        assert_public_url(&current).await?;
+        let resp = client
+            .request(method.clone(), &current)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if resp.status().is_redirection() {
+            if let Some(location) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|l| l.to_str().ok())
+            {
+                let base = url::Url::parse(&current).map_err(|_| "Invalid URL".to_string())?;
+                let next = base
+                    .join(location)
+                    .map_err(|_| "Invalid redirect location".to_string())?;
+                current = next.to_string();
+                continue;
+            }
+        }
+        return Ok(resp);
+    }
+    Err("Too many redirects".to_string())
+}
+
 /// Validate alias format and length
 fn validate_alias(alias: &str) -> Result<(), String> {
     let min_len = get_min_alias_length();
@@ -163,7 +301,18 @@ fn validate_alias(alias: &str) -> Result<(), String> {
     if alias.starts_with('-') || alias.starts_with('_') || alias.ends_with('-') || alias.ends_with('_') {
         return Err("Alias cannot start or end with hyphen or underscore".to_string());
     }
-    
+
+    // Reserved words that would collide with application / API routes.
+    const RESERVED: &[&str] = &[
+        "health", "links", "link", "auth", "admin", "orgs", "org", "organizations",
+        "folders", "tags", "analytics", "contact", "ws", "sse", "api-docs",
+        "swagger-ui", "password", "verify", "preview", "login", "register",
+        "settings", "me", "profile", "robots.txt", "favicon.ico", "sitemap.xml",
+    ];
+    if RESERVED.contains(&alias.to_lowercase().as_str()) {
+        return Err("This alias is reserved and cannot be used".to_string());
+    }
+
     Ok(())
 }
 
@@ -518,6 +667,30 @@ pub async fn create_link(
         }
     }
 
+    // Validate scheduling / limit inputs.
+    if let Some(max) = payload.max_clicks {
+        if max <= 0 {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "max_clicks must be greater than 0".to_string() })).into_response();
+        }
+    }
+    if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at) {
+        if starts >= expires {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "starts_at must be before expires_at".to_string() })).into_response();
+        }
+    }
+
+    // Verify folder ownership if one was specified (prevents assigning the link
+    // into another user's folder).
+    if let Some(folder_id) = payload.folder_id {
+        let allowed = match user_id {
+            Some(uid) => user_can_use_folder(&state.db, folder_id, uid).await,
+            None => false,
+        };
+        if !allowed {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Folder not found or access denied".to_string() })).into_response();
+        }
+    }
+
     let link = links::ActiveModel {
         original_url: Set(validated_url.clone()),
         code: Set(code.clone()),
@@ -533,53 +706,63 @@ pub async fn create_link(
         ..Default::default()
     };
 
-    let result = links::Entity::insert(link).exec(&state.db).await;
+    // Insert the link and its tags atomically so a tag failure can't leave a
+    // half-created link behind.
+    let txn = match state.db.begin().await {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response(),
+    };
 
-    match result {
-        Ok(link_res) => {
-            let link_id = link_res.last_insert_id;
-
-            // Add tags if provided
-            if let Some(tag_ids) = payload.tag_ids {
-                for tag_id in tag_ids {
-                    let link_tag = link_tags::ActiveModel {
-                        link_id: Set(link_id),
-                        tag_id: Set(tag_id),
-                        ..Default::default()
-                    };
-                    let _ = link_tag.insert(&state.db).await;
-                }
-            }
-
-            let tags = get_link_tags(&state.db, link_id).await;
-
-            let base_url = get_base_url();
-            let api_url = get_api_url();
-            (StatusCode::CREATED, Json(LinkResponse {
-                id: link_id,
-                code: code.clone(),
-                short_url: format!("{}/{}", base_url, code),
-                api_url: format!("{}/{}", api_url, code),
-                original_url: payload.original_url,
-                title: payload.title,
-                click_count: 0,
-                created_at: chrono::Utc::now().to_rfc3339(),
-                expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
-                has_password: password_hash.is_some(),
-                notes: payload.notes,
-                folder_id: payload.folder_id,
-                org_id: payload.org_id,
-                starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
-                max_clicks: payload.max_clicks,
-                is_active: true,
-                is_pinned: false,
-                tags,
-            })).into_response()
-        }
+    let link_id = match links::Entity::insert(link).exec(&txn).await {
+        Ok(link_res) => link_res.last_insert_id,
         Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response()
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
+        }
+    };
+
+    // Add tags if provided
+    if let Some(tag_ids) = payload.tag_ids {
+        for tag_id in tag_ids {
+            let link_tag = link_tags::ActiveModel {
+                link_id: Set(link_id),
+                tag_id: Set(tag_id),
+                ..Default::default()
+            };
+            if link_tag.insert(&txn).await.is_err() {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to attach tags".to_string() })).into_response();
+            }
         }
     }
+
+    if txn.commit().await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
+    }
+
+    let tags = get_link_tags(&state.db, link_id).await;
+    let base_url = get_base_url();
+    let api_url = get_api_url();
+    (StatusCode::CREATED, Json(LinkResponse {
+        id: link_id,
+        code: code.clone(),
+        short_url: format!("{}/{}", base_url, code),
+        api_url: format!("{}/{}", api_url, code),
+        original_url: payload.original_url,
+        title: payload.title,
+        click_count: 0,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
+        has_password: password_hash.is_some(),
+        notes: payload.notes,
+        folder_id: payload.folder_id,
+        org_id: payload.org_id,
+        starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
+        max_clicks: payload.max_clicks,
+        is_active: true,
+        is_pinned: false,
+        tags,
+    })).into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -739,6 +922,21 @@ pub async fn redirect_link(
         if !link.is_active() {
             let reason = link.inactive_reason().unwrap_or("Link is inactive");
             return (StatusCode::GONE, reason).into_response();
+        }
+
+        // Enforce content blocking at redirect time so a block applied after the
+        // link was created is retroactive. Runs before the caching block below, so
+        // a blocked link is never (re)written to the cache.
+        if check_blocked(&state.db, &link.original_url).await.is_err() {
+            return (StatusCode::GONE, "This link has been disabled").into_response();
+        }
+
+        // Enforce max_clicks against the buffered (not-yet-flushed) count too, so
+        // a burst of clicks can't overshoot the cap during the buffer window.
+        if let Some(max) = link.max_clicks {
+            if link.click_count + state.click_buffer.pending_count(link.id) >= max {
+                return (StatusCode::GONE, "Link has reached maximum clicks").into_response();
+            }
         }
 
         if link.password_hash.is_some() {
@@ -1240,6 +1438,9 @@ pub async fn update_link(
         }
 
         if let Some(folder_id) = payload.folder_id {
+            if !user_can_use_folder(&state.db, folder_id, user_id).await {
+                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Folder not found or access denied".to_string() })).into_response();
+            }
             active_link.folder_id = Set(Some(folder_id));
         }
 
@@ -1310,6 +1511,14 @@ pub async fn bulk_create_links(
 ) -> impl IntoResponse {
     let user_id = get_user_id_from_header(&headers);
 
+    // Cap batch size to avoid unbounded per-item work / DoS.
+    if payload.urls.len() > 500 {
+        return (StatusCode::BAD_REQUEST, Json(BulkCreateLinkResponse {
+            links: vec![],
+            errors: vec!["Too many URLs in one request (max 500)".to_string()],
+        })).into_response();
+    }
+
     // Check email verification for authenticated users
     if let Some(uid) = user_id {
         let user = users::Entity::find_by_id(uid)
@@ -1317,10 +1526,10 @@ pub async fn bulk_create_links(
             .await
             .ok()
             .flatten();
-        
+
         if let Some(u) = user {
             if !u.email_verified {
-                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse { 
+                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse {
                     links: vec![], 
                     errors: vec!["Please verify your email address before creating links".to_string()] 
                 })).into_response();
@@ -1425,6 +1634,10 @@ pub async fn bulk_delete_links(
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
 
+    if payload.ids.len() > 500 {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Too many items in one request (max 500)".to_string() })).into_response();
+    }
+
     let mut deleted = 0u64;
 
     for id in payload.ids {
@@ -1471,6 +1684,10 @@ pub async fn bulk_update_links(
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
 
+    if payload.ids.len() > 500 {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Too many items in one request (max 500)".to_string() })).into_response();
+    }
+
     let mut updated = 0u64;
 
     for id in payload.ids {
@@ -1485,7 +1702,10 @@ pub async fn bulk_update_links(
                 let mut active_link: links::ActiveModel = link.into();
 
                 if let Some(folder_id) = payload.folder_id {
-                    active_link.folder_id = Set(Some(folder_id));
+                    // Skip the folder move for items whose target folder the user can't use.
+                    if user_can_use_folder(&state.db, folder_id, user_id).await {
+                        active_link.folder_id = Set(Some(folder_id));
+                    }
                 }
 
                 if payload.remove_expiration == Some(true) {
@@ -1532,23 +1752,34 @@ pub async fn export_links_csv(
         .unwrap_or_default();
 
     let base_url = get_base_url();
+
+    // Escape a value for safe CSV output: neutralize spreadsheet formula
+    // injection (leading = + - @) and always quote, doubling inner quotes.
+    fn csv_field(value: &str) -> String {
+        let mut escaped = value.replace('"', "\"\"");
+        if value.starts_with(['=', '+', '-', '@']) {
+            escaped.insert(0, '\'');
+        }
+        format!("\"{}\"", escaped)
+    }
+
     let mut csv_content = String::from("ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At\n");
-    
+
     for link in user_links {
         csv_content.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             link.id,
-            link.code,
-            link.original_url.replace(',', "%2C"),
-            format!("{}/{}", base_url, link.code),
+            csv_field(&link.code),
+            csv_field(&link.original_url),
+            csv_field(&format!("{}/{}", base_url, link.code)),
             link.click_count,
-            link.created_at.format("%Y-%m-%d %H:%M:%S"),
-            link.expires_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
+            csv_field(&link.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
+            csv_field(&link.expires_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()),
             link.password_hash.is_some(),
-            link.notes.as_ref().map(|n| n.replace(',', "%2C")).unwrap_or_default(),
+            csv_field(&link.notes.clone().unwrap_or_default()),
             link.folder_id.map(|f| f.to_string()).unwrap_or_default(),
             link.max_clicks.map(|m| m.to_string()).unwrap_or_default(),
-            link.starts_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
+            csv_field(&link.starts_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()),
         ));
     }
 
@@ -1827,8 +2058,20 @@ pub struct UrlHealthResponse {
     tag = "Links"
 )]
 pub async fn check_url_health(
+    headers: HeaderMap,
     Json(payload): Json<HealthCheckRequest>,
 ) -> impl IntoResponse {
+    // Require authentication: this performs a server-side fetch of a user-supplied URL.
+    if get_user_id_from_header(&headers).is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(UrlHealthResponse {
+            url: payload.url,
+            reachable: false,
+            status_code: None,
+            response_time_ms: None,
+            error: Some("Unauthorized".to_string()),
+        })).into_response();
+    }
+
     // Validate URL first
     if validate_url(&payload.url).is_err() {
         return (StatusCode::BAD_REQUEST, Json(UrlHealthResponse {
@@ -1841,27 +2084,10 @@ pub async fn check_url_health(
     }
 
     let start = std::time::Instant::now();
-    
-    // Create HTTP client with timeout
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            return (StatusCode::OK, Json(UrlHealthResponse {
-                url: payload.url,
-                reachable: false,
-                status_code: None,
-                response_time_ms: None,
-                error: Some("Failed to create HTTP client".to_string()),
-            })).into_response();
-        }
-    };
 
-    // Send HEAD request (faster than GET)
-    match client.head(&payload.url).send().await {
+    // SSRF-guarded HEAD: the host and every redirect hop are validated against
+    // private/internal address ranges before any request is sent.
+    match ssrf_guarded_fetch(reqwest::Method::HEAD, &payload.url, None).await {
         Ok(response) => {
             let elapsed = start.elapsed().as_millis() as u64;
             let status = response.status().as_u16();
@@ -2115,8 +2341,14 @@ pub struct PreviewMetadataRequest {
     tag = "Links"
 )]
 pub async fn get_link_preview_metadata(
+    headers: HeaderMap,
     Json(payload): Json<PreviewMetadataRequest>,
 ) -> impl IntoResponse {
+    // Require authentication: this performs a server-side fetch of a user-supplied URL.
+    if get_user_id_from_header(&headers).is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
+    }
+
     // Validate URL
     let parsed = match url::Url::parse(&payload.url) {
         Ok(u) => u,
@@ -2127,43 +2359,53 @@ pub async fn get_link_preview_metadata(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Only HTTP/HTTPS URLs supported"}))).into_response();
     }
 
-    // Fetch page content
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent("Mozilla/5.0 (compatible; OPN.ONL LinkPreview/1.0)")
-        .build() 
-    {
-        Ok(c) => c,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to create HTTP client"}))).into_response(),
+    // SSRF-guarded GET: the host and every redirect hop are validated against
+    // private/internal ranges before any request is sent.
+    let response = match ssrf_guarded_fetch(
+        reqwest::Method::GET,
+        &payload.url,
+        Some("Mozilla/5.0 (compatible; OPN.ONL LinkPreview/1.0)"),
+    ).await {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::OK, Json(LinkPreviewData {
+            url: payload.url.clone(),
+            title: None,
+            description: None,
+            image: None,
+            site_name: None,
+            favicon: None,
+        })).into_response(),
     };
 
-    match client.get(&payload.url).send().await {
-        Ok(response) => {
-            if !response.status().is_success() {
-                return (StatusCode::OK, Json(LinkPreviewData {
-                    url: payload.url,
-                    title: None,
-                    description: None,
-                    image: None,
-                    site_name: None,
-                    favicon: None,
-                })).into_response();
-            }
+    if !response.status().is_success() {
+        return (StatusCode::OK, Json(LinkPreviewData {
+            url: payload.url.clone(),
+            title: None,
+            description: None,
+            image: None,
+            site_name: None,
+            favicon: None,
+        })).into_response();
+    }
 
-            let html = match response.text().await {
-                Ok(text) => text,
-                Err(_) => {
-                    return (StatusCode::OK, Json(LinkPreviewData {
-                        url: payload.url,
-                        title: None,
-                        description: None,
-                        image: None,
-                        site_name: None,
-                        favicon: None,
-                    })).into_response();
+    // Read at most 512 KiB of the body to bound memory (avoids preview-fetch DoS).
+    const MAX_PREVIEW_BYTES: usize = 512 * 1024;
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(c) => {
+                buf.extend_from_slice(&c);
+                if buf.len() >= MAX_PREVIEW_BYTES {
+                    buf.truncate(MAX_PREVIEW_BYTES);
+                    break;
                 }
-            };
+            }
+            Err(_) => break,
+        }
+    }
+    let html = String::from_utf8_lossy(&buf).to_string();
 
             // Parse OG tags and meta tags
             let title = extract_meta_content(&html, "og:title")
@@ -2184,26 +2426,14 @@ pub async fn get_link_preview_metadata(
                 .map(|fav| resolve_url(&payload.url, &fav))
                 .or_else(|| Some(format!("{}://{}/favicon.ico", parsed.scheme(), parsed.host_str().unwrap_or(""))));
 
-            (StatusCode::OK, Json(LinkPreviewData {
-                url: payload.url,
-                title,
-                description,
-                image,
-                site_name,
-                favicon,
-            })).into_response()
-        }
-        Err(e) => {
-            (StatusCode::OK, Json(LinkPreviewData {
-                url: payload.url,
-                title: None,
-                description: None,
-                image: None,
-                site_name: None,
-                favicon: Some(format!("Error: {}", e)),
-            })).into_response()
-        }
-    }
+    (StatusCode::OK, Json(LinkPreviewData {
+        url: payload.url,
+        title,
+        description,
+        image,
+        site_name,
+        favicon,
+    })).into_response()
 }
 
 // Helper functions for HTML parsing

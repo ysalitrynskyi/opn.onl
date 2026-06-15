@@ -40,6 +40,8 @@ pub struct ClickBuffer {
     max_buffer_size: usize,
     /// Flush interval in seconds
     flush_interval_secs: u64,
+    /// Signals the flush task to flush early once the buffer reaches max_buffer_size.
+    flush_notify: Arc<tokio::sync::Notify>,
 }
 
 impl ClickBuffer {
@@ -59,19 +61,21 @@ impl ClickBuffer {
             counters: Arc::new(RwLock::new(HashMap::new())),
             max_buffer_size,
             flush_interval_secs,
+            flush_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     /// Add a click event to the buffer
     pub fn add_click(&self, data: ClickData) {
         let link_id = data.link_id;
-        
+
         // Add to events buffer
-        {
+        let should_flush = {
             let mut events = self.events.write();
             events.push(data);
-        }
-        
+            events.len() >= self.max_buffer_size
+        };
+
         // Increment counter
         {
             let mut counters = self.counters.write();
@@ -80,11 +84,23 @@ impl ClickBuffer {
                 .and_modify(|c| c.count += 1)
                 .or_insert(ClickCounter { count: 1 });
         }
+
+        // Trigger an early flush when the buffer is full so it can't grow
+        // unbounded between timer ticks under load.
+        if should_flush {
+            self.flush_notify.notify_one();
+        }
     }
 
     /// Check if buffer should be flushed
     pub fn should_flush(&self) -> bool {
         self.events.read().len() >= self.max_buffer_size
+    }
+
+    /// Number of clicks buffered (not yet flushed to the DB) for a link.
+    /// Used so click limits account for in-flight clicks, not just the DB count.
+    pub fn pending_count(&self, link_id: i32) -> i32 {
+        self.counters.read().get(&link_id).map(|c| c.count).unwrap_or(0)
     }
 
     /// Flush the buffer to the database
@@ -158,9 +174,13 @@ impl ClickBuffer {
         
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(interval_secs));
-            
+
             loop {
-                ticker.tick().await;
+                // Flush on the timer, or early when the buffer signals it is full.
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = self.flush_notify.notified() => {}
+                }
                 self.flush(&db).await;
             }
         });
@@ -174,6 +194,7 @@ impl Clone for ClickBuffer {
             counters: self.counters.clone(),
             max_buffer_size: self.max_buffer_size,
             flush_interval_secs: self.flush_interval_secs,
+            flush_notify: self.flush_notify.clone(),
         }
     }
 }

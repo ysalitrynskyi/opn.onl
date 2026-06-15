@@ -322,8 +322,8 @@ mod limiters_tests {
     fn test_link_creation_limiter() {
         let limiters = RateLimiters::default();
         
-        // Link creation: 50 per hour
-        for _ in 0..50 {
+        // Link creation: 100 per hour
+        for _ in 0..100 {
             assert!(matches!(limiters.link_creation.check("test"), RateLimitResult::Allowed { .. }));
         }
         assert!(matches!(limiters.link_creation.check("test"), RateLimitResult::Limited { .. }));
@@ -333,8 +333,8 @@ mod limiters_tests {
     fn test_redirect_limiter() {
         let limiters = RateLimiters::default();
         
-        // Redirect: 1000 per minute
-        for _ in 0..1000 {
+        // Redirect: 100 per second
+        for _ in 0..100 {
             assert!(matches!(limiters.redirect.check("test"), RateLimitResult::Allowed { .. }));
         }
         assert!(matches!(limiters.redirect.check("test"), RateLimitResult::Limited { .. }));

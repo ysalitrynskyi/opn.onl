@@ -14,7 +14,7 @@ use axum::{
 use sea_orm::{Database, DatabaseConnection};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::{CorsLayer, Any, AllowOrigin};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -158,10 +158,44 @@ async fn ensure_admin_exists(db: &DatabaseConnection) {
     }
 }
 
+/// Build the CORS layer. Restricts allowed origins to the configured
+/// FRONTEND_URL / BASE_URL; only falls back to permissive `Any` when neither is
+/// set (local development), since allowing any origin in production lets any
+/// site call authenticated and server-side-fetch endpoints cross-origin.
+fn build_cors() -> CorsLayer {
+    use axum::http::HeaderValue;
+    let mut origins: Vec<HeaderValue> = Vec::new();
+    for var in ["FRONTEND_URL", "BASE_URL"] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim().trim_end_matches('/');
+            if !trimmed.is_empty() {
+                if let Ok(hv) = trimmed.parse::<HeaderValue>() {
+                    if !origins.contains(&hv) {
+                        origins.push(hv);
+                    }
+                }
+            }
+        }
+    }
+
+    let layer = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+    if origins.is_empty() {
+        tracing::warn!("CORS: FRONTEND_URL/BASE_URL not set - allowing any origin (development mode)");
+        layer.allow_origin(Any)
+    } else {
+        tracing::info!("CORS: restricting allowed origins to {:?}", origins);
+        layer.allow_origin(AllowOrigin::list(origins))
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Load environment variables
     dotenvy::dotenv().ok();
+
+    // Fail fast if the JWT secret is missing or too weak. Closes the previous
+    // hardcoded-fallback hole where an unset JWT_SECRET let anyone forge admin tokens.
+    utils::jwt::validate_jwt_secret();
 
     // Initialize structured logging
     let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
@@ -355,13 +389,8 @@ async fn main() {
         // Rate limiting middleware
         .layer(middleware::from_fn_with_state(rate_limiters, rate_limit_middleware))
         
-        // CORS
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any)
-        )
+        // CORS (origins restricted to FRONTEND_URL/BASE_URL when configured)
+        .layer(build_cors())
         
         // Tracing
         .layer(TraceLayer::new_for_http());
@@ -377,7 +406,13 @@ async fn main() {
     tracing::info!("Swagger UI available at http://localhost:{}/swagger-ui/", port);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // Serve with ConnectInfo so the rate limiter can use the real socket peer IP.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 /// Health check endpoint

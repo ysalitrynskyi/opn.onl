@@ -5,7 +5,12 @@ use std::env;
 pub async fn setup_test_db() -> DatabaseConnection {
     dotenvy::dotenv().ok();
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-    Database::connect(&db_url).await.expect("Failed to connect to test database")
+    let db = Database::connect(&db_url).await.expect("Failed to connect to test database");
+    // Ensure the schema exists. Migrator::up is idempotent, so running it on every
+    // test setup is safe and keeps tests self-contained (no external migrate step).
+    use migration::{Migrator, MigratorTrait};
+    Migrator::up(&db, None).await.expect("Failed to run migrations on test database");
+    db
 }
 
 pub fn get_test_token() -> String {

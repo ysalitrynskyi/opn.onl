@@ -67,7 +67,7 @@ tar = "0.4"
 tracing-appender = "0.2"
 
 # HTTP client for health checks
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # Regex for HTML parsing
 regex = "1.10"

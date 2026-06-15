@@ -122,6 +122,24 @@ async fn check_org_permission(
     Ok(member)
 }
 
+/// True if the user is a member of the org who may modify its resources
+/// (any role except `viewer`). Keeps viewers read-only on shared folders/tags.
+pub(crate) async fn member_can_edit(
+    db: &sea_orm::DatabaseConnection,
+    org_id: i32,
+    user_id: i32,
+) -> bool {
+    org_members::Entity::find()
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .filter(org_members::Column::UserId.eq(user_id))
+        .one(db)
+        .await
+        .ok()
+        .flatten()
+        .map(|m| m.role != "viewer")
+        .unwrap_or(false)
+}
+
 async fn log_audit(
     db: &sea_orm::DatabaseConnection,
     org_id: i32,
@@ -785,6 +803,7 @@ pub async fn update_member_role(
     }
 
     let member = org_members::Entity::find_by_id(member_id)
+        .filter(org_members::Column::OrgId.eq(org_id))
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -876,6 +895,7 @@ pub async fn remove_member(
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
     let member = org_members::Entity::find_by_id(member_id)
+        .filter(org_members::Column::OrgId.eq(org_id))
         .one(&state.db)
         .await
         .map_err(|_| {

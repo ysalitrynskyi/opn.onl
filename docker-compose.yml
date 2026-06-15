@@ -58,8 +58,8 @@ services:
       # Database
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-opn_onl}
       
-      # JWT Secret (CHANGE IN PRODUCTION!)
-      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      # JWT Secret (REQUIRED, min 32 bytes - the backend refuses to start otherwise)
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET to a strong random value (openssl rand -base64 64)}"
       
       # Server
       HOST: 0.0.0.0
@@ -69,7 +69,10 @@ services:
       
       # HTTPS (behind cloudflared)
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
-      
+      # Trust X-Forwarded-For for the rate-limit client IP (set because traffic
+      # arrives via the cloudflared tunnel which controls this header).
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+
       # Logging
       RUST_LOG: ${RUST_LOG:-info,tower_http=debug}
       LOG_DIR: /app/logs
