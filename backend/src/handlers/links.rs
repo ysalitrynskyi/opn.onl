@@ -21,31 +21,38 @@ use crate::handlers::websocket::ClickEvent;
 
 /// Check if URL or its domain is blocked
 async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String> {
-    // Parse URL to get domain
     let parsed_url = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
-    let domain = parsed_url.host_str().unwrap_or("");
-    
-    // Check if exact URL is blocked
+    // Normalized host: lowercase + strip trailing dot (defeats simple casing / FQDN-dot bypass).
+    let host = parsed_url.host_str().unwrap_or("").trim_end_matches('.').to_lowercase();
+
+    // Exact-URL block. Also check the trailing-slash-trimmed form so a "/" tweak can't bypass.
+    let mut url_candidates = vec![url.to_string()];
+    let trimmed = url.trim_end_matches('/').to_string();
+    if !url_candidates.contains(&trimmed) {
+        url_candidates.push(trimmed);
+    }
     let blocked_url = blocked_links::Entity::find()
-        .filter(blocked_links::Column::Url.eq(url))
+        .filter(blocked_links::Column::Url.is_in(url_candidates))
         .one(db)
         .await
         .ok()
         .flatten();
-    
     if let Some(blocked) = blocked_url {
         return Err(format!("This URL is blocked: {}", blocked.reason.unwrap_or_else(|| "Policy violation".to_string())));
     }
-    
-    // Check if domain is blocked (including subdomains)
-    let blocked_domain = blocked_domains::Entity::find()
-        .all(db)
-        .await
-        .unwrap_or_default();
-    
-    for bd in blocked_domain {
-        if domain == bd.domain || domain.ends_with(&format!(".{}", bd.domain)) {
-            return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
+
+    // Domain block (host + subdomains), with both sides normalized.
+    if !host.is_empty() {
+        let blocked_domain = blocked_domains::Entity::find().all(db).await.unwrap_or_default();
+        for bd in blocked_domain {
+            let bd_domain = bd.domain.trim().to_lowercase().replace("https://", "").replace("http://", "");
+            let bd_domain = bd_domain.trim_end_matches('/').trim_end_matches('.');
+            if bd_domain.is_empty() {
+                continue;
+            }
+            if host == bd_domain || host.ends_with(&format!(".{}", bd_domain)) {
+                return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
+            }
         }
     }
 
@@ -882,6 +889,13 @@ pub async fn redirect_link(
         if !link.is_active() {
             let reason = link.inactive_reason().unwrap_or("Link is inactive");
             return (StatusCode::GONE, reason).into_response();
+        }
+
+        // Enforce content blocking at redirect time so a block applied after the
+        // link was created is retroactive. Runs before the caching block below, so
+        // a blocked link is never (re)written to the cache.
+        if check_blocked(&state.db, &link.original_url).await.is_err() {
+            return (StatusCode::GONE, "This link has been disabled").into_response();
         }
 
         if link.password_hash.is_some() {

@@ -89,6 +89,48 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i32, (St
     Ok(claims.user_id)
 }
 
+/// Purge any cached redirect entries pointing at a now-blocked exact URL, so the
+/// block takes effect immediately instead of after the cache TTL.
+async fn invalidate_cache_for_url(state: &AppState, url: &str) {
+    let cache = match &state.redis_cache {
+        Some(c) => c,
+        None => return,
+    };
+    let matches = links::Entity::find()
+        .filter(links::Column::OriginalUrl.eq(url))
+        .filter(links::Column::DeletedAt.is_null())
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+    for l in matches {
+        let _ = cache.invalidate_link(&l.code).await;
+    }
+}
+
+/// Purge cached redirect entries whose target host matches a now-blocked domain
+/// (or a subdomain of it), so the block takes effect immediately.
+async fn invalidate_cache_for_domain(state: &AppState, domain: &str) {
+    let cache = match &state.redis_cache {
+        Some(c) => c,
+        None => return,
+    };
+    let all = links::Entity::find()
+        .filter(links::Column::DeletedAt.is_null())
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+    for l in all {
+        if let Ok(u) = url::Url::parse(&l.original_url) {
+            if let Some(h) = u.host_str() {
+                let h = h.trim_end_matches('.').to_lowercase();
+                if h == domain || h.ends_with(&format!(".{}", domain)) {
+                    let _ = cache.invalidate_link(&l.code).await;
+                }
+            }
+        }
+    }
+}
+
 /// Soft delete a user (admin only)
 #[utoipa::path(
     delete,
@@ -705,6 +747,8 @@ pub async fn block_link(
 
     match blocked.insert(&state.db).await {
         Ok(result) => {
+            // Make the block retroactive for any already-cached redirects.
+            invalidate_cache_for_url(&state, &payload.url).await;
             (StatusCode::CREATED, Json(BlockedLinkResponse {
                 id: result.id,
                 url: result.url,
@@ -854,6 +898,8 @@ pub async fn block_domain(
 
     match blocked.insert(&state.db).await {
         Ok(result) => {
+            // Make the block retroactive for any already-cached redirects.
+            invalidate_cache_for_domain(&state, &domain).await;
             (StatusCode::CREATED, Json(BlockedDomainResponse {
                 id: result.id,
                 domain: result.domain,
