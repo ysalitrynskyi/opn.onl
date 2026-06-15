@@ -88,10 +88,10 @@ describe('ErrorBoundary Component', () => {
                 </ErrorBoundary>
             );
 
-            // Should have a button to refresh/retry
-            const refreshButton = screen.queryByRole('button');
-            // Either a refresh button or a link to go back
-            expect(refreshButton || screen.queryByRole('link')).toBeDefined();
+            // Fallback offers recovery controls ("Try Again" and "Go Home").
+            const buttons = screen.getAllByRole('button');
+            expect(buttons.length).toBeGreaterThan(0);
+            expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
         });
     });
 

@@ -73,17 +73,12 @@ jobs:
         working-directory: frontend
         run: npm ci --legacy-peer-deps
 
-      # Lint and unit tests carry pre-existing failures (the suite was never run
-      # in CI before, so it drifted). Surfaced here but non-blocking until a
-      # dedicated cleanup pass; typecheck below is the blocking gate.
       - name: Lint
         working-directory: frontend
-        continue-on-error: true
         run: npm run lint
 
       - name: Unit tests
         working-directory: frontend
-        continue-on-error: true
         run: npm run test -- --run
 
       # Typecheck (blocking). The full prerender build (which needs Chromium/

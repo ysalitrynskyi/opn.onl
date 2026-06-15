@@ -169,27 +169,24 @@ describe('Admin Page', () => {
 
         it('displays blocked content tab', async () => {
             render(<Admin />);
-            
-            await waitFor(() => {
-                expect(screen.getByText(/blocked/i)).toBeInTheDocument();
-            });
+
+            expect(await screen.findByRole('button', { name: /blocked content/i })).toBeInTheDocument();
         });
 
         it('displays users tab', async () => {
             render(<Admin />);
-            
-            await waitFor(() => {
-                expect(screen.getByText(/users/i)).toBeInTheDocument();
-            });
+
+            expect(await screen.findByRole('button', { name: /^users$/i })).toBeInTheDocument();
         });
 
         it('switches tabs on click', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
+
+            const usersTab = await screen.findByRole('button', { name: /^users$/i });
+            fireEvent.click(usersTab);
+
+            // Users table renders after switching tabs.
+            expect(await screen.findByText('admin@example.com')).toBeInTheDocument();
         });
     });
 
@@ -273,211 +270,153 @@ describe('Admin Page', () => {
     describe('Blocked Content Tab', () => {
         it('displays blocked URLs section', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const blockedTab = screen.getByText(/blocked/i);
-                fireEvent.click(blockedTab);
-            });
-            
-            await waitFor(() => {
-                expect(screen.queryByText(/block.*url/i)).toBeDefined();
-            });
+
+            const blockedTab = await screen.findByRole('button', { name: /blocked content/i });
+            fireEvent.click(blockedTab);
+
+            // "Block URL" heading appears in the blocked-content tab.
+            expect(await screen.findByRole('heading', { name: /block url/i })).toBeInTheDocument();
         });
 
         it('displays blocked domains section', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const blockedTab = screen.getByText(/blocked/i);
-                fireEvent.click(blockedTab);
-            });
-            
-            await waitFor(() => {
-                expect(screen.queryByText(/block.*domain/i)).toBeDefined();
-            });
+
+            const blockedTab = await screen.findByRole('button', { name: /blocked content/i });
+            fireEvent.click(blockedTab);
+
+            expect(await screen.findByRole('heading', { name: /block domain/i })).toBeInTheDocument();
         });
 
         it('can add blocked URL', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const blockedTab = screen.getByText(/blocked/i);
-                fireEvent.click(blockedTab);
-            });
-            
-            await waitFor(async () => {
-                const urlInput = screen.queryByPlaceholderText(/malicious/i);
-                if (urlInput) {
-                    fireEvent.change(urlInput, { target: { value: 'https://bad.com/page' } });
-                    
-                    const blockBtn = screen.queryByRole('button', { name: /block/i });
-                    if (blockBtn) {
-                        fireEvent.click(blockBtn);
-                    }
-                }
+
+            const blockedTab = await screen.findByRole('button', { name: /blocked content/i });
+            fireEvent.click(blockedTab);
+
+            const urlInput = await screen.findByPlaceholderText(/example\.com\/malicious/i);
+            fireEvent.change(urlInput, { target: { value: 'https://bad.com/page' } });
+
+            // The two "Block" buttons (URL + domain); click the first.
+            const [blockBtn] = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtn);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/blocked/links'),
+                    expect.objectContaining({ method: 'POST' })
+                );
             });
         });
 
         it('can add blocked domain', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const blockedTab = screen.getByText(/blocked/i);
-                fireEvent.click(blockedTab);
-            });
-            
-            await waitFor(async () => {
-                const domainInput = screen.queryByPlaceholderText(/domain/i);
-                if (domainInput) {
-                    fireEvent.change(domainInput, { target: { value: 'evil.com' } });
-                }
-            });
+
+            const blockedTab = await screen.findByRole('button', { name: /blocked content/i });
+            fireEvent.click(blockedTab);
+
+            const domainInput = await screen.findByPlaceholderText(/malicious-domain/i);
+            fireEvent.change(domainInput, { target: { value: 'evil.com' } });
+
+            expect(domainInput).toHaveValue('evil.com');
         });
 
         it('displays existing blocked URLs', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const blockedTab = screen.getByText(/blocked/i);
-                fireEvent.click(blockedTab);
-            });
-            
-            await waitFor(() => {
-                expect(screen.queryByText(/malicious\.com/)).toBeDefined();
-            });
+
+            const blockedTab = await screen.findByRole('button', { name: /blocked content/i });
+            fireEvent.click(blockedTab);
+
+            expect(await screen.findByText(/malicious\.com/)).toBeInTheDocument();
         });
 
         it('can unblock URL', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const blockedTab = screen.getByText(/blocked/i);
-                fireEvent.click(blockedTab);
-            });
-            
-            await waitFor(async () => {
-                const deleteBtn = screen.queryByRole('button', { name: /delete|unblock|remove/i });
-            });
+
+            const blockedTab = await screen.findByRole('button', { name: /blocked content/i });
+            fireEvent.click(blockedTab);
+
+            // The blocked URL row renders with a trash/unblock action button.
+            expect(await screen.findByText(/malicious\.com/)).toBeInTheDocument();
+            const buttons = screen.getAllByRole('button');
+            expect(buttons.length).toBeGreaterThan(0);
         });
     });
 
     describe('Users Tab', () => {
+        const openUsersTab = async () => {
+            const usersTab = await screen.findByRole('button', { name: /^users$/i });
+            fireEvent.click(usersTab);
+        };
+
         it('displays users table', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(() => {
-                expect(screen.queryByText('admin@example.com')).toBeDefined();
-            });
+            await openUsersTab();
+
+            expect(await screen.findByText('admin@example.com')).toBeInTheDocument();
         });
 
         it('displays user email', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(() => {
-                expect(screen.queryByText('user@example.com')).toBeDefined();
-            });
+            await openUsersTab();
+
+            expect(await screen.findByText('user@example.com')).toBeInTheDocument();
         });
 
         it('shows admin badge for admin users', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(() => {
-                // Check for admin indicator
-                expect(screen.queryAllByText(/admin/i).length).toBeGreaterThan(0);
-            });
+            await openUsersTab();
+
+            await screen.findByText('admin@example.com');
+            // "Admin" badge for admin rows.
+            expect(screen.getAllByText(/admin/i).length).toBeGreaterThan(0);
         });
 
         it('shows verification status', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(() => {
-                expect(screen.queryByText(/verified|unverified/i)).toBeDefined();
-            });
+            await openUsersTab();
+
+            // Verified status badges render in the table.
+            expect(await screen.findAllByText(/^verified$/i)).not.toHaveLength(0);
+            expect(screen.getByText(/^unverified$/i)).toBeInTheDocument();
         });
 
         it('shows deleted users', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(() => {
-                expect(screen.queryByText(/deleted/i)).toBeDefined();
-            });
+            await openUsersTab();
+
+            // Soft-deleted user shows a "Deleted" status badge.
+            expect(await screen.findByText(/^deleted$/i)).toBeInTheDocument();
         });
 
         it('can make user admin', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(async () => {
-                const makeAdminBtn = screen.queryByText(/make admin/i);
-            });
+            await openUsersTab();
+
+            // Non-admin, non-deleted users expose a "Make Admin" action.
+            expect(await screen.findAllByRole('button', { name: /make admin/i })).not.toHaveLength(0);
         });
 
         it('can remove admin status', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(async () => {
-                const removeAdminBtn = screen.queryByText(/remove admin/i);
-            });
+            await openUsersTab();
+
+            // The admin user exposes a "Remove Admin" action.
+            expect(await screen.findByRole('button', { name: /remove admin/i })).toBeInTheDocument();
         });
 
         it('can delete user', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(async () => {
-                const deleteBtn = screen.queryByText(/delete/i);
-            });
+            await openUsersTab();
+
+            expect(await screen.findAllByRole('button', { name: /^delete$/i })).not.toHaveLength(0);
         });
 
         it('can restore deleted user', async () => {
             render(<Admin />);
-            
-            await waitFor(async () => {
-                const usersTab = screen.getByText(/users/i);
-                fireEvent.click(usersTab);
-            });
-            
-            await waitFor(async () => {
-                const restoreBtn = screen.queryByText(/restore/i);
-            });
+            await openUsersTab();
+
+            // The soft-deleted user exposes a "Restore" action.
+            expect(await screen.findByRole('button', { name: /restore/i })).toBeInTheDocument();
         });
     });
 

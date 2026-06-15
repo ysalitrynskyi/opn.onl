@@ -11,27 +11,28 @@ describe('Home Page', () => {
 
   it('renders hero section', () => {
     render(<Home />);
-    expect(screen.getByText(/shorten links/i)).toBeInTheDocument();
-    expect(screen.getByText(/expand your reach/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /short links that\s+answer to you/i })).toBeInTheDocument();
+    expect(screen.getByText(/a privacy-first url shortener you actually own/i)).toBeInTheDocument();
   });
 
   it('renders URL input form', () => {
     render(<Home />);
-    expect(screen.getByPlaceholderText(/paste your long link/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/your-very-long-link/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /shorten/i })).toBeInTheDocument();
   });
 
   it('renders feature cards', () => {
     render(<Home />);
-    expect(screen.getByText('High Performance')).toBeInTheDocument();
-    expect(screen.getByText('Privacy First')).toBeInTheDocument();
-    expect(screen.getByText('Detailed Analytics')).toBeInTheDocument();
+    expect(screen.getByText('Rust-fast redirects')).toBeInTheDocument();
+    expect(screen.getByText('Privacy by default')).toBeInTheDocument();
+    expect(screen.getByText('Honest analytics')).toBeInTheDocument();
   });
 
   it('shows terms and privacy links', () => {
     render(<Home />);
-    expect(screen.getByText(/terms of service/i)).toBeInTheDocument();
-    expect(screen.getByText(/privacy policy/i)).toBeInTheDocument();
+    // Multiple "Terms" links exist (hero + disclaimer); assert at least one and the privacy link.
+    expect(screen.getAllByRole('link', { name: /terms/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole('link', { name: /privacy policy/i })).toBeInTheDocument();
   });
 
   it('redirects to register when not logged in and form submitted', async () => {
@@ -39,7 +40,7 @@ describe('Home Page', () => {
     
     const { user } = render(<Home />);
     
-    const input = screen.getByPlaceholderText(/paste your long link/i);
+    const input = screen.getByPlaceholderText(/your-very-long-link/i);
     await user.type(input, 'https://example.com/test');
     
     const button = screen.getByRole('button', { name: /shorten/i });
@@ -56,7 +57,7 @@ describe('Home Page', () => {
 
     const { user } = render(<Home />);
     
-    const input = screen.getByPlaceholderText(/paste your long link/i);
+    const input = screen.getByPlaceholderText(/your-very-long-link/i);
     await user.type(input, 'https://example.com/test');
     
     const button = screen.getByRole('button', { name: /shorten/i });
@@ -78,7 +79,7 @@ describe('Home Page', () => {
 
     const { user } = render(<Home />);
     
-    const input = screen.getByPlaceholderText(/paste your long link/i);
+    const input = screen.getByPlaceholderText(/your-very-long-link/i);
     await user.type(input, 'https://example.com/test');
     
     const button = screen.getByRole('button', { name: /shorten/i });

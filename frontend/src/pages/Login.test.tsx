@@ -20,7 +20,7 @@ describe('Login Page', () => {
 
   it('shows link to register page', () => {
     render(<Login />);
-    expect(screen.getByText(/sign up/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /create an account/i })).toBeInTheDocument();
   });
 
   it('validates email input', async () => {

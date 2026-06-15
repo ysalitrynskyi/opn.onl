@@ -20,14 +20,14 @@ describe('Layout Component', () => {
     describe('Header', () => {
         it('renders the logo', () => {
             render(<Layout />);
-            // Check for logo or site name
-            expect(screen.getByText(/opn/i) || screen.getByAltText(/logo/i)).toBeDefined();
+            // Logo image appears in the header (and footer); at least one is present.
+            expect(screen.getAllByAltText(/opn\.onl logo/i).length).toBeGreaterThan(0);
         });
 
         it('renders navigation links', () => {
             render(<Layout />);
-            // Check for common nav links
-            expect(screen.getByText(/features/i) || screen.getByRole('link', { name: /features/i })).toBeDefined();
+            // "Features" appears in the header nav (and footer); at least one link is present.
+            expect(screen.getAllByRole('link', { name: /features/i }).length).toBeGreaterThan(0);
         });
 
         it('shows login button when not authenticated', () => {
@@ -85,12 +85,16 @@ describe('Layout Component', () => {
 
         it('contains privacy policy link', () => {
             render(<Layout />);
-            expect(screen.getByText(/privacy/i) || screen.getByRole('link', { name: /privacy/i })).toBeDefined();
+            const privacyLinks = screen.getAllByRole('link', { name: /privacy/i });
+            expect(privacyLinks.length).toBeGreaterThan(0);
+            expect(privacyLinks.some(l => l.getAttribute('href') === '/privacy')).toBe(true);
         });
 
         it('contains terms of service link', () => {
             render(<Layout />);
-            expect(screen.getByText(/terms/i) || screen.getByRole('link', { name: /terms/i })).toBeDefined();
+            const termsLinks = screen.getAllByRole('link', { name: /terms/i });
+            expect(termsLinks.length).toBeGreaterThan(0);
+            expect(termsLinks.some(l => l.getAttribute('href') === '/terms')).toBe(true);
         });
 
         it('contains social links or contact info', () => {
@@ -105,29 +109,26 @@ describe('Layout Component', () => {
     describe('Navigation', () => {
         it('features link navigates correctly', () => {
             render(<Layout />);
-            
-            const featuresLink = screen.queryByRole('link', { name: /features/i });
-            if (featuresLink) {
-                expect(featuresLink).toHaveAttribute('href', '/features');
-            }
+
+            const featuresLinks = screen.getAllByRole('link', { name: /features/i });
+            expect(featuresLinks.length).toBeGreaterThan(0);
+            featuresLinks.forEach(link => expect(link).toHaveAttribute('href', '/features'));
         });
 
         it('pricing link navigates correctly', () => {
             render(<Layout />);
-            
-            const pricingLink = screen.queryByRole('link', { name: /pricing/i });
-            if (pricingLink) {
-                expect(pricingLink).toHaveAttribute('href', '/pricing');
-            }
+
+            const pricingLinks = screen.getAllByRole('link', { name: /pricing/i });
+            expect(pricingLinks.length).toBeGreaterThan(0);
+            pricingLinks.forEach(link => expect(link).toHaveAttribute('href', '/pricing'));
         });
 
         it('docs link navigates correctly', () => {
             render(<Layout />);
-            
-            const docsLink = screen.queryByRole('link', { name: /docs/i });
-            if (docsLink) {
-                expect(docsLink).toHaveAttribute('href', '/docs');
-            }
+
+            const docsLinks = screen.getAllByRole('link', { name: /docs/i });
+            expect(docsLinks.length).toBeGreaterThan(0);
+            docsLinks.forEach(link => expect(link).toHaveAttribute('href', '/docs'));
         });
     });
 

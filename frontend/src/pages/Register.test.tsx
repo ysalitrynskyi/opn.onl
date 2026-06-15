@@ -11,7 +11,7 @@ describe('Register Page', () => {
 
   it('renders registration form', () => {
     render(<Register />);
-    expect(screen.getByText('Create an account')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /create your account/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/email address/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument();
@@ -98,8 +98,8 @@ describe('Register Page', () => {
 
   it('shows terms and privacy links', () => {
     render(<Register />);
-    expect(screen.getByText(/terms of service/i)).toBeInTheDocument();
-    expect(screen.getByText(/privacy policy/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /terms/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /privacy policy/i })).toBeInTheDocument();
   });
 });
 
