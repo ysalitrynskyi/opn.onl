@@ -197,9 +197,22 @@ pub async fn login(
                 is_admin: user.is_admin,
             })).into_response();
         }
+    } else {
+        // No such (active) account: run a dummy verify so the response time does
+        // not reveal whether the email is registered (user-enumeration timing).
+        let _ = verify_password(&payload.password, dummy_password_hash());
     }
 
     (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid credentials".to_string() })).into_response()
+}
+
+/// A lazily-computed bcrypt hash used to equalize login timing when the account
+/// does not exist, mitigating user enumeration via response time.
+fn dummy_password_hash() -> &'static str {
+    use once_cell::sync::Lazy;
+    static DUMMY: Lazy<String> =
+        Lazy::new(|| crate::utils::jwt::hash_password("not-a-real-password").unwrap_or_default());
+    DUMMY.as_str()
 }
 
 /// Verify email with token

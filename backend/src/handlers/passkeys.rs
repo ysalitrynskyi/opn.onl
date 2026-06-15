@@ -21,8 +21,40 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
 
-static REG_STATE: Lazy<Mutex<HashMap<String, PasskeyRegistration>>> = Lazy::new(|| Mutex::new(HashMap::new()));
-static AUTH_STATE: Lazy<Mutex<HashMap<String, PasskeyAuthentication>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+/// How long a pending registration/authentication challenge is kept before it expires.
+const PASSKEY_STATE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// In-memory map of pending WebAuthn challenges with per-entry expiry. Entries
+/// are pruned on insert so abandoned ceremonies can't accumulate unbounded, and
+/// expired entries are rejected on lookup.
+/// NOTE: process-local - for multi-instance deployments this should move to Redis.
+struct ExpiringMap<V> {
+    inner: Mutex<HashMap<String, (std::time::Instant, V)>>,
+}
+
+impl<V> ExpiringMap<V> {
+    fn new() -> Self {
+        Self { inner: Mutex::new(HashMap::new()) }
+    }
+
+    fn insert(&self, key: String, value: V) {
+        let mut map = self.inner.lock().unwrap();
+        let now = std::time::Instant::now();
+        map.retain(|_, (t, _)| now.duration_since(*t) < PASSKEY_STATE_TTL);
+        map.insert(key, (now, value));
+    }
+
+    fn remove(&self, key: &str) -> Option<V> {
+        let mut map = self.inner.lock().unwrap();
+        match map.remove(key) {
+            Some((t, v)) if std::time::Instant::now().duration_since(t) < PASSKEY_STATE_TTL => Some(v),
+            _ => None,
+        }
+    }
+}
+
+static REG_STATE: Lazy<ExpiringMap<PasskeyRegistration>> = Lazy::new(ExpiringMap::new);
+static AUTH_STATE: Lazy<ExpiringMap<PasskeyAuthentication>> = Lazy::new(ExpiringMap::new);
 
 // Helper to get Webauthn instance
 fn get_webauthn() -> Webauthn {
@@ -141,7 +173,7 @@ pub async fn register_start(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to start registration").into_response(),
     };
 
-    REG_STATE.lock().unwrap().insert(payload.username.clone(), reg_state);
+    REG_STATE.insert(payload.username.clone(), reg_state);
 
     (StatusCode::OK, Json(RegisterStartResponse { options: ccr })).into_response()
 }
@@ -150,7 +182,7 @@ pub async fn register_finish(
     State(state): State<AppState>,
     Json(payload): Json<RegisterFinishRequest>,
 ) -> impl IntoResponse {
-    let reg_state = match REG_STATE.lock().unwrap().remove(&payload.username) {
+    let reg_state = match REG_STATE.remove(&payload.username) {
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, "Registration state not found").into_response(),
     };
@@ -230,7 +262,7 @@ pub async fn login_start(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to start authentication").into_response(),
     };
 
-    AUTH_STATE.lock().unwrap().insert(payload.username.clone(), auth_state);
+    AUTH_STATE.insert(payload.username.clone(), auth_state);
 
     (StatusCode::OK, Json(LoginStartResponse { options: rcr })).into_response()
 }
@@ -239,7 +271,7 @@ pub async fn login_finish(
     State(state): State<AppState>,
     Json(payload): Json<LoginFinishRequest>,
 ) -> impl IntoResponse {
-    let auth_state = match AUTH_STATE.lock().unwrap().remove(&payload.username) {
+    let auth_state = match AUTH_STATE.remove(&payload.username) {
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, "Authentication state not found").into_response(),
     };
@@ -260,7 +292,20 @@ pub async fn login_finish(
         .unwrap_or(None);
 
     if let Some(pk) = passkey_db {
+        // Persist the updated signature counter back into the stored credential
+        // blob (the value the verifier actually reads) so WebAuthn clone/replay
+        // detection works on subsequent logins - not just the separate counter column.
+        let updated_blob = serde_json::from_str::<Passkey>(&pk.cred_public_key)
+            .ok()
+            .and_then(|mut passkey| {
+                passkey.update_credential(&auth_result);
+                serde_json::to_string(&passkey).ok()
+            });
+
         let mut active_pk: passkeys::ActiveModel = pk.into();
+        if let Some(blob) = updated_blob {
+            active_pk.cred_public_key = Set(blob);
+        }
         active_pk.counter = Set(auth_result.counter() as i32);
         active_pk.last_used = Set(Some(Utc::now().naive_utc()));
         let _ = active_pk.update(&state.db).await;

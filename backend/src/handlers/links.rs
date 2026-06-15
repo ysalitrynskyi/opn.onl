@@ -301,7 +301,18 @@ fn validate_alias(alias: &str) -> Result<(), String> {
     if alias.starts_with('-') || alias.starts_with('_') || alias.ends_with('-') || alias.ends_with('_') {
         return Err("Alias cannot start or end with hyphen or underscore".to_string());
     }
-    
+
+    // Reserved words that would collide with application / API routes.
+    const RESERVED: &[&str] = &[
+        "health", "links", "link", "auth", "admin", "orgs", "org", "organizations",
+        "folders", "tags", "analytics", "contact", "ws", "sse", "api-docs",
+        "swagger-ui", "password", "verify", "preview", "login", "register",
+        "settings", "me", "profile", "robots.txt", "favicon.ico", "sitemap.xml",
+    ];
+    if RESERVED.contains(&alias.to_lowercase().as_str()) {
+        return Err("This alias is reserved and cannot be used".to_string());
+    }
+
     Ok(())
 }
 
@@ -656,6 +667,18 @@ pub async fn create_link(
         }
     }
 
+    // Validate scheduling / limit inputs.
+    if let Some(max) = payload.max_clicks {
+        if max <= 0 {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "max_clicks must be greater than 0".to_string() })).into_response();
+        }
+    }
+    if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at) {
+        if starts >= expires {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "starts_at must be before expires_at".to_string() })).into_response();
+        }
+    }
+
     // Verify folder ownership if one was specified (prevents assigning the link
     // into another user's folder).
     if let Some(folder_id) = payload.folder_id {
@@ -683,53 +706,63 @@ pub async fn create_link(
         ..Default::default()
     };
 
-    let result = links::Entity::insert(link).exec(&state.db).await;
+    // Insert the link and its tags atomically so a tag failure can't leave a
+    // half-created link behind.
+    let txn = match state.db.begin().await {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response(),
+    };
 
-    match result {
-        Ok(link_res) => {
-            let link_id = link_res.last_insert_id;
-
-            // Add tags if provided
-            if let Some(tag_ids) = payload.tag_ids {
-                for tag_id in tag_ids {
-                    let link_tag = link_tags::ActiveModel {
-                        link_id: Set(link_id),
-                        tag_id: Set(tag_id),
-                        ..Default::default()
-                    };
-                    let _ = link_tag.insert(&state.db).await;
-                }
-            }
-
-            let tags = get_link_tags(&state.db, link_id).await;
-
-            let base_url = get_base_url();
-            let api_url = get_api_url();
-            (StatusCode::CREATED, Json(LinkResponse {
-                id: link_id,
-                code: code.clone(),
-                short_url: format!("{}/{}", base_url, code),
-                api_url: format!("{}/{}", api_url, code),
-                original_url: payload.original_url,
-                title: payload.title,
-                click_count: 0,
-                created_at: chrono::Utc::now().to_rfc3339(),
-                expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
-                has_password: password_hash.is_some(),
-                notes: payload.notes,
-                folder_id: payload.folder_id,
-                org_id: payload.org_id,
-                starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
-                max_clicks: payload.max_clicks,
-                is_active: true,
-                is_pinned: false,
-                tags,
-            })).into_response()
-        }
+    let link_id = match links::Entity::insert(link).exec(&txn).await {
+        Ok(link_res) => link_res.last_insert_id,
         Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response()
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
+        }
+    };
+
+    // Add tags if provided
+    if let Some(tag_ids) = payload.tag_ids {
+        for tag_id in tag_ids {
+            let link_tag = link_tags::ActiveModel {
+                link_id: Set(link_id),
+                tag_id: Set(tag_id),
+                ..Default::default()
+            };
+            if link_tag.insert(&txn).await.is_err() {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to attach tags".to_string() })).into_response();
+            }
         }
     }
+
+    if txn.commit().await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
+    }
+
+    let tags = get_link_tags(&state.db, link_id).await;
+    let base_url = get_base_url();
+    let api_url = get_api_url();
+    (StatusCode::CREATED, Json(LinkResponse {
+        id: link_id,
+        code: code.clone(),
+        short_url: format!("{}/{}", base_url, code),
+        api_url: format!("{}/{}", api_url, code),
+        original_url: payload.original_url,
+        title: payload.title,
+        click_count: 0,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
+        has_password: password_hash.is_some(),
+        notes: payload.notes,
+        folder_id: payload.folder_id,
+        org_id: payload.org_id,
+        starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
+        max_clicks: payload.max_clicks,
+        is_active: true,
+        is_pinned: false,
+        tags,
+    })).into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -896,6 +929,14 @@ pub async fn redirect_link(
         // a blocked link is never (re)written to the cache.
         if check_blocked(&state.db, &link.original_url).await.is_err() {
             return (StatusCode::GONE, "This link has been disabled").into_response();
+        }
+
+        // Enforce max_clicks against the buffered (not-yet-flushed) count too, so
+        // a burst of clicks can't overshoot the cap during the buffer window.
+        if let Some(max) = link.max_clicks {
+            if link.click_count + state.click_buffer.pending_count(link.id) >= max {
+                return (StatusCode::GONE, "Link has reached maximum clicks").into_response();
+            }
         }
 
         if link.password_hash.is_some() {
@@ -1470,6 +1511,14 @@ pub async fn bulk_create_links(
 ) -> impl IntoResponse {
     let user_id = get_user_id_from_header(&headers);
 
+    // Cap batch size to avoid unbounded per-item work / DoS.
+    if payload.urls.len() > 500 {
+        return (StatusCode::BAD_REQUEST, Json(BulkCreateLinkResponse {
+            links: vec![],
+            errors: vec!["Too many URLs in one request (max 500)".to_string()],
+        })).into_response();
+    }
+
     // Check email verification for authenticated users
     if let Some(uid) = user_id {
         let user = users::Entity::find_by_id(uid)
@@ -1477,10 +1526,10 @@ pub async fn bulk_create_links(
             .await
             .ok()
             .flatten();
-        
+
         if let Some(u) = user {
             if !u.email_verified {
-                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse { 
+                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse {
                     links: vec![], 
                     errors: vec!["Please verify your email address before creating links".to_string()] 
                 })).into_response();
@@ -1585,6 +1634,10 @@ pub async fn bulk_delete_links(
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
 
+    if payload.ids.len() > 500 {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Too many items in one request (max 500)".to_string() })).into_response();
+    }
+
     let mut deleted = 0u64;
 
     for id in payload.ids {
@@ -1630,6 +1683,10 @@ pub async fn bulk_update_links(
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
+
+    if payload.ids.len() > 500 {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Too many items in one request (max 500)".to_string() })).into_response();
+    }
 
     let mut updated = 0u64;
 
@@ -1695,23 +1752,34 @@ pub async fn export_links_csv(
         .unwrap_or_default();
 
     let base_url = get_base_url();
+
+    // Escape a value for safe CSV output: neutralize spreadsheet formula
+    // injection (leading = + - @) and always quote, doubling inner quotes.
+    fn csv_field(value: &str) -> String {
+        let mut escaped = value.replace('"', "\"\"");
+        if value.starts_with(['=', '+', '-', '@']) {
+            escaped.insert(0, '\'');
+        }
+        format!("\"{}\"", escaped)
+    }
+
     let mut csv_content = String::from("ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At\n");
-    
+
     for link in user_links {
         csv_content.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             link.id,
-            link.code,
-            link.original_url.replace(',', "%2C"),
-            format!("{}/{}", base_url, link.code),
+            csv_field(&link.code),
+            csv_field(&link.original_url),
+            csv_field(&format!("{}/{}", base_url, link.code)),
             link.click_count,
-            link.created_at.format("%Y-%m-%d %H:%M:%S"),
-            link.expires_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
+            csv_field(&link.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
+            csv_field(&link.expires_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()),
             link.password_hash.is_some(),
-            link.notes.as_ref().map(|n| n.replace(',', "%2C")).unwrap_or_default(),
+            csv_field(&link.notes.clone().unwrap_or_default()),
             link.folder_id.map(|f| f.to_string()).unwrap_or_default(),
             link.max_clicks.map(|m| m.to_string()).unwrap_or_default(),
-            link.starts_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
+            csv_field(&link.starts_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()),
         ));
     }
 
