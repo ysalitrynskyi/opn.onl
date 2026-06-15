@@ -62,6 +62,7 @@ services:
       BASE_URL: ${BASE_URL:-https://opn.onl}
       FRONTEND_URL: ${FRONTEND_URL:-https://opn.onl}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       RUST_LOG: ${RUST_LOG:-info,tower_http=debug}
       LOG_DIR: /app/logs
       REDIS_URL: redis://redis:6379

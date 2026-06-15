@@ -565,16 +565,17 @@ mod user_agent_tests {
             None
         };
 
+        // Android/iOS UAs also contain "Linux"/"like Mac OS", so check them first.
         let os = if ua_lower.contains("windows") {
             Some("Windows".to_string())
-        } else if ua_lower.contains("mac os") || ua_lower.contains("macos") {
-            Some("macOS".to_string())
-        } else if ua_lower.contains("linux") {
-            Some("Linux".to_string())
         } else if ua_lower.contains("android") {
             Some("Android".to_string())
         } else if ua_lower.contains("iphone") || ua_lower.contains("ipad") {
             Some("iOS".to_string())
+        } else if ua_lower.contains("mac os") || ua_lower.contains("macos") {
+            Some("macOS".to_string())
+        } else if ua_lower.contains("linux") {
+            Some("Linux".to_string())
         } else {
             None
         };
