@@ -56,11 +56,20 @@ pub struct RemoveTagsFromLinkRequest {
 
 // ============= Helper Functions =============
 
-fn get_user_id_from_header(headers: &HeaderMap) -> Option<i32> {
+async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
     let auth_header = headers.get("Authorization")?.to_str().ok()?;
     let token = auth_header.strip_prefix("Bearer ")?;
     let claims = decode_jwt(token).ok()?;
-    Some(claims.user_id)
+    let user = crate::entity::users::Entity::find_by_id(claims.user_id)
+        .filter(crate::entity::users::Column::DeletedAt.is_null())
+        .one(db)
+        .await
+        .ok()??;
+    if user.token_version == claims.token_version {
+        Some(user.id)
+    } else {
+        None
+    }
 }
 
 // ============= Handlers =============
@@ -82,7 +91,7 @@ pub async fn create_tag(
     headers: HeaderMap,
     Json(payload): Json<CreateTagRequest>,
 ) -> Result<(StatusCode, Json<TagResponse>), (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),
@@ -144,7 +153,7 @@ pub async fn get_tags(
     headers: HeaderMap,
     Query(query): Query<TagQuery>,
 ) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),
@@ -230,7 +239,7 @@ pub async fn get_tag(
     headers: HeaderMap,
     Path(tag_id): Path<i32>,
 ) -> Result<Json<TagResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),
@@ -316,7 +325,7 @@ pub async fn update_tag(
     Path(tag_id): Path<i32>,
     Json(payload): Json<UpdateTagRequest>,
 ) -> Result<Json<TagResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),
@@ -426,7 +435,7 @@ pub async fn delete_tag(
     headers: HeaderMap,
     Path(tag_id): Path<i32>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),
@@ -518,7 +527,7 @@ pub async fn add_tags_to_link(
     Path(link_id): Path<i32>,
     Json(payload): Json<AddTagsToLinkRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),
@@ -610,7 +619,7 @@ pub async fn remove_tags_from_link(
     Path(link_id): Path<i32>,
     Json(payload): Json<RemoveTagsFromLinkRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),
@@ -680,7 +689,7 @@ pub async fn get_links_by_tag(
     headers: HeaderMap,
     Path(tag_id): Path<i32>,
 ) -> Result<Json<Vec<crate::handlers::links::LinkResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&headers).ok_or_else(|| {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Unauthorized"})),

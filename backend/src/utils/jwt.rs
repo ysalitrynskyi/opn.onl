@@ -9,6 +9,11 @@ pub struct Claims {
     pub sub: String, // email
     pub exp: usize,
     pub user_id: i32,
+    /// Per-user token version; must match the user's current version in the DB
+    /// for the token to be accepted. `serde(default)` keeps older tokens (issued
+    /// before this field existed) decoding as version 0.
+    #[serde(default)]
+    pub token_version: i32,
 }
 
 pub fn hash_password(password: &str) -> Result<String, bcrypt::BcryptError> {
@@ -43,7 +48,7 @@ pub fn validate_jwt_secret() {
     let _ = jwt_secret();
 }
 
-pub fn create_jwt(user_id: i32, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_jwt(user_id: i32, email: &str, token_version: i32) -> Result<String, jsonwebtoken::errors::Error> {
     let secret = jwt_secret();
 
     let expiration = Utc::now()
@@ -55,6 +60,7 @@ pub fn create_jwt(user_id: i32, email: &str) -> Result<String, jsonwebtoken::err
         sub: email.to_owned(),
         exp: expiration as usize,
         user_id,
+        token_version,
     };
 
     encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
@@ -81,12 +87,12 @@ mod tests {
     fn jwt_secret_enforced_and_roundtrips() {
         // A too-short / weak secret must be rejected rather than silently accepted.
         std::env::set_var("JWT_SECRET", "short");
-        let weak = std::panic::catch_unwind(|| create_jwt(1, "a@b.c"));
+        let weak = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
         assert!(weak.is_err(), "create_jwt must panic on a <32 byte JWT_SECRET");
 
         // A strong secret round-trips and preserves the claims.
         std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");
-        let token = create_jwt(42, "x@y.z").expect("valid secret should sign");
+        let token = create_jwt(42, "x@y.z", 0).expect("valid secret should sign");
         let claims = decode_jwt(&token).expect("token should decode");
         assert_eq!(claims.user_id, 42);
         assert_eq!(claims.sub, "x@y.z");

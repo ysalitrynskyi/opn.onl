@@ -154,7 +154,7 @@ pub async fn get_link_stats(
     headers: HeaderMap,
     Query(query): Query<AnalyticsQuery>,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
@@ -377,7 +377,7 @@ pub async fn get_dashboard_stats(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
@@ -505,7 +505,7 @@ pub async fn get_realtime_clicks(
     Path(id): Path<i32>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&headers) {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };

@@ -322,7 +322,7 @@ pub async fn login_finish(
         _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
     };
 
-    let token = match create_jwt(user.id, &user.email) {
+    let token = match create_jwt(user.id, &user.email, user.token_version) {
         Ok(t) => t,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token").into_response(),
     };
@@ -348,7 +348,7 @@ pub async fn list_passkeys(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
@@ -380,7 +380,7 @@ pub async fn delete_passkey(
     headers: axum::http::HeaderMap,
     Json(payload): Json<DeletePasskeyRequest>,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
@@ -441,7 +441,7 @@ pub async fn rename_passkey(
     headers: axum::http::HeaderMap,
     Json(payload): Json<RenamePasskeyRequest>,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&headers) {
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
