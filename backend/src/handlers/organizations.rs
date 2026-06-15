@@ -785,6 +785,7 @@ pub async fn update_member_role(
     }
 
     let member = org_members::Entity::find_by_id(member_id)
+        .filter(org_members::Column::OrgId.eq(org_id))
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -876,6 +877,7 @@ pub async fn remove_member(
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
     let member = org_members::Entity::find_by_id(member_id)
+        .filter(org_members::Column::OrgId.eq(org_id))
         .one(&state.db)
         .await
         .map_err(|_| {

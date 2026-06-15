@@ -163,6 +163,10 @@ async fn main() {
     // Load environment variables
     dotenvy::dotenv().ok();
 
+    // Fail fast if the JWT secret is missing or too weak. Closes the previous
+    // hardcoded-fallback hole where an unset JWT_SECRET let anyone forge admin tokens.
+    utils::jwt::validate_jwt_secret();
+
     // Initialize structured logging
     let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
     let file_appender = tracing_appender::rolling::daily(&log_dir, "opn-onl.log");

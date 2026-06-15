@@ -575,6 +575,14 @@ pub async fn delete_account(
             .await
             .ok();
 
+        // Remove the user's passkeys so the deleted account cannot re-authenticate
+        // via WebAuthn (soft-delete is an UPDATE, so the FK cascade never fires).
+        crate::entity::passkeys::Entity::delete_many()
+            .filter(crate::entity::passkeys::Column::UserId.eq(user_id))
+            .exec(&state.db)
+            .await
+            .ok();
+
         return (StatusCode::OK, Json(MessageResponse { message: "Account deleted successfully".to_string() })).into_response();
     }
 

@@ -114,6 +114,7 @@ pub async fn register_start(
 ) -> impl IntoResponse {
     let user = users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
+        .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
@@ -162,8 +163,9 @@ pub async fn register_finish(
 
     let user = match users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
+        .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
-        .await 
+        .await
     {
         Ok(Some(user)) => user,
         _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
@@ -192,6 +194,7 @@ pub async fn login_start(
 ) -> impl IntoResponse {
     let user = users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
+        .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
@@ -266,8 +269,9 @@ pub async fn login_finish(
     // Fetch user to issue token
     let user = match users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
+        .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
-        .await 
+        .await
     {
         Ok(Some(user)) => user,
         _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),

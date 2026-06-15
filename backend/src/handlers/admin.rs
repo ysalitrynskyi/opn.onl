@@ -60,8 +60,10 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i32, (St
         }))
     })?;
 
-    // Check if user is admin
+    // Check if user is admin. Exclude soft-deleted users so a deleted admin's
+    // still-valid token cannot keep authorizing /admin/* actions.
     let user = users::Entity::find_by_id(claims.user_id)
+        .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -149,6 +151,15 @@ pub async fn delete_user(
             .col_expr(links::Column::DeletedAt, Expr::value(Utc::now().naive_utc()))
             .filter(links::Column::UserId.eq(user_id))
             .filter(links::Column::DeletedAt.is_null())
+            .exec(&state.db)
+            .await
+            .ok();
+
+        // Remove the user's passkeys. Soft-delete is an UPDATE so the FK cascade
+        // never fires; without this a deleted account could still re-authenticate
+        // via WebAuthn and mint a fresh token.
+        crate::entity::passkeys::Entity::delete_many()
+            .filter(crate::entity::passkeys::Column::UserId.eq(user_id))
             .exec(&state.db)
             .await
             .ok();
