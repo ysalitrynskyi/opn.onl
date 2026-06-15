@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { 
+import {
     Key, Shield, Download, Trash2,
     ChevronRight, Loader2, Check, AlertTriangle,
-    Fingerprint, Plus, User, Edit2, X
+    Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
 import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
@@ -39,6 +39,10 @@ interface AppSettings {
     passkeys_enabled: boolean;
 }
 
+function errorMessage(err: unknown, fallback = 'Something went wrong'): string {
+    return err instanceof Error ? err.message : fallback;
+}
+
 export default function Settings() {
     const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
@@ -48,26 +52,26 @@ export default function Settings() {
     const [registeringPasskey, setRegisteringPasskey] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
-    
+
     // Change password state
     const [showChangePassword, setShowChangePassword] = useState(false);
     const [currentPassword, setCurrentPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [changingPassword, setChangingPassword] = useState(false);
-    
+
     // Delete account state
     const [showDeleteAccount, setShowDeleteAccount] = useState(false);
     const [deletePassword, setDeletePassword] = useState('');
     const [deletingAccount, setDeletingAccount] = useState(false);
-    
+
     // Resend verification state
     const [resendingVerification, setResendingVerification] = useState(false);
-    
+
     // Rename passkey state
     const [renamingPasskeyId, setRenamingPasskeyId] = useState<number | null>(null);
     const [newPasskeyName, setNewPasskeyName] = useState('');
-    
+
     // Profile editing state
     const [editingProfile, setEditingProfile] = useState(false);
     const [displayName, setDisplayName] = useState('');
@@ -119,7 +123,7 @@ export default function Settings() {
         try {
             const token = localStorage.getItem('token');
             if (!token) return;
-            
+
             const payload = JSON.parse(atob(token.split('.')[1]));
             const username = payload.sub;
 
@@ -145,7 +149,7 @@ export default function Settings() {
                         ...options.publicKey.user,
                         id: base64ToBuffer(options.publicKey.user.id),
                     },
-                    excludeCredentials: options.publicKey.excludeCredentials?.map((cred: any) => ({
+                    excludeCredentials: options.publicKey.excludeCredentials?.map((cred: { id: string }) => ({
                         ...cred,
                         id: base64ToBuffer(cred.id),
                     })),
@@ -182,8 +186,8 @@ export default function Settings() {
 
             setSuccess('Passkey registered successfully!');
             fetchData(); // Refresh passkeys list
-        } catch (err: any) {
-            setError(err.message || 'Failed to register passkey');
+        } catch (err) {
+            setError(errorMessage(err, 'Failed to register passkey'));
         } finally {
             setRegisteringPasskey(false);
         }
@@ -191,41 +195,41 @@ export default function Settings() {
 
     const handleDeletePasskey = async (passkeyId: number) => {
         if (!confirm('Are you sure you want to delete this passkey?')) return;
-        
+
         try {
             const res = await authFetch(API_ENDPOINTS.passkeyDelete, {
                 method: 'POST',
                 body: JSON.stringify({ passkey_id: passkeyId }),
             });
-            
+
             if (!res.ok) {
                 const data = await res.json();
                 throw new Error(data.error || 'Failed to delete passkey');
             }
-            
+
             setSuccess('Passkey deleted successfully');
             fetchData();
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err) {
+            setError(errorMessage(err));
         }
     };
 
     const handleRenamePasskey = async (passkeyId: number) => {
         if (!newPasskeyName.trim()) return;
-        
+
         try {
             const res = await authFetch(API_ENDPOINTS.passkeyRename, {
                 method: 'POST',
                 body: JSON.stringify({ passkey_id: passkeyId, name: newPasskeyName }),
             });
-            
+
             if (!res.ok) throw new Error('Failed to rename passkey');
-            
+
             setRenamingPasskeyId(null);
             setNewPasskeyName('');
             fetchData();
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err) {
+            setError(errorMessage(err));
         }
     };
 
@@ -262,8 +266,8 @@ export default function Settings() {
             setCurrentPassword('');
             setNewPassword('');
             setConfirmPassword('');
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err) {
+            setError(errorMessage(err));
         } finally {
             setChangingPassword(false);
         }
@@ -292,8 +296,8 @@ export default function Settings() {
 
             localStorage.removeItem('token');
             navigate('/');
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err) {
+            setError(errorMessage(err));
         } finally {
             setDeletingAccount(false);
         }
@@ -312,8 +316,8 @@ export default function Settings() {
 
             if (!res.ok) throw new Error('Failed to resend verification email');
             setSuccess('Verification email sent!');
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err) {
+            setError(errorMessage(err));
         } finally {
             setResendingVerification(false);
         }
@@ -322,9 +326,9 @@ export default function Settings() {
     const handleExportData = async () => {
         try {
             const response = await authFetch(API_ENDPOINTS.exportLinks);
-            
+
             if (!response.ok) throw new Error('Failed to export data');
-            
+
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -334,8 +338,8 @@ export default function Settings() {
             a.click();
             a.remove();
             window.URL.revokeObjectURL(url);
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err) {
+            setError(errorMessage(err));
         }
     };
 
@@ -372,8 +376,8 @@ export default function Settings() {
             setProfile(data);
             setEditingProfile(false);
             setSuccess('Profile updated successfully');
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err) {
+            setError(errorMessage(err));
         } finally {
             setSavingProfile(false);
         }
@@ -387,35 +391,39 @@ export default function Settings() {
         );
     }
 
+    const inputClass = "w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint";
+    const labelClass = "block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5";
+
     return (
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
             <SEO title="Settings" description="Manage your account settings" noIndex />
-            
-            <h1 className="text-3xl font-bold text-slate-900 mb-8">Settings</h1>
+
+            <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-ink tracking-tight mb-8">Settings</h1>
 
             {error && (
-                <motion.div 
+                <motion.div
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm flex items-center gap-2"
+                    role="alert"
+                    className="mb-6 flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
                 >
                     <AlertTriangle className="h-4 w-4 flex-shrink-0" />
                     {error}
-                    <button onClick={() => setError('')} className="ml-auto">
+                    <button onClick={() => setError('')} aria-label="Dismiss error" className="ml-auto text-danger/70 hover:text-danger">
                         <X className="h-4 w-4" />
                     </button>
                 </motion.div>
             )}
 
             {success && (
-                <motion.div 
+                <motion.div
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="mb-6 p-4 bg-green-50 border border-green-200 rounded-xl text-green-700 text-sm flex items-center gap-2"
+                    className="mb-6 flex items-center gap-2 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm text-success"
                 >
                     <Check className="h-4 w-4 flex-shrink-0" />
                     {success}
-                    <button onClick={() => setSuccess('')} className="ml-auto">
+                    <button onClick={() => setSuccess('')} aria-label="Dismiss" className="ml-auto text-success/70 hover:text-success">
                         <X className="h-4 w-4" />
                     </button>
                 </motion.div>
@@ -423,32 +431,32 @@ export default function Settings() {
 
             <div className="space-y-6">
                 {/* Profile Section */}
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
+                <motion.section
+                    initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"
+                    className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
                 >
-                    <div className="p-6 border-b border-slate-100">
+                    <div className="p-6 border-b border-line">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 bg-primary-100 rounded-full flex items-center justify-center">
-                                    <User className="h-5 w-5 text-primary-600" />
+                                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-line bg-paper">
+                                    <User className="h-5 w-5 text-muted" />
                                 </div>
                                 <div>
-                                    <h2 className="text-lg font-semibold text-slate-900">
+                                    <h2 className="font-display text-lg font-bold text-ink tracking-tight">
                                         {profile?.display_name || 'Profile'}
                                     </h2>
-                                    <p className="text-sm text-slate-500">{profile?.email}</p>
+                                    <p className="text-sm text-muted">{profile?.email}</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
                                 {profile?.email_verified ? (
-                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/5 px-2.5 py-1 text-xs font-medium text-success">
                                         <Check className="h-3 w-3" />
                                         Verified
                                     </span>
                                 ) : (
-                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-medium">
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning">
                                         <AlertTriangle className="h-3 w-3" />
                                         Unverified
                                     </span>
@@ -456,8 +464,9 @@ export default function Settings() {
                                 {!editingProfile && (
                                     <button
                                         onClick={handleEditProfile}
-                                        className="p-2 text-slate-400 hover:text-slate-600"
+                                        className="p-2 text-faint transition-colors hover:text-ink"
                                         title="Edit profile"
+                                        aria-label="Edit profile"
                                     >
                                         <Edit2 className="h-4 w-4" />
                                     </button>
@@ -469,46 +478,50 @@ export default function Settings() {
                         {editingProfile ? (
                             <form onSubmit={handleSaveProfile} className="space-y-4">
                                 <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Display Name</label>
+                                    <label htmlFor="display-name" className={labelClass}>Display Name</label>
                                     <input
+                                        id="display-name"
                                         type="text"
                                         value={displayName}
                                         onChange={(e) => setDisplayName(e.target.value)}
-                                        className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                        className={inputClass}
                                         placeholder="Your name"
                                         maxLength={100}
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Bio</label>
+                                    <label htmlFor="bio" className={labelClass}>Bio</label>
                                     <textarea
+                                        id="bio"
                                         value={bio}
                                         onChange={(e) => setBio(e.target.value)}
-                                        className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
+                                        className={`${inputClass} resize-none`}
                                         placeholder="Tell us about yourself"
                                         rows={3}
                                         maxLength={500}
                                     />
-                                    <p className="text-xs text-slate-500 mt-1">{bio.length}/500 characters</p>
+                                    <p className="text-xs text-faint mt-1">{bio.length}/500 characters</p>
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Website</label>
+                                        <label htmlFor="website" className={labelClass}>Website</label>
                                         <input
+                                            id="website"
                                             type="url"
                                             value={website}
                                             onChange={(e) => setWebsite(e.target.value)}
-                                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                            className={inputClass}
                                             placeholder="https://example.com"
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
+                                        <label htmlFor="location" className={labelClass}>Location</label>
                                         <input
+                                            id="location"
                                             type="text"
                                             value={location}
                                             onChange={(e) => setLocation(e.target.value)}
-                                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                            className={inputClass}
                                             placeholder="City, Country"
                                             maxLength={100}
                                         />
@@ -518,14 +531,14 @@ export default function Settings() {
                                     <button
                                         type="button"
                                         onClick={() => setEditingProfile(false)}
-                                        className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                                        className="rounded-lg border border-line2 px-4 py-2 font-medium text-muted transition-colors hover:text-ink hover:border-ink/30"
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         type="submit"
                                         disabled={savingProfile}
-                                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-50"
+                                        className="rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
                                     >
                                         {savingProfile ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save Profile'}
                                     </button>
@@ -535,48 +548,50 @@ export default function Settings() {
                             <>
                                 {/* Profile info display */}
                                 {(profile?.bio || profile?.website || profile?.location) && (
-                                    <div className="space-y-2 pb-4 border-b border-slate-100">
+                                    <div className="space-y-2 pb-4 border-b border-line">
                                         {profile?.bio && (
-                                            <p className="text-slate-600">{profile.bio}</p>
+                                            <p className="text-muted leading-relaxed">{profile.bio}</p>
                                         )}
                                         {(profile?.website || profile?.location) && (
-                                            <div className="flex flex-wrap gap-4 text-sm text-slate-500">
+                                            <div className="flex flex-wrap gap-4 text-sm text-muted">
                                                 {profile?.website && (
-                                                    <a href={profile.website} target="_blank" rel="noreferrer" className="hover:text-primary-600">
-                                                        🔗 {profile.website.replace(/^https?:\/\//, '')}
+                                                    <a href={profile.website} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 transition-colors hover:text-primary-600">
+                                                        <Globe className="h-3.5 w-3.5 text-faint" /> {profile.website.replace(/^https?:\/\//, '')}
                                                     </a>
                                                 )}
                                                 {profile?.location && (
-                                                    <span>📍 {profile.location}</span>
+                                                    <span className="inline-flex items-center gap-1.5">
+                                                        <MapPin className="h-3.5 w-3.5 text-faint" /> {profile.location}
+                                                    </span>
                                                 )}
                                             </div>
                                         )}
                                     </div>
                                 )}
-                                
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="p-4 bg-slate-50 rounded-xl">
-                                        <p className="text-sm text-slate-500">Total Links</p>
-                                        <p className="text-2xl font-bold text-slate-900">{profile?.link_count?.toLocaleString() || 0}</p>
+
+                                <div className="grid grid-cols-2 gap-px bg-line border border-line rounded-xl overflow-hidden">
+                                    <div className="bg-surface p-4">
+                                        <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint">Total Links</p>
+                                        <p className="mt-1 font-display text-2xl font-extrabold text-ink tabular-nums">{profile?.link_count?.toLocaleString() || 0}</p>
                                     </div>
-                                    <div className="p-4 bg-slate-50 rounded-xl">
-                                        <p className="text-sm text-slate-500">Total Clicks</p>
-                                        <p className="text-2xl font-bold text-slate-900">{profile?.total_clicks?.toLocaleString() || 0}</p>
+                                    <div className="bg-surface p-4">
+                                        <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint">Total Clicks</p>
+                                        <p className="mt-1 font-display text-2xl font-extrabold text-ink tabular-nums">{profile?.total_clicks?.toLocaleString() || 0}</p>
                                     </div>
                                 </div>
-                                
+
                                 {/* Show resend verification only if NOT verified */}
                                 {profile && !profile.email_verified && (
-                                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                                        <div className="flex items-center justify-between">
+                                    <div className="rounded-xl border border-warning/40 bg-warning/10 p-4">
+                                        <div className="flex items-center justify-between gap-4">
                                             <div>
-                                                <p className="font-medium text-amber-800">Email not verified</p>
-                                                <p className="text-sm text-amber-700">Please verify your email to access all features.</p>
+                                                <p className="font-medium text-ink">Email not verified</p>
+                                                <p className="text-sm text-muted">Please verify your email to access all features.</p>
                                             </div>
                                             <button
                                                 onClick={handleResendVerification}
                                                 disabled={resendingVerification}
-                                                className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+                                                className="shrink-0 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30 disabled:opacity-50"
                                             >
                                                 {resendingVerification ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Resend'}
                                             </button>
@@ -586,31 +601,31 @@ export default function Settings() {
                             </>
                         )}
                     </div>
-                </motion.div>
+                </motion.section>
 
                 {/* Passkeys Section */}
                 {appSettings?.passkeys_enabled && (
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
+                    <motion.section
+                        initial={{ opacity: 0, y: 16 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.1 }}
-                        className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"
+                        transition={{ delay: 0.05 }}
+                        className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
                     >
-                        <div className="p-6 border-b border-slate-100">
+                        <div className="p-6 border-b border-line">
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-3">
-                                    <div className="h-10 w-10 bg-indigo-100 rounded-full flex items-center justify-center">
-                                        <Fingerprint className="h-5 w-5 text-indigo-600" />
+                                    <div className="flex h-10 w-10 items-center justify-center rounded-full border border-line bg-paper">
+                                        <Fingerprint className="h-5 w-5 text-muted" />
                                     </div>
                                     <div>
-                                        <h2 className="text-lg font-semibold text-slate-900">Passkeys</h2>
-                                        <p className="text-sm text-slate-500">Passwordless authentication</p>
+                                        <h2 className="font-display text-lg font-bold text-ink tracking-tight">Passkeys</h2>
+                                        <p className="text-sm text-muted">Passwordless authentication</p>
                                     </div>
                                 </div>
                                 <button
                                     onClick={handleRegisterPasskey}
                                     disabled={registeringPasskey}
-                                    className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+                                    className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
                                 >
                                     {registeringPasskey ? (
                                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -621,18 +636,18 @@ export default function Settings() {
                                 </button>
                             </div>
                         </div>
-                        <div className="divide-y divide-slate-100">
+                        <div className="divide-y divide-line">
                             {passkeys.length === 0 ? (
-                                <div className="p-6 text-center text-slate-500">
-                                    <Fingerprint className="h-12 w-12 text-slate-300 mx-auto mb-3" />
-                                    <p>No passkeys registered</p>
-                                    <p className="text-sm">Add a passkey for passwordless login</p>
+                                <div className="p-8 text-center text-muted">
+                                    <Fingerprint className="mx-auto mb-3 h-10 w-10 text-line2" />
+                                    <p className="text-ink">No passkeys registered</p>
+                                    <p className="text-sm text-faint">Add a passkey for passwordless login</p>
                                 </div>
                             ) : (
                                 passkeys.map((passkey) => (
-                                    <div key={passkey.id} className="p-4 flex items-center justify-between">
+                                    <div key={passkey.id} className="flex items-center justify-between p-4">
                                         <div className="flex items-center gap-3">
-                                            <Key className="h-5 w-5 text-slate-400" />
+                                            <Key className="h-5 w-5 text-faint" />
                                             <div>
                                                 {renamingPasskeyId === passkey.id ? (
                                                     <div className="flex items-center gap-2">
@@ -640,44 +655,49 @@ export default function Settings() {
                                                             type="text"
                                                             value={newPasskeyName}
                                                             onChange={(e) => setNewPasskeyName(e.target.value)}
-                                                            className="px-2 py-1 border border-slate-300 rounded text-sm"
+                                                            className="rounded border border-line2 bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-primary-500"
                                                             placeholder="Passkey name"
+                                                            aria-label="Passkey name"
                                                             autoFocus
                                                         />
                                                         <button
                                                             onClick={() => handleRenamePasskey(passkey.id)}
-                                                            className="text-green-600 hover:text-green-700"
+                                                            aria-label="Confirm rename"
+                                                            className="text-success hover:opacity-80"
                                                         >
                                                             <Check className="h-4 w-4" />
                                                         </button>
                                                         <button
                                                             onClick={() => { setRenamingPasskeyId(null); setNewPasskeyName(''); }}
-                                                            className="text-slate-400 hover:text-slate-600"
+                                                            aria-label="Cancel rename"
+                                                            className="text-faint hover:text-ink"
                                                         >
                                                             <X className="h-4 w-4" />
                                                         </button>
                                                     </div>
                                                 ) : (
-                                                    <p className="font-medium text-slate-900">{passkey.name}</p>
+                                                    <p className="font-medium text-ink">{passkey.name}</p>
                                                 )}
-                                                <p className="text-xs text-slate-500">
+                                                <p className="text-xs text-faint">
                                                     Created {new Date(passkey.created_at).toLocaleDateString()}
                                                     {passkey.last_used && ` · Last used ${new Date(passkey.last_used).toLocaleDateString()}`}
                                                 </p>
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-1">
                                             <button
                                                 onClick={() => { setRenamingPasskeyId(passkey.id); setNewPasskeyName(passkey.name); }}
-                                                className="p-2 text-slate-400 hover:text-slate-600"
+                                                className="p-2 text-faint transition-colors hover:text-ink"
                                                 title="Rename"
+                                                aria-label="Rename passkey"
                                             >
                                                 <Edit2 className="h-4 w-4" />
                                             </button>
                                             <button
                                                 onClick={() => handleDeletePasskey(passkey.id)}
-                                                className="p-2 text-slate-400 hover:text-red-600"
+                                                className="p-2 text-faint transition-colors hover:text-danger"
                                                 title="Delete"
+                                                aria-label="Delete passkey"
                                             >
                                                 <Trash2 className="h-4 w-4" />
                                             </button>
@@ -686,24 +706,24 @@ export default function Settings() {
                                 ))
                             )}
                         </div>
-                    </motion.div>
+                    </motion.section>
                 )}
 
                 {/* Security Section */}
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
+                <motion.section
+                    initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.2 }}
-                    className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"
+                    transition={{ delay: 0.1 }}
+                    className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
                 >
-                    <div className="p-6 border-b border-slate-100">
+                    <div className="p-6 border-b border-line">
                         <div className="flex items-center gap-3">
-                            <div className="h-10 w-10 bg-emerald-100 rounded-full flex items-center justify-center">
-                                <Shield className="h-5 w-5 text-emerald-600" />
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-line bg-paper">
+                                <Shield className="h-5 w-5 text-muted" />
                             </div>
                             <div>
-                                <h2 className="text-lg font-semibold text-slate-900">Security</h2>
-                                <p className="text-sm text-slate-500">Manage your password</p>
+                                <h2 className="font-display text-lg font-bold text-ink tracking-tight">Security</h2>
+                                <p className="text-sm text-muted">Manage your password</p>
                             </div>
                         </div>
                     </div>
@@ -711,53 +731,56 @@ export default function Settings() {
                         {!showChangePassword ? (
                             <button
                                 onClick={() => setShowChangePassword(true)}
-                                className="flex items-center justify-between w-full p-4 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors"
+                                className="flex w-full items-center justify-between rounded-xl border border-line bg-paper p-4 transition-colors hover:border-line2 hover:bg-primary-50/40"
                             >
                                 <div className="flex items-center gap-3">
-                                    <Key className="h-5 w-5 text-slate-400" />
-                                    <span className="font-medium text-slate-700">Change Password</span>
+                                    <Key className="h-5 w-5 text-faint" />
+                                    <span className="font-medium text-ink">Change Password</span>
                                 </div>
-                                <ChevronRight className="h-5 w-5 text-slate-400" />
+                                <ChevronRight className="h-5 w-5 text-faint" />
                             </button>
                         ) : (
                             <form onSubmit={handleChangePassword} className="space-y-4">
                                 <input
                                     type="password"
                                     placeholder="Current password"
+                                    aria-label="Current password"
                                     value={currentPassword}
                                     onChange={(e) => setCurrentPassword(e.target.value)}
-                                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                    className={inputClass}
                                     required
                                 />
                                 <input
                                     type="password"
                                     placeholder="New password (min 8 characters)"
+                                    aria-label="New password"
                                     value={newPassword}
                                     onChange={(e) => setNewPassword(e.target.value)}
-                                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                    className={inputClass}
                                     required
                                     minLength={8}
                                 />
                                 <input
                                     type="password"
                                     placeholder="Confirm new password"
+                                    aria-label="Confirm new password"
                                     value={confirmPassword}
                                     onChange={(e) => setConfirmPassword(e.target.value)}
-                                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                    className={inputClass}
                                     required
                                 />
                                 <div className="flex gap-3">
                                     <button
                                         type="button"
                                         onClick={() => setShowChangePassword(false)}
-                                        className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                                        className="rounded-lg border border-line2 px-4 py-2 font-medium text-muted transition-colors hover:text-ink hover:border-ink/30"
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         type="submit"
                                         disabled={changingPassword}
-                                        className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-50"
+                                        className="rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
                                     >
                                         {changingPassword ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Update Password'}
                                     </button>
@@ -765,56 +788,56 @@ export default function Settings() {
                             </form>
                         )}
                     </div>
-                </motion.div>
+                </motion.section>
 
                 {/* Data Section */}
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
+                <motion.section
+                    initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.3 }}
-                    className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"
+                    transition={{ delay: 0.15 }}
+                    className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
                 >
-                    <div className="p-6 border-b border-slate-100">
+                    <div className="p-6 border-b border-line">
                         <div className="flex items-center gap-3">
-                            <div className="h-10 w-10 bg-blue-100 rounded-full flex items-center justify-center">
-                                <Download className="h-5 w-5 text-blue-600" />
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-line bg-paper">
+                                <Download className="h-5 w-5 text-muted" />
                             </div>
                             <div>
-                                <h2 className="text-lg font-semibold text-slate-900">Data</h2>
-                                <p className="text-sm text-slate-500">Export your data</p>
+                                <h2 className="font-display text-lg font-bold text-ink tracking-tight">Data</h2>
+                                <p className="text-sm text-muted">Export your data</p>
                             </div>
                         </div>
                     </div>
                     <div className="p-6">
                         <button
                             onClick={handleExportData}
-                            className="flex items-center justify-between w-full p-4 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors"
+                            className="flex w-full items-center justify-between rounded-xl border border-line bg-paper p-4 transition-colors hover:border-line2 hover:bg-primary-50/40"
                         >
                             <div className="flex items-center gap-3">
-                                <Download className="h-5 w-5 text-slate-400" />
-                                <span className="font-medium text-slate-700">Export All Links (CSV)</span>
+                                <Download className="h-5 w-5 text-faint" />
+                                <span className="font-medium text-ink">Export All Links (CSV)</span>
                             </div>
-                            <ChevronRight className="h-5 w-5 text-slate-400" />
+                            <ChevronRight className="h-5 w-5 text-faint" />
                         </button>
                     </div>
-                </motion.div>
+                </motion.section>
 
                 {/* Danger Zone - Only show if account deletion is enabled */}
                 {appSettings?.account_deletion_enabled && (
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
+                    <motion.section
+                        initial={{ opacity: 0, y: 16 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.4 }}
-                        className="bg-white rounded-2xl shadow-sm border border-red-200 overflow-hidden"
+                        transition={{ delay: 0.2 }}
+                        className="rounded-2xl border border-danger/30 bg-surface shadow-subtle overflow-hidden"
                     >
-                        <div className="p-6 border-b border-red-100 bg-red-50">
+                        <div className="p-6 border-b border-danger/20 bg-danger/5">
                             <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 bg-red-100 rounded-full flex items-center justify-center">
-                                    <Trash2 className="h-5 w-5 text-red-600" />
+                                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-danger/30 bg-danger/10">
+                                    <Trash2 className="h-5 w-5 text-danger" />
                                 </div>
                                 <div>
-                                    <h2 className="text-lg font-semibold text-red-900">Danger Zone</h2>
-                                    <p className="text-sm text-red-700">Irreversible actions</p>
+                                    <h2 className="font-display text-lg font-bold text-danger tracking-tight">Danger Zone</h2>
+                                    <p className="text-sm text-danger/80">Irreversible actions</p>
                                 </div>
                             </div>
                         </div>
@@ -822,40 +845,41 @@ export default function Settings() {
                             {!showDeleteAccount ? (
                                 <button
                                     onClick={() => setShowDeleteAccount(true)}
-                                    className="flex items-center justify-between w-full p-4 bg-red-50 rounded-xl hover:bg-red-100 transition-colors border border-red-200"
+                                    className="flex w-full items-center justify-between rounded-xl border border-danger/30 bg-danger/5 p-4 transition-colors hover:bg-danger/10"
                                 >
                                     <div className="flex items-center gap-3">
-                                        <Trash2 className="h-5 w-5 text-red-500" />
-                                        <span className="font-medium text-red-700">Delete Account</span>
+                                        <Trash2 className="h-5 w-5 text-danger" />
+                                        <span className="font-medium text-danger">Delete Account</span>
                                     </div>
-                                    <ChevronRight className="h-5 w-5 text-red-400" />
+                                    <ChevronRight className="h-5 w-5 text-danger/60" />
                                 </button>
                             ) : (
                                 <form onSubmit={handleDeleteAccount} className="space-y-4">
-                                    <div className="p-4 bg-red-50 border border-red-200 rounded-xl">
-                                        <p className="text-red-800 text-sm font-medium">This action cannot be undone!</p>
-                                        <p className="text-red-700 text-sm">All your links and data will be permanently deleted.</p>
+                                    <div className="rounded-xl border border-danger/30 bg-danger/5 p-4">
+                                        <p className="text-sm font-medium text-danger">This action cannot be undone!</p>
+                                        <p className="text-sm text-danger/80">All your links and data will be permanently deleted.</p>
                                     </div>
                                     <input
                                         type="password"
                                         placeholder="Enter your password to confirm"
+                                        aria-label="Confirm password"
                                         value={deletePassword}
                                         onChange={(e) => setDeletePassword(e.target.value)}
-                                        className="w-full px-4 py-2 border border-red-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                        className="w-full rounded-lg border border-danger/40 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-danger placeholder:text-faint"
                                         required
                                     />
                                     <div className="flex gap-3">
                                         <button
                                             type="button"
                                             onClick={() => setShowDeleteAccount(false)}
-                                            className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                                            className="rounded-lg border border-line2 px-4 py-2 font-medium text-muted transition-colors hover:text-ink hover:border-ink/30"
                                         >
                                             Cancel
                                         </button>
                                         <button
                                             type="submit"
                                             disabled={deletingAccount}
-                                            className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 disabled:opacity-50"
+                                            className="rounded-lg bg-danger px-4 py-2 font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                                         >
                                             {deletingAccount ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Delete My Account'}
                                         </button>
@@ -863,7 +887,7 @@ export default function Settings() {
                                 </form>
                             )}
                         </div>
-                    </motion.div>
+                    </motion.section>
                 )}
             </div>
         </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import type { ReactNode } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { render, screen } from '../test/test-utils';
 import { act } from '@testing-library/react';
 import { ToastContainer, toast } from './Toast';
@@ -12,7 +12,7 @@ vi.mock('framer-motion', () => ({
     AnimatePresence: ({ children }: { children: ReactNode }) => <>{children}</>,
     motion: new Proxy({} as Record<string, unknown>, {
         get: (_t, tag: string) =>
-            ({ children, ...props }: Record<string, unknown>) => {
+            ({ children, ...props }: { children?: ReactNode } & Record<string, unknown>) => {
                 const Tag = tag as keyof JSX.IntrinsicElements;
                 // Drop framer-only props that aren't valid DOM attributes.
                 const { initial, animate, exit, transition, whileInView, whileHover, whileTap, viewport, variants, ...rest } = props;
