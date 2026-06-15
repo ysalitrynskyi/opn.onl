@@ -8,9 +8,9 @@ export default function Logo({ className = "h-8", iconOnly = false, showFull = f
     return (
         <div className={`flex items-center gap-2.5 ${className}`}>
             <img
-                src="/favicon.svg"
+                src="/logo.png"
                 alt="opn.onl logo"
-                className="w-9 h-9 rounded-lg"
+                className="h-7 w-auto"
             />
 
             {!iconOnly && (

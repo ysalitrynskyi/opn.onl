@@ -75,6 +75,7 @@ export default function Home() {
                 {/* ===== Hero ===== */}
                 <section className="relative border-b border-line overflow-hidden">
                     <div className="absolute inset-0 bg-grid-pattern [mask-image:radial-gradient(120%_90%_at_50%_0%,black,transparent)]" />
+                    <img src="/bg-network.png" alt="" aria-hidden="true" className="pointer-events-none absolute -top-12 right-0 hidden lg:block w-2/3 max-w-3xl opacity-60 [mask-image:linear-gradient(to_left,black,transparent_80%)]" />
                     <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-24 lg:pt-28 lg:pb-32">
                         <div className="grid lg:grid-cols-12 gap-12 lg:gap-8 items-center">
                             {/* Left: copy + instrument */}
@@ -253,8 +254,9 @@ export default function Home() {
 
                 {/* ===== Self-host callout ===== */}
                 <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-20 lg:pb-28">
-                    <div className="rounded-4xl bg-ink text-white overflow-hidden">
-                        <div className="grid lg:grid-cols-2">
+                    <div className="relative rounded-4xl bg-ink text-white overflow-hidden">
+                        <img src="/bg-network.png" alt="" aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-20 [mask-image:radial-gradient(120%_120%_at_100%_0%,black,transparent_75%)]" />
+                        <div className="relative grid lg:grid-cols-2">
                             <div className="p-8 sm:p-12 lg:p-14">
                                 <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary-300">Your server, your rules</p>
                                 <h2 className="mt-4 font-display text-3xl sm:text-4xl font-extrabold tracking-tight text-white">
@@ -306,8 +308,9 @@ export default function Home() {
                 </section>
 
                 {/* ===== CTA ===== */}
-                <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 lg:py-28">
-                    <div className="flex flex-col items-start gap-6 sm:flex-row sm:items-end sm:justify-between border-t border-line pt-14">
+                <section className="relative overflow-hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 lg:py-28">
+                    <img src="/bg-contours.png" alt="" aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-[0.35] [mask-image:radial-gradient(90%_120%_at_15%_100%,black,transparent_70%)]" />
+                    <div className="relative flex flex-col items-start gap-6 sm:flex-row sm:items-end sm:justify-between border-t border-line pt-14">
                         <div className="max-w-2xl">
                             <h2 className="font-display text-3xl sm:text-5xl font-extrabold text-ink tracking-tightest leading-[1.02]">
                                 Own your links.<br />Start in seconds.
