@@ -171,55 +171,39 @@ export default function Login() {
     // Show verification needed screen
     if (needsVerification) {
         return (
-            <div className="flex min-h-[80vh] items-center justify-center px-4">
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
+            <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+                <motion.div
+                    initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
                     className="w-full max-w-md"
                 >
-                    <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-100 text-center">
-                        <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <Mail className="w-8 h-8 text-amber-600" aria-hidden="true" />
+                    <div className="rounded-2xl border border-line bg-surface p-8 shadow-card text-center">
+                        <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-warning/10">
+                            <Mail className="h-7 w-7 text-warning" aria-hidden="true" />
                         </div>
-
-                        <h2 className="text-2xl font-bold text-slate-900 mb-2">Verify your email</h2>
-                        <p className="text-slate-600 mb-6">
-                            Please verify your email address to access all features.
-                            Check your inbox for a verification link.
+                        <h1 className="font-display text-2xl font-bold text-ink">Verify your email</h1>
+                        <p className="mt-2 text-muted leading-relaxed">
+                            Check your inbox for a verification link to unlock every feature.
                         </p>
-
-                        <div className="space-y-3">
+                        <div className="mt-6 space-y-3">
                             <button
                                 onClick={handleResendVerification}
                                 disabled={resendLoading || resendSuccess}
-                                className="w-full py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                                className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary-600 py-3 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
                             >
-                                {resendLoading ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : resendSuccess ? (
-                                    <>
-                                        <CheckCircle className="w-4 h-4" />
-                                        Email sent!
-                                    </>
-                                ) : (
-                                    <>
-                                        <Send className="w-4 h-4" />
-                                        Resend verification email
-                                    </>
-                                )}
+                                {resendLoading ? <Loader2 className="h-4 w-4 animate-spin" />
+                                    : resendSuccess ? <><CheckCircle className="h-4 w-4" /> Email sent</>
+                                    : <><Send className="h-4 w-4" /> Resend verification email</>}
                             </button>
-
                             <button
                                 onClick={handleContinueUnverified}
-                                className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium transition-colors"
+                                className="w-full rounded-xl border border-line2 bg-surface py-3 font-medium text-ink transition-colors hover:border-ink/30"
                             >
-                                Continue to Dashboard
+                                Continue to dashboard
                             </button>
                         </div>
-
-                        <p className="text-xs text-slate-500 mt-4">
-                            Some features may be limited until you verify your email.
-                        </p>
+                        <p className="mt-4 text-xs text-faint">Some features stay limited until you verify.</p>
                     </div>
                 </motion.div>
             </div>
@@ -227,72 +211,54 @@ export default function Login() {
     }
 
     return (
-        <div className="flex min-h-[80vh] items-center justify-center px-4">
-            <motion.div 
-                initial={{ opacity: 0, y: 20 }}
+        <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+            <motion.div
+                initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
                 className="w-full max-w-md"
             >
-                <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-100">
-                    <div className="text-center mb-8">
-                        <h2 className="text-3xl font-bold tracking-tight text-slate-900">Welcome back</h2>
-                        <p className="mt-2 text-sm text-slate-600">
-                            Don't have an account?{' '}
-                            <Link to="/register" className="font-medium text-primary-600 hover:text-primary-500">
-                                Sign up
-                            </Link>
-                        </p>
-                    </div>
+                <div className="mb-8 text-center">
+                    <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600">Welcome back</p>
+                    <h1 className="mt-3 font-display text-3xl font-extrabold tracking-tight text-ink">Sign in to opn.onl</h1>
+                    <p className="mt-2 text-sm text-muted">
+                        New here?{' '}
+                        <Link to="/register" className="font-medium text-primary-600 hover:text-primary-700">Create an account</Link>
+                    </p>
+                </div>
 
-                    {/* Passkey Login */}
+                <div className="rounded-2xl border border-line bg-surface p-8 shadow-card">
                     {isPasskeySupported && showPasskeyOption && (
-                        <div className="mb-6">
+                        <>
                             <button
                                 type="button"
                                 onClick={handlePasskeyLogin}
                                 disabled={passkeyLoading || !email}
                                 aria-label="Sign in with passkey"
-                                className="w-full flex items-center justify-center gap-3 px-4 py-3 border-2 border-slate-200 rounded-xl font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="flex w-full items-center justify-center gap-3 rounded-xl border border-line2 bg-surface px-4 py-3 font-medium text-ink transition-colors hover:border-primary-300 hover:bg-primary-50/50 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {passkeyLoading ? (
-                                    <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
-                                ) : (
-                                    <Fingerprint className="h-5 w-5 text-primary-600" aria-hidden="true" />
-                                )}
-                                Sign in with Passkey
+                                {passkeyLoading
+                                    ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+                                    : <Fingerprint className="h-5 w-5 text-primary-600" aria-hidden="true" />}
+                                Continue with passkey
                             </button>
-                            <p className="text-xs text-slate-500 text-center mt-2">
-                                Enter your email first, then click to use your passkey
-                            </p>
-                        </div>
-                    )}
+                            <p className="mt-2 text-center text-xs text-faint">Enter your email first, then use your passkey.</p>
 
-                    {isPasskeySupported && showPasskeyOption && (
-                        <div className="relative mb-6">
-                            <div className="absolute inset-0 flex items-center">
-                                <div className="w-full border-t border-slate-200" />
+                            <div className="relative my-6">
+                                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-line" /></div>
+                                <div className="relative flex justify-center"><span className="bg-surface px-3 font-mono text-xs uppercase tracking-wider text-faint">or email</span></div>
                             </div>
-                            <div className="relative flex justify-center text-sm">
-                                <span className="px-2 bg-white text-slate-500">or continue with email</span>
-                            </div>
-                        </div>
+                        </>
                     )}
 
                     <form onSubmit={handleSubmit} className="space-y-5">
                         <div>
-                            <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1">
-                                Email address
-                            </label>
+                            <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-ink">Email address</label>
                             <div className="relative">
-                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" aria-hidden="true" />
+                                <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" aria-hidden="true" />
                                 <input
-                                    id="email"
-                                    name="email"
-                                    type="email"
-                                    required
-                                    aria-required="true"
-                                    autoComplete="email"
-                                    className="block w-full pl-10 pr-3 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 placeholder:text-slate-400 shadow-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                    id="email" name="email" type="email" required autoComplete="email"
+                                    className="block w-full rounded-xl border border-line2 bg-white py-2.5 pl-10 pr-3 text-ink shadow-subtle outline-none transition-colors focus:border-primary-500"
                                     placeholder="you@example.com"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
@@ -300,25 +266,13 @@ export default function Login() {
                             </div>
                         </div>
                         <div>
-                            <div className="flex items-center justify-between mb-1">
-                                <label htmlFor="password" className="block text-sm font-medium text-slate-700">
-                                    Password
-                                </label>
-                                <Link 
-                                    to="/forgot-password" 
-                                    className="text-sm font-medium text-primary-600 hover:text-primary-500"
-                                >
-                                    Forgot password?
-                                </Link>
+                            <div className="mb-1.5 flex items-center justify-between">
+                                <label htmlFor="password" className="block text-sm font-medium text-ink">Password</label>
+                                <Link to="/forgot-password" className="text-sm font-medium text-primary-600 hover:text-primary-700">Forgot?</Link>
                             </div>
                             <input
-                                id="password"
-                                name="password"
-                                type="password"
-                                required
-                                aria-required="true"
-                                autoComplete="current-password"
-                                className="block w-full px-3 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 placeholder:text-slate-400 shadow-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                                id="password" name="password" type="password" required autoComplete="current-password"
+                                className="block w-full rounded-xl border border-line2 bg-white px-3 py-2.5 text-ink shadow-subtle outline-none transition-colors focus:border-primary-500"
                                 placeholder="••••••••"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
@@ -326,12 +280,10 @@ export default function Login() {
                         </div>
 
                         {error && (
-                            <motion.div 
-                                initial={{ opacity: 0, y: -10 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                className="text-sm text-red-600 bg-red-50 p-3 rounded-lg"
-                                role="alert"
-                                aria-live="polite"
+                            <motion.div
+                                initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+                                role="alert" aria-live="polite"
+                                className="rounded-xl border border-danger/30 bg-danger/5 px-3 py-2.5 text-sm text-danger"
                             >
                                 {error}
                             </motion.div>
@@ -340,7 +292,7 @@ export default function Login() {
                         <button
                             type="submit"
                             disabled={loading}
-                            className="flex w-full justify-center rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-primary-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600 disabled:opacity-70 transition-colors"
+                            className="flex w-full justify-center rounded-xl bg-primary-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-70"
                         >
                             {loading ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : 'Sign in'}
                         </button>
