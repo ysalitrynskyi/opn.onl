@@ -120,7 +120,7 @@ export default function Preview() {
                                         src={`https://www.google.com/s2/favicons?domain=${preview.domain}&sz=32`} 
                                         alt=""
                                         className="h-5 w-5"
-                                        onError={(e) => { (e.target as HTMLImageElement).src = '/favicon.svg'; }}
+                                        onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
                                     />
                                 </div>
                                 <div className="min-w-0 flex-1">
