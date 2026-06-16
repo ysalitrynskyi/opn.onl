@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import {
     Link2, BarChart2, QrCode, Lock, Clock,
     Zap, Shield, Download, Key, Sparkles,
-    ArrowRight, Check, Flame
+    ArrowRight, Check, Flame, ShieldCheck
 } from 'lucide-react';
 
 const features = [
@@ -76,6 +76,13 @@ const features = [
         description: "We don't track users across the web. Your data stays yours. No third-party trackers or cookies.",
         color: "text-green-600",
         bgColor: "bg-green-100"
+    },
+    {
+        icon: <ShieldCheck className="h-6 w-6" />,
+        title: "Safe-Link Interstitial",
+        description: "Optional, off by default: show a \"you're leaving to X — looks safe ✓\" check with a reputation signal before redirecting — on the links where it matters, without slowing the ones where it doesn't.",
+        color: "text-teal-600",
+        bgColor: "bg-teal-100"
     },
 ];
 

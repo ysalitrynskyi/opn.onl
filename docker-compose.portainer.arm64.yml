@@ -95,6 +95,8 @@ services:
       ENABLE_QR_BRANDING: ${ENABLE_QR_BRANDING:-true}
       # Burn-after-reading (one-time / self-destruct links). Opt-in, default off.
       ENABLE_BURN_AFTER_READING: ${ENABLE_BURN_AFTER_READING:-false}
+      # Safe-link interstitial (destination preview + reputation). Opt-in, default off.
+      ENABLE_SAFE_LINK_INTERSTITIAL: ${ENABLE_SAFE_LINK_INTERSTITIAL:-false}
       # Account settings
       ENABLE_ACCOUNT_DELETION: ${ENABLE_ACCOUNT_DELETION:-false}
     volumes:

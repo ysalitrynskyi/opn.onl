@@ -47,6 +47,10 @@ const faqs = [
             {
                 q: "Do you support one-time or self-destructing links?",
                 a: "Yes. With burn-after-reading you can mark a link to open once (or a set number of times) and then permanently disable itself. It's opt-in — flip it on per link from the create form or the edit dialog."
+            },
+            {
+                q: "Will visitors see a warning before leaving opn.onl?",
+                a: "Optionally. The safe-link interstitial shows a \"you're leaving to X — looks safe ✓\" preview with a reputation check before redirecting. It's off by default and enabled per link, so your normal links stay instant."
             }
         ]
     },
