@@ -108,6 +108,8 @@ services:
 
       # Branded QR codes (brand colour / centre logo / SVG). Kill-switch, default on.
       ENABLE_QR_BRANDING: ${ENABLE_QR_BRANDING:-true}
+      # Burn-after-reading (one-time / self-destruct links). Opt-in, default off.
+      ENABLE_BURN_AFTER_READING: ${ENABLE_BURN_AFTER_READING:-false}
     volumes:
       - backend_logs:/app/logs
       - backend_geoip:/app/data

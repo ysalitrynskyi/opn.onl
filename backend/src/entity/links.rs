@@ -24,6 +24,11 @@ pub struct Model {
     pub deleted_at: Option<DateTime>,
     #[sea_orm(default_value = "false")]
     pub is_pinned: bool,
+    // Burn-after-reading: when true, the link self-destructs once its click cap
+    // is reached. `burned_at` is stamped when it has been consumed.
+    #[sea_orm(default_value = "false")]
+    pub burn_after_reading: bool,
+    pub burned_at: Option<DateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -104,6 +109,11 @@ impl Model {
             return false;
         }
 
+        // A consumed one-time link is permanently inactive.
+        if self.burned_at.is_some() {
+            return false;
+        }
+
         let now = chrono::Utc::now().naive_utc();
         
         // Check if link hasn't started yet
@@ -133,7 +143,16 @@ impl Model {
     /// Get the reason why link is inactive
     pub fn inactive_reason(&self) -> Option<&'static str> {
         let now = chrono::Utc::now().naive_utc();
-        
+
+        // Burn state takes priority so a consumed one-time link shows the
+        // dedicated message rather than the generic max-clicks one.
+        if self.burned_at.is_some()
+            || (self.burn_after_reading
+                && self.max_clicks.map(|m| self.click_count >= m).unwrap_or(false))
+        {
+            return Some("This one-time link has already been opened");
+        }
+
         if let Some(starts_at) = self.starts_at {
             if now < starts_at {
                 return Some("Link is scheduled to activate later");
@@ -153,5 +172,77 @@ impl Model {
         }
         
         None
+    }
+}
+
+#[cfg(test)]
+mod burn_tests {
+    use super::*;
+
+    fn model() -> Model {
+        Model {
+            id: 1,
+            code: "abc".into(),
+            original_url: "https://opn.onl".into(),
+            user_id: Some(1),
+            created_at: chrono::Utc::now().naive_utc(),
+            click_count: 0,
+            expires_at: None,
+            password_hash: None,
+            title: None,
+            notes: None,
+            folder_id: None,
+            org_id: None,
+            starts_at: None,
+            max_clicks: None,
+            deleted_at: None,
+            is_pinned: false,
+            burn_after_reading: false,
+            burned_at: None,
+        }
+    }
+
+    #[test]
+    fn fresh_burn_link_is_active() {
+        let mut m = model();
+        m.burn_after_reading = true;
+        m.max_clicks = Some(1);
+        assert!(m.is_active());
+        assert!(m.inactive_reason().is_none());
+    }
+
+    #[test]
+    fn burn_link_exhausted_by_count_shows_one_time_message() {
+        let mut m = model();
+        m.burn_after_reading = true;
+        m.max_clicks = Some(1);
+        m.click_count = 1;
+        assert!(!m.is_active());
+        assert_eq!(
+            m.inactive_reason(),
+            Some("This one-time link has already been opened")
+        );
+    }
+
+    #[test]
+    fn burned_at_marks_inactive_even_below_cap() {
+        let mut m = model();
+        m.burn_after_reading = true;
+        m.max_clicks = Some(5);
+        m.burned_at = Some(chrono::Utc::now().naive_utc());
+        assert!(!m.is_active());
+        assert_eq!(
+            m.inactive_reason(),
+            Some("This one-time link has already been opened")
+        );
+    }
+
+    #[test]
+    fn non_burn_max_clicks_keeps_generic_message() {
+        let mut m = model();
+        m.max_clicks = Some(1);
+        m.click_count = 1;
+        assert!(!m.is_active());
+        assert_eq!(m.inactive_reason(), Some("Link has reached maximum clicks"));
     }
 }

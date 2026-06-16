@@ -617,6 +617,7 @@ pub struct AppSettingsResponse {
     pub max_alias_length: usize,
     pub url_sanitization_enabled: bool,
     pub qr_branding_enabled: bool,
+    pub burn_after_reading_enabled: bool,
 }
 
 /// Get app settings
@@ -663,6 +664,11 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v != "false")
         .unwrap_or(true);
 
+    // Burn-after-reading is opt-in — default OFF.
+    let burn_after_reading_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,
         custom_aliases_enabled,
@@ -672,6 +678,7 @@ pub async fn get_app_settings() -> impl IntoResponse {
         max_alias_length,
         url_sanitization_enabled,
         qr_branding_enabled,
+        burn_after_reading_enabled,
     }))
 }
 

@@ -12,6 +12,8 @@ export interface LinkData {
     notes: string | null;
     is_active: boolean;
     is_pinned: boolean;
+    burn_after_reading?: boolean;
+    burned_at?: string | null;
     tags: { id: number; name: string; color: string }[];
 }
 
@@ -21,4 +23,5 @@ export interface LinkUpdatePayload {
     expires_at?: string;
     remove_password?: boolean;
     remove_expiration?: boolean;
+    burn_after_reading?: boolean;
 }

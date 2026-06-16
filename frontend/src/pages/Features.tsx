@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import {
     Link2, BarChart2, QrCode, Lock, Clock,
     Zap, Shield, Download, Key, Sparkles,
-    ArrowRight, Check
+    ArrowRight, Check, Flame
 } from 'lucide-react';
 
 const features = [
@@ -41,6 +41,13 @@ const features = [
         description: "Set expiration dates on links for time-sensitive content. Perfect for limited-time offers and campaigns.",
         color: "text-rose-600",
         bgColor: "bg-rose-100"
+    },
+    {
+        icon: <Flame className="h-6 w-6" />,
+        title: "Burn After Reading",
+        description: "Optional one-time links that self-destruct. Set a link to open once — or a set number of times — then it disables itself. Built on the same click-cap engine you already trust.",
+        color: "text-orange-600",
+        bgColor: "bg-orange-100"
     },
     {
         icon: <Download className="h-6 w-6" />,
