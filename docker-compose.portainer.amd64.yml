@@ -101,6 +101,8 @@ services:
       ENABLE_CONDITIONAL_ROUTING: ${ENABLE_CONDITIONAL_ROUTING:-true}
       # Link-in-bio (opt-in public profile at /@username). Default off.
       ENABLE_LINK_IN_BIO: ${ENABLE_LINK_IN_BIO:-true}
+      # API keys (personal access tokens for the MCP server / API clients). Default on.
+      ENABLE_API_KEYS: ${ENABLE_API_KEYS:-true}
       # Account settings
       ENABLE_ACCOUNT_DELETION: ${ENABLE_ACCOUNT_DELETION:-false}
     volumes:

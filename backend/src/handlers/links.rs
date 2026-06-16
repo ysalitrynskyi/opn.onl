@@ -477,6 +477,13 @@ fn generate_short_code() -> String {
 pub async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
     let auth_header = headers.get("Authorization")?.to_str().ok()?;
     let token = auth_header.strip_prefix("Bearer ")?;
+
+    // API key path: tokens prefixed `opn_` are personal access tokens (used by the
+    // MCP server / external API clients), looked up by their sha256 hash.
+    if token.starts_with("opn_") {
+        return resolve_api_key(db, token).await;
+    }
+
     let claims = decode_jwt(token).ok()?;
     let user = users::Entity::find_by_id(claims.user_id)
         .filter(users::Column::DeletedAt.is_null())
@@ -488,6 +495,42 @@ pub async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: 
     } else {
         None
     }
+}
+
+/// sha256(key) base64-encoded — the value stored in `api_keys.key_hash`. Keys are
+/// high-entropy random strings, so a fast hash (not bcrypt) is appropriate and
+/// keeps per-request authentication O(1) via the unique index.
+pub fn hash_api_key(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use base64::Engine as _;
+    let digest = Sha256::digest(key.as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(digest)
+}
+
+/// Resolve an `opn_` API key to its (non-deleted) owner; best-effort stamps
+/// `last_used_at`. Returns None for unknown/revoked keys or deleted owners.
+async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<i32> {
+    use crate::entity::api_keys;
+    // Instance kill-switch: when ENABLE_API_KEYS=false, keys stop authenticating.
+    if std::env::var("ENABLE_API_KEYS").map(|v| v == "false").unwrap_or(false) {
+        return None;
+    }
+    let hash = hash_api_key(key);
+    let rec = api_keys::Entity::find()
+        .filter(api_keys::Column::KeyHash.eq(hash))
+        .one(db)
+        .await
+        .ok()??;
+    let user = users::Entity::find_by_id(rec.user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(db)
+        .await
+        .ok()??;
+    let mut am: api_keys::ActiveModel = Default::default();
+    am.id = Set(rec.id);
+    am.last_used_at = Set(Some(chrono::Utc::now().naive_utc()));
+    let _ = am.update(db).await;
+    Some(user.id)
 }
 
 fn get_base_url() -> String {
@@ -1602,6 +1645,20 @@ mod qr_render_tests {
         assert_eq!(parse_hex("2f37d8"), Some([0x2f, 0x37, 0xd8]));
         assert_eq!(parse_hex("xyz"), None);
         assert_eq!(parse_hex("2f37"), None);
+    }
+}
+
+#[cfg(test)]
+mod api_key_tests {
+    use super::hash_api_key;
+
+    #[test]
+    fn hash_is_deterministic_distinct_and_opaque() {
+        let a = hash_api_key("opn_abc123");
+        assert_eq!(a, hash_api_key("opn_abc123"), "same key → same hash");
+        assert_ne!(a, hash_api_key("opn_different"), "different keys → different hashes");
+        assert_eq!(a.len(), 44, "sha256 base64 is 44 chars");
+        assert!(!a.contains("opn_abc123"), "hash must not contain the raw key");
     }
 }
 

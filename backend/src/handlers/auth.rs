@@ -624,6 +624,7 @@ pub struct AppSettingsResponse {
     pub safe_link_interstitial_enabled: bool,
     pub conditional_routing_enabled: bool,
     pub link_in_bio_enabled: bool,
+    pub api_keys_enabled: bool,
 }
 
 /// Get app settings
@@ -690,6 +691,11 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v != "false")
         .unwrap_or(true);
 
+    // API keys (personal access tokens for the MCP / external clients) — default ON.
+    let api_keys_enabled = std::env::var("ENABLE_API_KEYS")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,
         custom_aliases_enabled,
@@ -703,6 +709,7 @@ pub async fn get_app_settings() -> impl IntoResponse {
         safe_link_interstitial_enabled,
         conditional_routing_enabled,
         link_in_bio_enabled,
+        api_keys_enabled,
     }))
 }
 

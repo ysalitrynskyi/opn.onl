@@ -11,7 +11,6 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{folders, links, link_tags, tags};
-use crate::utils::decode_jwt;
 use crate::handlers::links::TagInfo;
 
 // ============= DTOs =============
@@ -53,19 +52,8 @@ pub struct MoveLinkToFolderRequest {
 // ============= Helper Functions =============
 
 async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
-    let auth_header = headers.get("Authorization")?.to_str().ok()?;
-    let token = auth_header.strip_prefix("Bearer ")?;
-    let claims = decode_jwt(token).ok()?;
-    let user = crate::entity::users::Entity::find_by_id(claims.user_id)
-        .filter(crate::entity::users::Column::DeletedAt.is_null())
-        .one(db)
-        .await
-        .ok()??;
-    if user.token_version == claims.token_version {
-        Some(user.id)
-    } else {
-        None
-    }
+    // Delegate to the shared resolver (handles both JWT and `opn_` API keys).
+    crate::handlers::links::get_user_id_from_header(db, headers).await
 }
 
 async fn get_link_tags(db: &sea_orm::DatabaseConnection, link_id: i32) -> Vec<TagInfo> {

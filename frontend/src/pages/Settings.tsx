@@ -41,6 +41,7 @@ interface AppSettings {
     max_links_per_user: number | null;
     passkeys_enabled: boolean;
     link_in_bio_enabled: boolean;
+    api_keys_enabled: boolean;
 }
 
 function errorMessage(err: unknown, fallback = 'Something went wrong'): string {
@@ -89,6 +90,12 @@ export default function Settings() {
     const [bioEnabled, setBioEnabled] = useState(false);
     const [savingBio, setSavingBio] = useState(false);
 
+    // API keys state
+    const [apiKeys, setApiKeys] = useState<{ id: number; name: string; key_prefix: string; last_used_at: string | null; created_at: string }[]>([]);
+    const [newKeyName, setNewKeyName] = useState('');
+    const [createdApiKey, setCreatedApiKey] = useState<string | null>(null);
+    const [creatingKey, setCreatingKey] = useState(false);
+
     useEffect(() => {
         const token = localStorage.getItem('token');
         if (!token) {
@@ -109,10 +116,11 @@ export default function Settings() {
     const fetchData = async () => {
         try {
             setLoading(true);
-            const [profileRes, settingsRes, passkeysRes] = await Promise.all([
+            const [profileRes, settingsRes, passkeysRes, apiKeysRes] = await Promise.all([
                 authFetch(API_ENDPOINTS.userProfile),
                 fetch(API_ENDPOINTS.appSettings),
                 authFetch(API_ENDPOINTS.passkeys),
+                authFetch(API_ENDPOINTS.apiKeys),
             ]);
 
             if (profileRes.ok) {
@@ -124,6 +132,9 @@ export default function Settings() {
             if (passkeysRes.ok) {
                 const data = await passkeysRes.json();
                 setPasskeys(data.passkeys || []);
+            }
+            if (apiKeysRes.ok) {
+                setApiKeys(await apiKeysRes.json());
             }
         } catch (err) {
             logger.error('Failed to fetch settings data', err);
@@ -425,6 +436,49 @@ export default function Settings() {
             setError(errorMessage(err));
         } finally {
             setSavingBio(false);
+        }
+    };
+
+    const handleCreateApiKey = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setCreatingKey(true);
+        setError('');
+        setSuccess('');
+        setCreatedApiKey(null);
+        try {
+            const res = await authFetch(API_ENDPOINTS.apiKeys, {
+                method: 'POST',
+                body: JSON.stringify({ name: newKeyName || undefined }),
+            });
+            if (!res.ok) {
+                const txt = await res.text();
+                throw new Error(txt || 'Failed to create API key');
+            }
+            const data = await res.json();
+            setCreatedApiKey(data.key);
+            setNewKeyName('');
+            setSuccess("API key created — copy it now, it won't be shown again.");
+            await fetchData();
+        } catch (err) {
+            setError(errorMessage(err));
+        } finally {
+            setCreatingKey(false);
+        }
+    };
+
+    const handleRevokeApiKey = async (id: number) => {
+        setError('');
+        setSuccess('');
+        try {
+            const res = await authFetch(API_ENDPOINTS.apiKey(id), { method: 'DELETE' });
+            if (!res.ok) {
+                const txt = await res.text();
+                throw new Error(txt || 'Failed to revoke API key');
+            }
+            setApiKeys(prev => prev.filter(k => k.id !== id));
+            setSuccess('API key revoked');
+        } catch (err) {
+            setError(errorMessage(err));
         }
     };
 
@@ -866,6 +920,91 @@ export default function Settings() {
                         </button>
                     </div>
                 </motion.section>
+
+                {/* API Keys — personal tokens for the MCP server / API clients */}
+                {appSettings?.api_keys_enabled && (
+                    <motion.section
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.17 }}
+                        className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
+                    >
+                        <div className="p-6 border-b border-line">
+                            <div className="flex items-center gap-3">
+                                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-line bg-paper">
+                                    <Key className="h-5 w-5 text-muted" />
+                                </div>
+                                <div>
+                                    <h2 className="font-display text-lg font-bold text-ink tracking-tight">API Keys</h2>
+                                    <p className="text-sm text-muted">Personal tokens for the MCP server and the API</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            {createdApiKey && (
+                                <div className="rounded-lg border border-primary-200 bg-primary-50/60 p-4">
+                                    <p className="text-sm font-medium text-ink mb-2">Your new API key — copy it now, it won't be shown again:</p>
+                                    <div className="flex items-center gap-2">
+                                        <code className="flex-1 break-all rounded-md border border-line2 bg-surface px-3 py-2 font-mono text-xs text-ink">{createdApiKey}</code>
+                                        <button
+                                            type="button"
+                                            onClick={() => { navigator.clipboard?.writeText(createdApiKey); setSuccess('Copied to clipboard'); }}
+                                            className="rounded-lg border border-line2 px-3 py-2 text-sm text-muted transition-colors hover:text-ink hover:border-ink/30"
+                                        >
+                                            Copy
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {apiKeys.length > 0 && (
+                                <ul className="divide-y divide-line rounded-lg border border-line">
+                                    {apiKeys.map(k => (
+                                        <li key={k.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                                            <div className="min-w-0">
+                                                <p className="font-medium text-ink truncate">{k.name}</p>
+                                                <p className="font-mono text-xs text-faint">
+                                                    {k.key_prefix}… · {k.last_used_at ? `last used ${new Date(k.last_used_at).toLocaleDateString()}` : 'never used'}
+                                                </p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleRevokeApiKey(k.id)}
+                                                className="inline-flex items-center gap-1 text-sm text-danger hover:underline"
+                                                aria-label={`Revoke ${k.name}`}
+                                            >
+                                                <Trash2 className="h-4 w-4" /> Revoke
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+
+                            <form onSubmit={handleCreateApiKey} className="flex items-center gap-2">
+                                <input
+                                    type="text"
+                                    value={newKeyName}
+                                    onChange={e => setNewKeyName(e.target.value)}
+                                    placeholder="Key name (e.g. MCP on my laptop)"
+                                    maxLength={60}
+                                    className={inputClass}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={creatingKey}
+                                    className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
+                                >
+                                    {creatingKey ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Plus className="h-4 w-4" /> Create key</>}
+                                </button>
+                            </form>
+                            <p className="text-xs text-faint">
+                                Use with the{' '}
+                                <a href="https://github.com/ysalitrynskyi/opn-mcp" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">opn.onl MCP server</a>{' '}
+                                or any API client: <code className="font-mono">Authorization: Bearer opn_…</code>
+                            </p>
+                        </div>
+                    </motion.section>
+                )}
 
                 {/* Public profile (Link-in-Bio) — only shown when the instance enables it */}
                 {appSettings?.link_in_bio_enabled && (

@@ -295,6 +295,8 @@ async fn main() {
         .route("/auth/me", get(handlers::auth::get_current_user))
         .route("/auth/profile", put(handlers::auth::update_profile))
         .route("/auth/bio", put(handlers::bio::update_bio_settings))
+        .route("/auth/api-keys", get(handlers::api_keys::list_api_keys).post(handlers::api_keys::create_api_key))
+        .route("/auth/api-keys/:id", delete(handlers::api_keys::delete_api_key))
         .route("/auth/passkey/register/start", post(handlers::passkeys::register_start))
         .route("/auth/passkey/register/finish", post(handlers::passkeys::register_finish))
         .route("/auth/passkey/login/start", post(handlers::passkeys::login_start))
