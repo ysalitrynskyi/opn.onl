@@ -60,7 +60,7 @@ export default function SEO({
         'URL shortening with custom aliases',
         'Detailed click analytics',
         'Geographic visitor tracking',
-        'QR code generation',
+        'Branded QR codes (SVG export)',
         'Password protection',
         'Link expiration',
         'Team collaboration',

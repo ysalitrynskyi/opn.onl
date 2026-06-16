@@ -191,7 +191,7 @@ export default function Docs() {
                             <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
                                 <code className="text-slate-700">/links/{'{id}'}/qr</code>
-                                <span className="text-slate-500 text-sm">Generate QR code</span>
+                                <span className="text-slate-500 text-sm">Generate QR code — optional <code>?color=</code>, <code>logo=true</code>, <code>format=svg</code></span>
                             </div>
                             <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
@@ -278,6 +278,7 @@ export default function Docs() {
                                 <tr><td className="p-3"><code>SMTP_HOST</code></td><td className="p-3">SMTP server hostname</td><td className="p-3">-</td></tr>
                                 <tr><td className="p-3"><code>MIN_ALIAS_LENGTH</code></td><td className="p-3">Minimum custom alias length</td><td className="p-3">5</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_URL_SANITIZATION</code></td><td className="p-3">Block malicious URLs</td><td className="p-3">true</td></tr>
+                                <tr><td className="p-3"><code>ENABLE_QR_BRANDING</code></td><td className="p-3">Brand colour / logo / SVG on QR codes</td><td className="p-3">true</td></tr>
                             </tbody>
                         </table>
                     </div>

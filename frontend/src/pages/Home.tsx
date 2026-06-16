@@ -55,7 +55,7 @@ export default function Home() {
         { icon: Zap, title: 'Rust-fast redirects', desc: 'An Axum + Redis core resolves links in microseconds, built to index billions of rows.' },
         { icon: Shield, title: 'Privacy by default', desc: 'No cross-site tracking, no third-party pixels. The data your links generate stays yours.' },
         { icon: BarChart2, title: 'Honest analytics', desc: 'Clicks, geography, devices and referrers — first-party, in real time, no sampling.' },
-        { icon: QrCode, title: 'QR for everything', desc: 'Every link ships with a QR code, ready for print, packaging or a slide.' },
+        { icon: QrCode, title: 'Branded QR codes', desc: 'Every link ships with a QR — add your brand colour and logo, export PNG or SVG.' },
         { icon: Lock, title: 'Password & limits', desc: 'Gate sensitive links behind a password, cap total clicks, or schedule a window.' },
         { icon: Clock, title: 'Expiring links', desc: 'Set a start and an end. Campaigns turn themselves off when they should.' },
     ];

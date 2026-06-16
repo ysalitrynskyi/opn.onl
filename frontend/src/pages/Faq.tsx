@@ -42,7 +42,7 @@ const faqs = [
             },
             {
                 q: "Can I generate QR codes for my links?",
-                a: "Yes! Every link automatically gets a QR code that you can download and use on printed materials, presentations, or anywhere else. QR codes are available in PNG format."
+                a: "Yes! Every link automatically gets a QR code you can download for print, packaging, presentations, or anywhere else. Export as PNG or crisp SVG, and optionally drop in your brand colour and a centre logo."
             }
         ]
     },

@@ -56,6 +56,18 @@ describe('API_ENDPOINTS', () => {
             expect(API_ENDPOINTS.linkTags(3)).toContain('/links/3/tags');
         });
 
+        it('should build branded QR query params', () => {
+            // No options → plain endpoint (backward compatible).
+            expect(API_ENDPOINTS.linkQr(5)).toBe(API_ENDPOINTS.linkQr(5));
+            expect(API_ENDPOINTS.linkQr(5)).not.toContain('?');
+            const branded = API_ENDPOINTS.linkQr(5, { color: '#2f37d8', logo: true, format: 'svg' });
+            expect(branded).toContain('color=2f37d8'); // leading # stripped
+            expect(branded).toContain('logo=true');
+            expect(branded).toContain('format=svg');
+            // png is the default and is omitted from the query.
+            expect(API_ENDPOINTS.linkQr(5, { format: 'png' })).not.toContain('format=');
+        });
+
         it('should have export endpoint', () => {
             expect(API_ENDPOINTS.exportLinks).toContain('/links/export');
         });

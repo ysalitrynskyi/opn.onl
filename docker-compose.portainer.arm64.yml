@@ -91,6 +91,8 @@ services:
       MAX_ALIAS_LENGTH: ${MAX_ALIAS_LENGTH:-25}
       ALLOW_DELETED_SLUG_REUSE: ${ALLOW_DELETED_SLUG_REUSE:-false}
       ENABLE_URL_SANITIZATION: ${ENABLE_URL_SANITIZATION:-true}
+      # Branded QR codes (brand colour / centre logo / SVG). Kill-switch, default on.
+      ENABLE_QR_BRANDING: ${ENABLE_QR_BRANDING:-true}
       # Account settings
       ENABLE_ACCOUNT_DELETION: ${ENABLE_ACCOUNT_DELETION:-false}
     volumes:
