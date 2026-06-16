@@ -1,10 +1,16 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Shield, Eye, Database, Lock, Trash2, Mail } from 'lucide-react';
+import SEO from '../components/SEO';
 
 export default function Privacy() {
     return (
         <div className="pb-24">
+            <SEO
+                title="Privacy Policy"
+                description="How opn.onl handles your data — privacy-first, no cross-site tracking, no third-party pixels."
+                url="/privacy"
+            />
             {/* Hero */}
             <section className="bg-gradient-to-b from-slate-50 to-white py-16">
                 <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
