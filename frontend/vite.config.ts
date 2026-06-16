@@ -37,8 +37,11 @@ export default defineConfig(({ mode }) => {
       isProduction && Prerenderer({
         routes: PRERENDER_ROUTES,
         renderer: new PuppeteerRenderer({
-          maxConcurrentRoutes: 4,
-          renderAfterTime: 500, // Wait for React to render
+          // Render routes one at a time so each Puppeteer page gets full CPU and
+          // react-helmet-async reliably flushes per-page <title>/meta/JSON-LD
+          // into the captured HTML before snapshot.
+          maxConcurrentRoutes: 1,
+          renderAfterTime: 2000,
           headless: true,
         }),
         postProcess(renderedRoute) {

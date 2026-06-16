@@ -8,6 +8,16 @@ import Home from './pages/Home';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import NotFound from './pages/NotFound';
+// Marketing pages — eager imports so they prerender to full static HTML (SEO).
+// Lazy routes only render the Layout shell during prerender; eager ones don't.
+import Features from './pages/Features';
+import Pricing from './pages/Pricing';
+import About from './pages/About';
+import Privacy from './pages/Privacy';
+import Terms from './pages/Terms';
+import Contact from './pages/Contact';
+import Faq from './pages/Faq';
+import Docs from './pages/Docs';
 
 // Scroll to top on route change
 function ScrollToTop() {
@@ -20,24 +30,16 @@ function ScrollToTop() {
   return null;
 }
 
-// Lazy load heavier pages for better initial load
+// Lazy-load heavier auth / app / dynamic pages (not prerendered)
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Analytics = lazy(() => import('./pages/Analytics'));
 const Settings = lazy(() => import('./pages/Settings'));
 const PasswordPrompt = lazy(() => import('./pages/PasswordPrompt'));
-const Features = lazy(() => import('./pages/Features'));
-const Pricing = lazy(() => import('./pages/Pricing'));
-const About = lazy(() => import('./pages/About'));
-const Privacy = lazy(() => import('./pages/Privacy'));
-const Terms = lazy(() => import('./pages/Terms'));
-const Contact = lazy(() => import('./pages/Contact'));
-const Faq = lazy(() => import('./pages/Faq'));
 const VerifyEmail = lazy(() => import('./pages/VerifyEmail'));
 const Preview = lazy(() => import('./pages/Preview'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Admin = lazy(() => import('./pages/Admin'));
-const Docs = lazy(() => import('./pages/Docs'));
 const Redirect = lazy(() => import('./pages/Redirect'));
 const Bio = lazy(() => import('./pages/Bio'));
 

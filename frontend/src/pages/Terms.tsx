@@ -1,9 +1,15 @@
 import { motion } from 'framer-motion';
 import { FileText, AlertTriangle } from 'lucide-react';
+import SEO from '../components/SEO';
 
 export default function Terms() {
     return (
         <div className="pb-24">
+            <SEO
+                title="Terms of Service"
+                description="The terms governing use of opn.onl, the open-source, self-hostable URL shortener."
+                url="/terms"
+            />
             {/* Hero */}
             <section className="bg-gradient-to-b from-slate-50 to-white py-16">
                 <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
