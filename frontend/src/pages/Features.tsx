@@ -23,8 +23,8 @@ const features = [
     },
     {
         icon: <QrCode className="h-6 w-6" />,
-        title: "QR Code Generation",
-        description: "Automatically generate QR codes for every link. Download and share them anywhere - posters, business cards, products.",
+        title: "Branded QR Codes",
+        description: "Every link gets a QR code that looks like you. Drop in your brand colour and centre logo, then export as PNG or crisp SVG — ready for posters, packaging, business cards or a slide.",
         color: "text-violet-600",
         bgColor: "bg-violet-100"
     },

@@ -37,7 +37,7 @@ describe('Features Page', () => {
 
         it('displays QR code feature', () => {
             render(<Features />);
-            expect(screen.getByRole('heading', { name: /qr code generation/i })).toBeInTheDocument();
+            expect(screen.getByRole('heading', { name: /branded qr codes/i })).toBeInTheDocument();
         });
 
         it('displays password protection feature', () => {
@@ -103,7 +103,7 @@ describe('Features Page', () => {
 
         it('displays data export feature', () => {
             render(<Features />);
-            expect(screen.queryByText(/export/i)).toBeDefined();
+            expect(screen.getByText(/export your data to csv/i)).toBeInTheDocument();
         });
 
         it('displays account deletion feature', () => {

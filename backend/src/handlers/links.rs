@@ -1141,12 +1141,9 @@ pub async fn verify_link_password(
 pub async fn get_qr_code(
     State(state): State<AppState>,
     Path(id): Path<i32>,
+    Query(opts): Query<QrOptions>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    use qrcode::QrCode;
-    use image::Luma;
-    use std::io::Cursor;
-
     // Verify authentication
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
@@ -1182,26 +1179,283 @@ pub async fn get_qr_code(
         }
 
         let url = format!("{}/{}", get_base_url(), link.code);
-        
-        let qr_code = match QrCode::new(url.as_bytes()) {
-            Ok(code) => code,
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate QR code").into_response(),
-        };
-        
-        let image = qr_code.render::<Luma<u8>>().build();
 
-        let mut buffer = Cursor::new(Vec::new());
-        if image.write_to(&mut buffer, image::ImageFormat::Png).is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to encode QR code image").into_response();
+        // QR branding is a non-destructive kill-switch (default ON). When disabled,
+        // all options are ignored and we serve the plain black/white PNG, which is
+        // byte-identical to the legacy behavior.
+        let branding_enabled = std::env::var("ENABLE_QR_BRANDING")
+            .map(|v| v != "false")
+            .unwrap_or(true);
+        let effective = if branding_enabled { opts } else { QrOptions::default() };
+
+        match build_qr_image(&url, &effective) {
+            Some((bytes, content_type)) => (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                bytes,
+            ).into_response(),
+            None => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate QR code").into_response(),
         }
-
-        (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "image/png")],
-            buffer.into_inner(),
-        ).into_response()
     } else {
         (StatusCode::NOT_FOUND, "Link not found").into_response()
+    }
+}
+
+/// Query options for branded QR rendering. All optional — an empty set renders
+/// the plain black/white PNG (byte-identical to the legacy behavior).
+#[derive(Debug, Default, Deserialize)]
+pub struct QrOptions {
+    /// Foreground (module) color as hex, with or without `#`, e.g. `2f37d8`.
+    pub color: Option<String>,
+    /// Background color as hex. Defaults to white.
+    pub bg: Option<String>,
+    /// Overlay the brand mark in the center (uses higher error-correction).
+    pub logo: Option<bool>,
+    /// Output format: `png` (default) or `svg`.
+    pub format: Option<String>,
+    /// Target PNG size in pixels (clamped to 256..=1024). Ignored for SVG.
+    pub size: Option<u32>,
+}
+
+/// Brand mark embedded at compile time (square cobalt app icon). Decoded once.
+/// `include_bytes!` means there is no runtime filesystem dependency, so the
+/// minimal Docker runtime image needs no extra COPY. Self-disables to a plain
+/// QR if the bytes ever fail to decode.
+static QR_LOGO: once_cell::sync::Lazy<Option<image::DynamicImage>> =
+    once_cell::sync::Lazy::new(|| {
+        image::load_from_memory(include_bytes!("../../assets/qr-logo.png")).ok()
+    });
+
+/// Parse a `#rrggbb` / `rrggbb` hex string into RGB. Returns None on any malformed
+/// input so callers can fall back to the default color.
+fn parse_hex(s: &str) -> Option<[u8; 3]> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&s[0..2], 16).ok()?,
+        u8::from_str_radix(&s[2..4], 16).ok()?,
+        u8::from_str_radix(&s[4..6], 16).ok()?,
+    ])
+}
+
+/// Composite the embedded brand mark into the center of an RGBA QR raster, on a
+/// solid background-colored backplate so the occluded modules read cleanly. A
+/// no-op if the logo asset is unavailable.
+fn overlay_logo(img: &mut image::RgbaImage, bg: [u8; 3]) {
+    let logo = match QR_LOGO.as_ref() {
+        Some(l) => l,
+        None => return,
+    };
+    let (w, h) = img.dimensions();
+    // Logo occupies ~22% of the QR width; the backplate is a touch larger.
+    let target = ((w as f32) * 0.22) as u32;
+    if target == 0 {
+        return;
+    }
+    let plate = ((target as f32) * 1.18) as u32;
+    let px = w.saturating_sub(plate) / 2;
+    let py = h.saturating_sub(plate) / 2;
+    for yy in py..(py + plate).min(h) {
+        for xx in px..(px + plate).min(w) {
+            img.put_pixel(xx, yy, image::Rgba([bg[0], bg[1], bg[2], 255]));
+        }
+    }
+    let resized = image::imageops::resize(
+        &logo.to_rgba8(),
+        target,
+        target,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let lx = ((w - target) / 2) as i64;
+    let ly = ((h - target) / 2) as i64;
+    image::imageops::overlay(img, &resized, lx, ly);
+}
+
+/// Render a QR for `url` per `opts`. Returns `(bytes, content_type)`.
+///
+/// Pure (no DB / auth / env) so it is unit-testable. When no options are set it
+/// renders the plain Luma PNG exactly as before. Invalid hex / unknown formats
+/// fall back gracefully rather than erroring.
+fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)> {
+    use qrcode::{EcLevel, QrCode};
+    use std::io::Cursor;
+
+    let want_logo = opts.logo.unwrap_or(false);
+    let fmt = opts.format.as_deref().unwrap_or("png").to_lowercase();
+    let fg = opts.color.as_deref().and_then(parse_hex);
+    let bg = opts.bg.as_deref().and_then(parse_hex).unwrap_or([255, 255, 255]);
+
+    // A center logo occludes modules, so request high error-correction for it.
+    let qr = if want_logo {
+        QrCode::with_error_correction_level(url.as_bytes(), EcLevel::H)
+    } else {
+        QrCode::new(url.as_bytes())
+    }
+    .ok()?;
+
+    if fmt == "svg" {
+        use qrcode::render::svg;
+        let fg_hex = fg
+            .map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
+            .unwrap_or_else(|| "#000000".to_string());
+        let bg_hex = format!("#{:02x}{:02x}{:02x}", bg[0], bg[1], bg[2]);
+        let mut svg_xml = qr
+            .render::<svg::Color>()
+            .dark_color(svg::Color(&fg_hex))
+            .light_color(svg::Color(&bg_hex))
+            .quiet_zone(true)
+            .min_dimensions(256, 256)
+            .build();
+        if want_logo {
+            if let (Some(uri), Some(dim)) = (qr_logo_data_uri(), parse_svg_width(&svg_xml)) {
+                let logo_sz = ((dim as f32) * 0.22) as u32;
+                let pos = (dim - logo_sz) / 2;
+                let img_tag = format!(
+                    "<image x=\"{x}\" y=\"{y}\" width=\"{s}\" height=\"{s}\" href=\"{href}\" preserveAspectRatio=\"xMidYMid meet\"/>",
+                    x = pos, y = pos, s = logo_sz, href = uri
+                );
+                svg_xml = svg_xml.replace("</svg>", &format!("{}</svg>", img_tag));
+            }
+        }
+        return Some((svg_xml.into_bytes(), "image/svg+xml"));
+    }
+
+    let size = opts.size.unwrap_or(512).clamp(256, 1024);
+    let bytes = if fg.is_some() || bg != [255, 255, 255] || want_logo {
+        // Colored / branded → RGBA raster.
+        let dark = fg.unwrap_or([0, 0, 0]);
+        let mut img = qr
+            .render::<image::Rgba<u8>>()
+            .dark_color(image::Rgba([dark[0], dark[1], dark[2], 255]))
+            .light_color(image::Rgba([bg[0], bg[1], bg[2], 255]))
+            .quiet_zone(true)
+            .min_dimensions(size, size)
+            .build();
+        if want_logo {
+            overlay_logo(&mut img, bg);
+        }
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+        buf.into_inner()
+    } else {
+        // Plain path: identical output to the legacy handler.
+        let img = qr.render::<image::Luma<u8>>().build();
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+        buf.into_inner()
+    };
+    Some((bytes, "image/png"))
+}
+
+/// Base64 `data:` URI of the embedded brand mark for inlining into branded SVG.
+/// Returns None when the logo asset is unavailable.
+fn qr_logo_data_uri() -> Option<String> {
+    use base64::Engine as _;
+    QR_LOGO.as_ref()?;
+    static LOGO_URI: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(include_bytes!("../../assets/qr-logo.png"));
+        format!("data:image/png;base64,{}", b64)
+    });
+    Some(LOGO_URI.clone())
+}
+
+/// Extract the `width="N"` integer from a qrcode-rendered SVG header.
+fn parse_svg_width(svg: &str) -> Option<u32> {
+    let marker = "width=\"";
+    let start = svg.find(marker)? + marker.len();
+    let rest = &svg[start..];
+    let end = rest.find('"')?;
+    rest[..end].parse().ok()
+}
+
+#[cfg(test)]
+mod qr_render_tests {
+    use super::{build_qr_image, parse_hex, QrOptions};
+
+    const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G'];
+
+    fn opts(
+        color: Option<&str>,
+        logo: Option<bool>,
+        format: Option<&str>,
+    ) -> QrOptions {
+        QrOptions {
+            color: color.map(|s| s.to_string()),
+            bg: None,
+            logo,
+            format: format.map(|s| s.to_string()),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn plain_is_valid_png() {
+        let (bytes, ct) = build_qr_image("https://opn.onl/abc123", &QrOptions::default()).unwrap();
+        assert_eq!(ct, "image/png");
+        assert!(bytes.starts_with(PNG_MAGIC));
+        // Decodes as a real image.
+        assert!(image::load_from_memory(&bytes).is_ok());
+    }
+
+    #[test]
+    fn colored_is_valid_png() {
+        let (bytes, ct) =
+            build_qr_image("https://opn.onl/abc123", &opts(Some("2f37d8"), None, None)).unwrap();
+        assert_eq!(ct, "image/png");
+        assert!(image::load_from_memory(&bytes).is_ok());
+    }
+
+    #[test]
+    fn hash_prefixed_color_ok() {
+        let (bytes, _) =
+            build_qr_image("https://opn.onl/x", &opts(Some("#2f37d8"), None, None)).unwrap();
+        assert!(image::load_from_memory(&bytes).is_ok());
+    }
+
+    #[test]
+    fn invalid_color_falls_back() {
+        // Garbage hex must not error — it falls back to a plain render.
+        let (bytes, ct) =
+            build_qr_image("https://opn.onl/x", &opts(Some("nothex"), None, None)).unwrap();
+        assert_eq!(ct, "image/png");
+        assert!(bytes.starts_with(PNG_MAGIC));
+    }
+
+    #[test]
+    fn svg_format_returns_svg() {
+        let (bytes, ct) =
+            build_qr_image("https://opn.onl/abc123", &opts(None, None, Some("svg"))).unwrap();
+        assert_eq!(ct, "image/svg+xml");
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("<svg"));
+    }
+
+    #[test]
+    fn logo_overlay_does_not_panic() {
+        let (bytes, ct) =
+            build_qr_image("https://opn.onl/abc123", &opts(Some("2f37d8"), Some(true), None)).unwrap();
+        assert_eq!(ct, "image/png");
+        assert!(image::load_from_memory(&bytes).is_ok());
+    }
+
+    #[test]
+    fn svg_with_logo_embeds_image() {
+        let (bytes, _) =
+            build_qr_image("https://opn.onl/abc123", &opts(None, Some(true), Some("svg"))).unwrap();
+        let s = String::from_utf8(bytes).unwrap();
+        // Logo asset is embedded, so the branded SVG should carry a data URI.
+        assert!(s.contains("<image") && s.contains("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn parse_hex_roundtrip() {
+        assert_eq!(parse_hex("#2f37d8"), Some([0x2f, 0x37, 0xd8]));
+        assert_eq!(parse_hex("2f37d8"), Some([0x2f, 0x37, 0xd8]));
+        assert_eq!(parse_hex("xyz"), None);
+        assert_eq!(parse_hex("2f37"), None);
     }
 }
 

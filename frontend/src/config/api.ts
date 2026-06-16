@@ -41,7 +41,15 @@ export const API_ENDPOINTS = {
     sparklines: `${API_BASE_URL}/links/sparklines`,
     previewMetadata: `${API_BASE_URL}/links/preview-metadata`,
     linkStats: (id: number) => `${API_BASE_URL}/links/${id}/stats`,
-    linkQr: (id: number) => `${API_BASE_URL}/links/${id}/qr`,
+    linkQr: (id: number, opts?: { color?: string; logo?: boolean; format?: 'png' | 'svg' }) => {
+        const base = `${API_BASE_URL}/links/${id}/qr`;
+        const p = new URLSearchParams();
+        if (opts?.color) p.set('color', opts.color.replace(/^#/, ''));
+        if (opts?.logo) p.set('logo', 'true');
+        if (opts?.format && opts.format !== 'png') p.set('format', opts.format);
+        const qs = p.toString();
+        return qs ? `${base}?${qs}` : base;
+    },
     linkDelete: (id: number) => `${API_BASE_URL}/links/${id}`,
     linkUpdate: (id: number) => `${API_BASE_URL}/links/${id}`,
     linkClone: (id: number) => `${API_BASE_URL}/links/${id}/clone`,

@@ -27,6 +27,7 @@ interface AppSettings {
     custom_aliases_enabled: boolean;
     min_alias_length: number;
     max_alias_length: number;
+    qr_branding_enabled: boolean;
 }
 
 const LINKS_PER_PAGE = 20;
@@ -57,7 +58,8 @@ export default function Dashboard() {
     const [appSettings, setAppSettings] = useState<AppSettings>({
         custom_aliases_enabled: true,
         min_alias_length: 5,
-        max_alias_length: 50
+        max_alias_length: 50,
+        qr_branding_enabled: true
     });
     const [sparklineData, setSparklineData] = useState<Record<number, { data: number[]; labels: string[] }>>({});
     const [previewLink, setPreviewLink] = useState<LinkData | null>(null);
@@ -512,7 +514,7 @@ export default function Dashboard() {
                     />
                 )}
                 {qrLink && (
-                    <QRModal link={qrLink} onClose={() => setQrLink(null)} />
+                    <QRModal link={qrLink} onClose={() => setQrLink(null)} brandingEnabled={appSettings.qr_branding_enabled} />
                 )}
                 {shareLink && (
                     <ShareModal

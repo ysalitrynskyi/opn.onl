@@ -15,7 +15,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Password Protection** - Secure links with passwords
 - **Link Scheduling** - Set start dates and expiration for time-limited access
 - **Click Limits** - Define maximum clicks per link
-- **QR Code Generation** - Generate QR codes for any link
+- **Branded QR Codes** - Generate a QR for any link, with optional brand colour, centre logo and PNG/SVG export
 
 ### Organization & Management
 - **Organizations** - Team workspaces with role-based access (owner, admin, member, viewer)
@@ -264,7 +264,7 @@ Full API documentation available at `/swagger-ui/` when backend is running.
 | GET | `/links/{id}` | Get link details |
 | PUT | `/links/{id}` | Update link |
 | DELETE | `/links/{id}` | Delete link |
-| GET | `/links/{id}/qr` | Get QR code image |
+| GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
 | GET | `/links/{id}/stats` | Get link analytics |
 | POST | `/links/bulk` | Create multiple links |
 | POST | `/links/bulk/delete` | Delete multiple links |
