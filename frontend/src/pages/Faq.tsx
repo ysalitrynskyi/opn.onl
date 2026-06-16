@@ -43,6 +43,10 @@ const faqs = [
             {
                 q: "Can I generate QR codes for my links?",
                 a: "Yes! Every link automatically gets a QR code you can download for print, packaging, presentations, or anywhere else. Export as PNG or crisp SVG, and optionally drop in your brand colour and a centre logo."
+            },
+            {
+                q: "Do you support one-time or self-destructing links?",
+                a: "Yes. With burn-after-reading you can mark a link to open once (or a set number of times) and then permanently disable itself. It's opt-in — flip it on per link from the create form or the edit dialog."
             }
         ]
     },

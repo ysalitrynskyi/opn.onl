@@ -279,6 +279,7 @@ export default function Docs() {
                                 <tr><td className="p-3"><code>MIN_ALIAS_LENGTH</code></td><td className="p-3">Minimum custom alias length</td><td className="p-3">5</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_URL_SANITIZATION</code></td><td className="p-3">Block malicious URLs</td><td className="p-3">true</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_QR_BRANDING</code></td><td className="p-3">Brand colour / logo / SVG on QR codes</td><td className="p-3">true</td></tr>
+                                <tr><td className="p-3"><code>ENABLE_BURN_AFTER_READING</code></td><td className="p-3">One-time / self-destruct links</td><td className="p-3">false</td></tr>
                             </tbody>
                         </table>
                     </div>

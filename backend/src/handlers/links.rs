@@ -331,6 +331,7 @@ pub struct CreateLinkRequest {
     pub org_id: Option<i32>,
     pub starts_at: Option<DateTime<Utc>>,
     pub max_clicks: Option<i32>,
+    pub burn_after_reading: Option<bool>,
     pub tag_ids: Option<Vec<i32>>,
 }
 
@@ -346,6 +347,7 @@ pub struct UpdateLinkRequest {
     pub folder_id: Option<i32>,
     pub starts_at: Option<DateTime<Utc>>,
     pub max_clicks: Option<i32>,
+    pub burn_after_reading: Option<bool>,
     pub remove_starts_at: Option<bool>,
     pub remove_max_clicks: Option<bool>,
 }
@@ -421,6 +423,8 @@ pub struct LinkResponse {
     pub org_id: Option<i32>,
     pub starts_at: Option<String>,
     pub max_clicks: Option<i32>,
+    pub burn_after_reading: bool,
+    pub burned_at: Option<String>,
     pub is_active: bool,
     pub is_pinned: bool,
     pub tags: Vec<TagInfo>,
@@ -697,6 +701,18 @@ pub async fn create_link(
         }
     }
 
+    // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING). A burn link needs a
+    // click cap to ride the existing max_clicks enforcement; default to one-time use.
+    let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let burn_after_reading = burn_enabled && payload.burn_after_reading.unwrap_or(false);
+    let effective_max_clicks = if burn_after_reading && payload.max_clicks.is_none() {
+        Some(1)
+    } else {
+        payload.max_clicks
+    };
+
     let link = links::ActiveModel {
         original_url: Set(validated_url.clone()),
         code: Set(code.clone()),
@@ -708,7 +724,8 @@ pub async fn create_link(
         folder_id: Set(payload.folder_id),
         org_id: Set(payload.org_id),
         starts_at: Set(payload.starts_at.map(|d| d.naive_utc())),
-        max_clicks: Set(payload.max_clicks),
+        max_clicks: Set(effective_max_clicks),
+        burn_after_reading: Set(burn_after_reading),
         ..Default::default()
     };
 
@@ -764,7 +781,9 @@ pub async fn create_link(
         folder_id: payload.folder_id,
         org_id: payload.org_id,
         starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
-        max_clicks: payload.max_clicks,
+        max_clicks: effective_max_clicks,
+        burn_after_reading,
+        burned_at: None,
         is_active: true,
         is_pinned: false,
         tags,
@@ -941,7 +960,12 @@ pub async fn redirect_link(
         // a burst of clicks can't overshoot the cap during the buffer window.
         if let Some(max) = link.max_clicks {
             if link.click_count + state.click_buffer.pending_count(link.id) >= max {
-                return (StatusCode::GONE, "Link has reached maximum clicks").into_response();
+                let msg = if link.burn_after_reading {
+                    "This one-time link has already been opened"
+                } else {
+                    "Link has reached maximum clicks"
+                };
+                return (StatusCode::GONE, msg).into_response();
             }
         }
 
@@ -979,6 +1003,7 @@ pub async fn redirect_link(
         }
 
         // Record click using buffer
+        let pending_before = state.click_buffer.pending_count(link.id);
         record_click_buffered(
             &state.click_buffer,
             state.ws_state.as_ref().map(|w| w.as_ref()),
@@ -988,6 +1013,20 @@ pub async fn redirect_link(
             link.click_count,
             &headers,
         );
+
+        // Burn-after-reading: if this click exhausts the cap, stamp burned_at so the
+        // link reports a one-time message and shows a "burned" status afterwards.
+        // Best-effort; the max_clicks guard above already blocks further clicks.
+        if link.burn_after_reading && link.burned_at.is_none() {
+            if let Some(max) = link.max_clicks {
+                if link.click_count + pending_before + 1 >= max {
+                    let mut burned: links::ActiveModel = Default::default();
+                    burned.id = Set(link.id);
+                    burned.burned_at = Set(Some(chrono::Utc::now().naive_utc()));
+                    let _ = burned.update(&state.db).await;
+                }
+            }
+        }
 
         Redirect::temporary(&link.original_url).into_response()
     } else {
@@ -1556,6 +1595,8 @@ pub async fn get_user_links(
             org_id: l.org_id,
             starts_at: l.starts_at.map(|s| s.to_string()),
             max_clicks: l.max_clicks,
+            burn_after_reading: l.burn_after_reading,
+            burned_at: l.burned_at.map(|d| d.to_string()),
             is_active: l.is_active(),
             is_pinned: l.is_pinned,
             tags,
@@ -1716,6 +1757,30 @@ pub async fn update_link(
             active_link.max_clicks = Set(Some(max_clicks));
         }
 
+        // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING).
+        let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        if burn_enabled {
+            if let Some(burn) = payload.burn_after_reading {
+                active_link.burn_after_reading = Set(burn);
+                if burn {
+                    // Ensure a burn link has a click cap (default one-time use),
+                    // accounting for any cap change in this same request.
+                    let has_cap = if payload.remove_max_clicks == Some(true) {
+                        false
+                    } else if let Some(mc) = payload.max_clicks {
+                        mc > 0
+                    } else {
+                        link.max_clicks.is_some()
+                    };
+                    if !has_cap {
+                        active_link.max_clicks = Set(Some(1));
+                    }
+                }
+            }
+        }
+
         match active_link.update(&state.db).await {
             Ok(updated) => {
                 // Invalidate cache
@@ -1742,6 +1807,8 @@ pub async fn update_link(
                     org_id: updated.org_id,
                     starts_at: updated.starts_at.map(|s| s.to_string()),
                     max_clicks: updated.max_clicks,
+                    burn_after_reading: updated.burn_after_reading,
+                    burned_at: updated.burned_at.map(|d| d.to_string()),
                     is_active: updated.is_active(),
                     is_pinned: updated.is_pinned,
                     tags,

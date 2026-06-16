@@ -61,6 +61,7 @@ export default function SEO({
         'Detailed click analytics',
         'Geographic visitor tracking',
         'Branded QR codes (SVG export)',
+        'One-time burn-after-reading links',
         'Password protection',
         'Link expiration',
         'Team collaboration',
