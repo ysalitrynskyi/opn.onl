@@ -19,6 +19,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Safe-Link Interstitial** - Optional "you're leaving to X — looks safe ✓" destination preview with a reputation check, on links that opt in
 - **Smart Conditional Routing** - Optionally route one short link to different destinations by device, OS, country or language, with weighted A/B splits
 - **Link-in-Bio** - Privacy-first public profile page (`/@username`) aggregating your links — public only when you opt in: each user claims a username and enables their own page
+- **API & MCP Server** - Personal API keys + an [official MCP server](#mcp-server) so AI assistants (Claude, etc.) can manage links — against opn.onl or your own self-hosted instance
 - **Branded QR Codes** - Generate a QR for any link, with optional brand colour, centre logo and PNG/SVG export
 
 ### Organization & Management
@@ -34,6 +35,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Passkey Authentication** - Passwordless login via WebAuthn/FIDO2
 - **Rate Limiting** - Built-in protection against abuse (configurable)
 - **JWT Authentication** - Secure token-based auth with expiration
+- **API Keys** - Long-lived personal access tokens (`opn_…`) for the MCP server and programmatic API access
 
 ### Admin Features
 - **Admin Dashboard** - Full statistics and management interface
@@ -258,6 +260,10 @@ Full API documentation available at `/swagger-ui/` when backend is running.
 | POST | `/auth/reset-password` | Reset password with token |
 | POST | `/auth/change-password` | Change password (authenticated) |
 | DELETE | `/auth/delete-account` | Delete own account (if enabled) |
+| GET / POST | `/auth/api-keys` | List / create personal API keys |
+| DELETE | `/auth/api-keys/{id}` | Revoke an API key |
+
+Authenticate any request with `Authorization: Bearer <token>` — either a **JWT** (from `/auth/login`) or a personal **API key** (`opn_…`, created in **Settings → API Keys**). API keys are long-lived and recommended for scripts and the [MCP server](#mcp-server).
 
 ### Links
 
@@ -357,6 +363,34 @@ Full API documentation available at `/swagger-ui/` when backend is running.
 | GET | `/health` | Health check |
 | POST | `/contact` | Contact form |
 | GET | `/analytics/dashboard` | User analytics dashboard |
+
+## MCP Server
+
+opn.onl has an official [Model Context Protocol](https://modelcontextprotocol.io) server, so AI assistants (Claude Desktop, Cursor, etc.) can shorten links, read analytics and manage links in natural language — against the hosted service **or your own self-hosted instance**.
+
+**Repo:** [github.com/ysalitrynskyi/opn-mcp](https://github.com/ysalitrynskyi/opn-mcp)
+
+1. Create an API key in **Settings → API Keys**.
+2. Add the server to your MCP client config (Claude Desktop shown):
+
+```json
+{
+  "mcpServers": {
+    "opn": {
+      "command": "npx",
+      "args": ["-y", "opn-mcp"],
+      "env": {
+        "OPN_API_KEY": "opn_your_key_here",
+        "OPN_BASE_URL": "https://l.opn.onl"
+      }
+    }
+  }
+}
+```
+
+Set `OPN_BASE_URL` to your own instance's API to use a **self-hosted copy** (omit it to default to the hosted `https://l.opn.onl`).
+
+**Tools:** `shorten_url`, `list_links`, `get_link_stats`, `update_link`, `delete_link`, `get_qr_code`, `check_url_health`.
 
 ## Project Structure
 

@@ -103,6 +103,14 @@ export default function Docs() {
                                     Authorization: Bearer your-jwt-token
                                 </code>
                             </div>
+                            <p className="text-slate-600">
+                                For scripts and the <strong>MCP server</strong>, create a long-lived <strong>API key</strong> in Settings → API Keys and send it the same way (it never expires until you revoke it):
+                            </p>
+                            <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
+                                <code className="text-green-400 text-sm">
+                                    Authorization: Bearer opn_xxxxxxxxxxxx
+                                </code>
+                            </div>
                         </div>
                     </div>
 
@@ -210,6 +218,11 @@ export default function Docs() {
                             </div>
                             <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
+                                <code className="text-slate-700">/auth/api-keys</code>
+                                <span className="text-slate-500 text-sm">List / create (POST) keys; DELETE <code>/auth/api-keys/{'{id}'}</code> to revoke</span>
+                            </div>
+                            <div className="p-4 flex items-center gap-3">
+                                <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
                                 <code className="text-slate-700">/links/export</code>
                                 <span className="text-slate-500 text-sm">Export links as CSV</span>
                             </div>
@@ -298,6 +311,7 @@ export default function Docs() {
                                 <tr><td className="p-3"><code>ENABLE_SAFE_LINK_INTERSTITIAL</code></td><td className="p-3">Destination preview + reputation before redirect</td><td className="p-3">true</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_CONDITIONAL_ROUTING</code></td><td className="p-3">Route by device / OS / country / language + A/B</td><td className="p-3">true</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_LINK_IN_BIO</code></td><td className="p-3">Opt-in public link-in-bio profile pages</td><td className="p-3">true</td></tr>
+                                <tr><td className="p-3"><code>ENABLE_API_KEYS</code></td><td className="p-3">Personal API keys for the MCP server / API clients</td><td className="p-3">true</td></tr>
                             </tbody>
                         </table>
                     </div>

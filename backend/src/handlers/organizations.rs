@@ -11,7 +11,6 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{organizations, org_members, audit_log, users, folders, tags, links, link_tags, click_events};
-use crate::utils::decode_jwt;
 
 // ============= DTOs =============
 
@@ -74,19 +73,8 @@ pub struct AuditLogResponse {
 // ============= Helper Functions =============
 
 async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
-    let auth_header = headers.get("Authorization")?.to_str().ok()?;
-    let token = auth_header.strip_prefix("Bearer ")?;
-    let claims = decode_jwt(token).ok()?;
-    let user = crate::entity::users::Entity::find_by_id(claims.user_id)
-        .filter(crate::entity::users::Column::DeletedAt.is_null())
-        .one(db)
-        .await
-        .ok()??;
-    if user.token_version == claims.token_version {
-        Some(user.id)
-    } else {
-        None
-    }
+    // Delegate to the shared resolver (handles both JWT and `opn_` API keys).
+    crate::handlers::links::get_user_id_from_header(db, headers).await
 }
 
 async fn check_org_permission(

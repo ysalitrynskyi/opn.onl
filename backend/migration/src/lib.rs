@@ -23,6 +23,7 @@ mod m20220101_000020_add_burn_after_reading;
 mod m20220101_000021_add_safe_link_interstitial;
 mod m20220101_000022_create_routing_rules;
 mod m20220101_000023_add_link_in_bio;
+mod m20220101_000024_create_api_keys;
 
 pub struct Migrator;
 
@@ -53,6 +54,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000021_add_safe_link_interstitial::Migration),
             Box::new(m20220101_000022_create_routing_rules::Migration),
             Box::new(m20220101_000023_add_link_in_bio::Migration),
+            Box::new(m20220101_000024_create_api_keys::Migration),
         ]
     }
 }

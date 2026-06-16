@@ -24,6 +24,8 @@ export const API_ENDPOINTS = {
     
     // Passkeys
     passkeys: `${API_BASE_URL}/auth/passkeys`,
+    apiKeys: `${API_BASE_URL}/auth/api-keys`,
+    apiKey: (id: number) => `${API_BASE_URL}/auth/api-keys/${id}`,
     passkeyRegisterStart: `${API_BASE_URL}/auth/passkey/register/start`,
     passkeyRegisterFinish: `${API_BASE_URL}/auth/passkey/register/finish`,
     passkeyLoginStart: `${API_BASE_URL}/auth/passkey/login/start`,
