@@ -709,8 +709,8 @@ pub async fn create_link(
     // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING). A burn link needs a
     // click cap to ride the existing max_clicks enforcement; default to one-time use.
     let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .map(|v| v != "false")
+        .unwrap_or(true);
     let burn_after_reading = burn_enabled && payload.burn_after_reading.unwrap_or(false);
     let effective_max_clicks = if burn_after_reading && payload.max_clicks.is_none() {
         Some(1)
@@ -720,8 +720,8 @@ pub async fn create_link(
 
     // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
     let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .map(|v| v != "false")
+        .unwrap_or(true);
     let safe_link_interstitial =
         interstitial_enabled && payload.safe_link_interstitial.unwrap_or(false);
 
@@ -877,8 +877,8 @@ pub async fn preview_link(
             // today. Blocked → malicious; plain HTTP can't be vouched for → unknown;
             // otherwise we have nothing bad on record → safe. (Fails open.)
             let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-                .map(|v| v == "true")
-                .unwrap_or(false);
+                .map(|v| v != "false")
+                .unwrap_or(true);
             let verdict = if check_blocked(&state.db, &link.original_url).await.is_err() {
                 "malicious"
             } else if link.original_url.starts_with("https://") {
@@ -1040,8 +1040,8 @@ pub async fn redirect_link(
         // reach this DB path. When the flag is off, rules are ignored and the link
         // degrades to a plain redirect.
         let routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            .map(|v| v != "false")
+            .unwrap_or(true);
         let routing_rules = if routing_enabled {
             crate::entity::routing_rules::Entity::find()
                 .filter(crate::entity::routing_rules::Column::LinkId.eq(link.id))
@@ -2052,8 +2052,8 @@ pub async fn update_link(
 
         // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING).
         let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            .map(|v| v != "false")
+            .unwrap_or(true);
         if burn_enabled {
             if let Some(burn) = payload.burn_after_reading {
                 active_link.burn_after_reading = Set(burn);
@@ -2076,8 +2076,8 @@ pub async fn update_link(
 
         // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
         let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            .map(|v| v != "false")
+            .unwrap_or(true);
         if interstitial_enabled {
             if let Some(interstitial) = payload.safe_link_interstitial {
                 active_link.safe_link_interstitial = Set(interstitial);
@@ -2086,8 +2086,8 @@ pub async fn update_link(
 
         // Link-in-bio visibility (gated by ENABLE_LINK_IN_BIO).
         let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            .map(|v| v != "false")
+            .unwrap_or(true);
         if link_in_bio_enabled {
             if let Some(visible) = payload.bio_visible {
                 active_link.bio_visible = Set(visible);

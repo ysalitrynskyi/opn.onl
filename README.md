@@ -18,7 +18,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Burn After Reading** - Optional one-time / self-destruct links that disable themselves after they're opened
 - **Safe-Link Interstitial** - Optional "you're leaving to X — looks safe ✓" destination preview with a reputation check, on links that opt in
 - **Smart Conditional Routing** - Optionally route one short link to different destinations by device, OS, country or language, with weighted A/B splits
-- **Link-in-Bio** - Optional, privacy-first public profile page (`/@username`) aggregating your links — disabled by default at both the server and account level
+- **Link-in-Bio** - Privacy-first public profile page (`/@username`) aggregating your links — public only when you opt in: each user claims a username and enables their own page
 - **Branded QR Codes** - Generate a QR for any link, with optional brand colour, centre logo and PNG/SVG export
 
 ### Organization & Management
