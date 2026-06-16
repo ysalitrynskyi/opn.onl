@@ -26,6 +26,11 @@ pub struct Model {
     /// Bumped on credential changes to revoke previously issued JWTs.
     #[sea_orm(default_value = 0)]
     pub token_version: i32,
+    // Link-in-bio (opt-in public profile). Disabled by default.
+    pub bio_username: Option<String>,
+    #[sea_orm(default_value = "false")]
+    pub bio_enabled: bool,
+    pub bio_theme: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

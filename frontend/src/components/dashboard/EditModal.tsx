@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, Flame, ShieldCheck, Route, ChevronDown } from 'lucide-react';
+import { X, Flame, ShieldCheck, Route, ChevronDown, LayoutList } from 'lucide-react';
 import { API_ENDPOINTS, authFetch } from '../../config/api';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
 import RoutingRulesEditor from './RoutingRulesEditor';
@@ -12,9 +12,10 @@ interface EditModalProps {
     burnEnabled?: boolean;
     interstitialEnabled?: boolean;
     routingEnabled?: boolean;
+    bioEnabled?: boolean;
 }
 
-export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false, routingEnabled = false }: EditModalProps) {
+export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false, routingEnabled = false, bioEnabled = false }: EditModalProps) {
     const [url, setUrl] = useState(link.original_url);
     const [password, setPassword] = useState('');
     const [expiresAt, setExpiresAt] = useState(link.expires_at?.split('T')[0] || '');
@@ -22,6 +23,7 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     const [removeExpiration, setRemoveExpiration] = useState(false);
     const [burnAfterReading, setBurnAfterReading] = useState(link.burn_after_reading ?? false);
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(link.safe_link_interstitial ?? false);
+    const [bioVisible, setBioVisible] = useState(link.bio_visible ?? false);
     const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
     const [showRouting, setShowRouting] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -54,6 +56,7 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             remove_expiration: removeExpiration || undefined,
             burn_after_reading: burnEnabled ? burnAfterReading : undefined,
             safe_link_interstitial: interstitialEnabled ? safeLinkInterstitial : undefined,
+            bio_visible: bioEnabled ? bioVisible : undefined,
         });
         if (routingEnabled) {
             const rules = routingRules.filter(r => r.destination_url.trim());
@@ -189,6 +192,21 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                             <span className="inline-flex items-center gap-1.5">
                                 <ShieldCheck className="h-3.5 w-3.5 text-primary-600" />
                                 Show a safety interstitial before redirecting
+                            </span>
+                        </label>
+                    )}
+
+                    {bioEnabled && (
+                        <label className="flex items-center gap-2.5 text-sm text-muted cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={bioVisible}
+                                onChange={(e) => setBioVisible(e.target.checked)}
+                                className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
+                            />
+                            <span className="inline-flex items-center gap-1.5">
+                                <LayoutList className="h-3.5 w-3.5 text-primary-600" />
+                                Show this link on my bio page
                             </span>
                         </label>
                     )}

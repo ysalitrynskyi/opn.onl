@@ -15,6 +15,7 @@ export interface LinkData {
     burn_after_reading?: boolean;
     burned_at?: string | null;
     safe_link_interstitial?: boolean;
+    bio_visible?: boolean;
     tags: { id: number; name: string; color: string }[];
 }
 
@@ -36,4 +37,5 @@ export interface LinkUpdatePayload {
     remove_expiration?: boolean;
     burn_after_reading?: boolean;
     safe_link_interstitial?: boolean;
+    bio_visible?: boolean;
 }

@@ -64,6 +64,7 @@ export default function SEO({
         'One-time burn-after-reading links',
         'Optional safe-link interstitial',
         'Smart conditional routing (device / geo / language)',
+        'Opt-in link-in-bio profile page',
         'Password protection',
         'Link expiration',
         'Team collaboration',

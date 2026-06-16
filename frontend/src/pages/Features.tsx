@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import {
     Link2, BarChart2, QrCode, Lock, Clock,
     Zap, Shield, Download, Key, Sparkles,
-    ArrowRight, Check, Flame, ShieldCheck, Route
+    ArrowRight, Check, Flame, ShieldCheck, Route, LayoutList
 } from 'lucide-react';
 
 const features = [
@@ -90,6 +90,13 @@ const features = [
         description: "One link, many destinations. Route by device, OS, country or language — send iPhone users to the App Store, everyone else to the web — with an optional weighted A/B split, measured in real time.",
         color: "text-sky-600",
         bgColor: "bg-sky-100"
+    },
+    {
+        icon: <LayoutList className="h-6 w-6" />,
+        title: "Link-in-Bio",
+        description: "A profile page for your links — if you want one. Off by default and public only when you flip the switch. No tracking pixels, no third parties: just your links on your own opn.onl/@you page.",
+        color: "text-fuchsia-600",
+        bgColor: "bg-fuchsia-100"
     },
 ];
 

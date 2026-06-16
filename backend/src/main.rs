@@ -294,6 +294,7 @@ async fn main() {
         .route("/auth/settings", get(handlers::auth::get_app_settings))
         .route("/auth/me", get(handlers::auth::get_current_user))
         .route("/auth/profile", put(handlers::auth::update_profile))
+        .route("/auth/bio", put(handlers::bio::update_bio_settings))
         .route("/auth/passkey/register/start", post(handlers::passkeys::register_start))
         .route("/auth/passkey/register/finish", post(handlers::passkeys::register_finish))
         .route("/auth/passkey/login/start", post(handlers::passkeys::login_start))
@@ -375,6 +376,7 @@ async fn main() {
         
         // Health check
         .route("/health", get(health_check))
+        .route("/api/bio/:username", get(handlers::bio::get_public_bio))
         
         // Redirect route (must be last to not conflict with other routes)
         .route("/:code/verify", post(handlers::links::verify_link_password))

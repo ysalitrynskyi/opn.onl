@@ -55,6 +55,10 @@ const faqs = [
             {
                 q: "Can one short link go to different destinations?",
                 a: "Yes — with smart conditional routing you can send visitors to different URLs based on their device, OS, country or language, with an optional weighted A/B split. It reuses the same geolocation and device detection that powers your analytics, and falls back to the link's own URL when no rule matches."
+            },
+            {
+                q: "Is my link-in-bio page public?",
+                a: "Only if you opt in. The link-in-bio feature is off by default at both the server and the account level — no page exists until you claim a username, enable it, and choose which links appear. Pages aren't indexed by search engines by default."
             }
         ]
     },
