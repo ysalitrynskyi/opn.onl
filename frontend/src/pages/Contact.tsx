@@ -93,7 +93,7 @@ export default function Contact() {
                         </motion.a>
 
                         <motion.a
-                            href="https://github.com/salitrynskyi/opn.onl/issues"
+                            href="https://github.com/ysalitrynskyi/opn.onl/issues"
                             target="_blank"
                             rel="noreferrer"
                             initial={{ opacity: 0, y: 20 }}
