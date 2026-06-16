@@ -14,6 +14,7 @@ const PRERENDER_ROUTES = [
   '/contact',
   '/faq',
   '/docs',
+  '/developers',
   '/login',
   '/register',
 ]

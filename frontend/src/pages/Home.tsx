@@ -307,6 +307,62 @@ export default function Home() {
                     </div>
                 </section>
 
+                {/* ===== Developers / API + MCP ===== */}
+                <section className="border-t border-line">
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 lg:py-28">
+                        <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
+                            <div>
+                                <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600">For developers &amp; agents</p>
+                                <h2 className="mt-4 font-display text-3xl sm:text-4xl font-extrabold text-ink tracking-tight">
+                                    Built to be built on.
+                                </h2>
+                                <p className="mt-4 text-lg text-muted max-w-[52ch]">
+                                    A clean REST API and an official MCP server ship with every account. Automate your
+                                    links from code — or let an AI assistant like Claude do it for you. Hosted or
+                                    self-hosted, same keys.
+                                </p>
+                                <ul className="mt-7 grid grid-cols-2 gap-x-6 gap-y-3 max-w-md">
+                                    {['REST API + API keys', 'Official MCP server', 'OpenAPI / Swagger', 'Self-host ready'].map((t) => (
+                                        <li key={t} className="flex items-center gap-2 text-[15px] text-ink">
+                                            <Check className="h-4 w-4 text-primary-600 shrink-0" aria-hidden="true" /> {t}
+                                        </li>
+                                    ))}
+                                </ul>
+                                <div className="mt-8">
+                                    <Link to="/developers" className="inline-flex items-center gap-1.5 font-medium text-primary-600 hover:text-primary-700">
+                                        Explore the developer docs <ArrowRight className="h-4 w-4" />
+                                    </Link>
+                                </div>
+                            </div>
+
+                            {/* code peek */}
+                            <div className="overflow-hidden rounded-2xl border border-line2 bg-surface shadow-lift">
+                                <div className="flex items-center gap-1.5 border-b border-line px-4 py-3">
+                                    <span className="h-2.5 w-2.5 rounded-full bg-line2" />
+                                    <span className="h-2.5 w-2.5 rounded-full bg-line2" />
+                                    <span className="h-2.5 w-2.5 rounded-full bg-line2" />
+                                    <span className="ml-2 font-mono text-xs text-faint">opn-mcp + api</span>
+                                </div>
+                                <div className="p-5 space-y-4">
+                                    <pre className="overflow-x-auto font-mono text-[13px] leading-7 text-ink">
+<span className="text-faint"># shorten from anywhere</span>{'\n'}
+<span className="text-primary-600">curl</span> -X POST l.opn.onl/links \{'\n'}
+{'  '}-H <span className="text-emerald-600">"Authorization: Bearer opn_•••"</span> \{'\n'}
+{'  '}-d <span className="text-emerald-600">{'\'{"original_url":"https://…"}\''}</span>
+                                    </pre>
+                                    <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-4 font-mono text-[11px]">
+                                        <span className="text-faint">mcp tools:</span>
+                                        {['shorten_url', 'list_links', 'get_link_stats', 'get_qr_code'].map((t) => (
+                                            <span key={t} className="rounded-md bg-primary-50 px-2 py-0.5 text-primary-700">{t}</span>
+                                        ))}
+                                        <span className="text-faint">+3</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
                 {/* ===== CTA ===== */}
                 <section className="relative overflow-hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 lg:py-28">
                     <img src="/bg-contours.png" alt="" aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-[0.35] [mask-image:radial-gradient(90%_120%_at_15%_100%,black,transparent_70%)]" />
