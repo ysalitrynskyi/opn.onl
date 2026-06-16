@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Check, Sparkles, Building2, Heart } from 'lucide-react';
+import SEO from '../components/SEO';
 
 const plans = [
     {
@@ -11,7 +12,8 @@ const plans = [
         features: [
             "Unlimited short links",
             "Custom aliases",
-            "QR code generation",
+            "Branded QR codes (PNG/SVG)",
+            "Burn-after-reading links",
             "Password protection",
             "Link expiration",
             "Basic analytics",
@@ -36,6 +38,9 @@ const plans = [
             "Device & browser tracking",
             "Geographic insights",
             "Referrer tracking",
+            "Smart conditional routing",
+            "Link-in-bio profile page",
+            "Safe-link interstitial",
             "Priority support",
             "Early access to features"
         ],
@@ -88,6 +93,11 @@ const faqs = [
 export default function Pricing() {
     return (
         <div className="pb-24">
+            <SEO
+                title="Pricing"
+                description="opn.onl is free and open source — every feature, no usage limits. Self-host it or use the hosted version."
+                url="/pricing"
+            />
             {/* Hero */}
             <section className="py-20 text-center">
                 <motion.div

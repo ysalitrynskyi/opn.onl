@@ -269,6 +269,7 @@ Full API documentation available at `/swagger-ui/` when backend is running.
 | PUT | `/links/{id}` | Update link |
 | DELETE | `/links/{id}` | Delete link |
 | GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
+| GET / PUT | `/links/{id}/rules` | List or replace smart-routing rules (requires `ENABLE_CONDITIONAL_ROUTING`) |
 | GET | `/links/{id}/stats` | Get link analytics |
 | POST | `/links/bulk` | Create multiple links |
 | POST | `/links/bulk/delete` | Delete multiple links |
@@ -280,7 +281,15 @@ Full API documentation available at `/swagger-ui/` when backend is running.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/{code}` | Redirect to original URL |
+| GET | `/{code}/preview` | Link preview + safety/reputation signal (append `+` to any short link) |
 | POST | `/{code}/verify` | Verify password-protected link |
+
+### Link-in-Bio
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| PUT | `/auth/bio` | Update your link-in-bio settings (username, enabled, theme) — requires `ENABLE_LINK_IN_BIO` |
+| GET | `/api/bio/{username}` | Public bio profile (only when the feature and the user's page are enabled) |
 
 ### Organizations
 

@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Github, Heart, Users, Shield, Zap, Globe } from 'lucide-react';
+import SEO from '../components/SEO';
 
 const values = [
     {
@@ -28,6 +29,11 @@ const values = [
 export default function About() {
     return (
         <div className="pb-24">
+            <SEO
+                title="About"
+                description="About opn.onl — a fast, privacy-first, open-source URL shortener built with Rust and React."
+                url="/about"
+            />
             {/* Hero */}
             <section className="bg-gradient-to-b from-slate-50 to-white py-20">
                 <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">

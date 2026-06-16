@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { HelpCircle, ChevronDown, Search } from 'lucide-react';
+import SEO from '../components/SEO';
 
 const faqs = [
     {
@@ -132,8 +133,17 @@ export default function Faq() {
         })).filter(category => category.questions.length > 0)
         : faqs;
 
+    const faqItems = faqs.flatMap(c => c.questions).map(q => ({ question: q.q, answer: q.a }));
+
     return (
         <div className="pb-24">
+            <SEO
+                title="FAQ"
+                description="Answers to common questions about opn.onl — features, privacy, branded QR codes, smart routing, link-in-bio and self-hosting."
+                url="/faq"
+                schemaType="FAQPage"
+                faqItems={faqItems}
+            />
             {/* Hero */}
             <section className="bg-gradient-to-b from-slate-50 to-white py-16">
                 <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
