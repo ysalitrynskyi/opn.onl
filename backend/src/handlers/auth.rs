@@ -619,6 +619,7 @@ pub struct AppSettingsResponse {
     pub qr_branding_enabled: bool,
     pub burn_after_reading_enabled: bool,
     pub safe_link_interstitial_enabled: bool,
+    pub conditional_routing_enabled: bool,
 }
 
 /// Get app settings
@@ -675,6 +676,11 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    // Smart conditional routing is opt-in — default OFF.
+    let conditional_routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,
         custom_aliases_enabled,
@@ -686,6 +692,7 @@ pub async fn get_app_settings() -> impl IntoResponse {
         qr_branding_enabled,
         burn_after_reading_enabled,
         safe_link_interstitial_enabled,
+        conditional_routing_enabled,
     }))
 }
 

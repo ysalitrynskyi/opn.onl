@@ -97,6 +97,8 @@ services:
       ENABLE_BURN_AFTER_READING: ${ENABLE_BURN_AFTER_READING:-false}
       # Safe-link interstitial (destination preview + reputation). Opt-in, default off.
       ENABLE_SAFE_LINK_INTERSTITIAL: ${ENABLE_SAFE_LINK_INTERSTITIAL:-false}
+      # Smart conditional routing (device/OS/country/language + A/B). Opt-in, default off.
+      ENABLE_CONDITIONAL_ROUTING: ${ENABLE_CONDITIONAL_ROUTING:-false}
       # Account settings
       ENABLE_ACCOUNT_DELETION: ${ENABLE_ACCOUNT_DELETION:-false}
     volumes:

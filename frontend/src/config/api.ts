@@ -55,6 +55,7 @@ export const API_ENDPOINTS = {
     linkClone: (id: number) => `${API_BASE_URL}/links/${id}/clone`,
     linkPin: (id: number) => `${API_BASE_URL}/links/${id}/pin`,
     linkTags: (id: number) => `${API_BASE_URL}/links/${id}/tags`,
+    linkRules: (id: number) => `${API_BASE_URL}/links/${id}/rules`,
     linkRealtimeClicks: (id: number) => `${API_BASE_URL}/links/${id}/clicks/realtime`,
     
     // Analytics

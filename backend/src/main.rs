@@ -320,6 +320,7 @@ async fn main() {
         .route("/links/:id/stats", get(handlers::analytics::get_link_stats))
         .route("/links/:id/clicks/realtime", get(handlers::analytics::get_realtime_clicks))
         .route("/links/:id/tags", post(handlers::tags::add_tags_to_link).delete(handlers::tags::remove_tags_from_link))
+        .route("/links/:id/rules", get(handlers::links::get_routing_rules).put(handlers::links::replace_routing_rules))
         
         // Analytics routes
         .route("/analytics/dashboard", get(handlers::analytics::get_dashboard_stats))

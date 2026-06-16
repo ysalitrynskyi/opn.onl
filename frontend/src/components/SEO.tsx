@@ -63,6 +63,7 @@ export default function SEO({
         'Branded QR codes (SVG export)',
         'One-time burn-after-reading links',
         'Optional safe-link interstitial',
+        'Smart conditional routing (device / geo / language)',
         'Password protection',
         'Link expiration',
         'Team collaboration',

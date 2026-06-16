@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, Flame, ShieldCheck } from 'lucide-react';
-import type { LinkData, LinkUpdatePayload } from './types';
+import { X, Flame, ShieldCheck, Route, ChevronDown } from 'lucide-react';
+import { API_ENDPOINTS, authFetch } from '../../config/api';
+import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
+import RoutingRulesEditor from './RoutingRulesEditor';
 
 interface EditModalProps {
     link: LinkData;
@@ -9,9 +11,10 @@ interface EditModalProps {
     onSave: (id: number, data: LinkUpdatePayload) => Promise<void>;
     burnEnabled?: boolean;
     interstitialEnabled?: boolean;
+    routingEnabled?: boolean;
 }
 
-export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false }: EditModalProps) {
+export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false, routingEnabled = false }: EditModalProps) {
     const [url, setUrl] = useState(link.original_url);
     const [password, setPassword] = useState('');
     const [expiresAt, setExpiresAt] = useState(link.expires_at?.split('T')[0] || '');
@@ -19,7 +22,27 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     const [removeExpiration, setRemoveExpiration] = useState(false);
     const [burnAfterReading, setBurnAfterReading] = useState(link.burn_after_reading ?? false);
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(link.safe_link_interstitial ?? false);
+    const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
+    const [showRouting, setShowRouting] = useState(false);
     const [saving, setSaving] = useState(false);
+
+    useEffect(() => {
+        if (!routingEnabled) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await authFetch(API_ENDPOINTS.linkRules(link.id));
+                if (res.ok && !cancelled) {
+                    const data = await res.json();
+                    if (Array.isArray(data) && data.length) {
+                        setRoutingRules(data);
+                        setShowRouting(true);
+                    }
+                }
+            } catch { /* non-fatal: editor starts empty */ }
+        })();
+        return () => { cancelled = true; };
+    }, [routingEnabled, link.id]);
 
     const handleSave = async () => {
         setSaving(true);
@@ -32,6 +55,15 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             burn_after_reading: burnEnabled ? burnAfterReading : undefined,
             safe_link_interstitial: interstitialEnabled ? safeLinkInterstitial : undefined,
         });
+        if (routingEnabled) {
+            const rules = routingRules.filter(r => r.destination_url.trim());
+            try {
+                await authFetch(API_ENDPOINTS.linkRules(link.id), {
+                    method: 'PUT',
+                    body: JSON.stringify({ rules }),
+                });
+            } catch { /* surfaced on next open */ }
+        }
         setSaving(false);
         onClose();
     };
@@ -59,7 +91,7 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                     </button>
                 </div>
 
-                <div className="space-y-4">
+                <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     <div>
                         <label className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">Short link</label>
                         <div className="rounded-lg border border-line bg-paper px-4 py-2 font-mono text-sm text-ink">
@@ -159,6 +191,27 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                                 Show a safety interstitial before redirecting
                             </span>
                         </label>
+                    )}
+
+                    {routingEnabled && (
+                        <div className="border-t border-line pt-4">
+                            <button
+                                type="button"
+                                onClick={() => setShowRouting(v => !v)}
+                                className="flex w-full items-center justify-between text-sm font-medium text-muted transition-colors hover:text-ink"
+                            >
+                                <span className="inline-flex items-center gap-1.5">
+                                    <Route className="h-3.5 w-3.5 text-primary-600" />
+                                    Smart routing{routingRules.length > 0 ? ` (${routingRules.length})` : ''}
+                                </span>
+                                <ChevronDown className={`h-4 w-4 transition-transform ${showRouting ? 'rotate-180' : ''}`} />
+                            </button>
+                            {showRouting && (
+                                <div className="mt-3">
+                                    <RoutingRulesEditor rules={routingRules} onChange={setRoutingRules} />
+                                </div>
+                            )}
+                        </div>
                     )}
                 </div>
 

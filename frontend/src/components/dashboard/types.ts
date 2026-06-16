@@ -18,6 +18,16 @@ export interface LinkData {
     tags: { id: number; name: string; color: string }[];
 }
 
+export interface RoutingRule {
+    match_device?: string | null;
+    match_os?: string | null;
+    match_country?: string | null;
+    match_lang?: string | null;
+    destination_url: string;
+    weight?: number;
+    priority?: number;
+}
+
 export interface LinkUpdatePayload {
     original_url?: string;
     password?: string;

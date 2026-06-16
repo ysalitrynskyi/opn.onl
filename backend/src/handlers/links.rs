@@ -1031,6 +1031,64 @@ pub async fn redirect_link(
             }
         }
 
+        // Smart conditional routing. When enabled and this link has rules, resolve a
+        // per-request destination from the visitor's device/OS/country/language.
+        // Routed links are never cached (resolution is per-request), so they always
+        // reach this DB path. When the flag is off, rules are ignored and the link
+        // degrades to a plain redirect.
+        let routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        let routing_rules = if routing_enabled {
+            crate::entity::routing_rules::Entity::find()
+                .filter(crate::entity::routing_rules::Column::LinkId.eq(link.id))
+                .order_by_asc(crate::entity::routing_rules::Column::Priority)
+                .all(&state.db)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        if !routing_rules.is_empty() {
+            let ip = headers
+                .get("x-forwarded-for")
+                .and_then(|h| h.to_str().ok())
+                .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
+                .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+            let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
+            let ua_info = headers
+                .get("user-agent")
+                .and_then(|h| h.to_str().ok())
+                .map(parse_user_agent)
+                .unwrap_or_default();
+            let accept_language = headers.get("accept-language").and_then(|h| h.to_str().ok());
+
+            let destination = crate::utils::routing::resolve_destination(
+                &routing_rules,
+                &ua_info,
+                &geo,
+                accept_language,
+                &link.original_url,
+            );
+
+            // A routing rule must not be able to bypass the blocklist.
+            if check_blocked(&state.db, &destination).await.is_err() {
+                return (StatusCode::GONE, "This link has been disabled").into_response();
+            }
+
+            record_click_buffered(
+                &state.click_buffer,
+                state.ws_state.as_ref().map(|w| w.as_ref()),
+                link.id,
+                &code,
+                link.user_id,
+                link.click_count,
+                &headers,
+            );
+            return Redirect::temporary(&destination).into_response();
+        }
+
         // Cache the link for future requests (only non-password-protected and without max_clicks)
         if link.password_hash.is_none() && link.max_clicks.is_none() {
             if let Some(cache) = &state.redis_cache {
@@ -1542,6 +1600,190 @@ mod qr_render_tests {
         assert_eq!(parse_hex("xyz"), None);
         assert_eq!(parse_hex("2f37"), None);
     }
+}
+
+/// A single routing rule as accepted from the API.
+#[derive(Deserialize, ToSchema)]
+pub struct RoutingRuleInput {
+    pub priority: Option<i32>,
+    pub match_device: Option<String>,
+    pub match_os: Option<String>,
+    pub match_country: Option<String>,
+    pub match_lang: Option<String>,
+    pub destination_url: String,
+    pub weight: Option<i32>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ReplaceRoutingRulesRequest {
+    pub rules: Vec<RoutingRuleInput>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RoutingRuleResponse {
+    pub id: i32,
+    pub priority: i32,
+    pub match_device: Option<String>,
+    pub match_os: Option<String>,
+    pub match_country: Option<String>,
+    pub match_lang: Option<String>,
+    pub destination_url: String,
+    pub weight: i32,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RoutingRulesSavedResponse {
+    pub count: usize,
+}
+
+const MAX_ROUTING_RULES: usize = 20;
+
+/// Return the link if `user_id` owns it directly or via its organization.
+async fn link_for_owner(
+    db: &DatabaseConnection,
+    id: i32,
+    user_id: i32,
+) -> Option<links::Model> {
+    let link = links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
+        .one(db)
+        .await
+        .ok()
+        .flatten()?;
+    if link.user_id == Some(user_id) {
+        return Some(link);
+    }
+    if let Some(org_id) = link.org_id {
+        use crate::entity::org_members;
+        let is_member = org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        if is_member {
+            return Some(link);
+        }
+    }
+    None
+}
+
+/// List the routing rules for a link.
+pub async fn get_routing_rules(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+    };
+    if link_for_owner(&state.db, id, user_id).await.is_none() {
+        return (StatusCode::FORBIDDEN, "You don't have permission to access this link").into_response();
+    }
+    let rules = crate::entity::routing_rules::Entity::find()
+        .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
+        .order_by_asc(crate::entity::routing_rules::Column::Priority)
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+    let out: Vec<RoutingRuleResponse> = rules
+        .into_iter()
+        .map(|r| RoutingRuleResponse {
+            id: r.id,
+            priority: r.priority,
+            match_device: r.match_device,
+            match_os: r.match_os,
+            match_country: r.match_country,
+            match_lang: r.match_lang,
+            destination_url: r.destination_url,
+            weight: r.weight,
+        })
+        .collect();
+    (StatusCode::OK, Json(out)).into_response()
+}
+
+/// Replace all routing rules for a link (delete-then-insert in a transaction).
+pub async fn replace_routing_rules(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: HeaderMap,
+    Json(payload): Json<ReplaceRoutingRulesRequest>,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+    };
+    let link = match link_for_owner(&state.db, id, user_id).await {
+        Some(l) => l,
+        None => {
+            return (StatusCode::FORBIDDEN, "You don't have permission to modify this link").into_response()
+        }
+    };
+
+    if payload.rules.len() > MAX_ROUTING_RULES {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("A link can have at most {} routing rules", MAX_ROUTING_RULES),
+        )
+            .into_response();
+    }
+
+    // Validate every destination (format + blocklist) before persisting anything.
+    let mut validated: Vec<(String, &RoutingRuleInput)> = Vec::with_capacity(payload.rules.len());
+    for rule in &payload.rules {
+        let url = match validate_url(&rule.destination_url) {
+            Ok(u) => u,
+            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        };
+        if check_blocked(&state.db, &url).await.is_err() {
+            return (StatusCode::BAD_REQUEST, "A destination URL is blocked".to_string()).into_response();
+        }
+        validated.push((url, rule));
+    }
+
+    let txn = match state.db.begin().await {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response(),
+    };
+    if crate::entity::routing_rules::Entity::delete_many()
+        .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
+        .exec(&txn)
+        .await
+        .is_err()
+    {
+        let _ = txn.rollback().await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+    }
+    for (url, rule) in &validated {
+        let am = crate::entity::routing_rules::ActiveModel {
+            link_id: Set(id),
+            priority: Set(rule.priority.unwrap_or(0)),
+            match_device: Set(rule.match_device.clone().filter(|s| !s.is_empty())),
+            match_os: Set(rule.match_os.clone().filter(|s| !s.is_empty())),
+            match_country: Set(rule.match_country.clone().filter(|s| !s.is_empty())),
+            match_lang: Set(rule.match_lang.clone().filter(|s| !s.is_empty())),
+            destination_url: Set(url.clone()),
+            weight: Set(rule.weight.unwrap_or(1).max(1)),
+            ..Default::default()
+        };
+        if am.insert(&txn).await.is_err() {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    }
+    if txn.commit().await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+    }
+
+    // Invalidate the cache so the link leaves the fast path and picks up its rules.
+    if let Some(cache) = &state.redis_cache {
+        let _ = cache.invalidate_link(&link.code).await;
+    }
+
+    (StatusCode::OK, Json(RoutingRulesSavedResponse { count: validated.len() })).into_response()
 }
 
 /// Get user's links with filtering

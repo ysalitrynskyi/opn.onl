@@ -30,6 +30,7 @@ interface AppSettings {
     qr_branding_enabled: boolean;
     burn_after_reading_enabled: boolean;
     safe_link_interstitial_enabled: boolean;
+    conditional_routing_enabled: boolean;
 }
 
 const LINKS_PER_PAGE = 20;
@@ -63,7 +64,8 @@ export default function Dashboard() {
         max_alias_length: 50,
         qr_branding_enabled: true,
         burn_after_reading_enabled: false,
-        safe_link_interstitial_enabled: false
+        safe_link_interstitial_enabled: false,
+        conditional_routing_enabled: false
     });
     const [burnAfterReading, setBurnAfterReading] = useState(false);
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(false);
@@ -523,6 +525,7 @@ export default function Dashboard() {
                         onSave={handleUpdate}
                         burnEnabled={appSettings.burn_after_reading_enabled}
                         interstitialEnabled={appSettings.safe_link_interstitial_enabled}
+                        routingEnabled={appSettings.conditional_routing_enabled}
                     />
                 )}
                 {qrLink && (

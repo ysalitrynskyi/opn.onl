@@ -21,6 +21,7 @@ mod m20220101_000018_add_link_pinned;
 mod m20220101_000019_add_token_version;
 mod m20220101_000020_add_burn_after_reading;
 mod m20220101_000021_add_safe_link_interstitial;
+mod m20220101_000022_create_routing_rules;
 
 pub struct Migrator;
 
@@ -49,6 +50,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000019_add_token_version::Migration),
             Box::new(m20220101_000020_add_burn_after_reading::Migration),
             Box::new(m20220101_000021_add_safe_link_interstitial::Migration),
+            Box::new(m20220101_000022_create_routing_rules::Migration),
         ]
     }
 }
