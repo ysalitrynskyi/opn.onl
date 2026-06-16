@@ -672,23 +672,23 @@ pub async fn get_app_settings() -> impl IntoResponse {
 
     // Burn-after-reading is opt-in — default OFF.
     let burn_after_reading_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .map(|v| v != "false")
+        .unwrap_or(true);
 
     // Safe-link interstitial is opt-in — default OFF.
     let safe_link_interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .map(|v| v != "false")
+        .unwrap_or(true);
 
     // Smart conditional routing is opt-in — default OFF.
     let conditional_routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .map(|v| v != "false")
+        .unwrap_or(true);
 
     // Link-in-bio is opt-in — default OFF (and additionally per-user opt-in).
     let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .map(|v| v != "false")
+        .unwrap_or(true);
 
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,

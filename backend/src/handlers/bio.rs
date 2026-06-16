@@ -21,8 +21,8 @@ const RESERVED_USERNAMES: &[&str] = &[
 
 fn link_in_bio_enabled() -> bool {
     std::env::var("ENABLE_LINK_IN_BIO")
-        .map(|v| v == "true")
-        .unwrap_or(false)
+        .map(|v| v != "false")
+        .unwrap_or(true)
 }
 
 #[derive(Deserialize, ToSchema)]

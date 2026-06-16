@@ -51,7 +51,7 @@ const faqs = [
             },
             {
                 q: "Will visitors see a warning before leaving opn.onl?",
-                a: "Optionally. The safe-link interstitial shows a \"you're leaving to X — looks safe ✓\" preview with a reputation check before redirecting. It's off by default and enabled per link, so your normal links stay instant."
+                a: "Optionally. The safe-link interstitial shows a \"you're leaving to X — looks safe ✓\" preview with a reputation check before redirecting. You enable it per link, so your normal links still redirect instantly."
             },
             {
                 q: "Can one short link go to different destinations?",
@@ -59,7 +59,7 @@ const faqs = [
             },
             {
                 q: "Is my link-in-bio page public?",
-                a: "Only if you opt in. The link-in-bio feature is off by default at both the server and the account level — no page exists until you claim a username, enable it, and choose which links appear. Pages aren't indexed by search engines by default."
+                a: "Only if you opt in. No page exists until you claim a username, enable it, and choose which links appear — so your profile stays private until you turn it on. Pages aren't indexed by search engines by default."
             }
         ]
     },

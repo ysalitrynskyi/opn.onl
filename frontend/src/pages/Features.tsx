@@ -81,7 +81,7 @@ const features = [
     {
         icon: <ShieldCheck className="h-6 w-6" />,
         title: "Safe-Link Interstitial",
-        description: "Optional, off by default: show a \"you're leaving to X — looks safe ✓\" check with a reputation signal before redirecting — on the links where it matters, without slowing the ones where it doesn't.",
+        description: "Turn it on per link: show a \"you're leaving to X — looks safe ✓\" check with a reputation signal before redirecting — on the links where it matters, without slowing the ones where it doesn't.",
         color: "text-teal-600",
         bgColor: "bg-teal-100"
     },
@@ -95,7 +95,7 @@ const features = [
     {
         icon: <LayoutList className="h-6 w-6" />,
         title: "Link-in-Bio",
-        description: "A profile page for your links — if you want one. Off by default and public only when you flip the switch. No tracking pixels, no third parties: just your links on your own opn.onl/@you page.",
+        description: "A profile page for your links — if you want one. Public only when you flip the switch; your page stays private until you enable it. No tracking pixels, no third parties: just your links on your own opn.onl/@you page.",
         color: "text-fuchsia-600",
         bgColor: "bg-fuchsia-100"
     },
@@ -127,6 +127,7 @@ export default function Features() {
             {/* Hero */}
             <section className="relative overflow-hidden bg-ink text-white py-24">
                 <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4wNSI+PHBhdGggZD0iTTM2IDM0djItSDI0di0yaDEyek0zNiAyNHYySDI0di0yaDEyeiIvPjwvZz48L2c+PC9zdmc+')] opacity-40" />
+                <img src="/features-hero.png" alt="" aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-60 [mask-image:linear-gradient(to_left,black,transparent_85%)]" />
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative">
                     <motion.div 
                         initial={{ opacity: 0, y: 20 }}
@@ -184,8 +185,9 @@ export default function Features() {
             </section>
 
             {/* Comparison */}
-            <section className="bg-slate-50 py-24">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <section className="relative overflow-hidden bg-slate-50 py-24">
+                <img src="/features-band.png" alt="" aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-50 [mask-image:radial-gradient(120%_100%_at_50%_0%,black,transparent_78%)]" />
+                <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
                         whileInView={{ opacity: 1, y: 0 }}
