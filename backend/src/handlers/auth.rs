@@ -577,6 +577,9 @@ pub async fn delete_account(
         // Soft delete user
         let mut active_user: users::ActiveModel = user.into();
         active_user.deleted_at = Set(Some(Utc::now().naive_utc()));
+        // Free the bio username for reuse and take the public page down.
+        active_user.bio_username = Set(None);
+        active_user.bio_enabled = Set(false);
 
         if let Err(_) = active_user.update(&state.db).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() })).into_response();
@@ -620,6 +623,7 @@ pub struct AppSettingsResponse {
     pub burn_after_reading_enabled: bool,
     pub safe_link_interstitial_enabled: bool,
     pub conditional_routing_enabled: bool,
+    pub link_in_bio_enabled: bool,
 }
 
 /// Get app settings
@@ -681,6 +685,11 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    // Link-in-bio is opt-in — default OFF (and additionally per-user opt-in).
+    let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,
         custom_aliases_enabled,
@@ -693,6 +702,7 @@ pub async fn get_app_settings() -> impl IntoResponse {
         burn_after_reading_enabled,
         safe_link_interstitial_enabled,
         conditional_routing_enabled,
+        link_in_bio_enabled,
     }))
 }
 
@@ -711,6 +721,10 @@ pub struct UserProfileResponse {
     pub website: Option<String>,
     pub avatar_url: Option<String>,
     pub location: Option<String>,
+    // Link-in-bio settings (so the Settings page can render current state).
+    pub bio_username: Option<String>,
+    pub bio_enabled: bool,
+    pub bio_theme: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -778,6 +792,9 @@ pub async fn get_current_user(
             website: user.website,
             avatar_url: user.avatar_url,
             location: user.location,
+            bio_username: user.bio_username,
+            bio_enabled: user.bio_enabled,
+            bio_theme: user.bio_theme,
         })).into_response();
     }
 
@@ -872,6 +889,9 @@ pub async fn update_profile(
                     website: updated.website,
                     avatar_url: updated.avatar_url,
                     location: updated.location,
+                    bio_username: updated.bio_username,
+                    bio_enabled: updated.bio_enabled,
+                    bio_theme: updated.bio_theme,
                 })).into_response()
             }
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update profile".to_string() })).into_response(),

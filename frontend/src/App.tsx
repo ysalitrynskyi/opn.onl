@@ -39,6 +39,7 @@ const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Admin = lazy(() => import('./pages/Admin'));
 const Docs = lazy(() => import('./pages/Docs'));
 const Redirect = lazy(() => import('./pages/Redirect'));
+const Bio = lazy(() => import('./pages/Bio'));
 
 // Loading fallback component
 function PageLoader() {
@@ -80,6 +81,7 @@ function App() {
               <Route path="forgot-password" element={<ForgotPassword />} />
               <Route path="reset-password" element={<ResetPassword />} />
               <Route path="admin" element={<Admin />} />
+              <Route path="@:username" element={<Bio />} />
               <Route path=":code+" element={<Preview />} />
               <Route path=":code" element={<Redirect />} />
               <Route path="*" element={<NotFound />} />

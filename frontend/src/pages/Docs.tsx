@@ -199,6 +199,16 @@ export default function Docs() {
                                 <span className="text-slate-500 text-sm">List / replace (PUT) smart-routing rules</span>
                             </div>
                             <div className="p-4 flex items-center gap-3">
+                                <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-bold">PUT</span>
+                                <code className="text-slate-700">/auth/bio</code>
+                                <span className="text-slate-500 text-sm">Update your link-in-bio settings</span>
+                            </div>
+                            <div className="p-4 flex items-center gap-3">
+                                <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
+                                <code className="text-slate-700">/api/bio/{'{username}'}</code>
+                                <span className="text-slate-500 text-sm">Public bio profile (when enabled)</span>
+                            </div>
+                            <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
                                 <code className="text-slate-700">/links/export</code>
                                 <span className="text-slate-500 text-sm">Export links as CSV</span>
@@ -287,6 +297,7 @@ export default function Docs() {
                                 <tr><td className="p-3"><code>ENABLE_BURN_AFTER_READING</code></td><td className="p-3">One-time / self-destruct links</td><td className="p-3">false</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_SAFE_LINK_INTERSTITIAL</code></td><td className="p-3">Destination preview + reputation before redirect</td><td className="p-3">false</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_CONDITIONAL_ROUTING</code></td><td className="p-3">Route by device / OS / country / language + A/B</td><td className="p-3">false</td></tr>
+                                <tr><td className="p-3"><code>ENABLE_LINK_IN_BIO</code></td><td className="p-3">Opt-in public link-in-bio profile pages</td><td className="p-3">false</td></tr>
                             </tbody>
                         </table>
                     </div>

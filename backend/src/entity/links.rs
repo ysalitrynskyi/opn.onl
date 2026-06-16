@@ -33,6 +33,11 @@ pub struct Model {
     // "you're leaving to X" preview before redirecting (opt-in, instance-gated).
     #[sea_orm(default_value = "false")]
     pub safe_link_interstitial: bool,
+    // Link-in-bio: whether this link appears on the owner's public bio page.
+    #[sea_orm(default_value = "false")]
+    pub bio_visible: bool,
+    pub bio_position: Option<i32>,
+    pub bio_label: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -204,6 +209,9 @@ mod burn_tests {
             burn_after_reading: false,
             burned_at: None,
             safe_link_interstitial: false,
+            bio_visible: false,
+            bio_position: None,
+            bio_label: None,
         }
     }
 

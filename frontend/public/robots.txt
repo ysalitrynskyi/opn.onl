@@ -12,6 +12,9 @@ Disallow: /verify-email
 Disallow: /reset-password
 Disallow: /forgot-password
 
+# Link-in-bio profile pages are public-by-link only — not indexed by default
+Disallow: /@
+
 # Sitemap
 Sitemap: https://opn.onl/sitemap.xml
 
