@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import {
     Link2, BarChart2, QrCode, Lock, Clock,
     Zap, Shield, Download, Key, Sparkles,
-    ArrowRight, Check, Flame, ShieldCheck
+    ArrowRight, Check, Flame, ShieldCheck, Route
 } from 'lucide-react';
 
 const features = [
@@ -83,6 +83,13 @@ const features = [
         description: "Optional, off by default: show a \"you're leaving to X — looks safe ✓\" check with a reputation signal before redirecting — on the links where it matters, without slowing the ones where it doesn't.",
         color: "text-teal-600",
         bgColor: "bg-teal-100"
+    },
+    {
+        icon: <Route className="h-6 w-6" />,
+        title: "Smart Conditional Routing",
+        description: "One link, many destinations. Route by device, OS, country or language — send iPhone users to the App Store, everyone else to the web — with an optional weighted A/B split, measured in real time.",
+        color: "text-sky-600",
+        bgColor: "bg-sky-100"
     },
 ];
 

@@ -10,3 +10,4 @@ pub mod link_tags;
 pub mod audit_log;
 pub mod blocked_links;
 pub mod blocked_domains;
+pub mod routing_rules;

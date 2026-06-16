@@ -51,6 +51,10 @@ const faqs = [
             {
                 q: "Will visitors see a warning before leaving opn.onl?",
                 a: "Optionally. The safe-link interstitial shows a \"you're leaving to X — looks safe ✓\" preview with a reputation check before redirecting. It's off by default and enabled per link, so your normal links stay instant."
+            },
+            {
+                q: "Can one short link go to different destinations?",
+                a: "Yes — with smart conditional routing you can send visitors to different URLs based on their device, OS, country or language, with an optional weighted A/B split. It reuses the same geolocation and device detection that powers your analytics, and falls back to the link's own URL when no rule matches."
             }
         ]
     },

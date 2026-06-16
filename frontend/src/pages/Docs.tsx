@@ -195,6 +195,11 @@ export default function Docs() {
                             </div>
                             <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
+                                <code className="text-slate-700">/links/{'{id}'}/rules</code>
+                                <span className="text-slate-500 text-sm">List / replace (PUT) smart-routing rules</span>
+                            </div>
+                            <div className="p-4 flex items-center gap-3">
+                                <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
                                 <code className="text-slate-700">/links/export</code>
                                 <span className="text-slate-500 text-sm">Export links as CSV</span>
                             </div>
@@ -281,6 +286,7 @@ export default function Docs() {
                                 <tr><td className="p-3"><code>ENABLE_QR_BRANDING</code></td><td className="p-3">Brand colour / logo / SVG on QR codes</td><td className="p-3">true</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_BURN_AFTER_READING</code></td><td className="p-3">One-time / self-destruct links</td><td className="p-3">false</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_SAFE_LINK_INTERSTITIAL</code></td><td className="p-3">Destination preview + reputation before redirect</td><td className="p-3">false</td></tr>
+                                <tr><td className="p-3"><code>ENABLE_CONDITIONAL_ROUTING</code></td><td className="p-3">Route by device / OS / country / language + A/B</td><td className="p-3">false</td></tr>
                             </tbody>
                         </table>
                     </div>
