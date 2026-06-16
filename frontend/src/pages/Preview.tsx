@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link as RouterLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ExternalLink, Lock, Clock, MousePointer, Globe, AlertTriangle, ArrowRight } from 'lucide-react';
+import { ExternalLink, Lock, Clock, MousePointer, Globe, AlertTriangle, ArrowRight, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
 import { API_ENDPOINTS } from '../config/api';
 import SEO from '../components/SEO';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 interface LinkPreview {
     code: string;
@@ -14,6 +16,9 @@ interface LinkPreview {
     is_expired: boolean;
     created_at: string;
     click_count: number;
+    reputation?: { verdict: string; source: string };
+    interstitial_enabled?: boolean;
+    safe_link_interstitial?: boolean;
 }
 
 export default function Preview() {
@@ -174,11 +179,35 @@ export default function Preview() {
                             </div>
                         )}
 
+                        {/* Reputation */}
+                        {preview.reputation && (() => {
+                            const v = preview.reputation.verdict;
+                            const safe = v === 'safe';
+                            const danger = v === 'malicious' || v === 'suspicious';
+                            const Icon = safe ? ShieldCheck : danger ? ShieldAlert : ShieldQuestion;
+                            const tone = safe
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                                : danger
+                                    ? 'bg-red-50 border-red-200 text-red-800'
+                                    : 'bg-slate-50 border-slate-200 text-slate-700';
+                            const label = safe
+                                ? `You're heading to ${preview.domain} — looks safe ✓`
+                                : danger
+                                    ? `${preview.domain} is flagged on our blocklist`
+                                    : `We couldn't verify ${preview.domain} — proceed only if you trust it`;
+                            return (
+                                <div className={`flex items-start gap-2.5 p-3 rounded-lg border text-sm ${tone}`}>
+                                    <Icon className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                                    <span>{label}</span>
+                                </div>
+                            );
+                        })()}
+
                         {/* Actions */}
                         <div className="pt-2">
                             {!preview.is_expired ? (
                                 <a
-                                    href={`/${preview.code}`}
+                                    href={`${API_URL}/${preview.code}`}
                                     className="w-full flex items-center justify-center gap-2 bg-primary-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-primary-700 transition-colors"
                                 >
                                     Visit Link

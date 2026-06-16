@@ -6,7 +6,7 @@ import {
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
     MousePointer, SortAsc, SortDesc,
     Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus,
-    Eye, ArrowRight, Flame
+    Eye, ArrowRight, Flame, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_ENDPOINTS, authFetch } from '../config/api';
@@ -29,6 +29,7 @@ interface AppSettings {
     max_alias_length: number;
     qr_branding_enabled: boolean;
     burn_after_reading_enabled: boolean;
+    safe_link_interstitial_enabled: boolean;
 }
 
 const LINKS_PER_PAGE = 20;
@@ -61,9 +62,11 @@ export default function Dashboard() {
         min_alias_length: 5,
         max_alias_length: 50,
         qr_branding_enabled: true,
-        burn_after_reading_enabled: false
+        burn_after_reading_enabled: false,
+        safe_link_interstitial_enabled: false
     });
     const [burnAfterReading, setBurnAfterReading] = useState(false);
+    const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(false);
     const [sparklineData, setSparklineData] = useState<Record<number, { data: number[]; labels: string[] }>>({});
     const [previewLink, setPreviewLink] = useState<LinkData | null>(null);
     const [showBulkImport, setShowBulkImport] = useState(false);
@@ -336,6 +339,7 @@ export default function Dashboard() {
                     password: password || undefined,
                     expires_at: expirationDate,
                     burn_after_reading: burnAfterReading || undefined,
+                    safe_link_interstitial: safeLinkInterstitial || undefined,
                 }),
             });
 
@@ -347,6 +351,7 @@ export default function Dashboard() {
                 setExpiresAt('');
                 setExpiresTime('23:59');
                 setBurnAfterReading(false);
+                setSafeLinkInterstitial(false);
                 setShowAdvanced(false);
                 fetchLinks();
             } else {
@@ -517,6 +522,7 @@ export default function Dashboard() {
                         onClose={() => setEditingLink(null)}
                         onSave={handleUpdate}
                         burnEnabled={appSettings.burn_after_reading_enabled}
+                        interstitialEnabled={appSettings.safe_link_interstitial_enabled}
                     />
                 )}
                 {qrLink && (
@@ -858,6 +864,21 @@ export default function Dashboard() {
                                             <span className="inline-flex items-center gap-1.5">
                                                 <Flame className="h-3.5 w-3.5 text-primary-600" />
                                                 Burn after reading — opens once, then self-destructs
+                                            </span>
+                                        </label>
+                                    )}
+
+                                    {appSettings.safe_link_interstitial_enabled && (
+                                        <label className="flex items-center gap-2.5 text-sm text-muted cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={safeLinkInterstitial}
+                                                onChange={(e) => setSafeLinkInterstitial(e.target.checked)}
+                                                className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
+                                            />
+                                            <span className="inline-flex items-center gap-1.5">
+                                                <ShieldCheck className="h-3.5 w-3.5 text-primary-600" />
+                                                Show a safety interstitial before redirecting
                                             </span>
                                         </label>
                                     )}

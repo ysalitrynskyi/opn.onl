@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, Flame } from 'lucide-react';
+import { X, Flame, ShieldCheck } from 'lucide-react';
 import type { LinkData, LinkUpdatePayload } from './types';
 
 interface EditModalProps {
@@ -8,15 +8,17 @@ interface EditModalProps {
     onClose: () => void;
     onSave: (id: number, data: LinkUpdatePayload) => Promise<void>;
     burnEnabled?: boolean;
+    interstitialEnabled?: boolean;
 }
 
-export default function EditModal({ link, onClose, onSave, burnEnabled = false }: EditModalProps) {
+export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false }: EditModalProps) {
     const [url, setUrl] = useState(link.original_url);
     const [password, setPassword] = useState('');
     const [expiresAt, setExpiresAt] = useState(link.expires_at?.split('T')[0] || '');
     const [removePassword, setRemovePassword] = useState(false);
     const [removeExpiration, setRemoveExpiration] = useState(false);
     const [burnAfterReading, setBurnAfterReading] = useState(link.burn_after_reading ?? false);
+    const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(link.safe_link_interstitial ?? false);
     const [saving, setSaving] = useState(false);
 
     const handleSave = async () => {
@@ -28,6 +30,7 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false }
             remove_password: removePassword || undefined,
             remove_expiration: removeExpiration || undefined,
             burn_after_reading: burnEnabled ? burnAfterReading : undefined,
+            safe_link_interstitial: interstitialEnabled ? safeLinkInterstitial : undefined,
         });
         setSaving(false);
         onClose();
@@ -141,6 +144,21 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false }
                                 <p className="mt-1.5 text-xs text-danger">This link has already been burned.</p>
                             )}
                         </div>
+                    )}
+
+                    {interstitialEnabled && (
+                        <label className="flex items-center gap-2.5 text-sm text-muted cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={safeLinkInterstitial}
+                                onChange={(e) => setSafeLinkInterstitial(e.target.checked)}
+                                className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
+                            />
+                            <span className="inline-flex items-center gap-1.5">
+                                <ShieldCheck className="h-3.5 w-3.5 text-primary-600" />
+                                Show a safety interstitial before redirecting
+                            </span>
+                        </label>
                     )}
                 </div>
 

@@ -16,6 +16,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Link Scheduling** - Set start dates and expiration for time-limited access
 - **Click Limits** - Define maximum clicks per link
 - **Burn After Reading** - Optional one-time / self-destruct links that disable themselves after they're opened
+- **Safe-Link Interstitial** - Optional "you're leaving to X — looks safe ✓" destination preview with a reputation check, on links that opt in
 - **Branded QR Codes** - Generate a QR for any link, with optional brand colour, centre logo and PNG/SVG export
 
 ### Organization & Management

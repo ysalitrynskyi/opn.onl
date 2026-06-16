@@ -618,6 +618,7 @@ pub struct AppSettingsResponse {
     pub url_sanitization_enabled: bool,
     pub qr_branding_enabled: bool,
     pub burn_after_reading_enabled: bool,
+    pub safe_link_interstitial_enabled: bool,
 }
 
 /// Get app settings
@@ -669,6 +670,11 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    // Safe-link interstitial is opt-in — default OFF.
+    let safe_link_interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,
         custom_aliases_enabled,
@@ -679,6 +685,7 @@ pub async fn get_app_settings() -> impl IntoResponse {
         url_sanitization_enabled,
         qr_branding_enabled,
         burn_after_reading_enabled,
+        safe_link_interstitial_enabled,
     }))
 }
 

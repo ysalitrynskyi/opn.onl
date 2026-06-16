@@ -14,6 +14,7 @@ export interface LinkData {
     is_pinned: boolean;
     burn_after_reading?: boolean;
     burned_at?: string | null;
+    safe_link_interstitial?: boolean;
     tags: { id: number; name: string; color: string }[];
 }
 
@@ -24,4 +25,5 @@ export interface LinkUpdatePayload {
     remove_password?: boolean;
     remove_expiration?: boolean;
     burn_after_reading?: boolean;
+    safe_link_interstitial?: boolean;
 }

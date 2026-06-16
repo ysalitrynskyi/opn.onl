@@ -29,6 +29,10 @@ pub struct Model {
     #[sea_orm(default_value = "false")]
     pub burn_after_reading: bool,
     pub burned_at: Option<DateTime>,
+    // Safe-link interstitial: when true, browser visits are shown a
+    // "you're leaving to X" preview before redirecting (opt-in, instance-gated).
+    #[sea_orm(default_value = "false")]
+    pub safe_link_interstitial: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -199,6 +203,7 @@ mod burn_tests {
             is_pinned: false,
             burn_after_reading: false,
             burned_at: None,
+            safe_link_interstitial: false,
         }
     }
 

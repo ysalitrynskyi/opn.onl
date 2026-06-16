@@ -332,6 +332,7 @@ pub struct CreateLinkRequest {
     pub starts_at: Option<DateTime<Utc>>,
     pub max_clicks: Option<i32>,
     pub burn_after_reading: Option<bool>,
+    pub safe_link_interstitial: Option<bool>,
     pub tag_ids: Option<Vec<i32>>,
 }
 
@@ -348,6 +349,7 @@ pub struct UpdateLinkRequest {
     pub starts_at: Option<DateTime<Utc>>,
     pub max_clicks: Option<i32>,
     pub burn_after_reading: Option<bool>,
+    pub safe_link_interstitial: Option<bool>,
     pub remove_starts_at: Option<bool>,
     pub remove_max_clicks: Option<bool>,
 }
@@ -425,6 +427,7 @@ pub struct LinkResponse {
     pub max_clicks: Option<i32>,
     pub burn_after_reading: bool,
     pub burned_at: Option<String>,
+    pub safe_link_interstitial: bool,
     pub is_active: bool,
     pub is_pinned: bool,
     pub tags: Vec<TagInfo>,
@@ -713,6 +716,13 @@ pub async fn create_link(
         payload.max_clicks
     };
 
+    // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
+    let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let safe_link_interstitial =
+        interstitial_enabled && payload.safe_link_interstitial.unwrap_or(false);
+
     let link = links::ActiveModel {
         original_url: Set(validated_url.clone()),
         code: Set(code.clone()),
@@ -726,6 +736,7 @@ pub async fn create_link(
         starts_at: Set(payload.starts_at.map(|d| d.naive_utc())),
         max_clicks: Set(effective_max_clicks),
         burn_after_reading: Set(burn_after_reading),
+        safe_link_interstitial: Set(safe_link_interstitial),
         ..Default::default()
     };
 
@@ -784,10 +795,19 @@ pub async fn create_link(
         max_clicks: effective_max_clicks,
         burn_after_reading,
         burned_at: None,
+        safe_link_interstitial,
         is_active: true,
         is_pinned: false,
         tags,
     })).into_response()
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ReputationInfo {
+    /// "safe" | "suspicious" | "malicious" | "unknown"
+    pub verdict: String,
+    /// Where the verdict came from, e.g. "internal_blocklist".
+    pub source: String,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -800,6 +820,12 @@ pub struct LinkPreviewResponse {
     pub is_expired: bool,
     pub created_at: String,
     pub click_count: i32,
+    /// Destination reputation signal for the safe-link interstitial.
+    pub reputation: ReputationInfo,
+    /// Whether the instance has the safe-link interstitial feature enabled.
+    pub interstitial_enabled: bool,
+    /// Whether this link opted into showing the interstitial before redirecting.
+    pub safe_link_interstitial: bool,
 }
 
 /// Get link preview (add + to any short link URL to see preview)
@@ -844,6 +870,20 @@ pub async fn preview_link(
 
             let base_url = get_base_url();
 
+            // Reputation: the internal blocklist is the source of truth we have
+            // today. Blocked → malicious; plain HTTP can't be vouched for → unknown;
+            // otherwise we have nothing bad on record → safe. (Fails open.)
+            let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
+                .map(|v| v == "true")
+                .unwrap_or(false);
+            let verdict = if check_blocked(&state.db, &link.original_url).await.is_err() {
+                "malicious"
+            } else if link.original_url.starts_with("https://") {
+                "safe"
+            } else {
+                "unknown"
+            };
+
             (StatusCode::OK, Json(LinkPreviewResponse {
                 code: link.code.clone(),
                 short_url: format!("{}/{}", base_url, link.code),
@@ -853,6 +893,12 @@ pub async fn preview_link(
                 is_expired,
                 created_at: link.created_at.to_string(),
                 click_count: link.click_count,
+                reputation: ReputationInfo {
+                    verdict: verdict.to_string(),
+                    source: "internal_blocklist".to_string(),
+                },
+                interstitial_enabled,
+                safe_link_interstitial: link.safe_link_interstitial,
             })).into_response()
         }
         None => {
@@ -1597,6 +1643,7 @@ pub async fn get_user_links(
             max_clicks: l.max_clicks,
             burn_after_reading: l.burn_after_reading,
             burned_at: l.burned_at.map(|d| d.to_string()),
+            safe_link_interstitial: l.safe_link_interstitial,
             is_active: l.is_active(),
             is_pinned: l.is_pinned,
             tags,
@@ -1781,6 +1828,16 @@ pub async fn update_link(
             }
         }
 
+        // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
+        let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        if interstitial_enabled {
+            if let Some(interstitial) = payload.safe_link_interstitial {
+                active_link.safe_link_interstitial = Set(interstitial);
+            }
+        }
+
         match active_link.update(&state.db).await {
             Ok(updated) => {
                 // Invalidate cache
@@ -1809,6 +1866,7 @@ pub async fn update_link(
                     max_clicks: updated.max_clicks,
                     burn_after_reading: updated.burn_after_reading,
                     burned_at: updated.burned_at.map(|d| d.to_string()),
+                    safe_link_interstitial: updated.safe_link_interstitial,
                     is_active: updated.is_active(),
                     is_pinned: updated.is_pinned,
                     tags,
