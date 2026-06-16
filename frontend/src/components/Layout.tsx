@@ -33,6 +33,7 @@ export default function Layout() {
     const navLinks = [
         { href: '/features', label: 'Features' },
         { href: '/pricing', label: 'Pricing' },
+        { href: '/developers', label: 'Developers' },
         { href: '/docs', label: 'Docs' },
         { href: '/faq', label: 'FAQ' },
     ];
@@ -204,7 +205,7 @@ export default function Layout() {
                             </p>
                         </div>
                         {[
-                            { h: 'Product', links: [['Features', '/features'], ['Pricing', '/pricing'], ['FAQ', '/faq']] },
+                            { h: 'Product', links: [['Features', '/features'], ['Pricing', '/pricing'], ['Developers', '/developers'], ['FAQ', '/faq']] },
                             { h: 'Company', links: [['About', '/about'], ['Contact', '/contact']] },
                             { h: 'Legal', links: [['Privacy', '/privacy'], ['Terms', '/terms']] },
                         ].map(col => (

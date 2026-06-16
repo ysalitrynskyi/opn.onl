@@ -18,6 +18,7 @@ import Terms from './pages/Terms';
 import Contact from './pages/Contact';
 import Faq from './pages/Faq';
 import Docs from './pages/Docs';
+import Developers from './pages/Developers';
 
 // Scroll to top on route change
 function ScrollToTop() {
@@ -79,6 +80,7 @@ function App() {
               <Route path="contact" element={<Contact />} />
               <Route path="faq" element={<Faq />} />
               <Route path="docs" element={<Docs />} />
+              <Route path="developers" element={<Developers />} />
               <Route path="verify-email" element={<VerifyEmail />} />
               <Route path="forgot-password" element={<ForgotPassword />} />
               <Route path="reset-password" element={<ResetPassword />} />
