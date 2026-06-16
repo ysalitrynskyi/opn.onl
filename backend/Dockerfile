@@ -23,6 +23,8 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY migration ./migration
 COPY src ./src
+# Embedded assets (e.g. the QR brand mark pulled in via include_bytes!).
+COPY assets ./assets
 # Build the application (rust:alpine uses musl by default)
 RUN cargo build --release
 
