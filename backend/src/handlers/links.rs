@@ -1460,11 +1460,26 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
     ])
 }
 
-/// Composite the embedded brand mark into the center of an RGBA QR raster, on a
-/// solid background-colored backplate so the occluded modules read cleanly. A
-/// no-op if the logo asset is unavailable.
-fn overlay_logo(img: &mut image::RgbaImage, bg: [u8; 3]) {
-    let logo = match QR_LOGO.as_ref() {
+/// Strip baked-in white/near-white backgrounds and recolor the mark to `fg`.
+fn tinted_logo_rgba(fg: [u8; 3]) -> Option<image::RgbaImage> {
+    let logo = QR_LOGO.as_ref()?;
+    let rgba = logo.to_rgba8();
+    let mut out = image::RgbaImage::new(rgba.width(), rgba.height());
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        let [r, g, b, a] = pixel.0;
+        if a < 24 || (r > 232 && g > 232 && b > 232) {
+            out.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+        } else {
+            out.put_pixel(x, y, image::Rgba([fg[0], fg[1], fg[2], a]));
+        }
+    }
+    Some(out)
+}
+
+/// Composite the brand mark into the center of an RGBA QR raster, on a
+/// circular background-colored backplate so the occluded modules read cleanly.
+fn overlay_logo(img: &mut image::RgbaImage, bg: [u8; 3], fg: [u8; 3]) {
+    let logo = match tinted_logo_rgba(fg) {
         Some(l) => l,
         None => return,
     };
@@ -1474,16 +1489,23 @@ fn overlay_logo(img: &mut image::RgbaImage, bg: [u8; 3]) {
     if target == 0 {
         return;
     }
-    let plate = ((target as f32) * 1.18) as u32;
+    let plate = ((target as f32) * 1.22) as u32;
     let px = w.saturating_sub(plate) / 2;
     let py = h.saturating_sub(plate) / 2;
+    let cx = px as f32 + plate as f32 / 2.0;
+    let cy = py as f32 + plate as f32 / 2.0;
+    let radius = plate as f32 / 2.0;
     for yy in py..(py + plate).min(h) {
         for xx in px..(px + plate).min(w) {
-            img.put_pixel(xx, yy, image::Rgba([bg[0], bg[1], bg[2], 255]));
+            let dx = xx as f32 + 0.5 - cx;
+            let dy = yy as f32 + 0.5 - cy;
+            if dx * dx + dy * dy <= radius * radius {
+                img.put_pixel(xx, yy, image::Rgba([bg[0], bg[1], bg[2], 255]));
+            }
         }
     }
     let resized = image::imageops::resize(
-        &logo.to_rgba8(),
+        &logo,
         target,
         target,
         image::imageops::FilterType::Lanczos3,
@@ -1506,6 +1528,7 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
     let fmt = opts.format.as_deref().unwrap_or("png").to_lowercase();
     let fg = opts.color.as_deref().and_then(parse_hex);
     let bg = opts.bg.as_deref().and_then(parse_hex).unwrap_or([255, 255, 255]);
+    let dark = fg.unwrap_or([0, 0, 0]);
 
     // A center logo occludes modules, so request high error-correction for it.
     let qr = if want_logo {
@@ -1529,7 +1552,7 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
             .min_dimensions(256, 256)
             .build();
         if want_logo {
-            if let (Some(uri), Some(dim)) = (qr_logo_data_uri(), parse_svg_width(&svg_xml)) {
+            if let (Some(uri), Some(dim)) = (qr_logo_data_uri_tinted(dark), parse_svg_width(&svg_xml)) {
                 let logo_sz = ((dim as f32) * 0.22) as u32;
                 let pos = (dim - logo_sz) / 2;
                 let img_tag = format!(
@@ -1545,7 +1568,6 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
     let size = opts.size.unwrap_or(512).clamp(256, 1024);
     let bytes = if fg.is_some() || bg != [255, 255, 255] || want_logo {
         // Colored / branded → RGBA raster.
-        let dark = fg.unwrap_or([0, 0, 0]);
         let mut img = qr
             .render::<image::Rgba<u8>>()
             .dark_color(image::Rgba([dark[0], dark[1], dark[2], 255]))
@@ -1554,7 +1576,7 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
             .min_dimensions(size, size)
             .build();
         if want_logo {
-            overlay_logo(&mut img, bg);
+            overlay_logo(&mut img, bg, dark);
         }
         let mut buf = Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
@@ -1569,17 +1591,15 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
     Some((bytes, "image/png"))
 }
 
-/// Base64 `data:` URI of the embedded brand mark for inlining into branded SVG.
-/// Returns None when the logo asset is unavailable.
-fn qr_logo_data_uri() -> Option<String> {
+/// Base64 `data:` URI of the brand mark tinted to `fg`, for branded SVG output.
+fn qr_logo_data_uri_tinted(fg: [u8; 3]) -> Option<String> {
     use base64::Engine as _;
-    QR_LOGO.as_ref()?;
-    static LOGO_URI: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
-        let b64 = base64::engine::general_purpose::STANDARD
-            .encode(include_bytes!("../../assets/qr-logo.png"));
-        format!("data:image/png;base64,{}", b64)
-    });
-    Some(LOGO_URI.clone())
+    use std::io::Cursor;
+    let tinted = tinted_logo_rgba(fg)?;
+    let mut buf = Cursor::new(Vec::new());
+    tinted.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+    Some(format!("data:image/png;base64,{b64}"))
 }
 
 /// Extract the `width="N"` integer from a qrcode-rendered SVG header.
@@ -1659,6 +1679,15 @@ mod qr_render_tests {
             build_qr_image("https://opn.onl/abc123", &opts(Some("2f37d8"), Some(true), None)).unwrap();
         assert_eq!(ct, "image/png");
         assert!(image::load_from_memory(&bytes).is_ok());
+    }
+
+    #[test]
+    fn logo_color_follows_foreground() {
+        let (blue, _) =
+            build_qr_image("https://opn.onl/abc123", &opts(Some("2f37d8"), Some(true), None)).unwrap();
+        let (rose, _) =
+            build_qr_image("https://opn.onl/abc123", &opts(Some("e11d48"), Some(true), None)).unwrap();
+        assert_ne!(blue, rose, "tinted logo should change with foreground color");
     }
 
     #[test]

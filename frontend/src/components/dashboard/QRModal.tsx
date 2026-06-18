@@ -12,6 +12,10 @@ const COLOR_PRESETS = [
     { name: 'Amber', value: '#d97706' },
 ];
 
+function isPresetColor(color: string) {
+    return COLOR_PRESETS.some(p => p.value.toLowerCase() === color.toLowerCase());
+}
+
 export default function QRModal({
     link,
     onClose,
@@ -25,7 +29,7 @@ export default function QRModal({
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [color, setColor] = useState('#2f37d8');
-    const [useLogo, setUseLogo] = useState(false);
+    const [useLogo, setUseLogo] = useState(true);
     const [format, setFormat] = useState<'png' | 'svg'>('png');
     const qrUrlRef = useRef<string | null>(null);
 
@@ -120,10 +124,10 @@ export default function QRModal({
 
                 {brandingEnabled && (
                     <div className="text-left space-y-4 mb-6">
-                        {/* Color */}
+                        {/* Preset colors */}
                         <div>
-                            <span className="block text-xs font-semibold uppercase tracking-wide text-faint mb-2">Color</span>
-                            <div className="flex items-center gap-2">
+                            <span className="block text-xs font-semibold uppercase tracking-wide text-faint mb-2">Presets</span>
+                            <div className="flex flex-wrap items-center gap-2">
                                 {COLOR_PRESETS.map(p => (
                                     <button
                                         key={p.value}
@@ -131,42 +135,64 @@ export default function QRModal({
                                         onClick={() => setColor(p.value)}
                                         aria-label={p.name}
                                         aria-pressed={color.toLowerCase() === p.value.toLowerCase()}
-                                        className={`h-7 w-7 rounded-full border transition-transform hover:scale-110 ${
+                                        className={`h-8 w-8 rounded-full border-2 transition-transform hover:scale-110 ${
                                             color.toLowerCase() === p.value.toLowerCase()
                                                 ? 'border-ink ring-2 ring-ink/20 ring-offset-1 ring-offset-surface'
-                                                : 'border-line2'
+                                                : 'border-transparent'
                                         }`}
                                         style={{ backgroundColor: p.value }}
                                     />
                                 ))}
-                                <label className="relative h-7 w-7 rounded-full border border-line2 overflow-hidden cursor-pointer" title="Custom color">
-                                    <input
-                                        type="color"
-                                        value={color}
-                                        onChange={e => setColor(e.target.value)}
-                                        className="absolute inset-0 h-[200%] w-[200%] -translate-x-1/4 -translate-y-1/4 cursor-pointer"
-                                        aria-label="Custom color"
-                                    />
-                                </label>
                             </div>
                         </div>
 
-                        {/* Logo */}
-                        <button
-                            type="button"
-                            onClick={() => setUseLogo(v => !v)}
-                            aria-pressed={useLogo}
-                            className="flex w-full items-center justify-between rounded-lg border border-line2 px-3 py-2 text-sm transition-colors hover:border-ink/30"
+                        {/* Custom color — visually distinct from preset swatches */}
+                        <label
+                            className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 cursor-pointer transition-colors ${
+                                isPresetColor(color)
+                                    ? 'border-dashed border-line2 bg-canvas/40 hover:border-primary-400'
+                                    : 'border-primary-500 bg-primary-50/60 ring-1 ring-primary-500/20'
+                            }`}
                         >
-                            <span className="font-medium text-muted">Logo in center</span>
-                            <span
-                                className={`relative h-5 w-9 rounded-full transition-colors ${useLogo ? 'bg-primary-600' : 'bg-line2'}`}
-                            >
+                            <span className="relative shrink-0">
                                 <span
-                                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${useLogo ? 'translate-x-4' : 'translate-x-0.5'}`}
+                                    className="block h-9 w-9 rounded-lg border border-line2 shadow-inner"
+                                    style={{ backgroundColor: color }}
+                                    aria-hidden
+                                />
+                                <input
+                                    type="color"
+                                    value={color}
+                                    onChange={e => setColor(e.target.value)}
+                                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                    aria-label="Pick a custom color"
                                 />
                             </span>
-                        </button>
+                            <span className="min-w-0 flex-1 text-left">
+                                <span className="block text-sm font-medium text-ink">Custom color</span>
+                                <span className="block font-mono text-xs text-faint uppercase tracking-wide">{color}</span>
+                            </span>
+                            {!isPresetColor(color) && (
+                                <span className="shrink-0 rounded-full bg-primary-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                                    Active
+                                </span>
+                            )}
+                        </label>
+
+                        {/* Logo toggle */}
+                        <label className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-line2 px-3 py-2.5 transition-colors hover:border-ink/30 has-[:checked]:border-primary-300 has-[:checked]:bg-primary-50/40">
+                            <span className="font-medium text-muted">Logo in center</span>
+                            <span className="relative inline-flex h-6 w-11 shrink-0 items-center">
+                                <input
+                                    type="checkbox"
+                                    checked={useLogo}
+                                    onChange={e => setUseLogo(e.target.checked)}
+                                    className="peer sr-only"
+                                />
+                                <span className="absolute inset-0 rounded-full bg-line2 transition-colors peer-checked:bg-primary-600 peer-focus-visible:ring-2 peer-focus-visible:ring-primary-500/40" />
+                                <span className="relative ml-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" />
+                            </span>
+                        </label>
 
                         {/* Format */}
                         <div>
