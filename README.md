@@ -368,6 +368,8 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 
 opn.onl has an official [Model Context Protocol](https://modelcontextprotocol.io) server, so AI assistants (Claude Desktop, Cursor, etc.) can shorten links, read analytics and manage links in natural language — against the hosted service **or your own self-hosted instance**.
 
+[![opn-mcp MCP server](https://glama.ai/mcp/servers/ysalitrynskyi/opn-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ysalitrynskyi/opn-mcp)
+
 **Repo:** [github.com/ysalitrynskyi/opn-mcp](https://github.com/ysalitrynskyi/opn-mcp)
 
 1. Create an API key in **Settings → API Keys**.
