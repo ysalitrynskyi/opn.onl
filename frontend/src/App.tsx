@@ -86,6 +86,9 @@ function App() {
               <Route path="reset-password" element={<ResetPassword />} />
               <Route path="admin" element={<Admin />} />
               <Route path="@:username" element={<Bio />} />
+              {/* Safe-link interstitial: the backend 302s opted-in links here so
+                  the SPA can show the "you're leaving" screen before continuing. */}
+              <Route path="r/:code" element={<Redirect />} />
               <Route path=":code+" element={<Preview />} />
               <Route path=":code" element={<Redirect />} />
               <Route path="*" element={<NotFound />} />

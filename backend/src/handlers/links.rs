@@ -554,8 +554,11 @@ fn redirect_confirmed(confirm: Option<&str>) -> bool {
 }
 
 fn frontend_interstitial_redirect(code: &str) -> axum::response::Response {
+    // Send to the SPA interstitial route (/r/<code>), NOT the bare short link —
+    // the bare path is proxied straight back here and would loop. The SPA shows
+    // the "you're leaving" screen and re-hits this endpoint with ?confirm=1.
     let frontend = get_base_url().trim_end_matches('/').to_string();
-    Redirect::temporary(&format!("{frontend}/{code}")).into_response()
+    Redirect::temporary(&format!("{frontend}/r/{code}")).into_response()
 }
 
 async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
