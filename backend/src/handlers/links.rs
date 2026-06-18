@@ -535,13 +535,27 @@ async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<
 
 fn get_base_url() -> String {
     // Use FRONTEND_URL for short links (e.g., https://opn.onl)
-    // The frontend proxies short links to the backend API
     std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string())
 }
 
 fn get_api_url() -> String {
     // Use BASE_URL for direct API/redirect links (e.g., https://l.opn.onl)
     std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
+}
+
+fn interstitial_feature_enabled() -> bool {
+    std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
+        .map(|v| v != "false")
+        .unwrap_or(true)
+}
+
+fn redirect_confirmed(confirm: Option<&str>) -> bool {
+    confirm.map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+}
+
+fn frontend_interstitial_redirect(code: &str) -> axum::response::Response {
+    let frontend = get_base_url().trim_end_matches('/').to_string();
+    Redirect::temporary(&format!("{frontend}/{code}")).into_response()
 }
 
 async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
@@ -953,6 +967,12 @@ pub async fn preview_link(
     }
 }
 
+#[derive(Deserialize, Default)]
+pub(crate) struct RedirectQuery {
+    /// Set to `1` after the visitor confirms the safe-link interstitial in the SPA.
+    confirm: Option<String>,
+}
+
 /// Redirect to original URL
 #[utoipa::path(
     get,
@@ -971,6 +991,7 @@ pub async fn preview_link(
 pub async fn redirect_link(
     State(state): State<AppState>,
     Path(code): Path<String>,
+    Query(query): Query<RedirectQuery>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     use crate::utils::cache::CachedLink;
@@ -978,8 +999,9 @@ pub async fn redirect_link(
     // Try to get from Redis cache first (for non-password-protected links)
     if let Some(cache) = &state.redis_cache {
         if let Some(cached) = cache.get_link(&code).await {
-            // Skip cache for password-protected links and max_clicks links (need precise counting)
-            if !cached.has_password && cached.max_clicks.is_none() {
+            // Skip cache for password-protected links, max_clicks links, and
+            // interstitial links (need per-request interstitial/confirm handling).
+            if !cached.has_password && cached.max_clicks.is_none() && !cached.safe_link_interstitial {
                 // Check if link is active based on cached data
                 let now = chrono::Utc::now().timestamp();
                 
@@ -1077,6 +1099,13 @@ pub async fn redirect_link(
             }
         }
 
+        if link.safe_link_interstitial
+            && interstitial_feature_enabled()
+            && !redirect_confirmed(query.confirm.as_deref())
+        {
+            return frontend_interstitial_redirect(&code);
+        }
+
         // Smart conditional routing. When enabled and this link has rules, resolve a
         // per-request destination from the visitor's device/OS/country/language.
         // Routed links are never cached (resolution is per-request), so they always
@@ -1135,8 +1164,9 @@ pub async fn redirect_link(
             return Redirect::temporary(&destination).into_response();
         }
 
-        // Cache the link for future requests (only non-password-protected and without max_clicks)
-        if link.password_hash.is_none() && link.max_clicks.is_none() {
+        // Cache the link for future requests (only plain redirects — no password,
+        // click cap, or interstitial, which need the DB path).
+        if link.password_hash.is_none() && link.max_clicks.is_none() && !link.safe_link_interstitial {
             if let Some(cache) = &state.redis_cache {
                 let cached = CachedLink {
                     id: link.id,
@@ -1147,6 +1177,7 @@ pub async fn redirect_link(
                     max_clicks: link.max_clicks,
                     click_count: link.click_count,
                     user_id: link.user_id,
+                    safe_link_interstitial: link.safe_link_interstitial,
                 };
                 let _ = cache.set_link(&code, &cached).await;
             }

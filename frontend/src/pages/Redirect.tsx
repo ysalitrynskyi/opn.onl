@@ -145,7 +145,7 @@ export default function Redirect() {
                                     Cancel
                                 </RouterLink>
                                 <a
-                                    href={`${API_URL}/${code}`}
+                                    href={`${API_URL}/${code}?confirm=1`}
                                     className="flex-1 flex items-center justify-center gap-2 bg-primary-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-primary-700 transition-colors"
                                 >
                                     Continue

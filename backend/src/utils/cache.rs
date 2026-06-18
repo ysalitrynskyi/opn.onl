@@ -14,6 +14,8 @@ pub struct CachedLink {
     pub max_clicks: Option<i32>,
     pub click_count: i32,
     pub user_id: Option<i32>,
+    /// When true, redirect must go through the frontend interstitial first.
+    pub safe_link_interstitial: bool,
 }
 
 impl CachedLink {
@@ -27,6 +29,7 @@ impl CachedLink {
             "max_clicks": self.max_clicks,
             "click_count": self.click_count,
             "user_id": self.user_id,
+            "safe_link_interstitial": self.safe_link_interstitial,
         }).to_string()
     }
 
@@ -41,6 +44,7 @@ impl CachedLink {
             max_clicks: json["max_clicks"].as_i64().map(|n| n as i32),
             click_count: json["click_count"].as_i64()? as i32,
             user_id: json["user_id"].as_i64().map(|n| n as i32),
+            safe_link_interstitial: json["safe_link_interstitial"].as_bool().unwrap_or(false),
         })
     }
 }
