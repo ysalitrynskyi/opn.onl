@@ -172,6 +172,32 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-frontend:latest-amd64 \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-frontend:latest-arm64
 
+  cleanup:
+    name: Prune Old GHCR Versions
+    runs-on: ubuntu-latest
+    needs: [create-manifests]
+    # Only prune on release builds, after the :latest manifest has been
+    # (re)created — so the multi-arch children it references are preserved.
+    if: github.ref == 'refs/heads/release'
+    permissions:
+      packages: write
+    steps:
+      - name: Delete untagged + stale versions
+        uses: dataaxiom/ghcr-cleanup-action@v1.2.2
+        with:
+          packages: opn-backend,opn-frontend
+          owner: ${{ github.repository_owner }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Remove orphaned untagged digests left behind by each build.
+          delete-untagged: true
+          # Also tidy multi-arch images whose platform children went missing.
+          delete-ghost-images: true
+          delete-partial-images: true
+          # Keep the 10 most recent tagged versions (e.g. semver releases)…
+          keep-n-tagged: 10
+          # …and never delete the rolling production tags.
+          exclude-tags: latest,latest-amd64,latest-arm64
+
   summary:
     name: Build Summary
     runs-on: ubuntu-latest
