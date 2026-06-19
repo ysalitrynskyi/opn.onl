@@ -1464,23 +1464,30 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
 }
 
 /// Strip baked-in white/near-white backgrounds and recolor the mark to `fg`.
+///
+/// Transparent pixels keep `fg` as their RGB (only their alpha is zeroed) so a
+/// downstream Lanczos resize interpolates a constant color — no dark/colored
+/// fringe along the mark's edges.
 fn tinted_logo_rgba(fg: [u8; 3]) -> Option<image::RgbaImage> {
     let logo = QR_LOGO.as_ref()?;
     let rgba = logo.to_rgba8();
     let mut out = image::RgbaImage::new(rgba.width(), rgba.height());
     for (x, y, pixel) in rgba.enumerate_pixels() {
         let [r, g, b, a] = pixel.0;
-        if a < 24 || (r > 232 && g > 232 && b > 232) {
-            out.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
-        } else {
-            out.put_pixel(x, y, image::Rgba([fg[0], fg[1], fg[2], a]));
-        }
+        let alpha = if a < 24 || (r > 232 && g > 232 && b > 232) { 0 } else { a };
+        out.put_pixel(x, y, image::Rgba([fg[0], fg[1], fg[2], alpha]));
     }
     Some(out)
 }
 
+/// Linear blend of `over` onto `base` by `alpha` in [0,1].
+fn blend_channel(base: u8, over: u8, alpha: f32) -> u8 {
+    (over as f32 * alpha + base as f32 * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8
+}
+
 /// Composite the brand mark into the center of an RGBA QR raster, on a
 /// circular background-colored backplate so the occluded modules read cleanly.
+/// The backplate edge is anti-aliased (1px coverage ramp) to avoid jaggies.
 fn overlay_logo(img: &mut image::RgbaImage, bg: [u8; 3], fg: [u8; 3]) {
     let logo = match tinted_logo_rgba(fg) {
         Some(l) => l,
@@ -1492,19 +1499,31 @@ fn overlay_logo(img: &mut image::RgbaImage, bg: [u8; 3], fg: [u8; 3]) {
     if target == 0 {
         return;
     }
-    let plate = ((target as f32) * 1.22) as u32;
-    let px = w.saturating_sub(plate) / 2;
-    let py = h.saturating_sub(plate) / 2;
-    let cx = px as f32 + plate as f32 / 2.0;
-    let cy = py as f32 + plate as f32 / 2.0;
-    let radius = plate as f32 / 2.0;
-    for yy in py..(py + plate).min(h) {
-        for xx in px..(px + plate).min(w) {
+    let plate = (target as f32) * 1.22;
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
+    let radius = plate / 2.0;
+    let x0 = (cx - radius - 1.0).floor().max(0.0) as u32;
+    let x1 = (cx + radius + 1.0).ceil().min(w as f32) as u32;
+    let y0 = (cy - radius - 1.0).floor().max(0.0) as u32;
+    let y1 = (cy + radius + 1.0).ceil().min(h as f32) as u32;
+    for yy in y0..y1 {
+        for xx in x0..x1 {
             let dx = xx as f32 + 0.5 - cx;
             let dy = yy as f32 + 0.5 - cy;
-            if dx * dx + dy * dy <= radius * radius {
-                img.put_pixel(xx, yy, image::Rgba([bg[0], bg[1], bg[2], 255]));
+            let dist = (dx * dx + dy * dy).sqrt();
+            // 1 fully inside, 0 fully outside, linear ramp across the edge.
+            let coverage = (radius + 0.5 - dist).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
             }
+            let cur = img.get_pixel(xx, yy).0;
+            img.put_pixel(xx, yy, image::Rgba([
+                blend_channel(cur[0], bg[0], coverage),
+                blend_channel(cur[1], bg[1], coverage),
+                blend_channel(cur[2], bg[2], coverage),
+                255,
+            ]));
         }
     }
     let resized = image::imageops::resize(
@@ -1558,11 +1577,19 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
             if let (Some(uri), Some(dim)) = (qr_logo_data_uri_tinted(dark), parse_svg_width(&svg_xml)) {
                 let logo_sz = ((dim as f32) * 0.22) as u32;
                 let pos = (dim - logo_sz) / 2;
+                let center = dim as f32 / 2.0;
+                // Circular backplate (matches the PNG's 1.22× plate) so the logo
+                // reads cleanly over the modules instead of sitting bare on them.
+                let plate_r = (logo_sz as f32 * 1.22) / 2.0;
+                let backplate = format!(
+                    "<circle cx=\"{c}\" cy=\"{c}\" r=\"{r:.2}\" fill=\"{bg}\"/>",
+                    c = center, r = plate_r, bg = bg_hex
+                );
                 let img_tag = format!(
                     "<image x=\"{x}\" y=\"{y}\" width=\"{s}\" height=\"{s}\" href=\"{href}\" preserveAspectRatio=\"xMidYMid meet\"/>",
                     x = pos, y = pos, s = logo_sz, href = uri
                 );
-                svg_xml = svg_xml.replace("</svg>", &format!("{}</svg>", img_tag));
+                svg_xml = svg_xml.replace("</svg>", &format!("{}{}</svg>", backplate, img_tag));
             }
         }
         return Some((svg_xml.into_bytes(), "image/svg+xml"));
@@ -1691,6 +1718,15 @@ mod qr_render_tests {
         let (rose, _) =
             build_qr_image("https://opn.onl/abc123", &opts(Some("e11d48"), Some(true), None)).unwrap();
         assert_ne!(blue, rose, "tinted logo should change with foreground color");
+    }
+
+    #[test]
+    fn svg_with_logo_has_backplate() {
+        let (bytes, _) =
+            build_qr_image("https://opn.onl/abc123", &opts(None, Some(true), Some("svg"))).unwrap();
+        let s = String::from_utf8(bytes).unwrap();
+        // The logo must sit on a circular backplate, not bare on the modules.
+        assert!(s.contains("<circle"), "branded SVG should draw a backplate circle");
     }
 
     #[test]
