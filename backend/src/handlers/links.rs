@@ -212,9 +212,26 @@ fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-/// SSRF guard: reject a URL whose host is, or resolves to, a private/internal
-/// address. Resolves hostnames so DNS pointing at internal IPs is also caught.
-async fn assert_public_url(url: &str) -> Result<(), String> {
+/// A host that passed the SSRF guard, together with the exact set of addresses
+/// it resolved to. The connection is later pinned to these addresses so the IP
+/// that is connected to is always the IP that was validated (no second,
+/// independent DNS lookup that a rebinding attacker could answer differently).
+#[derive(Debug)]
+struct ValidatedTarget {
+    /// Host as it appears in the URL (used for the `Host` header and TLS SNI).
+    host: String,
+    /// Validated addresses to pin the connection to (IP + URL port).
+    addrs: Vec<std::net::SocketAddr>,
+    /// True when the host is a literal IP, so no DNS override is needed.
+    is_literal_ip: bool,
+}
+
+/// SSRF guard: resolve a URL's host and reject it if the host is, or resolves
+/// to, any private/internal address. Returns the validated addresses so the
+/// caller can pin the connection to them. Resolving here and connecting to the
+/// exact addresses returned closes the DNS-rebinding TOCTOU: validation and
+/// connection can no longer see different DNS answers.
+async fn resolve_and_validate(url: &str) -> Result<ValidatedTarget, String> {
     let parsed = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
     match parsed.scheme() {
         "http" | "https" => {}
@@ -223,46 +240,72 @@ async fn assert_public_url(url: &str) -> Result<(), String> {
     let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
     let port = parsed.port_or_known_default().unwrap_or(80);
 
-    let ips: Vec<std::net::IpAddr> = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        vec![ip]
-    } else {
-        tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|_| "Could not resolve host".to_string())?
-            .map(|sa| sa.ip())
-            .collect()
-    };
+    let (addrs, is_literal_ip): (Vec<std::net::SocketAddr>, bool) =
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            (vec![std::net::SocketAddr::new(ip, port)], true)
+        } else {
+            let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|_| "Could not resolve host".to_string())?
+                .collect();
+            (resolved, false)
+        };
 
-    if ips.is_empty() {
+    if addrs.is_empty() {
         return Err("Host did not resolve".to_string());
     }
-    if ips.iter().any(is_disallowed_ip) {
+    // Reject if ANY resolved address is internal/private. Because the connection
+    // is then pinned to exactly this address set, a rebinding answer cannot slip
+    // an internal IP in between validation and connect.
+    if addrs.iter().any(|sa| is_disallowed_ip(&sa.ip())) {
         return Err("URL resolves to a disallowed (internal/private) address".to_string());
     }
-    Ok(())
+    Ok(ValidatedTarget {
+        host: host.to_string(),
+        addrs,
+        is_literal_ip,
+    })
 }
 
-/// Perform an HTTP request with the SSRF guard applied to the initial URL and to
-/// every redirect hop. Redirects are followed manually (Policy::none) so each
-/// `Location` is re-validated, defeating redirect-based SSRF and DNS rebinding
-/// of the first hop. Returns the final response.
-async fn ssrf_guarded_fetch(
-    method: reqwest::Method,
-    start_url: &str,
+/// Build a reqwest client that connects **only** to the validated addresses for
+/// this hop. `resolve_to_addrs` overrides DNS for the target host, so reqwest
+/// does not perform its own (second) lookup, while the `Host` header and TLS
+/// SNI stay set to the hostname — HTTPS certificate validation is unaffected.
+fn build_pinned_client(
+    target: &ValidatedTarget,
     user_agent: Option<&str>,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none());
     if let Some(ua) = user_agent {
         builder = builder.user_agent(ua);
     }
-    let client = builder.build().map_err(|_| "Failed to build HTTP client".to_string())?;
+    // Literal-IP hosts trigger no DNS in reqwest, so there is nothing to pin.
+    if !target.is_literal_ip {
+        builder = builder.resolve_to_addrs(&target.host, &target.addrs);
+    }
+    builder
+        .build()
+        .map_err(|_| "Failed to build HTTP client".to_string())
+}
 
+/// Perform an HTTP request with the SSRF guard applied to the initial URL and to
+/// every redirect hop. Redirects are followed manually (Policy::none) so each
+/// `Location` is re-validated, defeating redirect-based SSRF. Every hop is
+/// resolved, validated, and then connected to via a DNS-pinned client, so the
+/// connected IP is always the validated IP (DNS rebinding cannot open a gap
+/// between the check and the connect). Returns the final response.
+async fn ssrf_guarded_fetch(
+    method: reqwest::Method,
+    start_url: &str,
+    user_agent: Option<&str>,
+) -> Result<reqwest::Response, String> {
     let mut current = start_url.to_string();
     // Initial request plus up to 5 redirects.
     for _ in 0..6 {
-        assert_public_url(&current).await?;
+        let target = resolve_and_validate(&current).await?;
+        let client = build_pinned_client(&target, user_agent)?;
         let resp = client
             .request(method.clone(), &current)
             .send()
@@ -1814,6 +1857,123 @@ mod api_key_tests {
         assert_ne!(a, hash_api_key("opn_different"), "different keys → different hashes");
         assert_eq!(a.len(), 44, "sha256 base64 is 44 chars");
         assert!(!a.contains("opn_abc123"), "hash must not contain the raw key");
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::{build_pinned_client, resolve_and_validate, ValidatedTarget};
+    use std::net::SocketAddr;
+
+    /// Minimal HTTP/1.1 server that answers every connection with `200 ok`.
+    /// Returns the address it is listening on (always 127.0.0.1:<ephemeral>).
+    async fn spawn_ok_server() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// Core DNS-rebinding regression: the client must connect to the address the
+    /// guard validated, NOT to whatever DNS says at connect time. The host here
+    /// (`pinned.invalid`) has no DNS record at all — reserved `.invalid` never
+    /// resolves — so the fetch can only succeed if the pin forces the connection
+    /// to the validated address. Before the fix reqwest did its own resolution
+    /// and this would be unreachable.
+    #[tokio::test]
+    async fn pinned_client_connects_to_validated_address_not_dns() {
+        let addr = spawn_ok_server().await;
+        let target = ValidatedTarget {
+            host: "pinned.invalid".to_string(),
+            addrs: vec![addr],
+            is_literal_ip: false,
+        };
+        let client = build_pinned_client(&target, None).unwrap();
+
+        let resp = client
+            .get(format!("http://pinned.invalid:{}/", addr.port()))
+            .send()
+            .await
+            .expect("pinned connection should reach the validated address");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+    }
+
+    #[tokio::test]
+    async fn literal_private_and_metadata_ips_are_refused() {
+        for url in [
+            "http://127.0.0.1/",
+            "http://127.0.0.1:8080/admin",
+            "http://169.254.169.254/latest/meta-data/", // cloud metadata
+            "http://10.0.0.5/",
+            "http://192.168.1.1/",
+            "http://100.64.0.1/",  // CGNAT
+            "http://[::1]/",       // IPv6 loopback
+            "http://[fd00::1]/",   // IPv6 ULA
+            "http://0.0.0.0/",
+            "http://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
+        ] {
+            let err = resolve_and_validate(url).await.expect_err(&format!("{url} must be refused"));
+            assert!(
+                err.contains("disallowed") || err.contains("resolve"),
+                "unexpected error for {url}: {err}"
+            );
+        }
+    }
+
+    /// A hostname that only resolves to a private IP is refused at resolve time,
+    /// before any connection is attempted. `localhost` → 127.0.0.1 / ::1.
+    #[tokio::test]
+    async fn hostname_resolving_to_private_ip_is_refused() {
+        let err = resolve_and_validate("http://localhost:3000/")
+            .await
+            .expect_err("localhost must be refused");
+        assert!(err.contains("disallowed"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn non_http_scheme_and_missing_host_are_refused() {
+        assert!(resolve_and_validate("file:///etc/passwd").await.is_err());
+        assert!(resolve_and_validate("gopher://127.0.0.1/").await.is_err());
+        assert!(resolve_and_validate("ftp://example.com/").await.is_err());
+        assert!(resolve_and_validate("not a url").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn public_literal_ip_is_allowed_and_marked_literal() {
+        let target = resolve_and_validate("http://93.184.216.34/")
+            .await
+            .expect("public literal IP should pass");
+        assert!(target.is_literal_ip);
+        assert_eq!(target.addrs, vec!["93.184.216.34:80".parse::<SocketAddr>().unwrap()]);
+    }
+
+    /// Positive path against a real external HTTPS host: pinning must not break
+    /// certificate validation (Host/SNI stay set to the hostname). Network-
+    /// dependent, so ignored by default; run with `--ignored`.
+    #[tokio::test]
+    #[ignore = "requires network"]
+    async fn real_public_https_still_fetches_through_guard() {
+        let resp = super::ssrf_guarded_fetch(reqwest::Method::GET, "https://example.com/", None)
+            .await
+            .expect("public HTTPS fetch should succeed with pinning");
+        assert!(resp.status().is_success());
+        let body = resp.text().await.unwrap();
+        assert!(body.to_lowercase().contains("example domain"));
     }
 }
 
