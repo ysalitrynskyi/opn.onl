@@ -155,10 +155,11 @@ export default function Settings() {
             const payload = JSON.parse(atob(token.split('.')[1]));
             const username = payload.sub;
 
-            // Step 1: Start registration
-            const startRes = await fetch(API_ENDPOINTS.passkeyRegisterStart, {
+            // Step 1: Start registration. Uses authFetch so the Bearer token is
+            // sent — the backend binds the new passkey to the authenticated
+            // account, so enrollment must be authenticated.
+            const startRes = await authFetch(API_ENDPOINTS.passkeyRegisterStart, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username }),
             });
 
@@ -190,10 +191,9 @@ export default function Settings() {
 
             const attestation = credential.response as AuthenticatorAttestationResponse;
 
-            // Step 3: Finish registration
-            const finishRes = await fetch(API_ENDPOINTS.passkeyRegisterFinish, {
+            // Step 3: Finish registration (authenticated — see Step 1).
+            const finishRes = await authFetch(API_ENDPOINTS.passkeyRegisterFinish, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     username,
                     credential: {

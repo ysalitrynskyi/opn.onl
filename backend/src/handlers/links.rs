@@ -947,11 +947,24 @@ pub async fn preview_link(
                 "unknown"
             };
 
+            // Do not disclose the destination of a password-protected or
+            // burn-after-reading link through the public, unauthenticated
+            // preview: the password gate exists to keep the destination secret,
+            // and a burn link is a one-time secret (preview does not consume the
+            // burn). Plain links — including plain safe-link-interstitial links —
+            // still show their destination so the interstitial can render it.
+            let protected = link.password_hash.is_some() || link.burn_after_reading;
+            let (shown_url, shown_domain) = if protected {
+                (String::new(), String::new())
+            } else {
+                (link.original_url.clone(), domain)
+            };
+
             (StatusCode::OK, Json(LinkPreviewResponse {
                 code: link.code.clone(),
                 short_url: format!("{}/{}", base_url, link.code),
-                original_url: link.original_url,
-                domain,
+                original_url: shown_url,
+                domain: shown_domain,
                 has_password: link.password_hash.is_some(),
                 is_expired,
                 created_at: link.created_at.to_string(),

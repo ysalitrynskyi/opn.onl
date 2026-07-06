@@ -105,6 +105,10 @@ fn get_webauthn() -> Webauthn {
 
 #[derive(Deserialize)]
 pub struct RegisterStartRequest {
+    /// Accepted for wire compatibility but IGNORED server-side: the target
+    /// account is taken from the caller's authenticated identity, never from
+    /// this field (see `register_start`).
+    #[allow(dead_code)]
     pub username: String,
 }
 
@@ -115,6 +119,9 @@ pub struct RegisterStartResponse {
 
 #[derive(Deserialize)]
 pub struct RegisterFinishRequest {
+    /// Accepted for wire compatibility but IGNORED server-side: the credential
+    /// is bound to the caller's authenticated identity (see `register_finish`).
+    #[allow(dead_code)]
     pub username: String,
     pub credential: RegisterPublicKeyCredential,
 }
@@ -142,18 +149,26 @@ pub struct AuthResponse {
 
 pub async fn register_start(
     State(state): State<AppState>,
-    Json(payload): Json<RegisterStartRequest>,
+    headers: axum::http::HeaderMap,
+    Json(_payload): Json<RegisterStartRequest>,
 ) -> impl IntoResponse {
-    let user = users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.username))
+    // Passkey enrollment MUST be authenticated: a passkey may only be added to
+    // the caller's own account. We derive the target account from the caller's
+    // authenticated identity, NOT from the client-supplied `username`. This
+    // closes the account-takeover hole where anyone who knew a victim's email
+    // could enroll their own authenticator onto the victim's account.
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+    };
+
+    let user = match users::Entity::find_by_id(user_id)
         .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
-        .unwrap_or(None);
-
-    let user = match user {
-        Some(u) => u,
-        None => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+    {
+        Ok(Some(u)) => u,
+        _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
     };
 
     // Deterministic UUID from ID for demo purposes
@@ -173,16 +188,27 @@ pub async fn register_start(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to start registration").into_response(),
     };
 
-    REG_STATE.insert(payload.username.clone(), reg_state);
+    // Key the pending-challenge store by the authenticated user id so the finish
+    // step can only complete for the same account that started the ceremony.
+    REG_STATE.insert(user.id.to_string(), reg_state);
 
     (StatusCode::OK, Json(RegisterStartResponse { options: ccr })).into_response()
 }
 
 pub async fn register_finish(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<RegisterFinishRequest>,
 ) -> impl IntoResponse {
-    let reg_state = match REG_STATE.remove(&payload.username) {
+    // Same authenticated-identity rule as register_start: the credential is bound
+    // to the CALLER's account, never to a client-supplied username. The pending
+    // challenge is looked up by the authenticated user id.
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
+        Some(id) => id,
+        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+    };
+
+    let reg_state = match REG_STATE.remove(&user_id.to_string()) {
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, "Registration state not found").into_response(),
     };
@@ -193,8 +219,7 @@ pub async fn register_finish(
         Err(_) => return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response(),
     };
 
-    let user = match users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.username))
+    let user = match users::Entity::find_by_id(user_id)
         .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
