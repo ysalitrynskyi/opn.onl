@@ -29,9 +29,17 @@ export default function SEO({
   faqItems,
   breadcrumbs,
 }: SEOProps) {
-  const fullTitle = title === 'opn.onl - Open Source URL Shortener' 
-    ? title 
+  const fullTitle = title === 'opn.onl - Open Source URL Shortener'
+    ? title
     : `${title} | opn.onl`;
+
+  // Resolve the canonical URL to an absolute one. Pages may pass a route-relative
+  // path (e.g. "/features") or an already-absolute URL; a relative path is joined
+  // onto BASE_URL so every indexable page canonicalizes to its own route rather
+  // than defaulting to the site root.
+  const canonicalUrl = /^https?:\/\//.test(url)
+    ? url
+    : `${BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
 
   // Main schema
   const mainSchema = {
@@ -39,7 +47,7 @@ export default function SEO({
     '@type': schemaType,
     name: 'opn.onl',
     description,
-    url,
+    url: canonicalUrl,
     ...(schemaType === 'WebApplication' && {
       applicationCategory: 'UtilityApplication',
       operatingSystem: 'Web',
@@ -160,7 +168,7 @@ export default function SEO({
       
       {/* Open Graph / Facebook */}
       <meta property="og:type" content={type} />
-      <meta property="og:url" content={url} />
+      <meta property="og:url" content={canonicalUrl} />
       <meta property="og:title" content={fullTitle} />
       <meta property="og:description" content={description} />
       <meta property="og:image" content={image} />
@@ -171,7 +179,7 @@ export default function SEO({
       
       {/* Twitter */}
       <meta name="twitter:card" content="summary_large_image" />
-      <meta name="twitter:url" content={url} />
+      <meta name="twitter:url" content={canonicalUrl} />
       <meta name="twitter:title" content={fullTitle} />
       <meta name="twitter:description" content={description} />
       <meta name="twitter:image" content={image} />
@@ -185,7 +193,7 @@ export default function SEO({
       <meta name="mobile-web-app-capable" content="yes" />
       
       {/* Canonical URL */}
-      <link rel="canonical" href={url} />
+      <link rel="canonical" href={canonicalUrl} />
       
       {/* DNS Prefetch for external resources */}
       <link rel="dns-prefetch" href="//www.google-analytics.com" />

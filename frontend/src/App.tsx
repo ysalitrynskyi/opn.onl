@@ -90,6 +90,9 @@ function App() {
                   the SPA can show the "you're leaving" screen before continuing. */}
               <Route path="r/:code" element={<Redirect />} />
               <Route path=":code+" element={<Preview />} />
+              {/* Explicit /404 so Redirect's navigate('/404') renders NotFound
+                  cleanly instead of leaving a fake /404 in the URL bar. */}
+              <Route path="404" element={<NotFound />} />
               <Route path=":code" element={<Redirect />} />
               <Route path="*" element={<NotFound />} />
             </Route>

@@ -11,10 +11,11 @@ const API_BASE = import.meta.env.VITE_API_URL || 'https://l.opn.onl';
 export default function Docs() {
     return (
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-            <SEO 
-                title="Documentation" 
+            <SEO
+                title="Documentation"
                 description="Learn how to use the opn.onl API to create and manage short links programmatically."
                 keywords="opn.onl api, url shortener api, link shortening api, documentation"
+                url="/docs"
             />
 
             <motion.div
