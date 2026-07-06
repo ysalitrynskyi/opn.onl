@@ -102,6 +102,15 @@ fn get_max_alias_length() -> usize {
         .unwrap_or(50)
 }
 
+/// Per-user link cap from MAX_LINKS_PER_USER. `None` (unset / unparseable / 0)
+/// means unlimited. Surfaced in GET /auth/settings and enforced at link create.
+fn get_max_links_per_user() -> Option<u64> {
+    std::env::var("MAX_LINKS_PER_USER")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+}
+
 /// Check if URL sanitization is enabled (default: true)
 fn is_url_sanitization_enabled() -> bool {
     std::env::var("ENABLE_URL_SANITIZATION")
@@ -302,12 +311,22 @@ fn validate_alias(alias: &str) -> Result<(), String> {
         return Err("Alias cannot start or end with hyphen or underscore".to_string());
     }
 
-    // Reserved words that would collide with application / API routes.
+    // Reserved words that would collide with a backend API route OR a frontend
+    // SPA route. Short links are handed out as FRONTEND_URL/<code> (opn.onl),
+    // and nginx serves the marketing/app routes from its allowlist, so an alias
+    // matching a frontend route (e.g. "about", "pricing") would render that page
+    // instead of redirecting — a dead link. Keep in sync with the nginx
+    // allowlist and frontend/src/App.tsx.
     const RESERVED: &[&str] = &[
+        // backend API routes
         "health", "links", "link", "auth", "admin", "orgs", "org", "organizations",
-        "folders", "tags", "analytics", "contact", "ws", "sse", "api-docs",
-        "swagger-ui", "password", "verify", "preview", "login", "register",
-        "settings", "me", "profile", "robots.txt", "favicon.ico", "sitemap.xml",
+        "folders", "tags", "analytics", "contact", "ws", "sse", "api", "api-docs",
+        "swagger-ui", "password", "verify", "preview", "me", "profile",
+        "robots.txt", "favicon.ico", "sitemap.xml",
+        // frontend SPA routes (opn.onl/<route>)
+        "features", "pricing", "about", "privacy", "terms", "faq", "docs",
+        "developers", "login", "register", "dashboard", "settings",
+        "forgot-password", "reset-password", "verify-email", "r",
     ];
     if RESERVED.contains(&alias.to_lowercase().as_str()) {
         return Err("This alias is reserved and cannot be used".to_string());
@@ -526,9 +545,11 @@ async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<
         .one(db)
         .await
         .ok()??;
-    let mut am: api_keys::ActiveModel = Default::default();
-    am.id = Set(rec.id);
-    am.last_used_at = Set(Some(chrono::Utc::now().naive_utc()));
+    let am = api_keys::ActiveModel {
+        id: Set(rec.id),
+        last_used_at: Set(Some(chrono::Utc::now().naive_utc())),
+        ..Default::default()
+    };
     let _ = am.update(db).await;
     Some(user.id)
 }
@@ -624,8 +645,28 @@ pub async fn create_link(
         
         if let Some(u) = user {
             if !u.email_verified {
-                return (StatusCode::FORBIDDEN, Json(ErrorResponse { 
-                    error: "Please verify your email address before creating links".to_string() 
+                return (StatusCode::FORBIDDEN, Json(ErrorResponse {
+                    error: "Please verify your email address before creating links".to_string()
+                })).into_response();
+            }
+        }
+    }
+
+    // Enforce the per-user link cap (MAX_LINKS_PER_USER). This is surfaced in
+    // GET /auth/settings; previously it was advertised but never enforced
+    // (fail-open). Applies to authenticated users only (anonymous links have no
+    // owner to cap). None/0 = unlimited.
+    if let Some(uid) = user_id {
+        if let Some(cap) = get_max_links_per_user() {
+            let existing = links::Entity::find()
+                .filter(links::Column::UserId.eq(uid))
+                .filter(links::Column::DeletedAt.is_null())
+                .count(&state.db)
+                .await
+                .unwrap_or(0);
+            if existing >= cap {
+                return (StatusCode::FORBIDDEN, Json(ErrorResponse {
+                    error: format!("You have reached the maximum of {} links for this account", cap),
                 })).into_response();
             }
         }
@@ -1217,9 +1258,11 @@ pub async fn redirect_link(
         if link.burn_after_reading && link.burned_at.is_none() {
             if let Some(max) = link.max_clicks {
                 if link.click_count + pending_before + 1 >= max {
-                    let mut burned: links::ActiveModel = Default::default();
-                    burned.id = Set(link.id);
-                    burned.burned_at = Set(Some(chrono::Utc::now().naive_utc()));
+                    let burned = links::ActiveModel {
+                        id: Set(link.id),
+                        burned_at: Set(Some(chrono::Utc::now().naive_utc())),
+                        ..Default::default()
+                    };
                     let _ = burned.update(&state.db).await;
                 }
             }
@@ -2164,6 +2207,32 @@ pub async fn update_link(
 
         let mut active_link: links::ActiveModel = link.clone().into();
 
+        // Validate scheduling / limit inputs the same way create_link does, so an
+        // update can't leave a link in an invalid state (e.g. max_clicks <= 0
+        // bricks the link; starts_at >= expires_at makes it never active).
+        if payload.remove_max_clicks != Some(true) {
+            if let Some(mc) = payload.max_clicks {
+                if mc <= 0 {
+                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "max_clicks must be greater than 0".to_string() })).into_response();
+                }
+            }
+        }
+        let eff_starts: Option<DateTime<Utc>> = if payload.remove_starts_at == Some(true) {
+            None
+        } else {
+            payload.starts_at.or_else(|| link.starts_at.map(|d| d.and_utc()))
+        };
+        let eff_expires: Option<DateTime<Utc>> = if payload.remove_expiration == Some(true) {
+            None
+        } else {
+            payload.expires_at.or_else(|| link.expires_at.map(|d| d.and_utc()))
+        };
+        if let (Some(s), Some(e)) = (eff_starts, eff_expires) {
+            if s >= e {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "starts_at must be before expires_at".to_string() })).into_response();
+            }
+        }
+
         if let Some(ref url) = payload.original_url {
             // Validate URL format and sanitize
             let validated_url = match validate_url(url) {
@@ -2379,19 +2448,39 @@ pub async fn bulk_create_links(
     let mut errors = Vec::new();
     let base_url = get_base_url();
 
+    // Per-user link cap (MAX_LINKS_PER_USER), enforced across the whole batch so
+    // bulk create can't be used to exceed the limit. `None` = unlimited /
+    // anonymous. Tracks the remaining budget as links are created.
+    let mut remaining_budget: Option<u64> = None;
+    if let (Some(uid), Some(cap)) = (user_id, get_max_links_per_user()) {
+        let existing = links::Entity::find()
+            .filter(links::Column::UserId.eq(uid))
+            .filter(links::Column::DeletedAt.is_null())
+            .count(&state.db)
+            .await
+            .unwrap_or(0);
+        remaining_budget = Some(cap.saturating_sub(existing));
+    }
+
     for url in payload.urls {
         // Validate URL before creating link
         if !is_valid_url(&url) {
             errors.push(format!("Invalid URL: {}", url));
             continue;
         }
-        
+
         // Check if URL or domain is blocked
         if let Err(e) = check_blocked(&state.db, &url).await {
             errors.push(format!("{}: {}", url, e));
             continue;
         }
-        
+
+        // Stop creating once the per-user cap is reached.
+        if let Some(0) = remaining_budget {
+            errors.push(format!("{}: account link limit reached", url));
+            continue;
+        }
+
         let code: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(6)
@@ -2414,6 +2503,9 @@ pub async fn bulk_create_links(
                     code: code.clone(),
                     short_url: format!("{}/{}", base_url, code),
                 });
+                if let Some(b) = remaining_budget.as_mut() {
+                    *b = b.saturating_sub(1);
+                }
             }
             Err(e) => {
                 errors.push(format!("Failed to shorten {}: {}", url, e));
@@ -3105,7 +3197,7 @@ pub async fn get_sparklines(
             if event.link_id == link_id {
                 let duration = now.signed_duration_since(event.created_at);
                 let days_ago = duration.num_days();
-                if days_ago >= 0 && days_ago < 7 {
+                if (0..7).contains(&days_ago) {
                     let idx = (6 - days_ago) as usize;
                     daily_counts[idx] += 1;
                     total += 1;

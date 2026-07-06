@@ -1,5 +1,5 @@
 use parking_lot::RwLock;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set, TransactionTrait};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,6 +123,18 @@ impl ClickBuffer {
 
         info!("Flushing {} click events and {} counter updates", events.len(), counters.len());
 
+        // Persist the event rows and the aggregate count bumps in a single
+        // transaction so a partial failure can't leave click_events and
+        // links.click_count divergent. On any error we roll back and log — the
+        // batch is lost but the two stores stay consistent.
+        let txn = match db.begin().await {
+            Ok(t) => t,
+            Err(e) => {
+                error!("Click flush: failed to open transaction ({} events, {} counters lost): {}", events.len(), counters.len(), e);
+                return;
+            }
+        };
+
         // Batch insert click events
         if !events.is_empty() {
             let models: Vec<click_events::ActiveModel> = events
@@ -144,8 +156,10 @@ impl ClickBuffer {
                 })
                 .collect();
 
-            if let Err(e) = click_events::Entity::insert_many(models).exec(db).await {
-                error!("Failed to batch insert click events: {}", e);
+            if let Err(e) = click_events::Entity::insert_many(models).exec(&txn).await {
+                error!("Failed to batch insert click events (rolling back flush): {}", e);
+                let _ = txn.rollback().await;
+                return;
             }
         }
 
@@ -160,11 +174,17 @@ impl ClickBuffer {
                     Expr::col(links::Column::ClickCount).add(counter.count),
                 )
                 .filter(links::Column::Id.eq(link_id))
-                .exec(db)
+                .exec(&txn)
                 .await
             {
-                error!("Failed to update click count for link {}: {}", link_id, e);
+                error!("Failed to update click count for link {} (rolling back flush): {}", link_id, e);
+                let _ = txn.rollback().await;
+                return;
             }
+        }
+
+        if let Err(e) = txn.commit().await {
+            error!("Click flush: failed to commit transaction: {}", e);
         }
     }
 

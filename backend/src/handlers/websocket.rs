@@ -78,16 +78,40 @@ pub struct WsAuthQuery {
     pub token: Option<String>,
 }
 
-/// Extract user_id from token
-fn get_user_id_from_token(token: &str) -> Option<i32> {
-    decode_jwt(token).ok().map(|claims| claims.user_id)
+/// Resolve a `?token=` query JWT to a user id WITH the same DB-backed revocation
+/// check the HTTP API uses: the user must exist, not be soft-deleted, and the
+/// token's `token_version` must match. Previously the WS/SSE handshake only
+/// decoded the JWT signature, so a token revoked by password change/reset kept a
+/// live analytics subscription until natural expiry.
+async fn resolve_ws_token(db: &sea_orm::DatabaseConnection, token: &str) -> Option<i32> {
+    use crate::entity::users;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let claims = decode_jwt(token).ok()?;
+    let user = users::Entity::find_by_id(claims.user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(db)
+        .await
+        .ok()??;
+    if user.token_version == claims.token_version {
+        Some(user.id)
+    } else {
+        None
+    }
 }
 
-/// Extract user_id from headers
-fn get_user_id_from_header(headers: &HeaderMap) -> Option<i32> {
-    let auth_header = headers.get("Authorization")?.to_str().ok()?;
-    let token = auth_header.strip_prefix("Bearer ")?;
-    decode_jwt(token).ok().map(|claims| claims.user_id)
+/// Resolve the subscriber's user id from the `?token=` query param first, then
+/// the `Authorization` header (which also honors API keys) — both DB-checked.
+async fn resolve_ws_user(
+    db: &sea_orm::DatabaseConnection,
+    token: Option<&str>,
+    headers: &HeaderMap,
+) -> Option<i32> {
+    if let Some(t) = token {
+        if let Some(id) = resolve_ws_token(db, t).await {
+            return Some(id);
+        }
+    }
+    crate::handlers::links::get_user_id_from_header(db, headers).await
 }
 
 /// WebSocket handler for real-time analytics
@@ -98,20 +122,14 @@ pub async fn ws_handler(
     headers: HeaderMap,
     Query(query): Query<WsAuthQuery>,
 ) -> Response {
-    // Try to get user_id from query token or header
-    let user_id = query.token
-        .as_ref()
-        .and_then(|t| get_user_id_from_token(t))
-        .or_else(|| get_user_id_from_header(&headers));
-    
-    // Require authentication
-    let user_id = match user_id {
+    // Resolve + DB-verify the subscriber (query token or Authorization header).
+    let user_id = match resolve_ws_user(&state.db, query.token.as_deref(), &headers).await {
         Some(id) => id,
         None => {
             return (StatusCode::UNAUTHORIZED, "Authentication required. Use /ws?token=<jwt_token>").into_response();
         }
     };
-    
+
     let ws_state = state.ws_state.clone().unwrap_or_else(|| Arc::new(WsState::new()));
     ws.on_upgrade(move |socket| handle_socket(socket, ws_state, user_id))
 }
@@ -185,20 +203,14 @@ pub async fn sse_handler(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use futures::stream;
     
-    // Try to get user_id from query token or header
-    let user_id = query.token
-        .as_ref()
-        .and_then(|t| get_user_id_from_token(t))
-        .or_else(|| get_user_id_from_header(&headers));
-    
-    // Require authentication
-    let user_id = match user_id {
+    // Resolve + DB-verify the subscriber (query token or Authorization header).
+    let user_id = match resolve_ws_user(&state.db, query.token.as_deref(), &headers).await {
         Some(id) => id,
         None => {
             return (StatusCode::UNAUTHORIZED, "Authentication required. Use /sse?token=<jwt_token>").into_response();
         }
     };
-    
+
     let ws_state = state.ws_state.clone().unwrap_or_else(|| Arc::new(WsState::new()));
     let rx = ws_state.click_tx.subscribe();
     

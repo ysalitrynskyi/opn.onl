@@ -251,7 +251,7 @@ pub async fn verify_email(
         active_user.verification_token = Set(None);
         active_user.verification_token_expires = Set(None);
 
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to verify email".to_string() })).into_response();
         }
 
@@ -305,7 +305,7 @@ pub async fn resend_verification(
         active_user.verification_token = Set(Some(verification_token.clone()));
         active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to generate token".to_string() })).into_response();
         }
 
@@ -354,7 +354,7 @@ pub async fn forgot_password(
         active_user.password_reset_token = Set(Some(reset_token.clone()));
         active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to generate token".to_string() })).into_response();
         }
 
@@ -419,7 +419,7 @@ pub async fn reset_password(
         active_user.password_reset_expires = Set(None);
         active_user.token_version = Set(next_token_version);
 
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to reset password".to_string() })).into_response();
         }
 
@@ -499,7 +499,7 @@ pub async fn change_password(
         active_user.password_hash = Set(hashed_password);
         active_user.token_version = Set(next_token_version);
 
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to change password".to_string() })).into_response();
         }
 
@@ -581,7 +581,7 @@ pub async fn delete_account(
         active_user.bio_username = Set(None);
         active_user.bio_enabled = Set(false);
 
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() })).into_response();
         }
 
@@ -671,22 +671,22 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v != "false")
         .unwrap_or(true);
 
-    // Burn-after-reading is opt-in — default OFF.
+    // Non-breaking kill-switch — default ON (set the var to "false" to disable).
     let burn_after_reading_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
         .map(|v| v != "false")
         .unwrap_or(true);
 
-    // Safe-link interstitial is opt-in — default OFF.
+    // Non-breaking kill-switch — default ON.
     let safe_link_interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
         .map(|v| v != "false")
         .unwrap_or(true);
 
-    // Smart conditional routing is opt-in — default OFF.
+    // Non-breaking kill-switch — default ON.
     let conditional_routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
         .map(|v| v != "false")
         .unwrap_or(true);
 
-    // Link-in-bio is opt-in — default OFF (and additionally per-user opt-in).
+    // Non-breaking kill-switch — default ON (and additionally per-user opt-in).
     let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
         .map(|v| v != "false")
         .unwrap_or(true);
@@ -696,11 +696,16 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v != "false")
         .unwrap_or(true);
 
+    // Passkeys kill-switch — default ON.
+    let passkeys_enabled = std::env::var("ENABLE_PASSKEYS")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+
     (StatusCode::OK, Json(AppSettingsResponse {
         account_deletion_enabled,
         custom_aliases_enabled,
         max_links_per_user,
-        passkeys_enabled: true,
+        passkeys_enabled,
         min_alias_length,
         max_alias_length,
         url_sanitization_enabled,
@@ -851,11 +856,10 @@ pub async fn update_profile(
         }
         if let Some(website) = payload.website {
             // Validate website URL
-            if !website.is_empty() {
-                if let Err(_) = url::Url::parse(&website) {
+            if !website.is_empty()
+                && url::Url::parse(&website).is_err() {
                     return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid website URL".to_string() })).into_response();
                 }
-            }
             active_user.website = Set(if website.is_empty() { None } else { Some(website) });
         }
         if let Some(avatar) = payload.avatar_url {

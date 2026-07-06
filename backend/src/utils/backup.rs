@@ -5,7 +5,7 @@ use chrono::Utc;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::Write;
-use std::process::Command;
+use tokio::process::Command;
 use tracing::{error, info};
 
 /// Backup service for PostgreSQL to S3/R2
@@ -77,12 +77,14 @@ impl BackupService {
 
         info!("Creating database backup: {}", filename);
 
-        // Run pg_dump
+        // Run pg_dump asynchronously so the dump doesn't block a runtime worker
+        // thread (tokio::process spawns and awaits without blocking).
         let output = Command::new("pg_dump")
             .arg(&self.database_url)
             .arg("--no-owner")
             .arg("--no-acl")
             .output()
+            .await
             .map_err(|e| format!("Failed to run pg_dump: {}", e))?;
 
         if !output.status.success() {

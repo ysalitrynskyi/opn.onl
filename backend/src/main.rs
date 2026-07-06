@@ -210,9 +210,10 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
         .init();
 
-    // Database connection
+    // Database connection. Required — fail fast rather than silently falling back
+    // to an insecure hardcoded dev credential in production.
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/opn_onl".to_string());
+        .expect("DATABASE_URL must be set (no default is used)");
     
     let db = Database::connect(&database_url)
         .await
@@ -276,6 +277,11 @@ async fn main() {
         click_buffer,
         backup,
     };
+
+    // Handles for the graceful-shutdown flush (so buffered clicks aren't lost on
+    // deploy/restart). Cloned before `app_state` is moved into the router.
+    let shutdown_buffer = app_state.click_buffer.clone();
+    let shutdown_db = app_state.db.clone();
 
     // Build router
     let app = Router::new()
@@ -412,12 +418,43 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     // Serve with ConnectInfo so the rate limiter can use the real socket peer IP.
+    // On SIGTERM/Ctrl-C, drain the click buffer so buffered clicks aren't lost.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal(shutdown_buffer, shutdown_db))
     .await
     .unwrap();
+}
+
+/// Wait for SIGTERM / Ctrl-C, then flush the click buffer so a deploy or restart
+/// doesn't drop buffered (not-yet-persisted) clicks.
+async fn shutdown_signal(click_buffer: Arc<ClickBuffer>, db: DatabaseConnection) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received — flushing click buffer before exit");
+    click_buffer.flush(&db).await;
+    tracing::info!("Click buffer flushed; shutting down");
 }
 
 /// Health check endpoint
@@ -430,7 +467,7 @@ async fn health_check(
     let db_ok = sea_orm::DbConn::ping(&state.db).await.is_ok();
     
     if db_ok {
-        let email_configured = state.email_service.as_ref().map_or(false, |e| e.is_configured());
+        let email_configured = state.email_service.as_ref().is_some_and(|e| e.is_configured());
         let backup_configured = state.backup.is_configured();
         let status = serde_json::json!({
             "status": "healthy",

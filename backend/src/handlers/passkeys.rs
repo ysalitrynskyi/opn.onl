@@ -103,6 +103,15 @@ fn get_webauthn() -> Webauthn {
         })
 }
 
+/// Instance kill-switch for passkeys (default ON, like the other ENABLE_* flags).
+/// When `false`, the enroll and login ceremonies are refused; management
+/// endpoints (list/delete/rename) keep working so users can still clean up.
+fn passkeys_enabled() -> bool {
+    std::env::var("ENABLE_PASSKEYS")
+        .map(|v| v != "false")
+        .unwrap_or(true)
+}
+
 #[derive(Deserialize)]
 pub struct RegisterStartRequest {
     /// Accepted for wire compatibility but IGNORED server-side: the target
@@ -152,6 +161,9 @@ pub async fn register_start(
     headers: axum::http::HeaderMap,
     Json(_payload): Json<RegisterStartRequest>,
 ) -> impl IntoResponse {
+    if !passkeys_enabled() {
+        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+    }
     // Passkey enrollment MUST be authenticated: a passkey may only be added to
     // the caller's own account. We derive the target account from the caller's
     // authenticated identity, NOT from the client-supplied `username`. This
@@ -200,6 +212,9 @@ pub async fn register_finish(
     headers: axum::http::HeaderMap,
     Json(payload): Json<RegisterFinishRequest>,
 ) -> impl IntoResponse {
+    if !passkeys_enabled() {
+        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+    }
     // Same authenticated-identity rule as register_start: the credential is bound
     // to the CALLER's account, never to a client-supplied username. The pending
     // challenge is looked up by the authenticated user id.
@@ -249,6 +264,9 @@ pub async fn login_start(
     State(state): State<AppState>,
     Json(payload): Json<LoginStartRequest>,
 ) -> impl IntoResponse {
+    if !passkeys_enabled() {
+        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+    }
     let user = users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
         .filter(users::Column::DeletedAt.is_null())
@@ -296,6 +314,9 @@ pub async fn login_finish(
     State(state): State<AppState>,
     Json(payload): Json<LoginFinishRequest>,
 ) -> impl IntoResponse {
+    if !passkeys_enabled() {
+        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+    }
     let auth_state = match AUTH_STATE.remove(&payload.username) {
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, "Authentication state not found").into_response(),
