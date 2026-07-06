@@ -1192,11 +1192,7 @@ pub async fn redirect_link(
         };
 
         let routed_destination = if !routing_rules.is_empty() {
-            let ip = headers
-                .get("x-forwarded-for")
-                .and_then(|h| h.to_str().ok())
-                .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-                .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+            let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers);
             let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
             let ua_info = headers
                 .get("user-agent")
@@ -1357,13 +1353,11 @@ fn record_click_buffered(
     headers: &HeaderMap,
 ) {
     use crate::utils::click_buffer::ClickData;
-    
-    // Extract request info
-    let ip = headers.get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
-    
+
+    // Client IP via the same trust rules as the rate limiter (no spoofable
+    // first-XFF token in analytics/geo either).
+    let ip = crate::utils::rate_limiter::client_ip_from_headers(headers);
+
     let user_agent = headers.get("user-agent")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
