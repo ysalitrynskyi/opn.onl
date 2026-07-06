@@ -20,7 +20,7 @@ pub enum Relation {
         from = "Column::OwnerId",
         to = "super::users::Column::Id",
         on_update = "Cascade",
-        on_delete = "Cascade"
+        on_delete = "Restrict"
     )]
     Owner,
     #[sea_orm(has_many = "super::org_members::Entity")]

@@ -343,6 +343,7 @@ async fn main() {
             .post(handlers::organizations::invite_member))
         .route("/orgs/:org_id/members/:member_id", put(handlers::organizations::update_member_role)
             .delete(handlers::organizations::remove_member))
+        .route("/orgs/:org_id/transfer-ownership", post(handlers::organizations::transfer_ownership))
         .route("/orgs/:org_id/audit", get(handlers::organizations::get_audit_log))
         
         // Folder routes

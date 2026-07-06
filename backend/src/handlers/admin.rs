@@ -142,6 +142,7 @@ async fn invalidate_cache_for_domain(state: &AppState, domain: &str) {
         (status = 200, description = "User deleted successfully", body = AdminResponse),
         (status = 403, description = "Admin access required"),
         (status = 404, description = "User not found"),
+        (status = 409, description = "User still owns organizations with other members"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -175,6 +176,29 @@ pub async fn delete_user(
                 success: false,
                 message: "User already deleted".to_string(),
             })).into_response();
+        }
+
+        // Refuse to delete an org owner while other members depend on the
+        // org; ownership must be transferred (or the org deleted) first.
+        match crate::handlers::organizations::split_owned_orgs(&state.db, user_id).await {
+            Ok(split) if !split.blocking.is_empty() => {
+                let slugs: Vec<&str> = split.blocking.iter().map(|o| o.slug.as_str()).collect();
+                return (StatusCode::CONFLICT, Json(AdminResponse {
+                    success: false,
+                    message: format!(
+                        "User {} still owns organizations with other members: {}. Transfer ownership or delete them first.",
+                        user_id,
+                        slugs.join(", ")
+                    ),
+                })).into_response();
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                })).into_response();
+            }
         }
 
         // Soft delete user
@@ -229,6 +253,7 @@ pub async fn delete_user(
         (status = 200, description = "User permanently deleted", body = AdminResponse),
         (status = 403, description = "Admin access required"),
         (status = 404, description = "User not found"),
+        (status = 409, description = "User still owns organizations with other members"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -251,30 +276,92 @@ pub async fn hard_delete_user(
         })).into_response();
     }
 
-    // First delete all user's links and associated data
-    // This uses cascade delete for click_events and link_tags
-    links::Entity::delete_many()
-        .filter(links::Column::UserId.eq(user_id))
-        .exec(&state.db)
-        .await
-        .ok();
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to delete user".to_string(),
+            })).into_response();
+        }
+    };
 
-    // Then delete the user
-    let result = users::Entity::delete_by_id(user_id)
-        .exec(&state.db)
-        .await;
+    // Orgs the user owns: ones with other members block the deletion
+    // (ownership must be transferred first); solo orgs die with the account.
+    // Checked inside the transaction so a concurrent invite/transfer can't
+    // slip between check and delete; the owner_id ON DELETE RESTRICT FK is
+    // the final backstop either way.
+    let split = match crate::handlers::organizations::split_owned_orgs(&txn, user_id).await {
+        Ok(split) => split,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to delete user".to_string(),
+            })).into_response();
+        }
+    };
+
+    if !split.blocking.is_empty() {
+        let _ = txn.rollback().await;
+        let slugs: Vec<&str> = split.blocking.iter().map(|o| o.slug.as_str()).collect();
+        return (StatusCode::CONFLICT, Json(AdminResponse {
+            success: false,
+            message: format!(
+                "User {} still owns organizations with other members: {}. Transfer ownership or delete them first.",
+                user_id,
+                slugs.join(", ")
+            ),
+        })).into_response();
+    }
+
+    let result = async {
+        for org in &split.solo {
+            crate::handlers::organizations::purge_organization(&txn, org.id).await?;
+        }
+
+        // Delete all user's links and associated data
+        // (cascade delete handles click_events and link_tags)
+        links::Entity::delete_many()
+            .filter(links::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+
+        users::Entity::delete_by_id(user_id).exec(&txn).await
+    }
+    .await;
 
     match result {
         Ok(res) if res.rows_affected > 0 => {
+            if txn.commit().await.is_err() {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                })).into_response();
+            }
             (StatusCode::OK, Json(AdminResponse {
                 success: true,
                 message: format!("User {} permanently deleted with all associated data", user_id),
             })).into_response()
         }
-        _ => {
+        Ok(_) => {
+            let _ = txn.rollback().await;
             (StatusCode::NOT_FOUND, Json(AdminResponse {
                 success: false,
                 message: "User not found".to_string(),
+            })).into_response()
+        }
+        Err(_) => {
+            let _ = txn.rollback().await;
+            // Most likely the owner_id RESTRICT FK: the user (re)gained an
+            // organization concurrently. Surface it as a conflict rather
+            // than a generic failure.
+            (StatusCode::CONFLICT, Json(AdminResponse {
+                success: false,
+                message: format!(
+                    "Failed to delete user {}: the user may still own an organization. Transfer ownership and retry.",
+                    user_id
+                ),
             })).into_response()
         }
     }

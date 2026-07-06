@@ -110,7 +110,7 @@ mod slug_validation {
 
 /// Test audit log action types
 mod audit_actions {
-    const VALID_ACTIONS: &[&str] = &["create", "update", "delete", "view", "invite", "remove", "update_role"];
+    const VALID_ACTIONS: &[&str] = &["create", "update", "delete", "view", "invite", "remove", "update_role", "transfer_ownership"];
     const VALID_RESOURCE_TYPES: &[&str] = &["link", "folder", "tag", "member", "organization"];
 
     fn is_valid_action(action: &str) -> bool {

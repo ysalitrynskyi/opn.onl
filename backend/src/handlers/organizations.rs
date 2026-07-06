@@ -4,7 +4,8 @@ use axum::{
     Json,
 };
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -35,6 +36,12 @@ pub struct InviteMemberRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateMemberRoleRequest {
     pub role: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TransferOwnershipRequest {
+    /// User ID of the member who becomes the new owner.
+    pub new_owner_user_id: i32,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -135,6 +142,104 @@ pub(crate) async fn member_can_edit(
         .flatten()
         .map(|m| m.role != "viewer")
         .unwrap_or(false)
+}
+
+/// Organizations owned by a user, split by what deleting that user would do
+/// to them. `blocking` orgs still have other members, so the account cannot
+/// be deleted until ownership is transferred (or the org deliberately
+/// deleted). `solo` orgs have no member besides the owner and die with the
+/// account on hard delete.
+pub(crate) struct OwnedOrgsSplit {
+    pub blocking: Vec<organizations::Model>,
+    pub solo: Vec<organizations::Model>,
+}
+
+pub(crate) async fn split_owned_orgs<C: ConnectionTrait>(
+    db: &C,
+    user_id: i32,
+) -> Result<OwnedOrgsSplit, sea_orm::DbErr> {
+    let owned = organizations::Entity::find()
+        .filter(organizations::Column::OwnerId.eq(user_id))
+        .all(db)
+        .await?;
+
+    let mut blocking = Vec::new();
+    let mut solo = Vec::new();
+    for org in owned {
+        let other_members = org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org.id))
+            .filter(org_members::Column::UserId.ne(user_id))
+            .count(db)
+            .await?;
+        if other_members > 0 {
+            blocking.push(org);
+        } else {
+            solo.push(org);
+        }
+    }
+    Ok(OwnedOrgsSplit { blocking, solo })
+}
+
+/// JSON body for refusing an account deletion because the user still owns
+/// organizations with other members.
+pub(crate) fn ownership_conflict_body(blocking: &[organizations::Model]) -> serde_json::Value {
+    serde_json::json!({
+        "error": "Account still owns organizations with other members. Transfer ownership (POST /orgs/{org_id}/transfer-ownership) or delete the organization first.",
+        "code": "ORG_OWNERSHIP_TRANSFER_REQUIRED",
+        "organizations": blocking.iter().map(|o| serde_json::json!({
+            "id": o.id,
+            "name": o.name,
+            "slug": o.slug,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// Delete an organization and all of its data: links (with click events and
+/// tag assignments), folders, tags, audit log, memberships, then the org row.
+pub(crate) async fn purge_organization<C: ConnectionTrait>(
+    db: &C,
+    org_id: i32,
+) -> Result<(), sea_orm::DbErr> {
+    let org_links = links::Entity::find()
+        .filter(links::Column::OrgId.eq(org_id))
+        .all(db)
+        .await?;
+
+    for link in org_links {
+        click_events::Entity::delete_many()
+            .filter(click_events::Column::LinkId.eq(link.id))
+            .exec(db)
+            .await?;
+        link_tags::Entity::delete_many()
+            .filter(link_tags::Column::LinkId.eq(link.id))
+            .exec(db)
+            .await?;
+        links::Entity::delete_by_id(link.id).exec(db).await?;
+    }
+
+    folders::Entity::delete_many()
+        .filter(folders::Column::OrgId.eq(org_id))
+        .exec(db)
+        .await?;
+
+    tags::Entity::delete_many()
+        .filter(tags::Column::OrgId.eq(org_id))
+        .exec(db)
+        .await?;
+
+    audit_log::Entity::delete_many()
+        .filter(audit_log::Column::OrgId.eq(org_id))
+        .exec(db)
+        .await?;
+
+    org_members::Entity::delete_many()
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .exec(db)
+        .await?;
+
+    organizations::Entity::delete_by_id(org_id).exec(db).await?;
+
+    Ok(())
 }
 
 // Audit logging naturally records many independent fields; grouping them into a
@@ -519,66 +624,26 @@ pub async fn delete_organization(
 
     check_org_permission(&state.db, org_id, user_id, "owner").await?;
 
-    // Delete all organization links first (including their click events and tags)
-    let org_links = links::Entity::find()
-        .filter(links::Column::OrgId.eq(org_id))
-        .all(&state.db)
-        .await
-        .unwrap_or_default();
+    let txn = state.db.begin().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Database error"})),
+        )
+    })?;
 
-    for link in org_links {
-        // Delete click events for this link
-        let _ = click_events::Entity::delete_many()
-            .filter(click_events::Column::LinkId.eq(link.id))
-            .exec(&state.db)
-            .await;
+    purge_organization(&txn, org_id).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to delete organization"})),
+        )
+    })?;
 
-        // Delete link tags
-        let _ = link_tags::Entity::delete_many()
-            .filter(link_tags::Column::LinkId.eq(link.id))
-            .exec(&state.db)
-            .await;
-
-        // Delete the link
-        let _ = links::Entity::delete_by_id(link.id)
-            .exec(&state.db)
-            .await;
-    }
-
-    // Delete organization folders
-    let _ = folders::Entity::delete_many()
-        .filter(folders::Column::OrgId.eq(org_id))
-        .exec(&state.db)
-        .await;
-
-    // Delete organization tags
-    let _ = tags::Entity::delete_many()
-        .filter(tags::Column::OrgId.eq(org_id))
-        .exec(&state.db)
-        .await;
-
-    // Delete audit logs
-    let _ = audit_log::Entity::delete_many()
-        .filter(audit_log::Column::OrgId.eq(org_id))
-        .exec(&state.db)
-        .await;
-
-    // Delete all members
-    let _ = org_members::Entity::delete_many()
-        .filter(org_members::Column::OrgId.eq(org_id))
-        .exec(&state.db)
-        .await;
-
-    // Finally delete the organization
-    organizations::Entity::delete_by_id(org_id)
-        .exec(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Failed to delete organization"})),
-            )
-        })?;
+    txn.commit().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to delete organization"})),
+        )
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -932,6 +997,194 @@ pub async fn remove_member(
     log_audit(&state.db, org_id, user_id, "remove", "member", Some(member_id), None, None).await;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Transfer organization ownership to another member
+#[utoipa::path(
+    post,
+    path = "/orgs/{org_id}/transfer-ownership",
+    params(
+        ("org_id" = i32, Path, description = "Organization ID")
+    ),
+    request_body = TransferOwnershipRequest,
+    responses(
+        (status = 200, description = "Ownership transferred", body = OrgResponse),
+        (status = 400, description = "Invalid target (self, deleted user, or not a member)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Only the owner can transfer ownership"),
+        (status = 404, description = "Organization or member not found"),
+    ),
+    tag = "Organizations",
+    security(("bearer_auth" = []))
+)]
+pub async fn transfer_ownership(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(org_id): Path<i32>,
+    Json(payload): Json<TransferOwnershipRequest>,
+) -> Result<Json<OrgResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        )
+    })?;
+
+    check_org_permission(&state.db, org_id, user_id, "owner").await?;
+
+    if payload.new_owner_user_id == user_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "You already own this organization"})),
+        ));
+    }
+
+    let org = organizations::Entity::find_by_id(org_id)
+        .one(&state.db)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Organization not found"})),
+            )
+        })?;
+
+    // Target must be an existing, non-deleted user...
+    let new_owner = users::Entity::find_by_id(payload.new_owner_user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "New owner must be an active user"})),
+            )
+        })?;
+
+    // ...who is already a member of this organization.
+    let new_owner_member = org_members::Entity::find()
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .filter(org_members::Column::UserId.eq(new_owner.id))
+        .one(&state.db)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "New owner must be a member of the organization"})),
+            )
+        })?;
+
+    let old_owner_member = org_members::Entity::find()
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .filter(org_members::Column::UserId.eq(user_id))
+        .one(&state.db)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?;
+
+    let txn = state.db.begin().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Database error"})),
+        )
+    })?;
+
+    let transfer = async {
+        let mut org_active: organizations::ActiveModel = org.into();
+        org_active.owner_id = Set(new_owner.id);
+        let org = org_active.update(&txn).await?;
+
+        let mut promoted: org_members::ActiveModel = new_owner_member.into();
+        promoted.role = Set("owner".to_string());
+        promoted.update(&txn).await?;
+
+        // Previous owner stays in the org as an admin.
+        if let Some(old_member) = old_owner_member {
+            let mut demoted: org_members::ActiveModel = old_member.into();
+            demoted.role = Set("admin".to_string());
+            demoted.update(&txn).await?;
+        }
+
+        Ok::<organizations::Model, sea_orm::DbErr>(org)
+    }
+    .await;
+
+    let org = match transfer {
+        Ok(org) => org,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to transfer ownership"})),
+            ));
+        }
+    };
+
+    txn.commit().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to transfer ownership"})),
+        )
+    })?;
+
+    log_audit(
+        &state.db,
+        org_id,
+        user_id,
+        "transfer_ownership",
+        "organization",
+        Some(org_id),
+        Some(serde_json::json!({
+            "previous_owner_id": user_id,
+            "new_owner_id": new_owner.id,
+        })),
+        None,
+    )
+    .await;
+
+    let member_count = org_members::Entity::find()
+        .filter(org_members::Column::OrgId.eq(org.id))
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
+
+    let link_count = links::Entity::find()
+        .filter(links::Column::OrgId.eq(org.id))
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
+
+    Ok(Json(OrgResponse {
+        id: org.id,
+        name: org.name.clone(),
+        slug: org.slug.clone(),
+        owner_id: org.owner_id,
+        created_at: org.created_at.to_string(),
+        member_count,
+        link_count,
+    }))
 }
 
 /// Get organization audit log

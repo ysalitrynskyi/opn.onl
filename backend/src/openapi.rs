@@ -68,6 +68,7 @@ use crate::handlers::{
         organizations::invite_member,
         organizations::update_member_role,
         organizations::remove_member,
+        organizations::transfer_ownership,
         organizations::get_audit_log,
         
         // Folders
@@ -133,6 +134,7 @@ use crate::handlers::{
             organizations::UpdateOrgRequest,
             organizations::InviteMemberRequest,
             organizations::UpdateMemberRoleRequest,
+            organizations::TransferOwnershipRequest,
             organizations::OrgResponse,
             organizations::OrgMemberResponse,
             organizations::AuditLogResponse,

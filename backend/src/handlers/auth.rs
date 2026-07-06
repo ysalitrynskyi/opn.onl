@@ -524,6 +524,7 @@ pub struct DeleteAccountRequest {
         (status = 400, description = "Invalid request or wrong password"),
         (status = 403, description = "Account deletion is disabled"),
         (status = 401, description = "Unauthorized"),
+        (status = 409, description = "User still owns organizations with other members; transfer ownership first"),
     ),
     tag = "Authentication",
     security(
@@ -571,6 +572,26 @@ pub async fn delete_account(
             }
             Err(_) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password verification failed".to_string() })).into_response();
+            }
+        }
+
+        // An org owner cannot delete their account while the org still has
+        // other members — that would leave the team headless (and a later
+        // hard delete would be blocked by the owner_id FK). Ownership must be
+        // transferred first. Solo orgs (owner is the only member) are left
+        // intact: soft delete is reversible and the org is unreachable while
+        // its only member is deleted.
+        match crate::handlers::organizations::split_owned_orgs(&state.db, user_id).await {
+            Ok(split) if !split.blocking.is_empty() => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(crate::handlers::organizations::ownership_conflict_body(&split.blocking)),
+                )
+                    .into_response();
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() })).into_response();
             }
         }
 
