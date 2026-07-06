@@ -65,16 +65,10 @@ impl ClickBuffer {
         }
     }
 
-    /// Add a click event to the buffer
+    /// Add a click event to the buffer and count it towards the link's
+    /// aggregate click_count (applied to links.click_count at flush).
     pub fn add_click(&self, data: ClickData) {
         let link_id = data.link_id;
-
-        // Add to events buffer
-        let should_flush = {
-            let mut events = self.events.write();
-            events.push(data);
-            events.len() >= self.max_buffer_size
-        };
 
         // Increment counter
         {
@@ -84,6 +78,24 @@ impl ClickBuffer {
                 .and_modify(|c| c.count += 1)
                 .or_insert(ClickCounter { count: 1 });
         }
+
+        self.push_event(data);
+    }
+
+    /// Buffer only the analytics event row, without touching the aggregate
+    /// counter. Used for capped (max_clicks) links whose click_count was
+    /// already incremented atomically at the DB — counting it here too would
+    /// double-add at flush time.
+    pub fn add_event_only(&self, data: ClickData) {
+        self.push_event(data);
+    }
+
+    fn push_event(&self, data: ClickData) {
+        let should_flush = {
+            let mut events = self.events.write();
+            events.push(data);
+            events.len() >= self.max_buffer_size
+        };
 
         // Trigger an early flush when the buffer is full so it can't grow
         // unbounded between timer ticks under load.
