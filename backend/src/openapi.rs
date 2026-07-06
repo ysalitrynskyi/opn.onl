@@ -9,7 +9,7 @@ use crate::handlers::{
 #[openapi(
     info(
         title = "opn.onl URL Shortener API",
-        version = "1.0.0",
+        version = "1.0.1",
         description = "A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.",
         license(
             name = "MIT",
