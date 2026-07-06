@@ -510,10 +510,10 @@ mod qr_code_tests {
     }
 
     #[test]
-    fn test_qr_code_empty_fails() {
+    fn test_qr_code_empty_data() {
+        // Empty payloads are valid QR content (a version-1 code with no data).
         let qr = QrCode::new(b"");
-        // QR code with empty data should still work
-        assert!(qr.is_ok() || qr.is_err());
+        assert!(qr.is_ok());
     }
 }
 

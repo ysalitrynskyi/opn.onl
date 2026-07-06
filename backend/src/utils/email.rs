@@ -94,6 +94,12 @@ pub struct EmailService {
     frontend_url: String,
 }
 
+impl Default for EmailService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EmailService {
     pub fn new() -> Self {
         let smtp_host = std::env::var("SMTP_HOST").ok();

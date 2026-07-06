@@ -1,20 +1,22 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
-    use axum_test::TestServer;
+    use super::common;
 
-    // Helper to create a minimal test app
-    fn create_test_app() -> axum::Router {
-        axum::Router::new()
-            .route("/health", axum::routing::get(|| async { "OK" }))
-    }
-
+    // Real-router check (replaces the old stub that only hit a fake /health):
+    // the analytics dashboard requires authentication.
     #[tokio::test]
-    async fn test_analytics_endpoint() {
-        let app = create_test_app();
-        let server = TestServer::new(app).unwrap();
+    async fn test_analytics_endpoint_requires_auth() {
+        let (server, _db) = common::spawn_real_app().await;
 
-        let response = server.get("/health").await;
-        response.assert_status_ok();
+        let response = server.get("/analytics/dashboard").await;
+        assert_eq!(
+            response.status_code(),
+            401,
+            "unauthenticated /analytics/dashboard must be rejected: {}",
+            response.text()
+        );
     }
 }
 

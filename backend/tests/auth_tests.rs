@@ -1,49 +1,55 @@
 mod common;
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode, header},
-};
-use axum_test::TestServer;
 use serde_json::json;
 
-// Note: These are integration tests that require a running database
-// Run with: cargo test --test auth_tests
-
+// Integration tests against the REAL router and a real Postgres database
+// (see tests/real_integration_tests.rs for the core flows). These replace the
+// old stub tests that only ever queried a fake /health route.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Helper to create test app (simplified version without DB for unit tests)
-    fn create_test_app() -> axum::Router {
-        axum::Router::new()
-            .route("/health", axum::routing::get(|| async { "OK" }))
-    }
-
-    #[tokio::test]
-    async fn test_health_check() {
-        let app = create_test_app();
-        let server = TestServer::new(app).unwrap();
-
-        let response = server.get("/health").await;
-        response.assert_status_ok();
-        response.assert_text("OK");
-    }
-
     #[tokio::test]
     async fn test_register_validation() {
-        let app = create_test_app();
-        let server = TestServer::new(app).unwrap();
-        let response = server.get("/health").await;
-        assert_eq!(response.status_code(), StatusCode::OK);
+        let (server, _db) = common::spawn_real_app().await;
+
+        // Invalid email must be rejected by the real handler's validator.
+        let response = server
+            .post("/auth/register")
+            .json(&json!({ "email": "not-an-email", "password": "password123" }))
+            .await;
+        assert!(
+            response.status_code().is_client_error(),
+            "invalid email accepted: {}",
+            response.text()
+        );
+
+        // Too-short password must be rejected.
+        let response = server
+            .post("/auth/register")
+            .json(&json!({ "email": common::unique_email(), "password": "short" }))
+            .await;
+        assert!(
+            response.status_code().is_client_error(),
+            "weak password accepted: {}",
+            response.text()
+        );
     }
 
     #[tokio::test]
     async fn test_login_requires_credentials() {
-        let app = create_test_app();
-        let server = TestServer::new(app).unwrap();
-        let response = server.get("/health").await;
-        response.assert_status_ok();
+        let (server, _db) = common::spawn_real_app().await;
+
+        // Unknown user / wrong credentials must not yield a token.
+        let response = server
+            .post("/auth/login")
+            .json(&json!({ "email": common::unique_email(), "password": "password123" }))
+            .await;
+        assert!(
+            response.status_code().is_client_error(),
+            "login without an account succeeded: {}",
+            response.text()
+        );
     }
 }
 
@@ -54,14 +60,6 @@ mod jwt_tests {
     use bcrypt::{hash, verify, DEFAULT_COST};
     use rand::{thread_rng, Rng};
     use rand::distributions::Alphanumeric;
-
-    #[test]
-    fn test_jwt_secret_environment() {
-        // JWT_SECRET should either be set or have a default fallback
-        let result = env::var("JWT_SECRET");
-        // The test should work regardless of whether it's set
-        assert!(result.is_ok() || result.is_err());
-    }
 
     #[test]
     fn test_password_hashing_success() {

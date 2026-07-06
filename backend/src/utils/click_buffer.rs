@@ -44,6 +44,12 @@ pub struct ClickBuffer {
     flush_notify: Arc<tokio::sync::Notify>,
 }
 
+impl Default for ClickBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClickBuffer {
     pub fn new() -> Self {
         let max_buffer_size = std::env::var("CLICK_BUFFER_SIZE")

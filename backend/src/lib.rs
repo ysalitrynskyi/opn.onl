@@ -1,0 +1,375 @@
+//! Library target for the opn.onl backend.
+//!
+//! Everything the binary (`src/main.rs`) wires together lives here so that
+//! integration tests in `tests/` can import the real router, state, and
+//! handlers instead of stubbing them. `build_router` must stay byte-for-byte
+//! equivalent to what the binary serves: same routes, same middleware order
+//! (https_redirect → rate limit → CORS → tracing).
+
+pub mod entity;
+pub mod handlers;
+pub mod openapi;
+pub mod utils;
+
+use axum::{
+    body::Body,
+    http::Request,
+    middleware,
+    response::{IntoResponse, Redirect},
+    routing::{delete, get, post, put},
+    Router,
+};
+use sea_orm::DatabaseConnection;
+use std::sync::Arc;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::trace::TraceLayer;
+
+use handlers::websocket::WsState;
+use utils::rate_limiter::{rate_limit_middleware, RateLimiters};
+use utils::cache::RedisCache;
+use utils::{BackupService, ClickBuffer, EmailService};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: DatabaseConnection,
+    pub ws_state: Option<Arc<WsState>>,
+    pub redis_cache: Option<Arc<RedisCache>>,
+    pub email_service: Option<Arc<EmailService>>,
+    pub click_buffer: Arc<ClickBuffer>,
+    pub backup: Arc<BackupService>,
+}
+
+impl AppState {
+    /// Minimal state for integration tests: no Redis, email, or WebSocket
+    /// fan-out; a real ClickBuffer (without the background flush task) and an
+    /// unconfigured BackupService.
+    pub async fn for_tests(db: DatabaseConnection) -> Self {
+        Self {
+            db,
+            ws_state: None,
+            redis_cache: None,
+            email_service: None,
+            click_buffer: Arc::new(ClickBuffer::new()),
+            backup: Arc::new(BackupService::new().await),
+        }
+    }
+}
+
+/// Middleware to redirect HTTP to HTTPS in production
+pub async fn https_redirect(
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> impl IntoResponse {
+    let force_https = std::env::var("FORCE_HTTPS")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    if !force_https {
+        return next.run(req).await;
+    }
+
+    // Check X-Forwarded-Proto header (set by reverse proxy)
+    let is_https = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|h| h.to_str().ok())
+        .map(|proto| proto == "https")
+        .unwrap_or(false);
+
+    if is_https {
+        next.run(req).await
+    } else {
+        // Get host from headers
+        let host = req
+            .headers()
+            .get("host")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("localhost");
+
+        let uri = req.uri();
+        let redirect_url = format!("https://{}{}", host, uri);
+
+        Redirect::permanent(&redirect_url).into_response()
+    }
+}
+
+/// Ensure at least one admin exists in the system
+/// If no admins exist, promote the first user to admin
+pub async fn ensure_admin_exists(db: &DatabaseConnection) {
+    use entity::users;
+    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
+
+    tracing::info!("Checking for admin users...");
+
+    // Count total users first
+    let total_users = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .count(db)
+        .await
+        .unwrap_or(0);
+
+    tracing::info!("Total users in system: {}", total_users);
+
+    if total_users == 0 {
+        tracing::info!("No users in the system yet - first registered user will be admin");
+        return;
+    }
+
+    // Check if any admin exists (non-deleted)
+    let admin_count = users::Entity::find()
+        .filter(users::Column::IsAdmin.eq(true))
+        .filter(users::Column::DeletedAt.is_null())
+        .count(db)
+        .await
+        .unwrap_or(0);
+
+    tracing::info!("Current admin count: {}", admin_count);
+
+    if admin_count > 0 {
+        tracing::info!("✓ Found {} admin(s) in the system - no action needed", admin_count);
+        return;
+    }
+
+    tracing::warn!("⚠ No admin users found! Promoting first user to admin...");
+
+    // Get the first user by ID (oldest user)
+    let first_user_result = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .order_by_asc(users::Column::Id)
+        .one(db)
+        .await;
+
+    match first_user_result {
+        Ok(Some(user)) => {
+            tracing::info!("Found first user: {} (ID: {}, is_admin: {})", user.email, user.id, user.is_admin);
+
+            if user.is_admin {
+                tracing::info!("User is already admin - count query may have had an issue");
+                return;
+            }
+
+            let user_id = user.id;
+            let user_email = user.email.clone();
+            let mut active_user: users::ActiveModel = user.into();
+            active_user.is_admin = Set(true);
+
+            match active_user.update(db).await {
+                Ok(updated) => {
+                    tracing::info!("✓ Successfully promoted user {} (ID: {}) to admin", updated.email, user_id);
+
+                    // Verify the update worked
+                    if let Ok(Some(verify)) = users::Entity::find_by_id(user_id).one(db).await {
+                        if verify.is_admin {
+                            tracing::info!("✓ Verified: {} is now admin", verify.email);
+                        } else {
+                            tracing::error!("✗ Verification failed: {} is still not admin!", verify.email);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("✗ Failed to promote user {} to admin: {}", user_email, e);
+                }
+            }
+        }
+        Ok(None) => {
+            tracing::warn!("No users found despite count showing {} users", total_users);
+        }
+        Err(e) => {
+            tracing::error!("✗ Database error while finding first user: {}", e);
+        }
+    }
+}
+
+/// Build the CORS layer. Restricts allowed origins to the configured
+/// FRONTEND_URL / BASE_URL; only falls back to permissive `Any` when neither is
+/// set (local development), since allowing any origin in production lets any
+/// site call authenticated and server-side-fetch endpoints cross-origin.
+pub fn build_cors() -> CorsLayer {
+    use axum::http::HeaderValue;
+    let mut origins: Vec<HeaderValue> = Vec::new();
+    for var in ["FRONTEND_URL", "BASE_URL"] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim().trim_end_matches('/');
+            if !trimmed.is_empty() {
+                if let Ok(hv) = trimmed.parse::<HeaderValue>() {
+                    if !origins.contains(&hv) {
+                        origins.push(hv);
+                    }
+                }
+            }
+        }
+    }
+
+    let layer = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+    if origins.is_empty() {
+        tracing::warn!("CORS: FRONTEND_URL/BASE_URL not set - allowing any origin (development mode)");
+        layer.allow_origin(Any)
+    } else {
+        tracing::info!("CORS: restricting allowed origins to {:?}", origins);
+        layer.allow_origin(AllowOrigin::list(origins))
+    }
+}
+
+/// Health check endpoint
+pub async fn health_check(
+    axum::extract::State(state): axum::extract::State<AppState>
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+
+    // Check database connection
+    let db_ok = sea_orm::DbConn::ping(&state.db).await.is_ok();
+
+    if db_ok {
+        let email_configured = state.email_service.as_ref().is_some_and(|e| e.is_configured());
+        let backup_configured = state.backup.is_configured();
+        let status = serde_json::json!({
+            "status": "healthy",
+            "database": "connected",
+            "redis": if state.redis_cache.is_some() { "connected" } else { "disabled" },
+            "email": if email_configured { "configured" } else { "disabled" },
+            "backup": if backup_configured { "configured" } else { "disabled" }
+        });
+        (StatusCode::OK, axum::Json(status)).into_response()
+    } else {
+        let status = serde_json::json!({
+            "status": "unhealthy",
+            "database": "disconnected"
+        });
+        (StatusCode::SERVICE_UNAVAILABLE, axum::Json(status)).into_response()
+    }
+}
+
+/// Build the complete application router — the single source of truth for
+/// routes and middleware, shared by the binary and the integration tests.
+///
+/// Middleware order (outermost last): with_state → https_redirect →
+/// rate limit → CORS → tracing. Do not reorder.
+pub fn build_router(app_state: AppState) -> Router {
+    // Rate limiters live for as long as the router; the cleanup task holds its
+    // own Arc and just prunes stale entries every 5 minutes.
+    let rate_limiters = Arc::new(RateLimiters::new());
+    RateLimiters::spawn_cleanup_task(rate_limiters.clone());
+
+    Router::new()
+        // API Documentation (includes /api-docs/openapi.json and /swagger-ui)
+        .merge(openapi::swagger_routes())
+
+        // Authentication routes
+        .route("/auth/register", post(handlers::auth::register))
+        .route("/auth/login", post(handlers::auth::login))
+        .route("/auth/verify-email", post(handlers::auth::verify_email))
+        .route("/auth/resend-verification", post(handlers::auth::resend_verification))
+        .route("/auth/forgot-password", post(handlers::auth::forgot_password))
+        .route("/auth/reset-password", post(handlers::auth::reset_password))
+        .route("/auth/change-password", post(handlers::auth::change_password))
+        .route("/auth/delete-account", post(handlers::auth::delete_account))
+        .route("/auth/settings", get(handlers::auth::get_app_settings))
+        .route("/auth/me", get(handlers::auth::get_current_user))
+        .route("/auth/profile", put(handlers::auth::update_profile))
+        .route("/auth/bio", put(handlers::bio::update_bio_settings))
+        .route("/auth/api-keys", get(handlers::api_keys::list_api_keys).post(handlers::api_keys::create_api_key))
+        .route("/auth/api-keys/:id", delete(handlers::api_keys::delete_api_key))
+        .route("/auth/passkey/register/start", post(handlers::passkeys::register_start))
+        .route("/auth/passkey/register/finish", post(handlers::passkeys::register_finish))
+        .route("/auth/passkey/login/start", post(handlers::passkeys::login_start))
+        .route("/auth/passkey/login/finish", post(handlers::passkeys::login_finish))
+        .route("/auth/passkeys", get(handlers::passkeys::list_passkeys))
+        .route("/auth/passkey/delete", post(handlers::passkeys::delete_passkey))
+        .route("/auth/passkey/rename", post(handlers::passkeys::rename_passkey))
+
+        // Link routes
+        .route("/links", get(handlers::links::get_user_links).post(handlers::links::create_link))
+        .route("/links/bulk", post(handlers::links::bulk_create_links))
+        .route("/links/bulk/delete", post(handlers::links::bulk_delete_links))
+        .route("/links/bulk/update", post(handlers::links::bulk_update_links))
+        .route("/links/export", get(handlers::links::export_links_csv))
+        .route("/links/check-code", get(handlers::links::check_code_availability))
+        .route("/links/health-check", post(handlers::links::check_url_health))
+        .route("/links/build-utm", post(handlers::links::build_utm_url))
+        .route("/links/sparklines", get(handlers::links::get_sparklines))
+        .route("/links/preview-metadata", post(handlers::links::get_link_preview_metadata))
+        .route("/links/:id", put(handlers::links::update_link).delete(handlers::links::delete_link))
+        .route("/links/:id/qr", get(handlers::links::get_qr_code))
+        .route("/links/:id/clone", post(handlers::links::clone_link))
+        .route("/links/:id/pin", post(handlers::links::toggle_pin))
+        .route("/links/:id/stats", get(handlers::analytics::get_link_stats))
+        .route("/links/:id/clicks/realtime", get(handlers::analytics::get_realtime_clicks))
+        .route("/links/:id/tags", post(handlers::tags::add_tags_to_link).delete(handlers::tags::remove_tags_from_link))
+        .route("/links/:id/rules", get(handlers::links::get_routing_rules).put(handlers::links::replace_routing_rules))
+
+        // Analytics routes
+        .route("/analytics/dashboard", get(handlers::analytics::get_dashboard_stats))
+
+        // Organization routes
+        .route("/orgs", get(handlers::organizations::get_user_organizations).post(handlers::organizations::create_organization))
+        .route("/orgs/:org_id", get(handlers::organizations::get_organization)
+            .put(handlers::organizations::update_organization)
+            .delete(handlers::organizations::delete_organization))
+        .route("/orgs/:org_id/members", get(handlers::organizations::get_organization_members)
+            .post(handlers::organizations::invite_member))
+        .route("/orgs/:org_id/members/:member_id", put(handlers::organizations::update_member_role)
+            .delete(handlers::organizations::remove_member))
+        .route("/orgs/:org_id/transfer-ownership", post(handlers::organizations::transfer_ownership))
+        .route("/orgs/:org_id/audit", get(handlers::organizations::get_audit_log))
+
+        // Folder routes
+        .route("/folders", get(handlers::folders::get_folders).post(handlers::folders::create_folder))
+        .route("/folders/:folder_id", get(handlers::folders::get_folder)
+            .put(handlers::folders::update_folder)
+            .delete(handlers::folders::delete_folder))
+        .route("/folders/:folder_id/links", get(handlers::folders::get_folder_links)
+            .post(handlers::folders::move_links_to_folder))
+
+        // Tag routes
+        .route("/tags", get(handlers::tags::get_tags).post(handlers::tags::create_tag))
+        .route("/tags/:tag_id", get(handlers::tags::get_tag)
+            .put(handlers::tags::update_tag)
+            .delete(handlers::tags::delete_tag))
+        .route("/tags/:tag_id/links", get(handlers::tags::get_links_by_tag))
+
+        // Contact form
+        .route("/contact", post(handlers::contact::send_contact_message))
+
+        // Admin routes (protected)
+        .route("/admin/stats", get(handlers::admin::get_admin_stats))
+        .route("/admin/users", get(handlers::admin::get_all_users))
+        .route("/admin/users/:user_id", delete(handlers::admin::delete_user))
+        .route("/admin/users/:user_id/hard", delete(handlers::admin::hard_delete_user))
+        .route("/admin/users/:user_id/restore", post(handlers::admin::restore_user))
+        .route("/admin/users/:user_id/make-admin", post(handlers::admin::make_admin))
+        .route("/admin/users/:user_id/remove-admin", post(handlers::admin::remove_admin))
+        .route("/admin/backup", get(handlers::admin::list_backups).post(handlers::admin::create_backup))
+        .route("/admin/backup/cleanup/:keep_count", delete(handlers::admin::cleanup_backups))
+        .route("/admin/blocked/links", get(handlers::admin::get_blocked_links).post(handlers::admin::block_link))
+        .route("/admin/blocked/links/:id", delete(handlers::admin::unblock_link))
+        .route("/admin/blocked/domains", get(handlers::admin::get_blocked_domains).post(handlers::admin::block_domain))
+        .route("/admin/blocked/domains/:id", delete(handlers::admin::unblock_domain))
+
+        // WebSocket for real-time updates
+        .route("/ws", get(handlers::websocket::ws_handler))
+        .route("/sse", get(handlers::websocket::sse_handler))
+
+        // Health check
+        .route("/health", get(health_check))
+        .route("/api/bio/:username", get(handlers::bio::get_public_bio))
+
+        // Redirect route (must be last to not conflict with other routes)
+        .route("/:code/verify", post(handlers::links::verify_link_password))
+        .route("/:code/preview", get(handlers::links::preview_link))
+        .route("/:code", get(handlers::links::redirect_link))
+
+        // State
+        .with_state(app_state)
+
+        // HTTPS redirect middleware
+        .layer(middleware::from_fn(https_redirect))
+
+        // Rate limiting middleware
+        .layer(middleware::from_fn_with_state(rate_limiters, rate_limit_middleware))
+
+        // CORS (origins restricted to FRONTEND_URL/BASE_URL when configured)
+        .layer(build_cors())
+
+        // Tracing
+        .layer(TraceLayer::new_for_http())
+}

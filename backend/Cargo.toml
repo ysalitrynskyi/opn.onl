@@ -6,6 +6,16 @@ edition = "2021"
 [workspace]
 members = [".", "migration"]
 
+# Library target so integration tests in tests/ can import the real router,
+# state, handlers, and entities. The binary below is a thin wrapper around it.
+[lib]
+name = "opn_onl_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opn_onl_backend"
+path = "src/main.rs"
+
 [dependencies]
 migration = { path = "migration" }
 axum = { version = "0.7", features = ["macros", "ws"] }

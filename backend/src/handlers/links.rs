@@ -1068,7 +1068,7 @@ pub async fn preview_link(
 }
 
 #[derive(Deserialize, Default)]
-pub(crate) struct RedirectQuery {
+pub struct RedirectQuery {
     /// Set to `1` after the visitor confirms the safe-link interstitial in the SPA.
     confirm: Option<String>,
 }

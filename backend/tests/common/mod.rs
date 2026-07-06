@@ -1,4 +1,3 @@
-use axum::Router;
 use sea_orm::{Database, DatabaseConnection};
 use std::env;
 
@@ -6,10 +5,16 @@ pub async fn setup_test_db() -> DatabaseConnection {
     dotenvy::dotenv().ok();
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
     let db = Database::connect(&db_url).await.expect("Failed to connect to test database");
-    // Ensure the schema exists. Migrator::up is idempotent, so running it on every
-    // test setup is safe and keeps tests self-contained (no external migrate step).
-    use migration::{Migrator, MigratorTrait};
-    Migrator::up(&db, None).await.expect("Failed to run migrations on test database");
+    // Ensure the schema exists. Run migrations exactly once per test process:
+    // tests run in parallel, and concurrent Migrator::up calls on a fresh
+    // database race on creating the seaql_migrations table.
+    static MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    MIGRATIONS
+        .get_or_init(|| async {
+            use migration::{Migrator, MigratorTrait};
+            Migrator::up(&db, None).await.expect("Failed to run migrations on test database");
+        })
+        .await;
     db
 }
 
@@ -71,9 +76,43 @@ pub fn get_test_admin_token() -> String {
         .expect("Failed to create admin test token")
 }
 
-pub fn create_test_app() -> Router {
-    Router::new()
-        .route("/health", axum::routing::get(|| async { "OK" }))
+/// Spawn the REAL application router (all routes, all middleware) backed by
+/// the Postgres database from `DATABASE_URL`, plus a handle to that database
+/// for test fixtures. This is what integration tests should use — never a
+/// stub router.
+#[allow(dead_code)]
+pub async fn spawn_real_app() -> (axum_test::TestServer, DatabaseConnection) {
+    // Pin environment-dependent middleware before dotenvy runs so a developer
+    // .env (e.g. FORCE_HTTPS=true) can't change test behavior: dotenvy never
+    // overrides variables that are already set.
+    std::env::set_var("FORCE_HTTPS", "false");
+    std::env::set_var("TRUST_PROXY_HEADERS", "false");
+    if std::env::var("JWT_SECRET").is_err() {
+        std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef");
+    }
+
+    let db = setup_test_db().await;
+    let state = opn_onl_backend::AppState::for_tests(db.clone()).await;
+    let server = axum_test::TestServer::new(opn_onl_backend::build_router(state))
+        .expect("failed to start test server");
+    (server, db)
+}
+
+/// Flip `email_verified` directly in the database (there is no SMTP in tests,
+/// so the verification email flow can't be exercised end-to-end here).
+#[allow(dead_code)]
+pub async fn mark_email_verified(db: &DatabaseConnection, user_id: i32) {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let user = users::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .expect("db error")
+        .expect("user not found");
+    let mut active: users::ActiveModel = user.into();
+    active.email_verified = Set(true);
+    active.update(db).await.expect("failed to mark user verified");
 }
 
 /// Generate a unique test email
