@@ -255,7 +255,7 @@ pub async fn rate_limit_middleware(
     // Choose appropriate limiter based on path
     let result = if path.ends_with("/verify") && req.method() == axum::http::Method::POST {
         // Password verification - strict anti-bruteforce (5 per minute per IP+code)
-        let code = path.split('/').filter(|s| !s.is_empty()).next().unwrap_or("unknown");
+        let code = path.split('/').find(|s| !s.is_empty()).unwrap_or("unknown");
         limiters.password_verify.check(&format!("pwverify:{}:{}", ip, code))
     } else if path.starts_with("/auth") {
         limiters.auth.check(&format!("auth:{}", ip))

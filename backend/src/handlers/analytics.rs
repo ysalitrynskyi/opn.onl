@@ -13,6 +13,9 @@ use crate::AppState;
 use crate::entity::{links, click_events};
 use crate::handlers::links::get_user_id_from_header;
 
+/// Aggregated geo bucket value: (latitude, longitude, city, country, hit count).
+type GeoAggregate = (f64, f64, Option<String>, Option<String>, i64);
+
 // ============= DTOs =============
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
@@ -324,7 +327,7 @@ pub async fn get_link_stats(
     }).collect();
 
     // Geo data for map
-    let mut geo_map: HashMap<(i64, i64), (f64, f64, Option<String>, Option<String>, i64)> = HashMap::new();
+    let mut geo_map: HashMap<(i64, i64), GeoAggregate> = HashMap::new();
     for event in &events {
         if let (Some(lat), Some(lon)) = (event.latitude, event.longitude) {
             // Round to 2 decimal places for clustering
@@ -424,7 +427,7 @@ pub async fn get_dashboard_stats(
             click_count: l.click_count,
         })
         .collect();
-    top_links.sort_by(|a, b| b.click_count.cmp(&a.click_count));
+    top_links.sort_by_key(|b| std::cmp::Reverse(b.click_count));
     top_links.truncate(10);
 
     // Clicks by day (last 30 days)
@@ -452,7 +455,7 @@ pub async fn get_dashboard_stats(
             percentage: (count as f64 / total_for_percentage) * 100.0,
         })
         .collect();
-    top_countries.sort_by(|a, b| b.count.cmp(&a.count));
+    top_countries.sort_by_key(|b| std::cmp::Reverse(b.count));
     top_countries.truncate(10);
 
     // Top browsers
@@ -468,7 +471,7 @@ pub async fn get_dashboard_stats(
             percentage: (count as f64 / total_for_percentage) * 100.0,
         })
         .collect();
-    top_browsers.sort_by(|a, b| b.count.cmp(&a.count));
+    top_browsers.sort_by_key(|b| std::cmp::Reverse(b.count));
     top_browsers.truncate(5);
 
     let response = DashboardStats {

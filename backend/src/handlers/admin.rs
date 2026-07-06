@@ -181,7 +181,7 @@ pub async fn delete_user(
         let mut active_user: users::ActiveModel = user.into();
         active_user.deleted_at = Set(Some(Utc::now().naive_utc()));
         
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
                 success: false,
                 message: "Failed to delete user".to_string(),
@@ -321,7 +321,7 @@ pub async fn restore_user(
         let mut active_user: users::ActiveModel = user.into();
         active_user.deleted_at = Set(None);
         
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
                 success: false,
                 message: "Failed to restore user".to_string(),
@@ -513,7 +513,7 @@ pub async fn make_admin(
         let mut active_user: users::ActiveModel = user.into();
         active_user.is_admin = Set(true);
         
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
                 success: false,
                 message: "Failed to update user".to_string(),
@@ -582,7 +582,7 @@ pub async fn remove_admin(
         let mut active_user: users::ActiveModel = user.into();
         active_user.is_admin = Set(false);
         
-        if let Err(_) = active_user.update(&state.db).await {
+        if active_user.update(&state.db).await.is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
                 success: false,
                 message: "Failed to update user".to_string(),

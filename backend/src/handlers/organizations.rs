@@ -137,6 +137,9 @@ pub(crate) async fn member_can_edit(
         .unwrap_or(false)
 }
 
+// Audit logging naturally records many independent fields; grouping them into a
+// struct would add indirection without improving clarity.
+#[allow(clippy::too_many_arguments)]
 async fn log_audit(
     db: &sea_orm::DatabaseConnection,
     org_id: i32,
