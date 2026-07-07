@@ -418,10 +418,12 @@ opn.onl/
 │   ├── src/
 │   │   ├── entity/       # SeaORM database models
 │   │   ├── handlers/     # API route handlers
-│   │   └── utils/        # Utilities (cache, jwt, geoip, email, backup)
+│   │   ├── utils/        # Utilities (cache, jwt, geoip, email, backup, privacy)
+│   │   ├── lib.rs        # Library target: AppState + build_router (used by tests)
+│   │   └── main.rs       # Thin binary: env, logging, DB, serve
 │   ├── migration/        # Database migrations
 │   ├── scripts/          # Helper scripts (GeoIP download, entrypoint)
-│   ├── tests/            # Integration tests
+│   ├── tests/            # Integration tests (real router + real Postgres)
 │   └── Dockerfile
 ├── frontend/
 │   ├── src/
@@ -513,6 +515,9 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
 - Email verification required before creating links
 - HTTPS enforced in production
 - URL sanitization and blocking
+- Visitor IPs truncated before storage (IPv4 /24, IPv6 /48); remaining
+  click identifiers anonymized after a configurable retention window
+  (`ANALYTICS_PII_RETENTION_DAYS`, default ~13 months)
 
 ## Development
 
@@ -521,9 +526,18 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
 ```bash
 cd backend
 cargo run          # Dev server on :3000
-cargo test         # Run tests
+cargo test         # Run tests (needs Postgres, see below)
 cargo clippy       # Lint
 cargo build --release
+```
+
+The test suite includes real integration tests that exercise the actual
+router against Postgres. Point `DATABASE_URL` at a throwaway database
+(migrations run automatically):
+
+```bash
+createdb opn_test
+DATABASE_URL=postgres://localhost/opn_test cargo test
 ```
 
 ### Frontend
@@ -584,6 +598,10 @@ docker pull --platform linux/amd64 ghcr.io/ysalitrynskyi/opn-backend:latest
 3. Commit changes (`git commit -m 'Add amazing feature'`)
 4. Push to branch (`git push origin feature/amazing`)
 5. Open a Pull Request
+
+## Security
+
+Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY.md).
 
 ## License
 
