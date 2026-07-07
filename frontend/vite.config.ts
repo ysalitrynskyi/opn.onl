@@ -44,6 +44,17 @@ export default defineConfig(({ mode }) => {
           maxConcurrentRoutes: 1,
           renderAfterTime: 2000,
           headless: true,
+          // The build runs as root inside the Docker builder stage; newer
+          // Debian Chromium refuses to start its sandbox there, so launch
+          // fails with an empty "Failed to launch the browser process".
+          // The container is throwaway and only renders our own pages, so
+          // disabling the sandbox (the standard CI/Docker setup) is safe.
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+          ],
         }),
         postProcess(renderedRoute) {
           // Add data attribute to mark prerendered pages

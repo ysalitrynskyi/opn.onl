@@ -1,32 +1,9 @@
 # Build stage - use full Node image for Puppeteer/Chromium support
 FROM node:22-slim AS builder
 
-# Install Puppeteer dependencies
-RUN apt-get update && apt-get install -y \
-    chromium \
-    fonts-liberation \
-    libappindicator3-1 \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    xdg-utils \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set Puppeteer to use installed Chromium
+# Don't let puppeteer download its own Chrome (Chrome for Testing has no
+# linux/arm64 builds); we use Playwright's Chromium below instead.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
@@ -35,6 +12,15 @@ COPY package*.json ./
 
 # Install dependencies
 RUN npm ci --legacy-peer-deps
+
+# Chromium for the prerender step. Debian's `chromium` package (150+) crashes
+# with SIGTRAP under Docker on both amd64 and arm64, which surfaced as
+# puppeteer "Failed to launch the browser process" with an empty stderr.
+# Playwright's Chromium is version-pinned through package-lock.json, ships
+# proper linux/amd64 AND linux/arm64 builds, and --with-deps installs the
+# required system libraries.
+RUN npx playwright install chromium --with-deps \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy source code
 COPY . .
@@ -46,8 +32,11 @@ ARG VITE_FRONTEND_URL
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_FRONTEND_URL=$VITE_FRONTEND_URL
 
-# Build the application with prerendering
-RUN npm run build
+# Build the application with prerendering. The Playwright Chromium path
+# contains a version segment, so resolve it at build time; puppeteer picks it
+# up via PUPPETEER_EXECUTABLE_PATH.
+RUN PUPPETEER_EXECUTABLE_PATH="$(find /root/.cache/ms-playwright -name chrome -type f | head -1)" \
+    npm run build
 
 # Production stage with nginx
 FROM nginx:alpine
