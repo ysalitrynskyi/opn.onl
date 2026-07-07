@@ -79,7 +79,9 @@ export default function Home() {
                     <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-24 lg:pt-28 lg:pb-32">
                         <div className="grid lg:grid-cols-12 gap-12 lg:gap-8 items-center">
                             {/* Left: copy + instrument */}
-                            <div className="lg:col-span-7">
+                            {/* min-w-0: let grid columns shrink below content width on small
+                                screens so the mock-URL truncation can actually engage */}
+                            <div className="min-w-0 lg:col-span-7">
                                 <motion.p
                                     initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease }}
                                     className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600"
@@ -171,7 +173,7 @@ export default function Home() {
                             {/* Right: product peek */}
                             <motion.div
                                 initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, ease, delay: 0.25 }}
-                                className="lg:col-span-5"
+                                className="min-w-0 lg:col-span-5"
                             >
                                 <div className="rounded-2xl border border-line2 bg-surface shadow-lift overflow-hidden">
                                     <div className="flex items-center gap-1.5 border-b border-line px-4 py-3">
