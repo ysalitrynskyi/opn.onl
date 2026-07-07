@@ -209,6 +209,16 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | `ENABLE_URL_SANITIZATION` | true | Sanitize URLs for security |
 | `ENABLE_ACCOUNT_DELETION` | false | Allow users to delete their own accounts |
 
+### Privacy & Analytics
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) are anonymized by a daily sweep; aggregate stats are kept. `0` disables the sweep |
+
+Click analytics never store the full visitor IP: addresses are truncated at
+collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
+lookup — no IP ever leaves the server.
+
 ### Performance Tuning
 
 | Variable | Default | Description |
@@ -259,7 +269,7 @@ Full API documentation available at `/swagger-ui/` when backend is running.
 | POST | `/auth/forgot-password` | Request password reset |
 | POST | `/auth/reset-password` | Reset password with token |
 | POST | `/auth/change-password` | Change password (authenticated) |
-| DELETE | `/auth/delete-account` | Delete own account (if enabled) |
+| POST | `/auth/delete-account` | Delete own account (if enabled; refused with 409 while you own orgs with other members) |
 | GET / POST | `/auth/api-keys` | List / create personal API keys |
 | DELETE | `/auth/api-keys/{id}` | Revoke an API key |
 
@@ -301,15 +311,21 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/organizations` | List user's organizations |
-| POST | `/organizations` | Create organization |
-| GET | `/organizations/{id}` | Get organization |
-| PUT | `/organizations/{id}` | Update organization |
-| DELETE | `/organizations/{id}` | Delete organization |
-| GET | `/organizations/{id}/members` | List members |
-| POST | `/organizations/{id}/members` | Add member |
-| DELETE | `/organizations/{id}/members/{user_id}` | Remove member |
-| GET | `/organizations/{id}/audit-log` | View audit log |
+| GET | `/orgs` | List user's organizations |
+| POST | `/orgs` | Create organization |
+| GET | `/orgs/{org_id}` | Get organization |
+| PUT | `/orgs/{org_id}` | Update organization |
+| DELETE | `/orgs/{org_id}` | Delete organization (owner only) |
+| GET | `/orgs/{org_id}/members` | List members |
+| POST | `/orgs/{org_id}/members` | Invite member by email (`role`: admin, editor, viewer) |
+| PUT | `/orgs/{org_id}/members/{member_id}` | Change a member's role |
+| DELETE | `/orgs/{org_id}/members/{member_id}` | Remove member |
+| POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only, body: `{"new_owner_user_id": <id>}`) |
+| GET | `/orgs/{org_id}/audit` | View audit log (admin+) |
+
+An account that owns organizations with other members cannot be deleted
+(HTTP 409 with the list of blocking orgs) until ownership is transferred or
+the organization is deleted — one person leaving can't wipe a shared team.
 
 ### Folders
 
