@@ -12,8 +12,8 @@ use crate::handlers::{
         version = "1.1.1",
         description = "A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.",
         license(
-            name = "MIT",
-            url = "https://opensource.org/licenses/MIT"
+            name = "AGPL-3.0-only",
+            url = "https://www.gnu.org/licenses/agpl-3.0.html"
         ),
         contact(
             name = "opn.onl Support",
