@@ -57,8 +57,10 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-backend
           tags: |
             type=raw,value=latest-${{ steps.platform.outputs.suffix }},enable=${{ github.ref == 'refs/heads/release' }}
-            type=ref,event=branch
-            type=semver,pattern={{version}}
+            type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
+            # Per-platform semver tags; the create-manifests job merges them
+            # into a single multi-arch :X.Y.Z manifest.
+            type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -118,8 +120,10 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-frontend
           tags: |
             type=raw,value=latest-${{ steps.platform.outputs.suffix }},enable=${{ github.ref == 'refs/heads/release' }}
-            type=ref,event=branch
-            type=semver,pattern={{version}}
+            type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
+            # Per-platform semver tags; the create-manifests job merges them
+            # into a single multi-arch :X.Y.Z manifest.
+            type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -159,6 +163,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push backend manifest
+        if: github.ref == 'refs/heads/release'
         run: |
           docker buildx imagetools create \
             --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-backend:latest \
@@ -166,11 +171,23 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-backend:latest-arm64
 
       - name: Create and push frontend manifest
+        if: github.ref == 'refs/heads/release'
         run: |
           docker buildx imagetools create \
             --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-frontend:latest \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-frontend:latest-amd64 \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-frontend:latest-arm64
+
+      - name: Create and push semver manifests
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for image in opn-backend opn-frontend; do
+            docker buildx imagetools create \
+              --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION \
+              ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-amd64 \
+              ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-arm64
+          done
 
   cleanup:
     name: Prune Old GHCR Versions
