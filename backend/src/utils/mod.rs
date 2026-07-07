@@ -7,6 +7,7 @@ pub mod click_buffer;
 pub mod backup;
 pub mod privacy;
 pub mod routing;
+pub mod url_policy;
 
 pub use jwt::*;
 pub use email::EmailService;

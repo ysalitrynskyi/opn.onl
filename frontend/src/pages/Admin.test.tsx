@@ -28,6 +28,7 @@ describe('Admin Page', () => {
         clicks_today: 900,
         blocked_links_count: 25,
         blocked_domains_count: 10,
+        suspicious_links_count: 2,
     };
 
     const mockActivity = {
@@ -117,6 +118,34 @@ describe('Admin Page', () => {
                 has_password: true,
                 is_active: true,
                 inactive_reason: null,
+                suspicious: false,
+                suspicion_reason: null,
+            },
+            {
+                id: 12,
+                code: 'muzzlava',
+                original_url: 'http://69.12.83.125/30/puregolds.hta',
+                title: null,
+                user_id: 5,
+                user_email: 'ardhra56070@gmail.com',
+                org_id: null,
+                folder_id: null,
+                click_count: 784,
+                max_clicks: null,
+                created_at: '2026-07-07T00:00:00Z',
+                starts_at: null,
+                expires_at: null,
+                deleted_at: null,
+                burned_at: null,
+                is_pinned: false,
+                burn_after_reading: false,
+                safe_link_interstitial: false,
+                bio_visible: false,
+                has_password: false,
+                is_active: true,
+                inactive_reason: null,
+                suspicious: true,
+                suspicion_reason: 'dangerous file type (.hta), raw IP host',
             },
             {
                 id: 11,
@@ -141,9 +170,11 @@ describe('Admin Page', () => {
                 has_password: false,
                 is_active: false,
                 inactive_reason: null,
+                suspicious: false,
+                suspicion_reason: null,
             },
         ],
-        total: 2,
+        total: 3,
         page: 1,
         per_page: 25,
     };
@@ -322,6 +353,20 @@ describe('Admin Page', () => {
             await waitFor(() => {
                 expect(global.fetch).toHaveBeenCalledWith(
                     expect.stringContaining('/admin/activity'),
+                    expect.anything(),
+                );
+            });
+        });
+
+        it('shows a suspicious-links banner and jumps to the filtered Links tab', async () => {
+            render(<Admin />);
+
+            const banner = await screen.findByRole('button', { name: /suspicious link/i });
+            fireEvent.click(banner);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringMatching(/\/admin\/links\?.*suspicious=true/),
                     expect.anything(),
                 );
             });
@@ -556,8 +601,8 @@ describe('Admin Page', () => {
             render(<Admin />);
             await openLinksTab();
 
-            const deleteBtn = await screen.findByRole('button', { name: /^delete$/i });
-            fireEvent.click(deleteBtn);
+            const deleteBtns = await screen.findAllByRole('button', { name: /^delete$/i });
+            fireEvent.click(deleteBtns[0]);
 
             await waitFor(() => {
                 expect(global.fetch).toHaveBeenCalledWith(
@@ -593,6 +638,63 @@ describe('Admin Page', () => {
                 expect(global.fetch).toHaveBeenCalledWith(
                     expect.stringMatching(/\/admin\/links\?.*search=abc/),
                     expect.anything(),
+                );
+            });
+        });
+
+        it('surfaces the suspicious flag and reason on malicious links', async () => {
+            render(<Admin />);
+            await openLinksTab();
+
+            expect(await screen.findByText(/dangerous file type \(\.hta\), raw IP host/i)).toBeInTheDocument();
+        });
+
+        it('the suspicious-only toggle sets the query param', async () => {
+            render(<Admin />);
+            await openLinksTab();
+
+            const toggle = await screen.findByRole('button', { name: /suspicious only/i });
+            fireEvent.click(toggle);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringMatching(/\/admin\/links\?.*suspicious=true/),
+                    expect.anything(),
+                );
+            });
+        });
+
+        it('block domain action calls the block-domain endpoint', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            render(<Admin />);
+            await openLinksTab();
+
+            const blockBtns = await screen.findAllByRole('button', { name: /block domain/i });
+            fireEvent.click(blockBtns[0]);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringMatching(/\/admin\/links\/\d+\/block-domain/),
+                    expect.objectContaining({ method: 'POST' }),
+                );
+            });
+        });
+
+        it('select-all then bulk delete calls the bulk endpoint', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            render(<Admin />);
+            await openLinksTab();
+
+            const selectAll = await screen.findByRole('checkbox', { name: /select all links/i });
+            fireEvent.click(selectAll);
+
+            const bulkDelete = await screen.findByRole('button', { name: /delete selected/i });
+            fireEvent.click(bulkDelete);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/links/bulk/delete'),
+                    expect.objectContaining({ method: 'POST' }),
                 );
             });
         });

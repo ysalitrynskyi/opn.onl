@@ -207,6 +207,8 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | `MIN_ALIAS_LENGTH` | 5 | Minimum custom alias length |
 | `MAX_ALIAS_LENGTH` | 25 | Maximum custom alias length |
 | `ENABLE_URL_SANITIZATION` | true | Sanitize URLs for security |
+| `BLOCK_DANGEROUS_FILE_EXTENSIONS` | true | Refuse to shorten links pointing directly at executable/script files (`.hta`, `.exe`, `.msi`, `.jar`, `.apk`, `.dmg`, …) — a common malware-delivery vector. Recommended on for any public instance |
+| `BLOCK_RAW_IP_URLS` | true | Refuse to shorten links whose host is a bare IP address. Set `false` if you legitimately shorten internal/LAN IPs on a self-hosted instance |
 | `ENABLE_ACCOUNT_DELETION` | false | Allow users to delete their own accounts |
 
 ### Privacy & Analytics
@@ -364,9 +366,12 @@ the organization is deleted — one person leaving can't wipe a shared team.
 | POST | `/admin/users/{id}/make-admin` | Promote to admin |
 | POST | `/admin/users/{id}/remove-admin` | Demote from admin |
 | POST | `/admin/users/{id}/verify-email` | Force-verify a user's email |
-| GET | `/admin/links` | List every link across all users — paginated, searchable (code/URL/title/owner email), filter by user or deleted status |
+| GET | `/admin/links` | List every link across all users — paginated, searchable (code/URL/title/owner email), filter by user, deleted status, or `suspicious=true` (dangerous file type / raw-IP host); each row carries a `suspicious` flag + reason |
 | DELETE | `/admin/links/{id}` | Soft delete any link (takedown; stops redirecting immediately) |
 | POST | `/admin/links/{id}/restore` | Restore a deleted link |
+| POST | `/admin/links/bulk/delete` | Soft delete many links at once (body: `{"ids":[…]}`) |
+| POST | `/admin/links/bulk/restore` | Restore many links at once |
+| POST | `/admin/links/{id}/block-domain` | One-click takedown: block the link's destination host and delete the link |
 | GET | `/admin/orgs` | List all organizations with owner, member and link counts |
 | GET | `/admin/blocked/links` | List blocked URLs |
 | POST | `/admin/blocked/links` | Block URL |

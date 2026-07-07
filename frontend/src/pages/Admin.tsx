@@ -6,6 +6,7 @@ import {
     RefreshCw, AlertTriangle, Check, X, Database, BarChart2,
     Search, ChevronLeft, ChevronRight, KeyRound, Building2,
     ExternalLink, Copy, RotateCcw, Flame, Lock, Pin, MailCheck,
+    ShieldAlert,
 } from 'lucide-react';
 import {
     ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
@@ -27,6 +28,7 @@ interface AdminStats {
     clicks_today: number;
     blocked_links_count: number;
     blocked_domains_count: number;
+    suspicious_links_count: number;
 }
 
 interface ActivityDay {
@@ -92,6 +94,8 @@ interface AdminLink {
     has_password: boolean;
     is_active: boolean;
     inactive_reason: string | null;
+    suspicious: boolean;
+    suspicion_reason: string | null;
 }
 
 interface AdminOrg {
@@ -143,7 +147,9 @@ export default function Admin() {
     const [linkSearch, setLinkSearch] = useState('');
     const [linkStatus, setLinkStatus] = useState('all');
     const [linkSort, setLinkSort] = useState('created_desc');
+    const [linkSuspiciousOnly, setLinkSuspiciousOnly] = useState(false);
     const [linkUserFilter, setLinkUserFilter] = useState<{ id: number; email: string } | null>(null);
+    const [selectedLinkIds, setSelectedLinkIds] = useState<Set<number>>(new Set());
 
     // Orgs
     const [orgs, setOrgs] = useState<AdminOrg[]>([]);
@@ -204,6 +210,7 @@ export default function Admin() {
         });
         if (linkSearch.trim()) params.set('search', linkSearch.trim());
         if (linkStatus !== 'all') params.set('status', linkStatus);
+        if (linkSuspiciousOnly) params.set('suspicious', 'true');
         if (linkUserFilter) params.set('user_id', String(linkUserFilter.id));
         if (linkSort === 'clicks_desc') {
             params.set('sort', 'clicks');
@@ -216,8 +223,9 @@ export default function Admin() {
             const data = await res.json();
             setLinks(data.links ?? []);
             setLinksTotal(data.total ?? 0);
+            setSelectedLinkIds(new Set());
         }
-    }, [linksPage, linkSearch, linkStatus, linkSort, linkUserFilter]);
+    }, [linksPage, linkSearch, linkStatus, linkSort, linkSuspiciousOnly, linkUserFilter]);
 
     const loadOrgs = useCallback(async () => {
         const params = new URLSearchParams({
@@ -352,6 +360,62 @@ export default function Admin() {
         'Link restored',
         loadLinks,
     );
+
+    const blockDomainFromLink = (link: AdminLink) => {
+        let host = link.original_url;
+        try {
+            host = new URL(link.original_url).host;
+        } catch {
+            // fall back to the raw URL in the prompt
+        }
+        if (!confirm(`Block ${host} and delete /${link.code}? All existing and future links to this host stop working.`)) return;
+        doAction(
+            () => authFetch(API_ENDPOINTS.adminLinkBlockDomain(link.id), { method: 'POST' }),
+            'Domain blocked and link deleted',
+            loadLinks,
+        );
+    };
+
+    const bulkDeleteSelectedLinks = () => {
+        const ids = [...selectedLinkIds];
+        if (ids.length === 0) return;
+        if (!confirm(`Delete ${ids.length} selected link(s)? They stop redirecting immediately.`)) return;
+        doAction(
+            () => authFetch(API_ENDPOINTS.adminLinksBulkDelete, {
+                method: 'POST',
+                body: JSON.stringify({ ids }),
+            }),
+            `Deleted ${ids.length} link(s)`,
+            loadLinks,
+        );
+    };
+
+    const bulkRestoreSelectedLinks = () => {
+        const ids = [...selectedLinkIds];
+        if (ids.length === 0) return;
+        doAction(
+            () => authFetch(API_ENDPOINTS.adminLinksBulkRestore, {
+                method: 'POST',
+                body: JSON.stringify({ ids }),
+            }),
+            `Restored ${ids.length} link(s)`,
+            loadLinks,
+        );
+    };
+
+    const toggleLinkSelected = (id: number) => {
+        setSelectedLinkIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    };
+
+    const toggleSelectAllLinks = () => {
+        setSelectedLinkIds((prev) =>
+            prev.size === links.length ? new Set() : new Set(links.map((l) => l.id)),
+        );
+    };
 
     const copyShortUrl = async (code: string) => {
         try {
@@ -507,6 +571,30 @@ export default function Admin() {
                         <StatCard label="Blocked URLs" value={stats.blocked_links_count} icon={Ban} color="red" />
                         <StatCard label="Blocked Domains" value={stats.blocked_domains_count} icon={Globe} color="red" />
                     </div>
+
+                    {stats.suspicious_links_count > 0 && (
+                        <button
+                            onClick={() => {
+                                setLinkSuspiciousOnly(true);
+                                setLinkStatus('live');
+                                setLinkUserFilter(null);
+                                setLinksPage(1);
+                                setActiveTab('links');
+                            }}
+                            className="w-full text-left bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3 hover:bg-red-100 transition-colors"
+                        >
+                            <ShieldAlert className="h-6 w-6 text-red-600 shrink-0" />
+                            <div>
+                                <div className="font-semibold text-red-800">
+                                    {stats.suspicious_links_count.toLocaleString()} suspicious link{stats.suspicious_links_count === 1 ? '' : 's'} live
+                                </div>
+                                <div className="text-sm text-red-600">
+                                    Point at executable files or raw IP addresses. Click to review and take down.
+                                </div>
+                            </div>
+                            <ChevronRight className="h-5 w-5 text-red-400 ml-auto" />
+                        </button>
+                    )}
 
                     <div className="bg-white rounded-xl border border-slate-200 p-6">
                         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
@@ -718,6 +806,18 @@ export default function Admin() {
                             <option value="created_asc">Oldest first</option>
                             <option value="clicks_desc">Most clicks</option>
                         </select>
+                        <button
+                            onClick={() => { setLinkSuspiciousOnly((v) => !v); setLinksPage(1); }}
+                            aria-pressed={linkSuspiciousOnly}
+                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                                linkSuspiciousOnly
+                                    ? 'bg-red-600 text-white border-red-600'
+                                    : 'bg-white text-red-700 border-red-200 hover:bg-red-50'
+                            }`}
+                        >
+                            <ShieldAlert className="h-4 w-4" />
+                            Suspicious only
+                        </button>
                         {linkUserFilter && (
                             <span className="inline-flex items-center gap-1 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-full text-sm">
                                 {linkUserFilter.email}
@@ -732,10 +832,45 @@ export default function Admin() {
                         <span className="text-sm text-slate-500 ml-auto">{linksTotal.toLocaleString()} links</span>
                     </div>
 
+                    {selectedLinkIds.size > 0 && (
+                        <div className="flex items-center gap-3 bg-slate-800 text-white rounded-xl px-4 py-3">
+                            <span className="text-sm font-medium">{selectedLinkIds.size} selected</span>
+                            <button
+                                onClick={bulkDeleteSelectedLinks}
+                                className="inline-flex items-center gap-1.5 bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+                            >
+                                <Trash2 className="h-4 w-4" /> Delete selected
+                            </button>
+                            <button
+                                onClick={bulkRestoreSelectedLinks}
+                                className="inline-flex items-center gap-1.5 bg-slate-600 hover:bg-slate-500 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+                            >
+                                <RotateCcw className="h-4 w-4" /> Restore selected
+                            </button>
+                            <button
+                                onClick={() => setSelectedLinkIds(new Set())}
+                                className="ml-auto text-sm text-slate-300 hover:text-white"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                    )}
+
                     <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-                        <table className="w-full min-w-[1000px]">
+                        <table className="w-full min-w-[1050px]">
                             <thead className="bg-slate-50 border-b border-slate-200">
                                 <tr>
+                                    <th className="px-4 py-3 w-10">
+                                        <input
+                                            type="checkbox"
+                                            aria-label="Select all links on this page"
+                                            checked={links.length > 0 && selectedLinkIds.size === links.length}
+                                            ref={(el) => {
+                                                if (el) el.indeterminate = selectedLinkIds.size > 0 && selectedLinkIds.size < links.length;
+                                            }}
+                                            onChange={toggleSelectAllLinks}
+                                        />
+                                    </th>
                                     <Th>Code</Th>
                                     <Th>Destination</Th>
                                     <Th>Owner</Th>
@@ -748,7 +883,23 @@ export default function Admin() {
                             </thead>
                             <tbody className="divide-y divide-slate-200">
                                 {links.map((link) => (
-                                    <tr key={link.id} className={link.deleted_at ? 'bg-red-50' : ''}>
+                                    <tr
+                                        key={link.id}
+                                        className={
+                                            link.deleted_at ? 'bg-red-50'
+                                            : link.suspicious ? 'bg-red-50/40'
+                                            : selectedLinkIds.has(link.id) ? 'bg-primary-50/50'
+                                            : ''
+                                        }
+                                    >
+                                        <td className="px-4 py-3">
+                                            <input
+                                                type="checkbox"
+                                                aria-label={`Select link ${link.code}`}
+                                                checked={selectedLinkIds.has(link.id)}
+                                                onChange={() => toggleLinkSelected(link.id)}
+                                            />
+                                        </td>
                                         <td className="px-4 py-3 whitespace-nowrap">
                                             <span className="font-mono text-sm text-slate-900">/{link.code}</span>
                                             <button
@@ -765,13 +916,19 @@ export default function Admin() {
                                             <a
                                                 href={link.original_url}
                                                 target="_blank"
-                                                rel="noopener noreferrer"
+                                                rel="noopener noreferrer nofollow"
                                                 className="text-xs text-slate-500 hover:text-primary-600 truncate block"
                                                 title={link.original_url}
                                             >
                                                 {link.original_url}
                                                 <ExternalLink className="h-3 w-3 inline ml-1" />
                                             </a>
+                                            {link.suspicious && (
+                                                <span className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-red-700">
+                                                    <ShieldAlert className="h-3.5 w-3.5" />
+                                                    {link.suspicion_reason ?? 'Suspicious'}
+                                                </span>
+                                            )}
                                         </td>
                                         <td className="px-4 py-3 text-sm text-slate-600 whitespace-nowrap">
                                             {link.user_email ?? <span className="text-slate-400">anonymous</span>}
@@ -798,7 +955,7 @@ export default function Admin() {
                                             )}
                                         </td>
                                         <td className="px-4 py-3 text-sm text-slate-500 whitespace-nowrap">{formatDate(link.created_at)}</td>
-                                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                                        <td className="px-4 py-3 text-right whitespace-nowrap space-x-2">
                                             {link.deleted_at ? (
                                                 <button
                                                     onClick={() => restoreLink(link)}
@@ -807,19 +964,28 @@ export default function Admin() {
                                                     <RotateCcw className="h-4 w-4 inline" /> Restore
                                                 </button>
                                             ) : (
-                                                <button
-                                                    onClick={() => deleteLink(link)}
-                                                    className="text-red-600 hover:text-red-800 text-sm font-medium"
-                                                >
-                                                    Delete
-                                                </button>
+                                                <>
+                                                    <button
+                                                        onClick={() => blockDomainFromLink(link)}
+                                                        className="text-red-600 hover:text-red-800 text-sm font-medium"
+                                                        title="Block this destination's domain and delete the link"
+                                                    >
+                                                        <Ban className="h-4 w-4 inline" /> Block domain
+                                                    </button>
+                                                    <button
+                                                        onClick={() => deleteLink(link)}
+                                                        className="text-red-600 hover:text-red-800 text-sm font-medium"
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                </>
                                             )}
                                         </td>
                                     </tr>
                                 ))}
                                 {links.length === 0 && (
                                     <tr>
-                                        <td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-500">
+                                        <td colSpan={9} className="px-4 py-8 text-center text-sm text-slate-500">
                                             No links match this filter.
                                         </td>
                                     </tr>

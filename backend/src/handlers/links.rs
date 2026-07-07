@@ -119,6 +119,43 @@ fn is_url_sanitization_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// Read a boolean env var that defaults to `true` (the safe/on setting). Any
+/// value other than "false"/"0" (case-insensitive) is treated as enabled, so a
+/// blank or malformed value fails safe rather than opening the guard.
+fn env_flag_default_on(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v != "false" && v != "0" && v != "no"
+        }
+        Err(_) => true,
+    }
+}
+
+/// Reject destinations that exist only to deliver a payload. Two independent,
+/// config-gated guards (both default ON for the hosted service; a self-hoster
+/// can turn either off):
+///   * `BLOCK_DANGEROUS_FILE_EXTENSIONS` — links straight at a `.hta`, `.exe`,
+///     `.scr`, … file.
+///   * `BLOCK_RAW_IP_URLS` — links whose host is a bare IP literal.
+///
+/// Runs on every create/update/bulk/routing destination via `validate_url`.
+fn check_url_content_policy(url: &str) -> Result<(), String> {
+    if env_flag_default_on("BLOCK_DANGEROUS_FILE_EXTENSIONS") {
+        if let Some(ext) = crate::utils::url_policy::dangerous_extension(url) {
+            return Err(format!(
+                "Links to .{ext} files are not allowed (potentially executable content)"
+            ));
+        }
+    }
+    if env_flag_default_on("BLOCK_RAW_IP_URLS")
+        && crate::utils::url_policy::host_is_raw_ip(url)
+    {
+        return Err("Links to raw IP addresses are not allowed".to_string());
+    }
+    Ok(())
+}
+
 // ============= URL Validation =============
 
 /// Validate URL is http/https only and sanitize if enabled
@@ -178,7 +215,11 @@ fn validate_url(url: &str) -> Result<String, String> {
             return Err("URL is too long (max 2048 characters)".to_string());
         }
     }
-    
+
+    // Content-safety guards (dangerous file types, raw-IP hosts). Independent of
+    // ENABLE_URL_SANITIZATION so they can't be disabled as a side effect.
+    check_url_content_policy(url)?;
+
     Ok(url.to_string())
 }
 
@@ -422,10 +463,6 @@ pub struct BulkCreateLinkRequest {
     pub urls: Vec<String>,
     pub folder_id: Option<i32>,
     pub org_id: Option<i32>,
-}
-
-fn is_valid_url(url: &str) -> bool {
-    validate_url(url).is_ok()
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -2737,9 +2774,11 @@ pub async fn bulk_create_links(
     }
 
     for url in payload.urls {
-        // Validate URL before creating link
-        if !is_valid_url(&url) {
-            errors.push(format!("Invalid URL: {}", url));
+        // Validate URL before creating link. Surface the specific reason
+        // (bad format, dangerous file type, raw IP, …) rather than a generic
+        // message, so a bulk upload tells the user which links were rejected why.
+        if let Err(e) = validate_url(&url) {
+            errors.push(format!("{}: {}", url, e));
             continue;
         }
 

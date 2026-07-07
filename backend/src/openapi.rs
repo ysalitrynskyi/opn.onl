@@ -9,7 +9,7 @@ use crate::handlers::{
 #[openapi(
     info(
         title = "opn.onl URL Shortener API",
-        version = "1.2.0",
+        version = "1.2.1",
         description = "A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.",
         license(
             name = "AGPL-3.0-only",
@@ -104,6 +104,9 @@ use crate::handlers::{
         admin::get_all_links,
         admin::admin_delete_link,
         admin::admin_restore_link,
+        admin::admin_bulk_delete_links,
+        admin::admin_bulk_restore_links,
+        admin::admin_block_domain_from_link,
         admin::get_all_orgs,
         admin::get_blocked_links,
         admin::block_link,
@@ -186,6 +189,9 @@ use crate::handlers::{
             admin::AdminUsersListResponse,
             admin::AdminLinkResponse,
             admin::AdminLinksListResponse,
+            admin::BulkLinkIdsRequest,
+            admin::BulkLinkActionResponse,
+            admin::BlockFromLinkResponse,
             admin::AdminOrgResponse,
             admin::AdminOrgsListResponse,
             admin::ActivityDay,

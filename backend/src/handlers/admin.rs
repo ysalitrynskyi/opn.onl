@@ -36,6 +36,28 @@ fn ilike_pattern(search: &str) -> String {
     format!("%{}%", escaped)
 }
 
+/// A `WHERE` fragment matching links whose destination is suspicious — a
+/// dangerous file extension at the end of the path, or a raw IPv4/bracketed
+/// IPv6 host. Built entirely from the static extension list (no user input), so
+/// embedding it as raw SQL is injection-safe. Kept in SQL so the "suspicious
+/// only" filter and the suspicious count both stay correct under pagination
+/// instead of loading every row to test in Rust.
+fn suspicious_sql_condition() -> Condition {
+    let alt = crate::utils::url_policy::dangerous_extensions().join("|");
+    // Case-insensitive: dangerous extension inside the PATH (after the host's
+    // first '/'), at a segment boundary. Anchoring to the path is essential —
+    // otherwise a plain `.com` / `.run` domain in the host would match.
+    let ext_re = format!(
+        "links.original_url ~* '^https?://[^/?#]+/[^?#]*\\.({})($|[?#/])'",
+        alt
+    );
+    // Case-insensitive: host is a bare IPv4 or bracketed IPv6 literal.
+    let ip_re = "links.original_url ~* '^https?://(\\[[0-9a-f:]+\\]|[0-9]{1,3}(\\.[0-9]{1,3}){3})([:/?#]|$)'";
+    Condition::any()
+        .add(Expr::cust(ext_re))
+        .add(Expr::cust(ip_re))
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct AdminResponse {
     pub success: bool,
@@ -757,6 +779,8 @@ pub struct AdminStatsResponse {
     pub clicks_today: i64,
     pub blocked_links_count: i64,
     pub blocked_domains_count: i64,
+    /// Live (non-deleted) links whose destination trips the abuse heuristic.
+    pub suspicious_links_count: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -865,6 +889,11 @@ pub async fn get_admin_stats(
     let blocked_links_count = blocked_links::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let blocked_domains_count = blocked_domains::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
 
+    let suspicious_links_count = links::Entity::find()
+        .filter(links::Column::DeletedAt.is_null())
+        .filter(suspicious_sql_condition())
+        .count(&state.db).await.unwrap_or(0) as i64;
+
     (StatusCode::OK, Json(AdminStatsResponse {
         total_users,
         active_users,
@@ -879,6 +908,7 @@ pub async fn get_admin_stats(
         clicks_today,
         blocked_links_count,
         blocked_domains_count,
+        suspicious_links_count,
     })).into_response()
 }
 
@@ -1349,6 +1379,10 @@ pub struct AdminLinksQuery {
     pub sort: Option<String>,
     /// Sort order: desc (default) | asc
     pub order: Option<String>,
+    /// When true, return only links flagged suspicious (dangerous file type or
+    /// raw-IP host). Applied after the DB query since the heuristic is computed
+    /// in Rust.
+    pub suspicious: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1375,6 +1409,11 @@ pub struct AdminLinkResponse {
     pub has_password: bool,
     pub is_active: bool,
     pub inactive_reason: Option<String>,
+    /// True when the destination trips an abuse heuristic (dangerous file type
+    /// or raw-IP host). Computed live, independent of the creation-time guard.
+    pub suspicious: bool,
+    /// Human-readable reason the link is flagged, when `suspicious`.
+    pub suspicion_reason: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1422,6 +1461,10 @@ pub async fn get_all_links(
         finder = finder.filter(links::Column::UserId.eq(user_id));
     }
 
+    if query.suspicious == Some(true) {
+        finder = finder.filter(suspicious_sql_condition());
+    }
+
     if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let pattern = ilike_pattern(search);
         finder = finder.filter(
@@ -1448,6 +1491,7 @@ pub async fn get_all_links(
     let responses: Vec<AdminLinkResponse> = rows.into_iter().map(|(link, owner)| {
         let is_active = link.is_active();
         let inactive_reason = link.inactive_reason().map(str::to_string);
+        let suspicion_reason = crate::utils::url_policy::suspicion_reason(&link.original_url);
         AdminLinkResponse {
             id: link.id,
             code: link.code,
@@ -1471,6 +1515,8 @@ pub async fn get_all_links(
             has_password: link.password_hash.is_some(),
             is_active,
             inactive_reason,
+            suspicious: suspicion_reason.is_some(),
+            suspicion_reason,
         }
     }).collect();
 
@@ -1606,6 +1652,231 @@ pub async fn admin_restore_link(
     (StatusCode::OK, Json(AdminResponse {
         success: true,
         message: format!("Link {} restored", code),
+    })).into_response()
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct BulkLinkIdsRequest {
+    /// Link IDs to act on.
+    pub ids: Vec<i32>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BulkLinkActionResponse {
+    pub success: bool,
+    pub affected: u64,
+    pub message: String,
+}
+
+/// Soft delete many links at once (admin only) — the fast path for clearing an
+/// abuse spree. Invalidates the redirect cache for each affected code.
+#[utoipa::path(
+    post,
+    path = "/admin/links/bulk/delete",
+    request_body = BulkLinkIdsRequest,
+    responses(
+        (status = 200, description = "Links deleted", body = BulkLinkActionResponse),
+        (status = 400, description = "No IDs provided"),
+        (status = 403, description = "Admin access required"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn admin_bulk_delete_links(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<BulkLinkIdsRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+    if payload.ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+            success: false,
+            message: "No link IDs provided".to_string(),
+        })).into_response();
+    }
+
+    // Collect the codes first so we can purge them from the redirect cache after
+    // the update (soft delete is an UPDATE, so nothing cascades on its own).
+    let affected_links = links::Entity::find()
+        .filter(links::Column::Id.is_in(payload.ids.clone()))
+        .filter(links::Column::DeletedAt.is_null())
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+    let codes: Vec<String> = affected_links.iter().map(|l| l.code.clone()).collect();
+
+    let res = links::Entity::update_many()
+        .col_expr(links::Column::DeletedAt, Expr::value(Utc::now().naive_utc()))
+        .filter(links::Column::Id.is_in(payload.ids.clone()))
+        .filter(links::Column::DeletedAt.is_null())
+        .exec(&state.db)
+        .await;
+
+    match res {
+        Ok(r) => {
+            if let Some(cache) = &state.redis_cache {
+                for code in &codes {
+                    let _ = cache.invalidate_link(code).await;
+                }
+            }
+            (StatusCode::OK, Json(BulkLinkActionResponse {
+                success: true,
+                affected: r.rows_affected,
+                message: format!("Deleted {} link(s)", r.rows_affected),
+            })).into_response()
+        }
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+            success: false,
+            message: "Failed to delete links".to_string(),
+        })).into_response(),
+    }
+}
+
+/// Restore many soft-deleted links at once (admin only).
+#[utoipa::path(
+    post,
+    path = "/admin/links/bulk/restore",
+    request_body = BulkLinkIdsRequest,
+    responses(
+        (status = 200, description = "Links restored", body = BulkLinkActionResponse),
+        (status = 400, description = "No IDs provided"),
+        (status = 403, description = "Admin access required"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn admin_bulk_restore_links(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<BulkLinkIdsRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+    if payload.ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+            success: false,
+            message: "No link IDs provided".to_string(),
+        })).into_response();
+    }
+
+    let res = links::Entity::update_many()
+        .col_expr(links::Column::DeletedAt, Expr::value(Option::<chrono::NaiveDateTime>::None))
+        .filter(links::Column::Id.is_in(payload.ids.clone()))
+        .filter(links::Column::DeletedAt.is_not_null())
+        .exec(&state.db)
+        .await;
+
+    match res {
+        Ok(r) => (StatusCode::OK, Json(BulkLinkActionResponse {
+            success: true,
+            affected: r.rows_affected,
+            message: format!("Restored {} link(s)", r.rows_affected),
+        })).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+            success: false,
+            message: "Failed to restore links".to_string(),
+        })).into_response(),
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BlockFromLinkResponse {
+    pub success: bool,
+    pub domain: String,
+    pub message: String,
+}
+
+/// One-click takedown from the Links tab: block the destination's host (so no
+/// link can point at it again) and soft-delete this link. The host is extracted
+/// server-side from the stored URL rather than trusted from the client.
+#[utoipa::path(
+    post,
+    path = "/admin/links/{link_id}/block-domain",
+    params(
+        ("link_id" = i32, Path, description = "Link whose destination host to block")
+    ),
+    responses(
+        (status = 200, description = "Domain blocked and link deleted", body = BlockFromLinkResponse),
+        (status = 400, description = "Link has no usable host"),
+        (status = 403, description = "Admin access required"),
+        (status = 404, description = "Link not found"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn admin_block_domain_from_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(link_id): Path<i32>,
+) -> impl IntoResponse {
+    let admin_id = match require_admin(&state, &headers).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let link = links::Entity::find_by_id(link_id)
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    let Some(link) = link else {
+        return (StatusCode::NOT_FOUND, Json(AdminResponse {
+            success: false,
+            message: "Link not found".to_string(),
+        })).into_response();
+    };
+
+    let host = url::Url::parse(&link.original_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_lowercase()));
+
+    let Some(domain) = host.filter(|h| !h.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+            success: false,
+            message: "Link destination has no host to block".to_string(),
+        })).into_response();
+    };
+
+    // Block the domain if not already blocked (idempotent).
+    let already = blocked_domains::Entity::find()
+        .filter(blocked_domains::Column::Domain.eq(&domain))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten();
+    if already.is_none() {
+        let blocked = blocked_domains::ActiveModel {
+            domain: Set(domain.clone()),
+            reason: Set(Some("Blocked via admin link takedown".to_string())),
+            blocked_by: Set(Some(admin_id)),
+            ..Default::default()
+        };
+        if blocked.insert(&state.db).await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to block domain".to_string(),
+            })).into_response();
+        }
+    }
+
+    // Soft-delete this link and purge the whole domain from the redirect cache
+    // (covers every already-cached link pointing at the now-blocked host).
+    let code = link.code.clone();
+    let mut active: links::ActiveModel = link.into();
+    active.deleted_at = Set(Some(Utc::now().naive_utc()));
+    let _ = active.update(&state.db).await;
+    invalidate_cache_for_domain(&state, &domain).await;
+    if let Some(cache) = &state.redis_cache {
+        let _ = cache.invalidate_link(&code).await;
+    }
+
+    (StatusCode::OK, Json(BlockFromLinkResponse {
+        success: true,
+        domain: domain.clone(),
+        message: format!("Blocked {} and deleted link {}", domain, code),
     })).into_response()
 }
 
