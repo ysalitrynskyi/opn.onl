@@ -25,6 +25,11 @@ export default defineConfig(({ mode }) => {
   const isProduction = mode === 'production'
   
   return {
+    // Dev server: honor an externally assigned port (preview tooling sets
+    // PORT); fall back to Vite's default otherwise.
+    server: {
+      port: Number(process.env.PORT) || 5173,
+    },
     plugins: [
       react(),
       // Replace GA ID placeholder in HTML
