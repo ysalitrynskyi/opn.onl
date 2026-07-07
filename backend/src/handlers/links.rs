@@ -1123,14 +1123,16 @@ pub async fn redirect_link(
                     }
                 }
                 
-                // Record click using buffer (synchronous, non-blocking)
+                // Record click using buffer (synchronous, non-blocking).
+                // Only uncapped links reach the cache fast-path (gated above),
+                // so the buffer owns the aggregate count here.
                 record_click_buffered(
                     &state.click_buffer,
                     state.ws_state.as_ref().map(|w| w.as_ref()),
                     cached.id,
                     &code,
                     cached.user_id,
-                    cached.click_count,
+                    ClickAccounting::Buffered { db_click_count: cached.click_count },
                     &headers,
                 );
                 
@@ -1170,8 +1172,13 @@ pub async fn redirect_link(
             return (StatusCode::GONE, "This link has been disabled").into_response();
         }
 
-        // Enforce max_clicks against the buffered (not-yet-flushed) count too, so
-        // a burst of clicks can't overshoot the cap during the buffer window.
+        // Advisory fast-fail for capped links, e.g. so an exhausted link 410s
+        // before prompting for a password or interstitial, and so counts still
+        // buffered from before a cap was added are respected. This read is NOT
+        // the enforcement point — N concurrent requests can all pass it before
+        // any click is recorded. The authoritative check is the atomic
+        // conditional UPDATE below (consume_capped_click), which runs once the
+        // request is actually going to be served a destination.
         if let Some(max) = link.max_clicks {
             if link.click_count + state.click_buffer.pending_count(link.id) >= max {
                 let msg = if link.burn_after_reading {
@@ -1210,7 +1217,9 @@ pub async fn redirect_link(
         // per-request destination from the visitor's device/OS/country/language.
         // Routed links are never cached (resolution is per-request), so they always
         // reach this DB path. When the flag is off, rules are ignored and the link
-        // degrades to a plain redirect.
+        // degrades to a plain redirect. Resolved (and blocklist-checked) BEFORE the
+        // cap consume below, so a blocked routed destination can't waste a click
+        // slot or burn a one-time link without serving anything.
         let routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
             .map(|v| v != "false")
             .unwrap_or(true);
@@ -1225,12 +1234,8 @@ pub async fn redirect_link(
             Vec::new()
         };
 
-        if !routing_rules.is_empty() {
-            let ip = headers
-                .get("x-forwarded-for")
-                .and_then(|h| h.to_str().ok())
-                .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-                .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+        let routed_destination = if !routing_rules.is_empty() {
+            let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers);
             let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
             let ua_info = headers
                 .get("user-agent")
@@ -1251,14 +1256,48 @@ pub async fn redirect_link(
             if check_blocked(&state.db, &destination).await.is_err() {
                 return (StatusCode::GONE, "This link has been disabled").into_response();
             }
+            Some(destination)
+        } else {
+            None
+        };
 
+        // Authoritative cap enforcement. From here on this request will be
+        // served a destination, so for capped links the click is consumed NOW
+        // with a single conditional UPDATE (click_count < max_clicks). Under
+        // concurrency exactly max_clicks requests can win this update — a
+        // burn-after-reading link is exactly-once. 0 rows updated means a
+        // concurrent request took the last slot (or, transiently, that the cap
+        // was just removed / the link soft-deleted by a concurrent update — a
+        // retry then sees the link's new state).
+        let accounting = if link.max_clicks.is_some() {
+            match consume_capped_click(&state.db, link.id).await {
+                Ok(Some(new_count)) => ClickAccounting::Consumed { new_click_count: new_count },
+                Ok(None) => {
+                    let msg = if link.burn_after_reading {
+                        "This one-time link has already been opened"
+                    } else {
+                        "Link has reached maximum clicks"
+                    };
+                    return (StatusCode::GONE, msg).into_response();
+                }
+                // Fail closed: a capped (possibly burn) link must never
+                // redirect without its click being counted.
+                Err(_) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+                }
+            }
+        } else {
+            ClickAccounting::Buffered { db_click_count: link.click_count }
+        };
+
+        if let Some(destination) = routed_destination {
             record_click_buffered(
                 &state.click_buffer,
                 state.ws_state.as_ref().map(|w| w.as_ref()),
                 link.id,
                 &code,
                 link.user_id,
-                link.click_count,
+                accounting,
                 &headers,
             );
             return Redirect::temporary(&destination).into_response();
@@ -1283,38 +1322,67 @@ pub async fn redirect_link(
             }
         }
 
-        // Record click using buffer
-        let pending_before = state.click_buffer.pending_count(link.id);
+        // Record click using buffer. For capped links the aggregate count (and
+        // the burned_at stamp when the cap is exhausted) was already handled
+        // atomically by consume_capped_click; only the analytics row and the
+        // realtime broadcast go through here.
         record_click_buffered(
             &state.click_buffer,
             state.ws_state.as_ref().map(|w| w.as_ref()),
             link.id,
             &code,
             link.user_id,
-            link.click_count,
+            accounting,
             &headers,
         );
-
-        // Burn-after-reading: if this click exhausts the cap, stamp burned_at so the
-        // link reports a one-time message and shows a "burned" status afterwards.
-        // Best-effort; the max_clicks guard above already blocks further clicks.
-        if link.burn_after_reading && link.burned_at.is_none() {
-            if let Some(max) = link.max_clicks {
-                if link.click_count + pending_before + 1 >= max {
-                    let burned = links::ActiveModel {
-                        id: Set(link.id),
-                        burned_at: Set(Some(chrono::Utc::now().naive_utc())),
-                        ..Default::default()
-                    };
-                    let _ = burned.update(&state.db).await;
-                }
-            }
-        }
 
         Redirect::temporary(&link.original_url).into_response()
     } else {
         (StatusCode::NOT_FOUND, "Link not found").into_response()
     }
+}
+
+/// How a click's aggregate count is accounted, so it is counted exactly once.
+#[derive(Clone, Copy)]
+enum ClickAccounting {
+    /// Uncapped link: the click buffer owns the count — the per-link counter is
+    /// incremented and added to `links.click_count` at flush.
+    Buffered { db_click_count: i32 },
+    /// Capped (max_clicks) link: the count was already consumed atomically at
+    /// the DB by `consume_capped_click`, so only the analytics event row is
+    /// buffered — incrementing the counter too would double-count at flush.
+    Consumed { new_click_count: i32 },
+}
+
+/// Atomically consume one click slot on a capped (`max_clicks`) link.
+///
+/// A single conditional UPDATE so concurrent redirects cannot overshoot the
+/// cap: only a row with `click_count < max_clicks` is incremented, and
+/// `burned_at` is stamped in the same statement when this click exhausts a
+/// burn-after-reading link. Returns `Ok(Some(new_click_count))` when a slot
+/// was consumed, `Ok(None)` when the cap is already exhausted.
+async fn consume_capped_click(
+    db: &DatabaseConnection,
+    link_id: i32,
+) -> Result<Option<i32>, DbErr> {
+    let stmt = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        r#"UPDATE links
+           SET click_count = click_count + 1,
+               burned_at = CASE
+                   WHEN burn_after_reading AND burned_at IS NULL AND click_count + 1 >= max_clicks
+                       THEN $2
+                   ELSE burned_at
+               END
+           WHERE id = $1
+             AND deleted_at IS NULL
+             AND max_clicks IS NOT NULL
+             AND click_count < max_clicks
+           RETURNING click_count"#,
+        [link_id.into(), chrono::Utc::now().naive_utc().into()],
+    );
+    let row = db.query_one(stmt).await?;
+    row.map(|r| r.try_get::<i32>("", "click_count")).transpose()
 }
 
 /// Helper function to record a click event using the click buffer
@@ -1324,17 +1392,15 @@ fn record_click_buffered(
     link_id: i32,
     link_code: &str,
     user_id: Option<i32>,
-    current_click_count: i32,
+    accounting: ClickAccounting,
     headers: &HeaderMap,
 ) {
     use crate::utils::click_buffer::ClickData;
-    
-    // Extract request info
-    let ip = headers.get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
-    
+
+    // Client IP via the same trust rules as the rate limiter (no spoofable
+    // first-XFF token in analytics/geo either).
+    let ip = crate::utils::rate_limiter::client_ip_from_headers(headers);
+
     let user_agent = headers.get("user-agent")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
@@ -1364,10 +1430,16 @@ fn record_click_buffered(
         browser: ua_info.browser.clone(),
         os: ua_info.os,
     };
-    click_buffer.add_click(click_data);
+    match accounting {
+        ClickAccounting::Buffered { .. } => click_buffer.add_click(click_data),
+        ClickAccounting::Consumed { .. } => click_buffer.add_event_only(click_data),
+    }
 
     // Broadcast real-time event
-    let new_click_count = current_click_count + 1;
+    let new_click_count = match accounting {
+        ClickAccounting::Buffered { db_click_count } => db_click_count + 1,
+        ClickAccounting::Consumed { new_click_count } => new_click_count,
+    };
     if let Some(ws) = ws_state {
         let event = ClickEvent {
             link_id,
@@ -1419,27 +1491,67 @@ pub async fn verify_link_password(
             return (StatusCode::GONE, Json(ErrorResponse { error: reason.to_string() })).into_response();
         }
 
-        if let Some(hash_str) = &link.password_hash {
-            if bcrypt::verify(&payload.password, hash_str).unwrap_or(false) {
-                // Use click buffer for consistent click tracking (same as regular redirects)
-                // This also handles WebSocket broadcast internally
-                record_click_buffered(
-                    &state.click_buffer,
-                    state.ws_state.as_ref().map(|w| w.as_ref()),
-                    link.id,
-                    &link.code,
-                    link.user_id,
-                    link.click_count,
-                    &headers,
-                );
+        // Advisory parity with redirect_link: respect clicks still buffered
+        // from before a cap was added. The atomic consume below is the
+        // enforcement point.
+        if let Some(max) = link.max_clicks {
+            if link.click_count + state.click_buffer.pending_count(link.id) >= max {
+                let msg = if link.burn_after_reading {
+                    "This one-time link has already been opened"
+                } else {
+                    "Link has reached maximum clicks"
+                };
+                return (StatusCode::GONE, Json(ErrorResponse { error: msg.to_string() })).into_response();
+            }
+        }
 
-                return (StatusCode::OK, Json(serde_json::json!({ "url": link.original_url }))).into_response();
-            } else {
+        if let Some(hash_str) = &link.password_hash {
+            if !bcrypt::verify(&payload.password, hash_str).unwrap_or(false) {
                 return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid password".to_string() })).into_response();
             }
-        } else {
-            return (StatusCode::OK, Json(serde_json::json!({ "url": link.original_url }))).into_response();
         }
+
+        // This endpoint discloses the destination URL (after verification for
+        // password links; historically for passwordless links too), so capped
+        // links must consume their click atomically here exactly like a
+        // redirect — otherwise a burst of verifies opens a burn link more than
+        // once, and the passwordless form would leak it without any count.
+        let accounting = if link.max_clicks.is_some() {
+            match consume_capped_click(&state.db, link.id).await {
+                Ok(Some(new_count)) => ClickAccounting::Consumed { new_click_count: new_count },
+                Ok(None) => {
+                    let msg = if link.burn_after_reading {
+                        "This one-time link has already been opened"
+                    } else {
+                        "Link has reached maximum clicks"
+                    };
+                    return (StatusCode::GONE, Json(ErrorResponse { error: msg.to_string() })).into_response();
+                }
+                // Fail closed: never disclose the URL uncounted.
+                Err(_) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
+                }
+            }
+        } else {
+            ClickAccounting::Buffered { db_click_count: link.click_count }
+        };
+
+        // Password links count every unlock as a click (legacy behavior, same
+        // as a redirect). Passwordless links only record when the cap consumed
+        // one above — uncapped passwordless verifies stay uncounted as before.
+        if link.password_hash.is_some() || matches!(accounting, ClickAccounting::Consumed { .. }) {
+            record_click_buffered(
+                &state.click_buffer,
+                state.ws_state.as_ref().map(|w| w.as_ref()),
+                link.id,
+                &link.code,
+                link.user_id,
+                accounting,
+                &headers,
+            );
+        }
+
+        return (StatusCode::OK, Json(serde_json::json!({ "url": link.original_url }))).into_response();
     }
 
     (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()

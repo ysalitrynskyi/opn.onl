@@ -63,6 +63,8 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-https://opn.onl}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      REAL_IP_HEADER: ${REAL_IP_HEADER:-cf-connecting-ip}
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
       RUST_LOG: ${RUST_LOG:-info,tower_http=debug}
       LOG_DIR: /app/logs
       REDIS_URL: redis://redis:6379

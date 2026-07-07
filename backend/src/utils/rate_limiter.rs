@@ -1,14 +1,14 @@
 use axum::{
     body::Body,
     extract::{State, ConnectInfo},
-    http::{Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Rate limiter configuration
@@ -174,40 +174,125 @@ impl RateLimiters {
     }
 }
 
-/// Extract the client IP used as the rate-limit key.
+/// How the client IP is derived when the app runs behind trusted proxies.
 ///
-/// `X-Forwarded-For` / `X-Real-IP` are client-controlled and are only trusted
-/// when `TRUST_PROXY_HEADERS` is enabled - set that ONLY when the app runs
-/// behind a trusted reverse proxy (e.g. Cloudflare Tunnel, nginx) that
-/// overwrites those headers. Otherwise the real socket peer address is used,
-/// so a client cannot spoof its IP to bypass the auth/brute-force limits.
-pub fn extract_ip(req: &Request<Body>) -> String {
-    let trust_proxy = std::env::var("TRUST_PROXY_HEADERS")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+/// Read once from the environment:
+/// - `TRUST_PROXY_HEADERS` — master switch (default `false`). When off, only
+///   the socket peer address is used and every forwarding header is ignored.
+///   Note: behind a proxy that means all traffic shares the proxy's bucket,
+///   so proxied deployments must turn it on.
+/// - `REAL_IP_HEADER` — name of the header the trusted edge sets to the real
+///   client IP. Defaults to `cf-connecting-ip`: Cloudflare sets it
+///   authoritatively at the edge (a client cannot forge it through
+///   Cloudflare), and it survives both production paths (tunnel -> backend
+///   and tunnel -> nginx -> backend) verbatim. Set it to an empty string to
+///   disable when the edge is not Cloudflare, or to e.g. `x-real-ip` when a
+///   trusted nginx overwrites that header with the real peer address.
+/// - `TRUSTED_PROXY_HOPS` — `X-Forwarded-For` fallback used when
+///   `REAL_IP_HEADER` is unset or absent: how many trailing XFF entries were
+///   appended by additional trusted proxies (default 0 = use the right-most
+///   entry, i.e. what the proxy directly in front of the app appended). The
+///   left-most entries are client-controlled and are never used.
+#[derive(Debug, Clone)]
+pub struct ClientIpConfig {
+    pub trust_proxy_headers: bool,
+    pub real_ip_header: Option<String>,
+    pub trusted_proxy_hops: usize,
+}
 
-    if trust_proxy {
-        if let Some(xff) = req.headers().get("x-forwarded-for") {
-            if let Ok(xff_str) = xff.to_str() {
-                if let Some(first_ip) = xff_str.split(',').next() {
-                    let ip = first_ip.trim();
-                    if ip.parse::<IpAddr>().is_ok() {
-                        return ip.to_string();
-                    }
+impl ClientIpConfig {
+    pub fn from_env() -> Self {
+        let trust_proxy_headers = std::env::var("TRUST_PROXY_HEADERS")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        let real_ip_header = match std::env::var("REAL_IP_HEADER") {
+            Ok(v) => {
+                let v = v.trim().to_ascii_lowercase();
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v)
                 }
             }
+            Err(_) => Some("cf-connecting-ip".to_string()),
+        };
+        let trusted_proxy_hops = std::env::var("TRUSTED_PROXY_HOPS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        Self {
+            trust_proxy_headers,
+            real_ip_header,
+            trusted_proxy_hops,
         }
+    }
+}
 
-        if let Some(real_ip) = req.headers().get("x-real-ip") {
-            if let Ok(ip_str) = real_ip.to_str() {
-                if ip_str.parse::<IpAddr>().is_ok() {
-                    return ip_str.to_string();
-                }
-            }
+fn client_ip_config() -> &'static ClientIpConfig {
+    static CONFIG: OnceLock<ClientIpConfig> = OnceLock::new();
+    CONFIG.get_or_init(ClientIpConfig::from_env)
+}
+
+/// Parse a single header/XFF token into a canonical IP string.
+fn parse_ip(token: &str) -> Option<String> {
+    token
+        .trim()
+        .parse::<IpAddr>()
+        .ok()
+        .map(|ip| ip.to_string())
+}
+
+/// Resolve the real client IP from forwarding headers per `config`.
+///
+/// Returns `None` when proxy headers are not trusted or no trustworthy value
+/// is present — callers fall back to the socket peer (or record no IP).
+pub fn client_ip_with(headers: &HeaderMap, config: &ClientIpConfig) -> Option<String> {
+    if !config.trust_proxy_headers {
+        return None;
+    }
+
+    if let Some(name) = &config.real_ip_header {
+        if let Some(ip) = headers
+            .get(name.as_str())
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_ip)
+        {
+            return Some(ip);
         }
     }
 
-    // Real socket peer address (requires serving with ConnectInfo<SocketAddr>).
+    // X-Forwarded-For fallback: count from the RIGHT. Each trusted proxy
+    // appends the address of the peer that connected to it, so the trailing
+    // entries are trustworthy while the leading ones are whatever the client
+    // sent. Reading the first token (the historical behavior here) trusts
+    // exactly the spoofable part. If the selected token is not a valid IP the
+    // whole chain is rejected rather than scanning further left.
+    let mut tokens: Vec<&str> = Vec::new();
+    for value in headers.get_all("x-forwarded-for") {
+        if let Ok(s) = value.to_str() {
+            tokens.extend(s.split(','));
+        }
+    }
+    let idx = tokens.len().checked_sub(1 + config.trusted_proxy_hops)?;
+    parse_ip(tokens[idx])
+}
+
+/// Resolve the real client IP from forwarding headers using the env-derived
+/// config. Used for click analytics / geo / conditional routing as well, so
+/// the recorded IP obeys the same trust rules as the rate limiter.
+pub fn client_ip_from_headers(headers: &HeaderMap) -> Option<String> {
+    client_ip_with(headers, client_ip_config())
+}
+
+/// Extract the client IP used as the rate-limit key.
+///
+/// Trusted forwarding headers first (see [`ClientIpConfig`]), then the real
+/// socket peer address (requires serving with `ConnectInfo<SocketAddr>`).
+pub fn extract_ip(req: &Request<Body>) -> String {
+    if let Some(ip) = client_ip_from_headers(req.headers()) {
+        return ip;
+    }
+
     if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
         return addr.ip().to_string();
     }
@@ -323,10 +408,259 @@ mod tests {
     #[test]
     fn test_rate_limiter_separate_keys() {
         let limiter = RateLimiter::new(RateLimitConfig::new(1, 60));
-        
+
         assert!(matches!(limiter.check("user1"), RateLimitResult::Allowed { .. }));
         assert!(matches!(limiter.check("user2"), RateLimitResult::Allowed { .. }));
         assert!(matches!(limiter.check("user1"), RateLimitResult::Limited { .. }));
+    }
+
+    mod client_ip_resolution {
+        use super::*;
+        use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+        fn cfg(trust: bool, header: Option<&str>, hops: usize) -> ClientIpConfig {
+            ClientIpConfig {
+                trust_proxy_headers: trust,
+                real_ip_header: header.map(str::to_string),
+                trusted_proxy_hops: hops,
+            }
+        }
+
+        fn headers_of(pairs: &[(&str, &str)]) -> HeaderMap {
+            let mut map = HeaderMap::new();
+            for (name, value) in pairs {
+                map.append(
+                    name.parse::<HeaderName>().unwrap(),
+                    HeaderValue::from_str(value).unwrap(),
+                );
+            }
+            map
+        }
+
+        #[test]
+        fn trust_off_ignores_all_headers() {
+            let headers = headers_of(&[
+                ("cf-connecting-ip", "203.0.113.7"),
+                ("x-forwarded-for", "203.0.113.7"),
+                ("x-real-ip", "203.0.113.7"),
+            ]);
+            assert_eq!(client_ip_with(&headers, &cfg(false, Some("cf-connecting-ip"), 0)), None);
+        }
+
+        #[test]
+        fn real_ip_header_wins_over_forged_xff() {
+            let headers = headers_of(&[
+                ("cf-connecting-ip", "203.0.113.7"),
+                ("x-forwarded-for", "6.6.6.6, 203.0.113.7"),
+            ]);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)),
+                Some("203.0.113.7".to_string())
+            );
+        }
+
+        #[test]
+        fn xff_fallback_uses_rightmost_not_first() {
+            let headers = headers_of(&[("x-forwarded-for", "6.6.6.6, 203.0.113.7")]);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)),
+                Some("203.0.113.7".to_string())
+            );
+        }
+
+        #[test]
+        fn trusted_proxy_hops_skip_trailing_proxy_entries() {
+            let headers = headers_of(&[("x-forwarded-for", "6.6.6.6, 203.0.113.7, 10.0.0.2")]);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(true, None, 1)),
+                Some("203.0.113.7".to_string())
+            );
+        }
+
+        #[test]
+        fn hops_beyond_chain_yield_none() {
+            let headers = headers_of(&[("x-forwarded-for", "203.0.113.7")]);
+            assert_eq!(client_ip_with(&headers, &cfg(true, None, 5)), None);
+        }
+
+        #[test]
+        fn x_real_ip_is_not_implicitly_trusted() {
+            let headers = headers_of(&[("x-real-ip", "203.0.113.7")]);
+            assert_eq!(client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)), None);
+        }
+
+        #[test]
+        fn real_ip_header_is_configurable() {
+            let headers = headers_of(&[("x-real-ip", "203.0.113.7")]);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(true, Some("x-real-ip"), 0)),
+                Some("203.0.113.7".to_string())
+            );
+        }
+
+        #[test]
+        fn malformed_values_resolve_to_none_without_panicking() {
+            for value in ["", "not-an-ip", "  ,  ,", "999.999.999.999", "1.2.3.4;evil"] {
+                let headers = headers_of(&[
+                    ("cf-connecting-ip", value),
+                    ("x-forwarded-for", value),
+                ]);
+                assert_eq!(
+                    client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)),
+                    None,
+                    "value {value:?} must be rejected"
+                );
+            }
+
+            // Non-UTF-8 header bytes must be skipped, not panic.
+            let mut headers = HeaderMap::new();
+            headers.append(
+                "x-forwarded-for",
+                HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+            );
+            assert_eq!(client_ip_with(&headers, &cfg(true, None, 0)), None);
+        }
+
+        #[test]
+        fn multiple_xff_header_lines_use_the_last_appended_token() {
+            // Attacker sends their own XFF line; the trusted proxy appends a
+            // second one. Wire order is preserved by HeaderMap::append.
+            let headers = headers_of(&[
+                ("x-forwarded-for", "6.6.6.6, 7.7.7.7"),
+                ("x-forwarded-for", "203.0.113.7"),
+            ]);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(true, None, 0)),
+                Some("203.0.113.7".to_string())
+            );
+        }
+
+        #[test]
+        fn ipv6_is_canonicalized_for_stable_bucket_keys() {
+            let headers = headers_of(&[("cf-connecting-ip", "2001:DB8:0:0:0:0:0:1")]);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)),
+                Some("2001:db8::1".to_string())
+            );
+        }
+    }
+
+    /// Black-box regression tests for the client identity used by the rate
+    /// limiter behind the production proxy chain (Cloudflare -> nginx ->
+    /// backend, or Cloudflare tunnel -> backend directly for l.opn.onl).
+    ///
+    /// The tests simulate what the trusted edge actually delivers: Cloudflare
+    /// sets `CF-Connecting-IP` authoritatively and *appends* the real client
+    /// IP to any `X-Forwarded-For` the client sent. Everything to the left of
+    /// that appended token — and any extra headers like `X-Real-IP` on the
+    /// direct tunnel path — is attacker-controlled.
+    mod client_identity {
+        use super::*;
+        use axum::{middleware, routing::post, Router};
+
+        async fn spawn_test_server() -> SocketAddr {
+            // Matches the production deployment: proxy headers are trusted.
+            // REAL_IP_HEADER is left unset so the cf-connecting-ip default
+            // applies.
+            std::env::set_var("TRUST_PROXY_HEADERS", "true");
+
+            let limiters = Arc::new(RateLimiters {
+                per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+                general: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+                link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+                // Tight budget so the tests exhaust it quickly: 2 per minute.
+                auth: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
+                redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+                password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            });
+
+            let app = Router::new()
+                .route("/auth/login", post(|| async { "ok" }))
+                .layer(middleware::from_fn_with_state(
+                    limiters,
+                    rate_limit_middleware,
+                ));
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            addr
+        }
+
+        #[tokio::test]
+        async fn spoofed_forwarding_headers_do_not_change_bucket() {
+            let addr = spawn_test_server().await;
+            let client = reqwest::Client::new();
+
+            // One real client (203.0.113.7) sends a different forged XFF
+            // prefix and X-Real-IP on every request. All four requests must
+            // land in the same bucket: 2 allowed, then 429.
+            for i in 0..4u16 {
+                let forged = format!("{}.{}.{}.{}", i + 1, i + 2, i + 3, i + 4);
+                let res = client
+                    .post(format!("http://{addr}/auth/login"))
+                    .header("cf-connecting-ip", "203.0.113.7")
+                    .header("x-forwarded-for", format!("{forged}, 203.0.113.7"))
+                    .header("x-real-ip", forged.clone())
+                    .send()
+                    .await
+                    .unwrap();
+                if i < 2 {
+                    assert_eq!(res.status().as_u16(), 200, "request {i} should be allowed");
+                } else {
+                    assert_eq!(
+                        res.status().as_u16(),
+                        429,
+                        "request {i}: a forged X-Forwarded-For/X-Real-IP must not move the client to a fresh bucket"
+                    );
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn distinct_clients_get_distinct_buckets() {
+            let addr = spawn_test_server().await;
+            let client = reqwest::Client::new();
+
+            // Two different real clients behind the same proxy chain. Both
+            // happen to send the same (forged) XFF prefix; they must still
+            // get independent budgets.
+            for real in ["203.0.113.10", "203.0.113.11"] {
+                for i in 0..2 {
+                    let res = client
+                        .post(format!("http://{addr}/auth/login"))
+                        .header("cf-connecting-ip", real)
+                        .header("x-forwarded-for", format!("9.9.9.9, {real}"))
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        res.status().as_u16(),
+                        200,
+                        "client {real} request {i} must not share a bucket with the other client"
+                    );
+                }
+            }
+
+            // The first client's budget is genuinely spent.
+            let res = client
+                .post(format!("http://{addr}/auth/login"))
+                .header("cf-connecting-ip", "203.0.113.10")
+                .header("x-forwarded-for", "9.9.9.9, 203.0.113.10")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status().as_u16(), 429);
+        }
     }
 }
 

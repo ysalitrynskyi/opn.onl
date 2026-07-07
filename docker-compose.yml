@@ -69,9 +69,17 @@ services:
       
       # HTTPS (behind cloudflared)
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
-      # Trust X-Forwarded-For for the rate-limit client IP (set because traffic
-      # arrives via the cloudflared tunnel which controls this header).
+      # Client identity for rate limiting / analytics behind the proxy chain.
+      # Cloudflare sets CF-Connecting-IP authoritatively at the edge and it
+      # reaches the backend verbatim on both paths (tunnel -> backend, and
+      # tunnel -> nginx -> backend), so it is the trusted source. Note that
+      # X-Forwarded-For is APPENDED to (not overwritten) by Cloudflare, so its
+      # first entry is client-controlled and must never be trusted.
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      REAL_IP_HEADER: ${REAL_IP_HEADER:-cf-connecting-ip}
+      # X-Forwarded-For fallback (only used when REAL_IP_HEADER is absent):
+      # 0 = right-most entry. Leave at 0 for the Cloudflare tunnel topology.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
 
       # Logging
       RUST_LOG: ${RUST_LOG:-info,tower_http=debug}
