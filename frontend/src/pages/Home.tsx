@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
+import AmbientNetwork from '../components/AmbientNetwork';
 
 export default function Home() {
     const [url, setUrl] = useState('');
@@ -76,6 +77,9 @@ export default function Home() {
                 <section className="relative border-b border-line overflow-hidden">
                     <div className="absolute inset-0 bg-grid-pattern [mask-image:radial-gradient(120%_90%_at_50%_0%,black,transparent)]" />
                     <img src="/bg-network.png" alt="" aria-hidden="true" className="pointer-events-none absolute -top-12 right-0 hidden lg:block w-2/3 max-w-3xl opacity-60 [mask-image:linear-gradient(to_left,black,transparent_80%)]" />
+                    {/* Breathing overlay for the network art above; same box, same
+                        fade. Decorative only — the page is complete without it. */}
+                    <AmbientNetwork className="pointer-events-none absolute -top-12 right-0 hidden lg:block w-2/3 max-w-3xl aspect-[3/2] [mask-image:linear-gradient(to_left,black,transparent_80%)]" />
                     <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-24 lg:pt-28 lg:pb-32">
                         <div className="grid lg:grid-cols-12 gap-12 lg:gap-8 items-center">
                             {/* Left: copy + instrument */}
