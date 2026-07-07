@@ -5,6 +5,7 @@ pub mod cache;
 pub mod email;
 pub mod click_buffer;
 pub mod backup;
+pub mod privacy;
 pub mod routing;
 
 pub use jwt::*;

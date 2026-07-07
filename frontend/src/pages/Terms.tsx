@@ -22,7 +22,7 @@ export default function Terms() {
                             <FileText className="h-8 w-8 text-primary-600" />
                         </div>
                         <h1 className="text-4xl font-extrabold text-slate-900 mb-4">Terms of Service</h1>
-                        <p className="text-slate-500">Last updated: December 7, 2025</p>
+                        <p className="text-slate-500">Last updated: July 7, 2026</p>
                     </motion.div>
                 </div>
             </section>
@@ -45,10 +45,14 @@ export default function Terms() {
 
                     {/* Sections */}
                     <TermsSection number="1" title="Acceptance of Terms">
-                        <p>
-                            By accessing or using opn.onl, you agree to be bound by these Terms of Service and all 
-                            applicable laws and regulations. If you are using the service on behalf of an organization, 
+                        <p className="mb-4">
+                            By accessing or using opn.onl, you agree to be bound by these Terms of Service and all
+                            applicable laws and regulations. If you are using the service on behalf of an organization,
                             you represent that you have the authority to bind that organization to these terms.
+                        </p>
+                        <p>
+                            You must be at least 16 years old — or the minimum age required in your country to
+                            consent to the processing of your personal data, if higher — to create an account.
                         </p>
                     </TermsSection>
 

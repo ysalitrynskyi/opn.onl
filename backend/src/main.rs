@@ -82,6 +82,10 @@ async fn main() {
     click_buffer.clone().start_flush_task(db.clone());
     tracing::info!("Click buffer initialized");
 
+    // Daily sweep anonymizing per-visitor click identifiers past the
+    // retention window (ANALYTICS_PII_RETENTION_DAYS, default ~13 months).
+    utils::privacy::spawn_retention_task(db.clone());
+
     // Initialize backup service
     let backup = Arc::new(BackupService::new().await);
     if backup.is_configured() {

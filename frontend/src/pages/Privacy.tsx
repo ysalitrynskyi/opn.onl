@@ -23,7 +23,7 @@ export default function Privacy() {
                             <Shield className="h-8 w-8 text-emerald-600" />
                         </div>
                         <h1 className="text-4xl font-extrabold text-slate-900 mb-4">Privacy Policy</h1>
-                        <p className="text-slate-500">Last updated: December 7, 2025</p>
+                        <p className="text-slate-500">Last updated: July 7, 2026</p>
                     </motion.div>
                 </div>
             </section>
@@ -66,13 +66,22 @@ export default function Privacy() {
                                 <li>Expiration dates (if set)</li>
                             </ul>
 
-                            <h4 className="font-semibold text-slate-900 mb-2">Analytics Data</h4>
+                            <h4 className="font-semibold text-slate-900 mb-2">Analytics Data (collected when someone opens a short link)</h4>
                             <ul className="list-disc pl-5 space-y-1">
-                                <li>Click counts</li>
-                                <li>IP addresses (for geographic analytics)</li>
-                                <li>User agent strings (browser/device info)</li>
+                                <li>Click counts and timestamps</li>
+                                <li>
+                                    A <strong>truncated</strong> IP address — we remove the last part of the
+                                    address before storing it (IPv4: last octet zeroed; IPv6: reduced to /48).
+                                    The full address is used only in memory to derive an approximate location
+                                    and for rate limiting, then discarded.
+                                </li>
+                                <li>
+                                    Approximate, city-level location (country, region, city and city-level
+                                    coordinates) derived from the IP via a local geolocation database — your
+                                    IP is never sent to a third party for this
+                                </li>
+                                <li>Browser, device type and operating system (parsed from the user agent, which is also stored temporarily — see retention below)</li>
                                 <li>Referrer URLs</li>
-                                <li>Click timestamps</li>
                             </ul>
                         </PolicySection>
 
@@ -119,12 +128,58 @@ export default function Privacy() {
                             <ul className="list-disc pl-5 space-y-2 mb-4">
                                 <li><strong>Account data:</strong> Retained until you delete your account</li>
                                 <li><strong>Link data:</strong> Retained until you delete the link or your account</li>
-                                <li><strong>Analytics data:</strong> Retained for the lifetime of the link for analytics purposes</li>
+                                <li>
+                                    <strong>Per-visitor analytics identifiers:</strong> The truncated IP address
+                                    and raw user-agent string of a click are automatically anonymized after
+                                    13 months by a scheduled job
+                                </li>
+                                <li>
+                                    <strong>Aggregate analytics:</strong> Non-identifying dimensions (click counts,
+                                    country, city, device type, browser, referrer) are retained for the lifetime
+                                    of the link so your statistics keep working
+                                </li>
+                                <li><strong>Backups:</strong> Encrypted database backups are rotated on a fixed schedule; deleted data ages out of backups as they rotate</li>
                             </ul>
-                            <p>
-                                You can request complete deletion of your account and all associated data at any time 
-                                by contacting us. We will process deletion requests within 30 days.
+                            <h4 className="font-semibold text-slate-900 mb-2">Your rights</h4>
+                            <p className="mb-4">
+                                Depending on where you live (e.g. under the GDPR or similar laws), you have the
+                                right to access, correct, export, object to the processing of, and delete your
+                                personal data. Where self-service deletion is enabled you can delete your account
+                                from Settings; otherwise email us and we will process verified deletion requests
+                                within 30 days.
                             </p>
+                            <p>
+                                Legal bases we rely on: performance of a contract (providing the service you sign
+                                up for), and legitimate interest (abuse prevention, security, and aggregate,
+                                non-identifying analytics).
+                            </p>
+                        </PolicySection>
+
+                        <PolicySection
+                            icon={<Shield className="h-5 w-5" />}
+                            title="Cookies & Local Storage"
+                        >
+                            <p className="mb-4">
+                                We use your browser's local storage to keep you signed in (your session token).
+                                We do not use advertising cookies, cross-site tracking, or third-party analytics
+                                or tracking pixels on this site.
+                            </p>
+                        </PolicySection>
+
+                        <PolicySection
+                            icon={<Database className="h-5 w-5" />}
+                            title="Service Providers We Rely On"
+                        >
+                            <p className="mb-4">
+                                We don't sell or share your data for marketing. The following infrastructure
+                                providers process data on our behalf, strictly to run the service:
+                            </p>
+                            <ul className="list-disc pl-5 space-y-2">
+                                <li><strong>Cloudflare</strong> — network proxy, TLS and DDoS protection in front of our servers (sees connection metadata like your IP, as any network carrier does)</li>
+                                <li><strong>MaxMind GeoLite2</strong> — the IP-to-city database used for geographic analytics; lookups run entirely on our own servers, so your IP is never transmitted to MaxMind</li>
+                                <li><strong>Email delivery provider</strong> — sends transactional email only (verification, password reset, security notices) to the address you registered</li>
+                                <li><strong>Object storage (S3-compatible)</strong> — stores encrypted database backups</li>
+                            </ul>
                         </PolicySection>
 
                         <PolicySection
@@ -147,7 +202,7 @@ export default function Privacy() {
                     {/* Footer */}
                     <div className="border-t border-slate-200 pt-8">
                         <p className="text-sm text-slate-500 text-center">
-                            This privacy policy is effective as of December 7, 2025. We may update this policy 
+                            This privacy policy is effective as of July 7, 2026. We may update this policy
                             from time to time. We will notify you of any significant changes by email or through 
                             a notice on our website.
                         </p>

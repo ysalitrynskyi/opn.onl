@@ -1415,10 +1415,12 @@ fn record_click_buffered(
     // Parse user agent
     let ua_info = user_agent.as_ref().map(|ua| parse_user_agent(ua)).unwrap_or_default();
 
-    // Add to click buffer instead of writing directly
+    // Add to click buffer instead of writing directly. Only the truncated IP
+    // is stored (IPv4 /24, IPv6 /48) — the full address is used above for the
+    // geo lookup and then dropped.
     let click_data = ClickData {
         link_id,
-        ip_address: ip,
+        ip_address: ip.as_deref().and_then(crate::utils::privacy::anonymize_ip),
         user_agent,
         referer,
         country: geo.country.clone(),
