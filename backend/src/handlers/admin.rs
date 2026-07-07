@@ -1,18 +1,40 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use sea_orm::*;
+use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::sea_query::Expr;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use std::collections::HashMap;
+use utoipa::{IntoParams, ToSchema};
 
-use crate::entity::{users, links, blocked_links, blocked_domains};
+use crate::entity::{
+    api_keys, blocked_domains, blocked_links, click_events, links, org_members, organizations,
+    passkeys, users,
+};
 use crate::utils::decode_jwt;
 use crate::AppState;
+
+/// Clamp pagination params: 1-based page, 1..=100 per_page (default 25).
+fn clamp_pagination(page: Option<u64>, per_page: Option<u64>) -> (u64, u64) {
+    let page = page.unwrap_or(1).max(1);
+    let per_page = per_page.unwrap_or(25).clamp(1, 100);
+    (page, per_page)
+}
+
+/// Escape LIKE/ILIKE wildcards in user-supplied search text and wrap it for a
+/// substring match.
+fn ilike_pattern(search: &str) -> String {
+    let escaped = search
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{}%", escaped)
+}
 
 #[derive(Serialize, ToSchema)]
 pub struct AdminResponse {
@@ -724,9 +746,15 @@ pub struct BlockedDomainResponse {
 pub struct AdminStatsResponse {
     pub total_users: i64,
     pub active_users: i64,
+    pub verified_users: i64,
+    pub admin_users: i64,
     pub total_links: i64,
     pub active_links: i64,
     pub total_clicks: i64,
+    pub total_orgs: i64,
+    pub users_today: i64,
+    pub links_today: i64,
+    pub clicks_today: i64,
     pub blocked_links_count: i64,
     pub blocked_domains_count: i64,
 }
@@ -735,10 +763,40 @@ pub struct AdminStatsResponse {
 pub struct AdminUserResponse {
     pub id: i32,
     pub email: String,
+    pub display_name: Option<String>,
     pub is_admin: bool,
     pub email_verified: bool,
     pub created_at: String,
     pub deleted_at: Option<String>,
+    pub bio_username: Option<String>,
+    pub bio_enabled: bool,
+    pub links_count: i64,
+    pub total_clicks: i64,
+    pub api_keys_count: i64,
+    pub passkeys_count: i64,
+    pub orgs_owned: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminUsersListResponse {
+    pub users: Vec<AdminUserResponse>,
+    pub total: u64,
+    pub page: u64,
+    pub per_page: u64,
+}
+
+#[derive(Deserialize, IntoParams)]
+pub struct AdminUsersQuery {
+    /// 1-based page number (default 1)
+    pub page: Option<u64>,
+    /// Items per page, 1-100 (default 25)
+    pub per_page: Option<u64>,
+    /// Substring match on email, display name, or bio username
+    pub search: Option<String>,
+    /// Filter: all (default) | active | deleted | admins | unverified
+    pub status: Option<String>,
+    /// Sort order for created_at: desc (default) | asc
+    pub order: Option<String>,
 }
 
 /// Get admin dashboard stats
@@ -760,29 +818,65 @@ pub async fn get_admin_stats(
         return e.into_response();
     }
 
+    let day_ago = (Utc::now() - Duration::hours(24)).naive_utc();
+
     let total_users = users::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let active_users = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
         .count(&state.db).await.unwrap_or(0) as i64;
-    
+    let verified_users = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::EmailVerified.eq(true))
+        .count(&state.db).await.unwrap_or(0) as i64;
+    let admin_users = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::IsAdmin.eq(true))
+        .count(&state.db).await.unwrap_or(0) as i64;
+    let users_today = users::Entity::find()
+        .filter(users::Column::CreatedAt.gte(day_ago))
+        .count(&state.db).await.unwrap_or(0) as i64;
+
     let total_links = links::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let active_links = links::Entity::find()
         .filter(links::Column::DeletedAt.is_null())
         .count(&state.db).await.unwrap_or(0) as i64;
-    
+    let links_today = links::Entity::find()
+        .filter(links::Column::CreatedAt.gte(day_ago))
+        .count(&state.db).await.unwrap_or(0) as i64;
+
+    // Aggregate in SQL — loading every link row to sum click counts does not
+    // survive a table with millions of rows.
     let total_clicks: i64 = links::Entity::find()
-        .all(&state.db).await.unwrap_or_default()
-        .iter().map(|l| l.click_count as i64).sum();
-    
+        .select_only()
+        .column_as(links::Column::ClickCount.sum(), "total")
+        .into_tuple::<Option<i64>>()
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or(0);
+
+    let clicks_today = click_events::Entity::find()
+        .filter(click_events::Column::CreatedAt.gte(day_ago))
+        .count(&state.db).await.unwrap_or(0) as i64;
+
+    let total_orgs = organizations::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let blocked_links_count = blocked_links::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let blocked_domains_count = blocked_domains::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
 
     (StatusCode::OK, Json(AdminStatsResponse {
         total_users,
         active_users,
+        verified_users,
+        admin_users,
         total_links,
         active_links,
         total_clicks,
+        total_orgs,
+        users_today,
+        links_today,
+        clicks_today,
         blocked_links_count,
         blocked_domains_count,
     })).into_response()
@@ -1084,12 +1178,13 @@ pub async fn unblock_domain(
     }
 }
 
-/// Get all users (admin only)
+/// Get all users with per-user aggregates (admin only)
 #[utoipa::path(
     get,
     path = "/admin/users",
+    params(AdminUsersQuery),
     responses(
-        (status = 200, description = "List of users", body = Vec<AdminUserResponse>),
+        (status = 200, description = "Paginated list of users with link/click aggregates", body = AdminUsersListResponse),
         (status = 403, description = "Admin access required"),
     ),
     tag = "Admin",
@@ -1098,25 +1193,717 @@ pub async fn unblock_domain(
 pub async fn get_all_users(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<AdminUsersQuery>,
 ) -> impl IntoResponse {
     if let Err(e) = require_admin(&state, &headers).await {
         return e.into_response();
     }
 
-    let users_list = users::Entity::find()
-        .order_by_desc(users::Column::CreatedAt)
-        .all(&state.db)
+    let (page, per_page) = clamp_pagination(query.page, query.per_page);
+
+    let mut finder = users::Entity::find();
+
+    match query.status.as_deref() {
+        Some("active") => finder = finder.filter(users::Column::DeletedAt.is_null()),
+        Some("deleted") => finder = finder.filter(users::Column::DeletedAt.is_not_null()),
+        Some("admins") => {
+            finder = finder
+                .filter(users::Column::IsAdmin.eq(true))
+                .filter(users::Column::DeletedAt.is_null())
+        }
+        Some("unverified") => {
+            finder = finder
+                .filter(users::Column::EmailVerified.eq(false))
+                .filter(users::Column::DeletedAt.is_null())
+        }
+        _ => {}
+    }
+
+    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let pattern = ilike_pattern(search);
+        finder = finder.filter(
+            Condition::any()
+                .add(Expr::col((users::Entity, users::Column::Email)).ilike(pattern.clone()))
+                .add(Expr::col((users::Entity, users::Column::DisplayName)).ilike(pattern.clone()))
+                .add(Expr::col((users::Entity, users::Column::BioUsername)).ilike(pattern)),
+        );
+    }
+
+    finder = match query.order.as_deref() {
+        Some("asc") => finder.order_by_asc(users::Column::CreatedAt),
+        _ => finder.order_by_desc(users::Column::CreatedAt),
+    };
+
+    let paginator = finder.paginate(&state.db, per_page);
+    let total = paginator.num_items().await.unwrap_or(0);
+    let users_page = paginator.fetch_page(page - 1).await.unwrap_or_default();
+
+    // Aggregates for just the users on this page — grouped queries instead of
+    // per-user lookups.
+    let user_ids: Vec<i32> = users_page.iter().map(|u| u.id).collect();
+
+    let mut link_stats: HashMap<i32, (i64, i64)> = HashMap::new();
+    let mut api_key_counts: HashMap<i32, i64> = HashMap::new();
+    let mut passkey_counts: HashMap<i32, i64> = HashMap::new();
+    let mut orgs_owned_counts: HashMap<i32, i64> = HashMap::new();
+
+    if !user_ids.is_empty() {
+        let rows: Vec<(Option<i32>, i64, Option<i64>)> = links::Entity::find()
+            .select_only()
+            .column(links::Column::UserId)
+            .column_as(links::Column::Id.count(), "links_count")
+            .column_as(links::Column::ClickCount.sum(), "clicks")
+            .filter(links::Column::UserId.is_in(user_ids.clone()))
+            .filter(links::Column::DeletedAt.is_null())
+            .group_by(links::Column::UserId)
+            .into_tuple()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        for (user_id, count, clicks) in rows {
+            if let Some(user_id) = user_id {
+                link_stats.insert(user_id, (count, clicks.unwrap_or(0)));
+            }
+        }
+
+        let rows: Vec<(i32, i64)> = api_keys::Entity::find()
+            .select_only()
+            .column(api_keys::Column::UserId)
+            .column_as(api_keys::Column::Id.count(), "count")
+            .filter(api_keys::Column::UserId.is_in(user_ids.clone()))
+            .group_by(api_keys::Column::UserId)
+            .into_tuple()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        api_key_counts.extend(rows);
+
+        let rows: Vec<(i32, i64)> = passkeys::Entity::find()
+            .select_only()
+            .column(passkeys::Column::UserId)
+            .column_as(passkeys::Column::Id.count(), "count")
+            .filter(passkeys::Column::UserId.is_in(user_ids.clone()))
+            .group_by(passkeys::Column::UserId)
+            .into_tuple()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        passkey_counts.extend(rows);
+
+        let rows: Vec<(i32, i64)> = organizations::Entity::find()
+            .select_only()
+            .column(organizations::Column::OwnerId)
+            .column_as(organizations::Column::Id.count(), "count")
+            .filter(organizations::Column::OwnerId.is_in(user_ids.clone()))
+            .group_by(organizations::Column::OwnerId)
+            .into_tuple()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        orgs_owned_counts.extend(rows);
+    }
+
+    let responses: Vec<AdminUserResponse> = users_page.into_iter().map(|u| {
+        let (links_count, total_clicks) = link_stats.get(&u.id).copied().unwrap_or((0, 0));
+        AdminUserResponse {
+            id: u.id,
+            email: u.email,
+            display_name: u.display_name,
+            is_admin: u.is_admin,
+            email_verified: u.email_verified,
+            created_at: u.created_at.to_string(),
+            deleted_at: u.deleted_at.map(|d| d.to_string()),
+            bio_username: u.bio_username,
+            bio_enabled: u.bio_enabled,
+            links_count,
+            total_clicks,
+            api_keys_count: api_key_counts.get(&u.id).copied().unwrap_or(0),
+            passkeys_count: passkey_counts.get(&u.id).copied().unwrap_or(0),
+            orgs_owned: orgs_owned_counts.get(&u.id).copied().unwrap_or(0),
+        }
+    }).collect();
+
+    (StatusCode::OK, Json(AdminUsersListResponse {
+        users: responses,
+        total,
+        page,
+        per_page,
+    })).into_response()
+}
+
+// ==================== ADMIN: ALL LINKS ====================
+
+#[derive(Deserialize, IntoParams)]
+pub struct AdminLinksQuery {
+    /// 1-based page number (default 1)
+    pub page: Option<u64>,
+    /// Items per page, 1-100 (default 25)
+    pub per_page: Option<u64>,
+    /// Substring match on code, destination URL, title, or owner email
+    pub search: Option<String>,
+    /// Filter: all (default) | live | deleted
+    pub status: Option<String>,
+    /// Only links belonging to this user
+    pub user_id: Option<i32>,
+    /// Sort key: created (default) | clicks
+    pub sort: Option<String>,
+    /// Sort order: desc (default) | asc
+    pub order: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminLinkResponse {
+    pub id: i32,
+    pub code: String,
+    pub original_url: String,
+    pub title: Option<String>,
+    pub user_id: Option<i32>,
+    pub user_email: Option<String>,
+    pub org_id: Option<i32>,
+    pub folder_id: Option<i32>,
+    pub click_count: i32,
+    pub max_clicks: Option<i32>,
+    pub created_at: String,
+    pub starts_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub deleted_at: Option<String>,
+    pub burned_at: Option<String>,
+    pub is_pinned: bool,
+    pub burn_after_reading: bool,
+    pub safe_link_interstitial: bool,
+    pub bio_visible: bool,
+    pub has_password: bool,
+    pub is_active: bool,
+    pub inactive_reason: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminLinksListResponse {
+    pub links: Vec<AdminLinkResponse>,
+    pub total: u64,
+    pub page: u64,
+    pub per_page: u64,
+}
+
+/// List every link in the system, across all users (admin only)
+#[utoipa::path(
+    get,
+    path = "/admin/links",
+    params(AdminLinksQuery),
+    responses(
+        (status = 200, description = "Paginated list of all links with owner info", body = AdminLinksListResponse),
+        (status = 403, description = "Admin access required"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn get_all_links(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminLinksQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let (page, per_page) = clamp_pagination(query.page, query.per_page);
+
+    // Join the owner so search can match their email and the response can
+    // show who a link belongs to.
+    let mut finder = links::Entity::find().find_also_related(users::Entity);
+
+    match query.status.as_deref() {
+        Some("live") => finder = finder.filter(links::Column::DeletedAt.is_null()),
+        Some("deleted") => finder = finder.filter(links::Column::DeletedAt.is_not_null()),
+        _ => {}
+    }
+
+    if let Some(user_id) = query.user_id {
+        finder = finder.filter(links::Column::UserId.eq(user_id));
+    }
+
+    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let pattern = ilike_pattern(search);
+        finder = finder.filter(
+            Condition::any()
+                .add(Expr::col((links::Entity, links::Column::Code)).ilike(pattern.clone()))
+                .add(Expr::col((links::Entity, links::Column::OriginalUrl)).ilike(pattern.clone()))
+                .add(Expr::col((links::Entity, links::Column::Title)).ilike(pattern.clone()))
+                .add(Expr::col((users::Entity, users::Column::Email)).ilike(pattern)),
+        );
+    }
+
+    let descending = !matches!(query.order.as_deref(), Some("asc"));
+    finder = match (query.sort.as_deref(), descending) {
+        (Some("clicks"), true) => finder.order_by_desc(links::Column::ClickCount),
+        (Some("clicks"), false) => finder.order_by_asc(links::Column::ClickCount),
+        (_, false) => finder.order_by_asc(links::Column::CreatedAt),
+        (_, true) => finder.order_by_desc(links::Column::CreatedAt),
+    };
+
+    let paginator = finder.paginate(&state.db, per_page);
+    let total = paginator.num_items().await.unwrap_or(0);
+    let rows = paginator.fetch_page(page - 1).await.unwrap_or_default();
+
+    let responses: Vec<AdminLinkResponse> = rows.into_iter().map(|(link, owner)| {
+        let is_active = link.is_active();
+        let inactive_reason = link.inactive_reason().map(str::to_string);
+        AdminLinkResponse {
+            id: link.id,
+            code: link.code,
+            original_url: link.original_url,
+            title: link.title,
+            user_id: link.user_id,
+            user_email: owner.map(|u| u.email),
+            org_id: link.org_id,
+            folder_id: link.folder_id,
+            click_count: link.click_count,
+            max_clicks: link.max_clicks,
+            created_at: link.created_at.to_string(),
+            starts_at: link.starts_at.map(|d| d.to_string()),
+            expires_at: link.expires_at.map(|d| d.to_string()),
+            deleted_at: link.deleted_at.map(|d| d.to_string()),
+            burned_at: link.burned_at.map(|d| d.to_string()),
+            is_pinned: link.is_pinned,
+            burn_after_reading: link.burn_after_reading,
+            safe_link_interstitial: link.safe_link_interstitial,
+            bio_visible: link.bio_visible,
+            has_password: link.password_hash.is_some(),
+            is_active,
+            inactive_reason,
+        }
+    }).collect();
+
+    (StatusCode::OK, Json(AdminLinksListResponse {
+        links: responses,
+        total,
+        page,
+        per_page,
+    })).into_response()
+}
+
+/// Soft delete any user's link (admin only)
+#[utoipa::path(
+    delete,
+    path = "/admin/links/{link_id}",
+    params(
+        ("link_id" = i32, Path, description = "Link ID to soft delete")
+    ),
+    responses(
+        (status = 200, description = "Link deleted", body = AdminResponse),
+        (status = 400, description = "Link already deleted"),
+        (status = 403, description = "Admin access required"),
+        (status = 404, description = "Link not found"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn admin_delete_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(link_id): Path<i32>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let link = links::Entity::find_by_id(link_id)
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    let Some(link) = link else {
+        return (StatusCode::NOT_FOUND, Json(AdminResponse {
+            success: false,
+            message: "Link not found".to_string(),
+        })).into_response();
+    };
+
+    if link.deleted_at.is_some() {
+        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+            success: false,
+            message: "Link already deleted".to_string(),
+        })).into_response();
+    }
+
+    let code = link.code.clone();
+    let mut active: links::ActiveModel = link.into();
+    active.deleted_at = Set(Some(Utc::now().naive_utc()));
+
+    if active.update(&state.db).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+            success: false,
+            message: "Failed to delete link".to_string(),
+        })).into_response();
+    }
+
+    // Drop any cached redirect so the takedown is immediate, not after TTL.
+    if let Some(cache) = &state.redis_cache {
+        let _ = cache.invalidate_link(&code).await;
+    }
+
+    (StatusCode::OK, Json(AdminResponse {
+        success: true,
+        message: format!("Link {} deleted", code),
+    })).into_response()
+}
+
+/// Restore a soft-deleted link (admin only)
+#[utoipa::path(
+    post,
+    path = "/admin/links/{link_id}/restore",
+    params(
+        ("link_id" = i32, Path, description = "Link ID to restore")
+    ),
+    responses(
+        (status = 200, description = "Link restored", body = AdminResponse),
+        (status = 400, description = "Link is not deleted"),
+        (status = 403, description = "Admin access required"),
+        (status = 404, description = "Link not found"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn admin_restore_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(link_id): Path<i32>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let link = links::Entity::find_by_id(link_id)
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    let Some(link) = link else {
+        return (StatusCode::NOT_FOUND, Json(AdminResponse {
+            success: false,
+            message: "Link not found".to_string(),
+        })).into_response();
+    };
+
+    if link.deleted_at.is_none() {
+        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+            success: false,
+            message: "Link is not deleted".to_string(),
+        })).into_response();
+    }
+
+    let code = link.code.clone();
+    let mut active: links::ActiveModel = link.into();
+    active.deleted_at = Set(None);
+
+    if active.update(&state.db).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+            success: false,
+            message: "Failed to restore link".to_string(),
+        })).into_response();
+    }
+
+    (StatusCode::OK, Json(AdminResponse {
+        success: true,
+        message: format!("Link {} restored", code),
+    })).into_response()
+}
+
+/// Force-verify a user's email (admin only)
+#[utoipa::path(
+    post,
+    path = "/admin/users/{user_id}/verify-email",
+    params(
+        ("user_id" = i32, Path, description = "User ID to verify")
+    ),
+    responses(
+        (status = 200, description = "Email marked verified", body = AdminResponse),
+        (status = 400, description = "Email already verified"),
+        (status = 403, description = "Admin access required"),
+        (status = 404, description = "User not found"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn admin_verify_email(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<i32>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let user = users::Entity::find_by_id(user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .unwrap_or(None);
+
+    let Some(user) = user else {
+        return (StatusCode::NOT_FOUND, Json(AdminResponse {
+            success: false,
+            message: "User not found".to_string(),
+        })).into_response();
+    };
+
+    if user.email_verified {
+        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+            success: false,
+            message: "Email is already verified".to_string(),
+        })).into_response();
+    }
+
+    let mut active: users::ActiveModel = user.into();
+    active.email_verified = Set(true);
+    active.verification_token = Set(None);
+    active.verification_token_expires = Set(None);
+
+    if active.update(&state.db).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+            success: false,
+            message: "Failed to verify email".to_string(),
+        })).into_response();
+    }
+
+    (StatusCode::OK, Json(AdminResponse {
+        success: true,
+        message: format!("Email verified for user {}", user_id),
+    })).into_response()
+}
+
+// ==================== ADMIN: ORGANIZATIONS ====================
+
+#[derive(Deserialize, IntoParams)]
+pub struct AdminOrgsQuery {
+    /// 1-based page number (default 1)
+    pub page: Option<u64>,
+    /// Items per page, 1-100 (default 25)
+    pub per_page: Option<u64>,
+    /// Substring match on org name or slug
+    pub search: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminOrgResponse {
+    pub id: i32,
+    pub name: String,
+    pub slug: String,
+    pub owner_id: i32,
+    pub owner_email: Option<String>,
+    pub member_count: i64,
+    pub links_count: i64,
+    pub created_at: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminOrgsListResponse {
+    pub orgs: Vec<AdminOrgResponse>,
+    pub total: u64,
+    pub page: u64,
+    pub per_page: u64,
+}
+
+/// List every organization with owner and member counts (admin only)
+#[utoipa::path(
+    get,
+    path = "/admin/orgs",
+    params(AdminOrgsQuery),
+    responses(
+        (status = 200, description = "Paginated list of all organizations", body = AdminOrgsListResponse),
+        (status = 403, description = "Admin access required"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn get_all_orgs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminOrgsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let (page, per_page) = clamp_pagination(query.page, query.per_page);
+
+    let mut finder = organizations::Entity::find();
+
+    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let pattern = ilike_pattern(search);
+        finder = finder.filter(
+            Condition::any()
+                .add(Expr::col((organizations::Entity, organizations::Column::Name)).ilike(pattern.clone()))
+                .add(Expr::col((organizations::Entity, organizations::Column::Slug)).ilike(pattern)),
+        );
+    }
+
+    let paginator = finder
+        .order_by_desc(organizations::Column::CreatedAt)
+        .paginate(&state.db, per_page);
+    let total = paginator.num_items().await.unwrap_or(0);
+    let orgs_page = paginator.fetch_page(page - 1).await.unwrap_or_default();
+
+    let org_ids: Vec<i32> = orgs_page.iter().map(|o| o.id).collect();
+    let owner_ids: Vec<i32> = orgs_page.iter().map(|o| o.owner_id).collect();
+
+    let mut member_counts: HashMap<i32, i64> = HashMap::new();
+    let mut link_counts: HashMap<i32, i64> = HashMap::new();
+    let mut owner_emails: HashMap<i32, String> = HashMap::new();
+
+    if !org_ids.is_empty() {
+        let rows: Vec<(i32, i64)> = org_members::Entity::find()
+            .select_only()
+            .column(org_members::Column::OrgId)
+            .column_as(org_members::Column::Id.count(), "count")
+            .filter(org_members::Column::OrgId.is_in(org_ids.clone()))
+            .group_by(org_members::Column::OrgId)
+            .into_tuple()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        member_counts.extend(rows);
+
+        let rows: Vec<(Option<i32>, i64)> = links::Entity::find()
+            .select_only()
+            .column(links::Column::OrgId)
+            .column_as(links::Column::Id.count(), "count")
+            .filter(links::Column::OrgId.is_in(org_ids.clone()))
+            .filter(links::Column::DeletedAt.is_null())
+            .group_by(links::Column::OrgId)
+            .into_tuple()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        for (org_id, count) in rows {
+            if let Some(org_id) = org_id {
+                link_counts.insert(org_id, count);
+            }
+        }
+
+        let owners = users::Entity::find()
+            .filter(users::Column::Id.is_in(owner_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        for owner in owners {
+            owner_emails.insert(owner.id, owner.email);
+        }
+    }
+
+    let responses: Vec<AdminOrgResponse> = orgs_page.into_iter().map(|o| AdminOrgResponse {
+        id: o.id,
+        name: o.name,
+        slug: o.slug,
+        owner_id: o.owner_id,
+        owner_email: owner_emails.get(&o.owner_id).cloned(),
+        member_count: member_counts.get(&o.id).copied().unwrap_or(0),
+        links_count: link_counts.get(&o.id).copied().unwrap_or(0),
+        created_at: o.created_at.to_string(),
+    }).collect();
+
+    (StatusCode::OK, Json(AdminOrgsListResponse {
+        orgs: responses,
+        total,
+        page,
+        per_page,
+    })).into_response()
+}
+
+// ==================== ADMIN: ACTIVITY TIMESERIES ====================
+
+#[derive(Deserialize, IntoParams)]
+pub struct AdminActivityQuery {
+    /// Days of history, 1-365 (default 30)
+    pub days: Option<u64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ActivityDay {
+    pub date: String,
+    pub new_users: i64,
+    pub new_links: i64,
+    pub clicks: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminActivityResponse {
+    pub days: Vec<ActivityDay>,
+}
+
+/// Count rows per day for a table since `cutoff`. Table name comes from a
+/// fixed internal list, never user input.
+async fn day_counts(
+    db: &DatabaseConnection,
+    table: &str,
+    cutoff: chrono::NaiveDateTime,
+) -> HashMap<String, i64> {
+    let sql = format!(
+        "SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::bigint AS cnt \
+         FROM {} WHERE created_at >= $1 GROUP BY 1",
+        table
+    );
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            &sql,
+            [cutoff.into()],
+        ))
         .await
         .unwrap_or_default();
 
-    let responses: Vec<AdminUserResponse> = users_list.into_iter().map(|u| AdminUserResponse {
-        id: u.id,
-        email: u.email,
-        is_admin: u.is_admin,
-        email_verified: u.email_verified,
-        created_at: u.created_at.to_string(),
-        deleted_at: u.deleted_at.map(|d| d.to_string()),
-    }).collect();
+    let mut map = HashMap::new();
+    for row in rows {
+        if let (Ok(day), Ok(cnt)) = (row.try_get::<String>("", "day"), row.try_get::<i64>("", "cnt")) {
+            map.insert(day, cnt);
+        }
+    }
+    map
+}
 
-    (StatusCode::OK, Json(responses)).into_response()
+/// Daily signups, link creations, and clicks for the admin overview chart
+#[utoipa::path(
+    get,
+    path = "/admin/activity",
+    params(AdminActivityQuery),
+    responses(
+        (status = 200, description = "Per-day activity for the requested window", body = AdminActivityResponse),
+        (status = 403, description = "Admin access required"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn get_admin_activity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminActivityQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let days = query.days.unwrap_or(30).clamp(1, 365) as i64;
+    let today = Utc::now().date_naive();
+    let start = today - Duration::days(days - 1);
+    let cutoff = start.and_hms_opt(0, 0, 0).unwrap_or_else(|| Utc::now().naive_utc());
+
+    let users_by_day = day_counts(&state.db, "users", cutoff).await;
+    let links_by_day = day_counts(&state.db, "links", cutoff).await;
+    let clicks_by_day = day_counts(&state.db, "click_events", cutoff).await;
+
+    // Emit every day in the window, zero-filled, so charts don't skip days.
+    let mut out = Vec::with_capacity(days as usize);
+    let mut day = start;
+    while day <= today {
+        let key = day.format("%Y-%m-%d").to_string();
+        out.push(ActivityDay {
+            date: key.clone(),
+            new_users: users_by_day.get(&key).copied().unwrap_or(0),
+            new_links: links_by_day.get(&key).copied().unwrap_or(0),
+            clicks: clicks_by_day.get(&key).copied().unwrap_or(0),
+        });
+        day += Duration::days(1);
+    }
+
+    (StatusCode::OK, Json(AdminActivityResponse { days: out })).into_response()
 }

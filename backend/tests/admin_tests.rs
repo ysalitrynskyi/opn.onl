@@ -1,356 +1,406 @@
+//! Admin endpoint integration tests: real router, real Postgres.
+//!
+//! Requirements: a Postgres reachable via `DATABASE_URL` (migrations are run
+//! automatically; use a throwaway database).
+
 mod common;
 
-// ============= Admin Stats Tests =============
+use common::{mark_email_verified, spawn_real_app, unique_email};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
+use serde_json::{json, Value};
 
-#[cfg(test)]
-mod admin_stats_tests {
-    #[derive(Default)]
-    struct AdminStats {
-        total_users: u64,
-        active_users: u64,
-        total_links: u64,
-        active_links: u64,
-        total_clicks: u64,
-        blocked_links_count: u64,
-        blocked_domains_count: u64,
-    }
+/// Register a user through the real handler; returns (token, user_id).
+async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) {
+    let res = server
+        .post("/auth/register")
+        .json(&json!({ "email": email, "password": "password123" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        201,
+        "register failed for {email}: {}",
+        res.text()
+    );
+    let body: Value = res.json();
+    (
+        body["token"].as_str().expect("token in response").to_string(),
+        body["user_id"].as_i64().expect("user_id in response") as i32,
+    )
+}
 
-    #[test]
-    fn test_stats_initialization() {
-        let stats = AdminStats::default();
-        assert_eq!(stats.total_users, 0);
-        assert_eq!(stats.active_users, 0);
-        assert_eq!(stats.total_links, 0);
-    }
+/// Flip `is_admin` directly in the database. Tests share one database, so the
+/// "first user becomes admin" bootstrap can't be relied on here.
+async fn make_admin(db: &DatabaseConnection, user_id: i32) {
+    use opn_onl_backend::entity::users;
+    let user = users::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .expect("db error")
+        .expect("user not found");
+    let mut active: users::ActiveModel = user.into();
+    active.is_admin = Set(true);
+    active.update(db).await.expect("failed to promote user");
+}
 
-    #[test]
-    fn test_active_users_less_than_total() {
-        let stats = AdminStats {
-            total_users: 100,
-            active_users: 80,
-            ..Default::default()
-        };
-        assert!(stats.active_users <= stats.total_users);
-    }
+/// Register a fresh admin: a normal registration plus a direct DB promotion.
+async fn register_admin(
+    server: &axum_test::TestServer,
+    db: &DatabaseConnection,
+) -> (String, i32) {
+    let (token, user_id) = register(server, &unique_email()).await;
+    make_admin(db, user_id).await;
+    (token, user_id)
+}
 
-    #[test]
-    fn test_active_links_less_than_total() {
-        let stats = AdminStats {
-            total_links: 1000,
-            active_links: 950,
-            ..Default::default()
-        };
-        assert!(stats.active_links <= stats.total_links);
+/// Register a verified regular user (link creation requires a verified email).
+async fn register_verified(
+    server: &axum_test::TestServer,
+    db: &DatabaseConnection,
+) -> (String, i32, String) {
+    let email = unique_email();
+    let (token, user_id) = register(server, &email).await;
+    mark_email_verified(db, user_id).await;
+    (token, user_id, email)
+}
+
+/// Create a link through the real handler; returns (id, code).
+async fn create_link(server: &axum_test::TestServer, token: &str, url: &str) -> (i64, String) {
+    let res = server
+        .post("/links")
+        .authorization_bearer(token)
+        .json(&json!({ "original_url": url }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create link failed: {}", res.text());
+    let body: Value = res.json();
+    (
+        body["id"].as_i64().expect("link id"),
+        body["code"].as_str().expect("link code").to_string(),
+    )
+}
+
+#[tokio::test]
+async fn non_admin_and_anonymous_are_rejected() {
+    let (server, db) = spawn_real_app().await;
+    let (user_token, _, _) = register_verified(&server, &db).await;
+
+    for path in [
+        "/admin/stats",
+        "/admin/activity",
+        "/admin/users",
+        "/admin/links",
+        "/admin/orgs",
+    ] {
+        let res = server.get(path).await;
+        assert_eq!(res.status_code(), 401, "anonymous {path} should be 401");
+
+        let res = server.get(path).authorization_bearer(&user_token).await;
+        assert_eq!(res.status_code(), 403, "non-admin {path} should be 403");
     }
 }
 
-// ============= User Management Tests =============
+#[tokio::test]
+async fn admin_sees_other_users_links_with_owner_data() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (user_token, user_id, user_email) = register_verified(&server, &db).await;
 
-#[cfg(test)]
-mod user_management_tests {
-    use chrono::{Utc, NaiveDateTime};
+    let (link_id, code) = create_link(&server, &user_token, "https://example.com/owned").await;
 
-    struct User {
-        id: i32,
-        email: String,
-        is_admin: bool,
-        deleted_at: Option<NaiveDateTime>,
-    }
+    let res = server
+        .get("/admin/links")
+        .add_query_param("search", &code)
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    let body: Value = res.json();
 
-    #[test]
-    fn test_user_is_deleted() {
-        let user = User {
-            id: 1,
-            email: "test@example.com".to_string(),
-            is_admin: false,
-            deleted_at: Some(Utc::now().naive_utc()),
-        };
-        assert!(user.deleted_at.is_some());
-    }
-
-    #[test]
-    fn test_user_is_not_deleted() {
-        let user = User {
-            id: 1,
-            email: "test@example.com".to_string(),
-            is_admin: false,
-            deleted_at: None,
-        };
-        assert!(user.deleted_at.is_none());
-    }
-
-    #[test]
-    fn test_user_admin_status() {
-        let admin = User {
-            id: 1,
-            email: "admin@example.com".to_string(),
-            is_admin: true,
-            deleted_at: None,
-        };
-        assert!(admin.is_admin);
-    }
-
-    #[test]
-    fn test_user_regular_status() {
-        let user = User {
-            id: 2,
-            email: "user@example.com".to_string(),
-            is_admin: false,
-            deleted_at: None,
-        };
-        assert!(!user.is_admin);
-    }
-
-    #[test]
-    fn test_cannot_delete_self() {
-        let current_user_id = 1;
-        let target_user_id = 1;
-        // Simulating the check that prevents self-deletion
-        let can_delete = current_user_id != target_user_id;
-        assert!(!can_delete);
-    }
-
-    #[test]
-    fn test_can_delete_other_user() {
-        let current_user_id = 1;
-        let target_user_id = 2;
-        let can_delete = current_user_id != target_user_id;
-        assert!(can_delete);
-    }
+    assert_eq!(body["total"].as_u64(), Some(1));
+    let link = &body["links"][0];
+    assert_eq!(link["id"].as_i64(), Some(link_id));
+    assert_eq!(link["code"].as_str(), Some(code.as_str()));
+    assert_eq!(link["user_id"].as_i64(), Some(user_id as i64));
+    assert_eq!(link["user_email"].as_str(), Some(user_email.as_str()));
+    assert_eq!(link["original_url"].as_str(), Some("https://example.com/owned"));
+    assert_eq!(link["is_active"].as_bool(), Some(true));
+    assert_eq!(link["has_password"].as_bool(), Some(false));
+    assert!(link["deleted_at"].is_null());
 }
 
-// ============= URL Blocking Tests =============
+#[tokio::test]
+async fn admin_links_support_pagination_and_user_filter() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (user_token, user_id, _) = register_verified(&server, &db).await;
 
-#[cfg(test)]
-mod url_blocking_tests {
-    struct BlockedLink {
-        id: i32,
-        url: String,
-        reason: Option<String>,
+    for i in 0..3 {
+        create_link(&server, &user_token, &format!("https://example.com/page-{i}")).await;
     }
 
-    struct BlockedDomain {
-        id: i32,
-        domain: String,
-        reason: Option<String>,
-    }
+    let res = server
+        .get("/admin/links")
+        .add_query_param("user_id", user_id.to_string())
+        .add_query_param("per_page", "2")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["total"].as_u64(), Some(3));
+    assert_eq!(body["links"].as_array().map(Vec::len), Some(2));
+    assert_eq!(body["per_page"].as_u64(), Some(2));
 
-    fn is_url_blocked(url: &str, blocked_links: &[BlockedLink]) -> bool {
-        blocked_links.iter().any(|bl| bl.url == url)
-    }
-
-    fn is_domain_blocked(url: &str, blocked_domains: &[BlockedDomain]) -> bool {
-        if let Ok(parsed) = url::Url::parse(url) {
-            if let Some(host) = parsed.host_str() {
-                return blocked_domains.iter().any(|bd| {
-                    host == bd.domain || host.ends_with(&format!(".{}", bd.domain))
-                });
-            }
-        }
-        false
-    }
-
-    #[test]
-    fn test_exact_url_blocked() {
-        let blocked = vec![BlockedLink {
-            id: 1,
-            url: "https://malicious.com/bad".to_string(),
-            reason: Some("Malware".to_string()),
-        }];
-        
-        assert!(is_url_blocked("https://malicious.com/bad", &blocked));
-    }
-
-    #[test]
-    fn test_url_not_blocked() {
-        let blocked = vec![BlockedLink {
-            id: 1,
-            url: "https://malicious.com/bad".to_string(),
-            reason: None,
-        }];
-        
-        assert!(!is_url_blocked("https://safe.com/good", &blocked));
-    }
-
-    #[test]
-    fn test_domain_blocked() {
-        let blocked = vec![BlockedDomain {
-            id: 1,
-            domain: "evil.com".to_string(),
-            reason: Some("Spam".to_string()),
-        }];
-        
-        assert!(is_domain_blocked("https://evil.com/page", &blocked));
-    }
-
-    #[test]
-    fn test_subdomain_blocked() {
-        let blocked = vec![BlockedDomain {
-            id: 1,
-            domain: "evil.com".to_string(),
-            reason: None,
-        }];
-        
-        assert!(is_domain_blocked("https://sub.evil.com/page", &blocked));
-    }
-
-    #[test]
-    fn test_similar_domain_not_blocked() {
-        let blocked = vec![BlockedDomain {
-            id: 1,
-            domain: "evil.com".to_string(),
-            reason: None,
-        }];
-        
-        // "notevil.com" should NOT be blocked just because it contains "evil.com"
-        assert!(!is_domain_blocked("https://notevil.com/page", &blocked));
-    }
-
-    #[test]
-    fn test_empty_blocklist() {
-        let blocked: Vec<BlockedLink> = vec![];
-        assert!(!is_url_blocked("https://any.com", &blocked));
-    }
+    let res = server
+        .get("/admin/links")
+        .add_query_param("user_id", user_id.to_string())
+        .add_query_param("per_page", "2")
+        .add_query_param("page", "2")
+        .authorization_bearer(&admin_token)
+        .await;
+    let body: Value = res.json();
+    assert_eq!(body["links"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["page"].as_u64(), Some(2));
 }
 
-// ============= Backup Tests =============
+#[tokio::test]
+async fn admin_can_delete_and_restore_any_link() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (user_token, _, _) = register_verified(&server, &db).await;
 
-#[cfg(test)]
-mod backup_tests {
-    use chrono::Utc;
+    let (link_id, code) = create_link(&server, &user_token, "https://example.com/takedown").await;
 
-    fn generate_backup_filename() -> String {
-        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-        format!("backup_{}.sql.gz", timestamp)
-    }
+    // Redirect works while the link is live.
+    let res = server.get(&format!("/{code}")).await;
+    assert!(
+        res.status_code().is_redirection(),
+        "expected redirect, got {}",
+        res.status_code()
+    );
 
-    #[test]
-    fn test_backup_filename_format() {
-        let filename = generate_backup_filename();
-        assert!(filename.starts_with("backup_"));
-        assert!(filename.ends_with(".sql.gz"));
-    }
+    // Admin takes it down.
+    let res = server
+        .delete(&format!("/admin/links/{link_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
 
-    #[test]
-    fn test_backup_filename_uniqueness() {
-        let filename1 = generate_backup_filename();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        // Within the same second, filenames might be the same
-        // This is expected behavior
-        let filename2 = generate_backup_filename();
-        // Both should be valid filenames
-        assert!(filename1.starts_with("backup_"));
-        assert!(filename2.starts_with("backup_"));
-    }
+    let res = server.get(&format!("/{code}")).await;
+    assert_eq!(res.status_code(), 404, "deleted link must stop redirecting");
 
-    #[test]
-    fn test_backup_retention() {
-        let backups = vec![
-            "backup_20240101_000000.sql.gz",
-            "backup_20240102_000000.sql.gz",
-            "backup_20240103_000000.sql.gz",
-            "backup_20240104_000000.sql.gz",
-            "backup_20240105_000000.sql.gz",
-        ];
-        
-        let keep_count = 3;
-        let to_delete = backups.len().saturating_sub(keep_count);
-        
-        assert_eq!(to_delete, 2);
-    }
+    // Deleting again is a 400, not a silent success.
+    let res = server
+        .delete(&format!("/admin/links/{link_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 400);
+
+    // It shows up under the deleted filter.
+    let res = server
+        .get("/admin/links")
+        .add_query_param("search", &code)
+        .add_query_param("status", "deleted")
+        .authorization_bearer(&admin_token)
+        .await;
+    let body: Value = res.json();
+    assert_eq!(body["total"].as_u64(), Some(1));
+    assert!(!body["links"][0]["deleted_at"].is_null());
+
+    // Restore brings the redirect back.
+    let res = server
+        .post(&format!("/admin/links/{link_id}/restore"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+
+    let res = server.get(&format!("/{code}")).await;
+    assert!(
+        res.status_code().is_redirection(),
+        "restored link must redirect again, got {}",
+        res.status_code()
+    );
 }
 
-// ============= Admin Permission Tests =============
+#[tokio::test]
+async fn admin_users_list_is_paginated_with_aggregates() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (user_token, user_id, user_email) = register_verified(&server, &db).await;
 
-#[cfg(test)]
-mod admin_permission_tests {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Role {
-        User,
-        Admin,
-    }
+    create_link(&server, &user_token, "https://example.com/counted-1").await;
+    create_link(&server, &user_token, "https://example.com/counted-2").await;
 
-    fn can_access_admin_panel(role: Role) -> bool {
-        role == Role::Admin
-    }
+    let res = server
+        .get("/admin/users")
+        .add_query_param("search", &user_email)
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    let body: Value = res.json();
 
-    fn can_manage_users(role: Role) -> bool {
-        role == Role::Admin
-    }
-
-    fn can_block_content(role: Role) -> bool {
-        role == Role::Admin
-    }
-
-    fn can_create_backup(role: Role) -> bool {
-        role == Role::Admin
-    }
-
-    #[test]
-    fn test_admin_can_access_panel() {
-        assert!(can_access_admin_panel(Role::Admin));
-    }
-
-    #[test]
-    fn test_user_cannot_access_panel() {
-        assert!(!can_access_admin_panel(Role::User));
-    }
-
-    #[test]
-    fn test_admin_can_manage_users() {
-        assert!(can_manage_users(Role::Admin));
-    }
-
-    #[test]
-    fn test_admin_can_block_content() {
-        assert!(can_block_content(Role::Admin));
-    }
-
-    #[test]
-    fn test_admin_can_create_backup() {
-        assert!(can_create_backup(Role::Admin));
-    }
-
-    #[test]
-    fn test_user_cannot_manage_users() {
-        assert!(!can_manage_users(Role::User));
-    }
+    assert_eq!(body["total"].as_u64(), Some(1));
+    let user = &body["users"][0];
+    assert_eq!(user["id"].as_i64(), Some(user_id as i64));
+    assert_eq!(user["email"].as_str(), Some(user_email.as_str()));
+    assert_eq!(user["links_count"].as_i64(), Some(2));
+    assert_eq!(user["total_clicks"].as_i64(), Some(0));
+    assert_eq!(user["email_verified"].as_bool(), Some(true));
+    assert_eq!(user["is_admin"].as_bool(), Some(false));
+    assert!(user["api_keys_count"].is_i64());
+    assert!(user["passkeys_count"].is_i64());
+    assert!(user["orgs_owned"].is_i64());
 }
 
-// ============= First User Admin Tests =============
+#[tokio::test]
+async fn admin_users_status_filter_finds_unverified() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let email = unique_email();
+    let (_, user_id) = register(&server, &email).await;
 
-#[cfg(test)]
-mod first_user_admin_tests {
-    #[test]
-    fn test_first_user_becomes_admin() {
-        let user_count = 0;
-        let is_first_user = user_count == 0;
-        assert!(is_first_user);
-    }
+    let res = server
+        .get("/admin/users")
+        .add_query_param("search", &email)
+        .add_query_param("status", "unverified")
+        .authorization_bearer(&admin_token)
+        .await;
+    let body: Value = res.json();
+    assert_eq!(body["total"].as_u64(), Some(1));
+    assert_eq!(body["users"][0]["id"].as_i64(), Some(user_id as i64));
 
-    #[test]
-    fn test_second_user_not_admin() {
-        let user_count = 1;
-        let is_first_user = user_count == 0;
-        assert!(!is_first_user);
-    }
-
-    #[test]
-    fn test_ensure_admin_exists() {
-        let admin_count = 0;
-        let total_users = 5;
-        
-        // If no admins exist but users exist, promote first user
-        let should_promote = admin_count == 0 && total_users > 0;
-        assert!(should_promote);
-    }
-
-    #[test]
-    fn test_admin_already_exists() {
-        let admin_count = 1;
-        let should_promote = admin_count == 0;
-        assert!(!should_promote);
-    }
+    // The same user disappears from the "admins" filter.
+    let res = server
+        .get("/admin/users")
+        .add_query_param("search", &email)
+        .add_query_param("status", "admins")
+        .authorization_bearer(&admin_token)
+        .await;
+    let body: Value = res.json();
+    assert_eq!(body["total"].as_u64(), Some(0));
 }
 
+#[tokio::test]
+async fn admin_can_force_verify_email() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (user_token, user_id) = register(&server, &unique_email()).await;
 
+    // Unverified users cannot create links.
+    let res = server
+        .post("/links")
+        .authorization_bearer(&user_token)
+        .json(&json!({ "original_url": "https://example.com/blocked" }))
+        .await;
+    assert_ne!(res.status_code(), 201, "unverified user should not create links");
+
+    let res = server
+        .post(&format!("/admin/users/{user_id}/verify-email"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+
+    // Verifying twice is a 400.
+    let res = server
+        .post(&format!("/admin/users/{user_id}/verify-email"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 400);
+
+    // Now link creation works.
+    let res = server
+        .post("/links")
+        .authorization_bearer(&user_token)
+        .json(&json!({ "original_url": "https://example.com/now-allowed" }))
+        .await;
+    assert_eq!(res.status_code(), 201, "{}", res.text());
+}
+
+#[tokio::test]
+async fn admin_stats_have_full_shape() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (user_token, _, _) = register_verified(&server, &db).await;
+    create_link(&server, &user_token, "https://example.com/for-stats").await;
+
+    let res = server
+        .get("/admin/stats")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+
+    for field in [
+        "total_users",
+        "active_users",
+        "verified_users",
+        "admin_users",
+        "total_links",
+        "active_links",
+        "total_clicks",
+        "total_orgs",
+        "users_today",
+        "links_today",
+        "clicks_today",
+        "blocked_links_count",
+        "blocked_domains_count",
+    ] {
+        assert!(
+            body[field].as_i64().is_some_and(|v| v >= 0),
+            "field {field} missing or negative: {body}"
+        );
+    }
+    assert!(body["total_users"].as_i64() >= body["active_users"].as_i64());
+    assert!(body["total_links"].as_i64().unwrap() >= 1);
+    assert!(body["admin_users"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn admin_activity_returns_zero_filled_window() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+
+    let res = server
+        .get("/admin/activity")
+        .add_query_param("days", "7")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    let days = body["days"].as_array().expect("days array");
+    assert_eq!(days.len(), 7, "window must be zero-filled to 7 entries");
+
+    let dates: Vec<&str> = days.iter().map(|d| d["date"].as_str().unwrap()).collect();
+    let mut sorted = dates.clone();
+    sorted.sort();
+    assert_eq!(dates, sorted, "days must be ascending");
+
+    // The admin registered moments ago, so today must show at least one signup.
+    let today = days.last().unwrap();
+    assert!(today["new_users"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn admin_orgs_list_shows_owner_and_member_count() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (user_token, _, user_email) = register_verified(&server, &db).await;
+
+    let slug = format!("org-{}", common::unique_code().to_lowercase());
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&user_token)
+        .json(&json!({ "name": "Admin Test Org", "slug": slug }))
+        .await;
+    assert_eq!(res.status_code(), 201, "{}", res.text());
+
+    let res = server
+        .get("/admin/orgs")
+        .add_query_param("search", &slug)
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["total"].as_u64(), Some(1));
+    let org = &body["orgs"][0];
+    assert_eq!(org["slug"].as_str(), Some(slug.as_str()));
+    assert_eq!(org["owner_email"].as_str(), Some(user_email.as_str()));
+    assert!(org["member_count"].as_i64().unwrap() >= 1);
+}

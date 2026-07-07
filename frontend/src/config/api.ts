@@ -106,8 +106,14 @@ export const API_ENDPOINTS = {
     
     // Admin
     adminStats: `${API_BASE_URL}/admin/stats`,
+    adminActivity: `${API_BASE_URL}/admin/activity`,
     adminUsers: `${API_BASE_URL}/admin/users`,
+    adminLinks: `${API_BASE_URL}/admin/links`,
+    adminLink: (id: number) => `${API_BASE_URL}/admin/links/${id}`,
+    adminLinkRestore: (id: number) => `${API_BASE_URL}/admin/links/${id}/restore`,
+    adminOrgs: `${API_BASE_URL}/admin/orgs`,
     adminUser: (id: number) => `${API_BASE_URL}/admin/users/${id}`,
+    adminUserVerifyEmail: (id: number) => `${API_BASE_URL}/admin/users/${id}/verify-email`,
     adminUserHardDelete: (id: number) => `${API_BASE_URL}/admin/users/${id}/hard`,
     adminUserRestore: (id: number) => `${API_BASE_URL}/admin/users/${id}/restore`,
     adminUserMakeAdmin: (id: number) => `${API_BASE_URL}/admin/users/${id}/make-admin`,

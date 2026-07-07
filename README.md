@@ -356,12 +356,18 @@ the organization is deleted — one person leaving can't wipe a shared team.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/admin/stats` | Get system statistics |
-| GET | `/admin/users` | List all users |
+| GET | `/admin/activity` | Daily signups/links/clicks timeseries (`?days=30`) |
+| GET | `/admin/users` | List all users — paginated, searchable, with per-user link/click/key/org counts |
 | DELETE | `/admin/users/{id}` | Soft delete user |
 | DELETE | `/admin/users/{id}/hard` | Permanently delete user |
 | POST | `/admin/users/{id}/restore` | Restore deleted user |
 | POST | `/admin/users/{id}/make-admin` | Promote to admin |
 | POST | `/admin/users/{id}/remove-admin` | Demote from admin |
+| POST | `/admin/users/{id}/verify-email` | Force-verify a user's email |
+| GET | `/admin/links` | List every link across all users — paginated, searchable (code/URL/title/owner email), filter by user or deleted status |
+| DELETE | `/admin/links/{id}` | Soft delete any link (takedown; stops redirecting immediately) |
+| POST | `/admin/links/{id}/restore` | Restore a deleted link |
+| GET | `/admin/orgs` | List all organizations with owner, member and link counts |
 | GET | `/admin/blocked/links` | List blocked URLs |
 | POST | `/admin/blocked/links` | Block URL |
 | DELETE | `/admin/blocked/links/{id}` | Unblock URL |

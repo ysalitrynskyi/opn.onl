@@ -2,14 +2,14 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
-    auth, links, analytics, organizations, folders, tags,
+    admin, auth, links, analytics, organizations, folders, tags,
 };
 
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "opn.onl URL Shortener API",
-        version = "1.1.2",
+        version = "1.2.0",
         description = "A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.",
         license(
             name = "AGPL-3.0-only",
@@ -32,6 +32,7 @@ use crate::handlers::{
         (name = "Organizations", description = "Team and organization management"),
         (name = "Folders", description = "Organize links into folders"),
         (name = "Tags", description = "Tag and categorize links"),
+        (name = "Admin", description = "Instance administration: users, links, organizations, blocking, backups"),
     ),
     paths(
         // Authentication
@@ -89,6 +90,30 @@ use crate::handlers::{
         tags::add_tags_to_link,
         tags::remove_tags_from_link,
         tags::get_links_by_tag,
+
+        // Admin
+        admin::get_admin_stats,
+        admin::get_admin_activity,
+        admin::get_all_users,
+        admin::delete_user,
+        admin::hard_delete_user,
+        admin::restore_user,
+        admin::make_admin,
+        admin::remove_admin,
+        admin::admin_verify_email,
+        admin::get_all_links,
+        admin::admin_delete_link,
+        admin::admin_restore_link,
+        admin::get_all_orgs,
+        admin::get_blocked_links,
+        admin::block_link,
+        admin::unblock_link,
+        admin::get_blocked_domains,
+        admin::block_domain,
+        admin::unblock_domain,
+        admin::create_backup,
+        admin::list_backups,
+        admin::cleanup_backups,
     ),
     components(
         schemas(
@@ -153,6 +178,24 @@ use crate::handlers::{
             tags::TagResponse,
             tags::AddTagsToLinkRequest,
             tags::RemoveTagsFromLinkRequest,
+
+            // Admin schemas
+            admin::AdminResponse,
+            admin::AdminStatsResponse,
+            admin::AdminUserResponse,
+            admin::AdminUsersListResponse,
+            admin::AdminLinkResponse,
+            admin::AdminLinksListResponse,
+            admin::AdminOrgResponse,
+            admin::AdminOrgsListResponse,
+            admin::ActivityDay,
+            admin::AdminActivityResponse,
+            admin::BlockLinkRequest,
+            admin::BlockDomainRequest,
+            admin::BlockedLinkResponse,
+            admin::BlockedDomainResponse,
+            admin::BackupResponse,
+            admin::BackupListResponse,
         )
     ),
     modifiers(&SecurityAddon)
