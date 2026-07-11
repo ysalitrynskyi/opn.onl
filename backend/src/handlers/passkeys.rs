@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use webauthn_rs::prelude::*;
 use webauthn_rs::Webauthn;
 use sea_orm::*;
@@ -151,11 +152,27 @@ pub struct LoginFinishRequest {
     pub credential: PublicKeyCredential,
 }
 
-#[derive(Serialize)]
-pub struct AuthResponse {
+#[derive(Serialize, ToSchema)]
+pub struct PasskeyAuthResponse {
     pub token: String,
 }
 
+/// Begin passkey enrollment for the authenticated caller. Returns a WebAuthn
+/// `CreationChallengeResponse` to pass to the browser's credential API. The
+/// request/response bodies are standard WebAuthn ceremony objects and are not
+/// expanded into the schema.
+#[utoipa::path(
+    post,
+    path = "/auth/passkey/register/start",
+    responses(
+        (status = 200, description = "WebAuthn creation challenge"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Passkeys are disabled on this instance"),
+        (status = 404, description = "User not found"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn register_start(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -207,6 +224,22 @@ pub async fn register_start(
     (StatusCode::OK, Json(RegisterStartResponse { options: ccr })).into_response()
 }
 
+/// Complete passkey enrollment for the authenticated caller. Rejects a
+/// credential already registered to any account (409).
+#[utoipa::path(
+    post,
+    path = "/auth/passkey/register/finish",
+    responses(
+        (status = 200, description = "Passkey registered"),
+        (status = 400, description = "Invalid or expired registration ceremony"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Passkeys are disabled on this instance"),
+        (status = 404, description = "User not found"),
+        (status = 409, description = "This passkey is already registered"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn register_finish(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -277,6 +310,18 @@ pub async fn register_finish(
     }
 }
 
+/// Begin passkey login. Returns a WebAuthn `RequestChallengeResponse`.
+#[utoipa::path(
+    post,
+    path = "/auth/passkey/login/start",
+    responses(
+        (status = 200, description = "WebAuthn assertion challenge"),
+        (status = 400, description = "User has no registered passkeys"),
+        (status = 403, description = "Passkeys are disabled on this instance"),
+        (status = 404, description = "User not found"),
+    ),
+    tag = "Authentication"
+)]
 pub async fn login_start(
     State(state): State<AppState>,
     Json(payload): Json<LoginStartRequest>,
@@ -327,6 +372,19 @@ pub async fn login_start(
     (StatusCode::OK, Json(LoginStartResponse { options: rcr })).into_response()
 }
 
+/// Complete passkey login and issue a JWT on success.
+#[utoipa::path(
+    post,
+    path = "/auth/passkey/login/finish",
+    responses(
+        (status = 200, description = "Authenticated; JWT issued", body = PasskeyAuthResponse),
+        (status = 400, description = "Invalid or expired assertion"),
+        (status = 401, description = "Assertion did not verify"),
+        (status = 403, description = "Passkeys are disabled on this instance"),
+        (status = 404, description = "User not found"),
+    ),
+    tag = "Authentication"
+)]
 pub async fn login_finish(
     State(state): State<AppState>,
     Json(payload): Json<LoginFinishRequest>,
@@ -390,10 +448,10 @@ pub async fn login_finish(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token").into_response(),
     };
 
-    (StatusCode::OK, Json(AuthResponse { token })).into_response()
+    (StatusCode::OK, Json(PasskeyAuthResponse { token })).into_response()
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct PasskeyInfo {
     pub id: i32,
     pub name: String,
@@ -401,12 +459,22 @@ pub struct PasskeyInfo {
     pub last_used: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct PasskeyListResponse {
     pub passkeys: Vec<PasskeyInfo>,
 }
 
 /// List user's passkeys
+#[utoipa::path(
+    get,
+    path = "/auth/passkeys",
+    responses(
+        (status = 200, description = "The caller's registered passkeys", body = PasskeyListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn list_passkeys(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -438,6 +506,18 @@ pub struct DeletePasskeyRequest {
 }
 
 /// Delete a passkey
+#[utoipa::path(
+    post,
+    path = "/auth/passkey/delete",
+    responses(
+        (status = 200, description = "Passkey deleted"),
+        (status = 400, description = "Cannot delete the account's only login method"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Passkey not found"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn delete_passkey(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -511,6 +591,17 @@ pub struct RenamePasskeyRequest {
 }
 
 /// Rename a passkey
+#[utoipa::path(
+    post,
+    path = "/auth/passkey/rename",
+    responses(
+        (status = 200, description = "Passkey renamed"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Passkey not found"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn rename_passkey(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

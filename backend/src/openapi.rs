@@ -2,7 +2,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
-    admin, auth, links, analytics, organizations, folders, tags, contact,
+    admin, api_keys, auth, bio, links, analytics, organizations, folders, passkeys, tags, contact,
 };
 
 #[derive(OpenApi)]
@@ -34,6 +34,7 @@ use crate::handlers::{
         (name = "Tags", description = "Tag and categorize links"),
         (name = "Admin", description = "Instance administration: users, links, organizations, blocking, backups"),
         (name = "Contact", description = "Contact form"),
+        (name = "Bio", description = "Public link-in-bio pages"),
     ),
     paths(
         // Authentication
@@ -48,6 +49,24 @@ use crate::handlers::{
         auth::get_app_settings,
         auth::get_current_user,
         auth::update_profile,
+
+        // API keys (personal access tokens)
+        api_keys::create_api_key,
+        api_keys::list_api_keys,
+        api_keys::delete_api_key,
+
+        // Passkeys (WebAuthn)
+        passkeys::register_start,
+        passkeys::register_finish,
+        passkeys::login_start,
+        passkeys::login_finish,
+        passkeys::list_passkeys,
+        passkeys::delete_passkey,
+        passkeys::rename_passkey,
+
+        // Link-in-bio
+        bio::update_bio_settings,
+        bio::get_public_bio,
 
         // Links
         links::create_link,
@@ -143,7 +162,23 @@ use crate::handlers::{
             auth::RegisterRequest,
             auth::LoginRequest,
             auth::AuthResponse,
-            
+
+            // API key schemas
+            api_keys::CreateApiKeyRequest,
+            api_keys::CreateApiKeyResponse,
+            api_keys::ApiKeyInfo,
+
+            // Passkey schemas (WebAuthn ceremony bodies are opaque and not expanded)
+            passkeys::PasskeyAuthResponse,
+            passkeys::PasskeyInfo,
+            passkeys::PasskeyListResponse,
+
+            // Link-in-bio schemas
+            bio::BioSettingsRequest,
+            bio::BioSettingsResponse,
+            bio::BioLink,
+            bio::BioProfileResponse,
+
             // Link schemas
             links::CreateLinkRequest,
             links::UpdateLinkRequest,

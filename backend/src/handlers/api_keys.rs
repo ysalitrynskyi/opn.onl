@@ -47,6 +47,19 @@ pub struct ApiKeyInfo {
 }
 
 /// Create a new personal API key. The full key is returned once.
+#[utoipa::path(
+    post,
+    path = "/auth/api-keys",
+    request_body = CreateApiKeyRequest,
+    responses(
+        (status = 201, description = "API key created; the full secret is returned once", body = CreateApiKeyResponse),
+        (status = 400, description = "API key limit reached"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "API keys are disabled on this instance"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn create_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -112,6 +125,16 @@ pub async fn create_api_key(
 }
 
 /// List the caller's API keys (never returns the secret).
+#[utoipa::path(
+    get,
+    path = "/auth/api-keys",
+    responses(
+        (status = 200, description = "The caller's API keys (secrets never returned)", body = [ApiKeyInfo]),
+        (status = 401, description = "Unauthorized"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn list_api_keys(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
@@ -137,6 +160,18 @@ pub async fn list_api_keys(State(state): State<AppState>, headers: HeaderMap) ->
 }
 
 /// Revoke (delete) one of the caller's API keys.
+#[utoipa::path(
+    delete,
+    path = "/auth/api-keys/{id}",
+    params(("id" = i32, Path, description = "API key id to revoke")),
+    responses(
+        (status = 200, description = "API key revoked"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "API key not found"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn delete_api_key(
     State(state): State<AppState>,
     Path(id): Path<i32>,
