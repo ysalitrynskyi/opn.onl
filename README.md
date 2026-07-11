@@ -274,6 +274,10 @@ Full API documentation available at `/swagger-ui/` when backend is running.
 | POST | `/auth/delete-account` | Delete own account (if enabled; refused with 409 while you own orgs with other members) |
 | GET / POST | `/auth/api-keys` | List / create personal API keys |
 | DELETE | `/auth/api-keys/{id}` | Revoke an API key |
+| POST | `/auth/passkey/register/start` · `/finish` | Enroll a passkey for the authenticated account (WebAuthn; requires `ENABLE_PASSKEYS`) |
+| POST | `/auth/passkey/login/start` · `/finish` | Passwordless login with a registered passkey |
+| GET | `/auth/passkeys` | List your registered passkeys |
+| POST | `/auth/passkey/delete` · `/auth/passkey/rename` | Remove or rename a passkey |
 
 Authenticate any request with `Authorization: Bearer <token>` — either a **JWT** (from `/auth/login`) or a personal **API key** (`opn_…`, created in **Settings → API Keys**). API keys are long-lived and recommended for scripts and the [MCP server](#mcp-server).
 
@@ -307,6 +311,7 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 |--------|----------|-------------|
 | PUT | `/auth/bio` | Update your link-in-bio settings (username, enabled, theme) — requires `ENABLE_LINK_IN_BIO` |
 | GET | `/api/bio/{username}` | Public bio profile (only when the feature and the user's page are enabled) |
+| GET | `/api/bio/avatar?url=…` | Server-side image proxy for bio avatars, so a visitor's browser never hits the external avatar host (SSRF-guarded, inert-raster images only) |
 
 ### Organizations
 
