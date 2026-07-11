@@ -29,17 +29,29 @@ echo "Downloading GeoLite2-City database from MaxMind..."
 # Download using MaxMind's direct download URL
 DOWNLOAD_URL="https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz"
 
-# Download and extract
+# Download and extract. GeoIP is optional, so any failure here (network blip,
+# rate-limited/expired license key, or MaxMind changing the tarball layout) must
+# degrade gracefully with exit 0 rather than aborting container startup. Under
+# `set -e` a bare `wget`/`tar`/`mv` failure would exit non-zero *before* the
+# graceful handling below ever runs, crash-looping the whole service — so each
+# step is guarded by an `if !` condition (which `set -e` does not treat as fatal).
 cd /tmp
-wget -q -O GeoLite2-City.tar.gz "$DOWNLOAD_URL"
 
-if [ $? -ne 0 ]; then
-    echo "Failed to download GeoIP database. Check your MaxMind credentials."
+if ! wget -q -O GeoLite2-City.tar.gz "$DOWNLOAD_URL"; then
+    echo "Failed to download GeoIP database. Check your MaxMind credentials. Continuing without GeoIP."
     exit 0
 fi
 
-tar -xzf GeoLite2-City.tar.gz
-mv GeoLite2-City_*/GeoLite2-City.mmdb "$GEOIP_FILE"
+if ! tar -xzf GeoLite2-City.tar.gz; then
+    echo "Failed to extract GeoIP archive. Continuing without GeoIP."
+    exit 0
+fi
+
+if ! mv GeoLite2-City_*/GeoLite2-City.mmdb "$GEOIP_FILE"; then
+    echo "GeoIP archive did not contain the expected database file. Continuing without GeoIP."
+    exit 0
+fi
+
 rm -rf GeoLite2-City.tar.gz GeoLite2-City_*
 
 echo "GeoIP database downloaded successfully to $GEOIP_FILE"
