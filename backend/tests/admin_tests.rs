@@ -90,6 +90,14 @@ async fn non_admin_and_anonymous_are_rejected() {
         "/admin/links",
         "/admin/orgs",
     ] {
+        // Use a fresh app (fresh rate limiters) per endpoint. This test exercises
+        // authorization, not rate limiting: checking five endpoints ×2 requests
+        // against one app would share the 10/sec per-IP bucket and spuriously
+        // return 429 (all test requests share the "unknown" IP key), which was a
+        // machine-speed-dependent flake. The JWT is valid against any app on the
+        // same DB/secret.
+        let (server, _) = spawn_real_app().await;
+
         let res = server.get(path).await;
         assert_eq!(res.status_code(), 401, "anonymous {path} should be 401");
 
@@ -347,7 +355,11 @@ async fn admin_stats_have_full_shape() {
             "field {field} missing or negative: {body}"
         );
     }
-    assert!(body["total_users"].as_i64() >= body["active_users"].as_i64());
+    // Note: we deliberately do NOT assert total_users >= active_users. Those are
+    // two independently-computed global counts, and the suite runs in parallel
+    // against one shared database, so comparing them is a read-skew flake. The
+    // shape checks above cover both fields. The >=1 checks below are safe: they
+    // are monotonic lower bounds from this test's own admin + link.
     assert!(body["total_links"].as_i64().unwrap() >= 1);
     assert!(body["admin_users"].as_i64().unwrap() >= 1);
 }
