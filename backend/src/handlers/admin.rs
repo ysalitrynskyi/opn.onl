@@ -1103,11 +1103,14 @@ pub async fn block_domain(
         Err(e) => return e.into_response(),
     };
 
+    // Lowercase first so an uppercase scheme (HTTPS://) is still stripped.
     let domain = payload.domain
+        .to_lowercase()
         .replace("https://", "")
         .replace("http://", "")
         .trim_end_matches('/')
-        .to_lowercase();
+        .trim_end_matches('.')
+        .to_string();
 
     let existing = blocked_domains::Entity::find()
         .filter(blocked_domains::Column::Domain.eq(&domain))

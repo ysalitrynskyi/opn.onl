@@ -41,18 +41,31 @@ async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String>
         return Err(format!("This URL is blocked: {}", blocked.reason.unwrap_or_else(|| "Policy violation".to_string())));
     }
 
-    // Domain block (host + subdomains), with both sides normalized.
+    // Domain block (host + subdomains). A block on "evil.com" must also block
+    // "sub.evil.com", so the set of blocked_domains rows that could match this
+    // host is exactly the host itself plus each of its parent domains. Query only
+    // those candidates against the indexed, normalized `domain` column instead of
+    // loading and scanning the whole table on every uncached redirect. Stored
+    // domains are normalized on write (see admin::block_domain) and by migration
+    // m20220101_000028, so the candidates compare directly.
     if !host.is_empty() {
-        let blocked_domain = blocked_domains::Entity::find().all(db).await.unwrap_or_default();
-        for bd in blocked_domain {
-            let bd_domain = bd.domain.trim().to_lowercase().replace("https://", "").replace("http://", "");
-            let bd_domain = bd_domain.trim_end_matches('/').trim_end_matches('.');
-            if bd_domain.is_empty() {
-                continue;
+        let mut candidates: Vec<String> = Vec::new();
+        let mut suffix = host.as_str();
+        loop {
+            candidates.push(suffix.to_string());
+            match suffix.find('.') {
+                Some(pos) => suffix = &suffix[pos + 1..],
+                None => break,
             }
-            if host == bd_domain || host.ends_with(&format!(".{}", bd_domain)) {
-                return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
-            }
+        }
+        let hit = blocked_domains::Entity::find()
+            .filter(blocked_domains::Column::Domain.is_in(candidates))
+            .one(db)
+            .await
+            .ok()
+            .flatten();
+        if let Some(bd) = hit {
+            return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
         }
     }
 
