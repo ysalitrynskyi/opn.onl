@@ -37,6 +37,11 @@ pub struct AppState {
     pub email_service: Option<Arc<EmailService>>,
     pub click_buffer: Arc<ClickBuffer>,
     pub backup: Arc<BackupService>,
+    /// Shared rate limiters. The same instance backs both the global rate-limit
+    /// middleware and in-handler checks (e.g. the redirect password path), so a
+    /// handler that classifies differently than the middleware can still enforce
+    /// the right limiter.
+    pub rate_limiters: Arc<RateLimiters>,
 }
 
 impl AppState {
@@ -51,6 +56,7 @@ impl AppState {
             email_service: None,
             click_buffer: Arc::new(ClickBuffer::new()),
             backup: Arc::new(BackupService::new().await),
+            rate_limiters: Arc::new(RateLimiters::new()),
         }
     }
 }
@@ -246,8 +252,9 @@ pub async fn health_check(
 /// rate limit → CORS → tracing. Do not reorder.
 pub fn build_router(app_state: AppState) -> Router {
     // Rate limiters live for as long as the router; the cleanup task holds its
-    // own Arc and just prunes stale entries every 5 minutes.
-    let rate_limiters = Arc::new(RateLimiters::new());
+    // own Arc and just prunes stale entries every 5 minutes. Shared with handlers
+    // via AppState so in-handler checks hit the same limiter instances.
+    let rate_limiters = app_state.rate_limiters.clone();
     RateLimiters::spawn_cleanup_task(rate_limiters.clone());
 
     Router::new()

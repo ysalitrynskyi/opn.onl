@@ -123,6 +123,18 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i32, (St
             }))
         })?;
 
+    // Honor JWT revocation on the admin surface too. A password change/reset
+    // bumps the user's token_version to invalidate outstanding JWTs; every other
+    // auth path checks this (see get_user_id_from_header). Without it a stolen or
+    // pre-reset admin token would keep authorizing /admin/* actions for the full
+    // token lifetime even after the admin reset their password to lock it out.
+    if user.token_version != claims.token_version {
+        return Err((StatusCode::UNAUTHORIZED, Json(AdminResponse {
+            success: false,
+            message: "Token has been revoked".to_string(),
+        })));
+    }
+
     if !user.is_admin {
         return Err((StatusCode::FORBIDDEN, Json(AdminResponse {
             success: false,

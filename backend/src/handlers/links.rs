@@ -1232,10 +1232,38 @@ pub async fn redirect_link(
                 .and_then(|h| h.to_str().ok());
 
             if let Some(pwd) = provided_password {
+                // Anti-bruteforce: this inline password check lives on the redirect
+                // hot path, which the rate-limit middleware classifies as a redirect
+                // (100/s) — so it is NOT covered by the 5/min password_verify limiter
+                // that guards POST /:code/verify. Enforce that same limiter here,
+                // keyed by IP+code, before spending a (deliberately slow) bcrypt.
+                let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
+                    .unwrap_or_else(|| "unknown".to_string());
+                if let crate::utils::rate_limiter::RateLimitResult::Limited { retry_after_secs, .. } =
+                    state.rate_limiters.password_verify.check(&format!("pwverify:{}:{}", ip, code))
+                {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("Retry-After", retry_after_secs.to_string())],
+                        "Too many password attempts. Try again later.",
+                    )
+                        .into_response();
+                }
+
                 if let Some(hash_str) = &link.password_hash {
-                     if !bcrypt::verify(pwd, hash_str).unwrap_or(false) {
-                         return (StatusCode::UNAUTHORIZED, "Invalid password").into_response();
-                     }
+                    // bcrypt::verify is CPU-heavy (cost 12, ~250ms) and blocking.
+                    // Run it on the blocking pool so a burst of attempts can't
+                    // starve the async runtime's worker threads.
+                    let pwd = pwd.to_string();
+                    let hash_str = hash_str.clone();
+                    let verified = tokio::task::spawn_blocking(move || {
+                        bcrypt::verify(&pwd, &hash_str).unwrap_or(false)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if !verified {
+                        return (StatusCode::UNAUTHORIZED, "Invalid password").into_response();
+                    }
                 }
             } else {
                 let frontend_url = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());

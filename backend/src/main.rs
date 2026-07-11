@@ -101,6 +101,7 @@ async fn main() {
         email_service,
         click_buffer,
         backup,
+        rate_limiters: std::sync::Arc::new(opn_onl_backend::utils::rate_limiter::RateLimiters::new()),
     };
 
     // Handles for the graceful-shutdown flush (so buffered clicks aren't lost on
