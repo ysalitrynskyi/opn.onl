@@ -1,484 +1,164 @@
+//! Integration tests for the real-time analytics transports (`/ws`, `/sse`).
+//!
+//! This file previously defined LOCAL copies of the event structs and only
+//! tested that those copies round-tripped through serde — it exercised none of
+//! the production handlers, so it passed no matter what `ws_handler` /
+//! `sse_handler` did. It now drives the real router over an HTTP transport with
+//! a real `WsState`, asserting the three properties that actually matter:
+//!   * both transports reject unauthenticated / bad / revoked tokens
+//!     (the `token_version` revocation the audit added), and
+//!   * a connected `/ws` subscriber receives broadcast click events for its own
+//!     links but NOT another user's (the per-user filter in `handle_socket`).
+
 mod common;
 
-// ============= WebSocket Event Tests =============
+use common::{mark_email_verified, spawn_real_app_ws, unique_email};
+use opn_onl_backend::handlers::websocket::{ClickEvent, WsState};
+use serde_json::{json, Value};
+use std::time::Duration;
 
-#[cfg(test)]
-mod websocket_event_tests {
-    use serde::{Deserialize, Serialize};
-    use chrono::{NaiveDateTime, Utc};
+/// Register a user and return `(jwt, user_id)`.
+async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) {
+    let res = server
+        .post("/auth/register")
+        .json(&json!({ "email": email, "password": "password123" }))
+        .await;
+    assert_eq!(res.status_code(), 201, "register: {}", res.text());
+    let body: Value = res.json();
+    (
+        body["token"].as_str().unwrap().to_string(),
+        body["user_id"].as_i64().unwrap() as i32,
+    )
+}
 
-    #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-    #[serde(tag = "type")]
-    enum WsEvent {
-        Click(ClickEvent),
-        LinkCreated(LinkEvent),
-        LinkUpdated(LinkEvent),
-        LinkDeleted(LinkDeletedEvent),
-        Ping,
-        Pong,
-    }
-
-    #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-    struct ClickEvent {
-        link_id: i32,
-        link_code: String,
-        click_count: i64,
-        country: Option<String>,
-        city: Option<String>,
-        device: Option<String>,
-        browser: Option<String>,
-        timestamp: String,
-    }
-
-    #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-    struct LinkEvent {
-        link_id: i32,
-        code: String,
-        original_url: String,
-    }
-
-    #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-    struct LinkDeletedEvent {
-        link_id: i32,
-        code: String,
-    }
-
-    #[test]
-    fn test_click_event_serialization() {
-        let event = WsEvent::Click(ClickEvent {
-            link_id: 1,
-            link_code: "abc123".to_string(),
-            click_count: 42,
-            country: Some("US".to_string()),
-            city: Some("New York".to_string()),
-            device: Some("Desktop".to_string()),
-            browser: Some("Chrome".to_string()),
-            timestamp: Utc::now().to_rfc3339(),
-        });
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("Click"));
-        assert!(json.contains("abc123"));
-    }
-
-    #[test]
-    fn test_click_event_deserialization() {
-        let json = r#"{"type":"Click","link_id":1,"link_code":"xyz789","click_count":100,"country":"UK","city":"London","device":"Mobile","browser":"Safari","timestamp":"2024-01-01T00:00:00Z"}"#;
-        
-        let event: WsEvent = serde_json::from_str(json).unwrap();
-        match event {
-            WsEvent::Click(click) => {
-                assert_eq!(click.link_id, 1);
-                assert_eq!(click.link_code, "xyz789");
-                assert_eq!(click.click_count, 100);
-            }
-            _ => panic!("Expected Click event"),
-        }
-    }
-
-    #[test]
-    fn test_link_created_event() {
-        let event = WsEvent::LinkCreated(LinkEvent {
-            link_id: 5,
-            code: "new123".to_string(),
-            original_url: "https://example.com".to_string(),
-        });
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("LinkCreated"));
-        assert!(json.contains("new123"));
-    }
-
-    #[test]
-    fn test_link_updated_event() {
-        let event = WsEvent::LinkUpdated(LinkEvent {
-            link_id: 10,
-            code: "upd456".to_string(),
-            original_url: "https://updated.com".to_string(),
-        });
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("LinkUpdated"));
-    }
-
-    #[test]
-    fn test_link_deleted_event() {
-        let event = WsEvent::LinkDeleted(LinkDeletedEvent {
-            link_id: 15,
-            code: "del789".to_string(),
-        });
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("LinkDeleted"));
-    }
-
-    #[test]
-    fn test_ping_pong_events() {
-        let ping = WsEvent::Ping;
-        let pong = WsEvent::Pong;
-
-        let ping_json = serde_json::to_string(&ping).unwrap();
-        let pong_json = serde_json::to_string(&pong).unwrap();
-
-        assert!(ping_json.contains("Ping"));
-        assert!(pong_json.contains("Pong"));
-    }
-
-    #[test]
-    fn test_click_event_with_null_fields() {
-        let event = WsEvent::Click(ClickEvent {
-            link_id: 1,
-            link_code: "abc123".to_string(),
-            click_count: 1,
-            country: None,
-            city: None,
-            device: None,
-            browser: None,
-            timestamp: Utc::now().to_rfc3339(),
-        });
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("null") || !json.contains("country"));
+/// A click event addressed to `user_id`, tagged with `code` so the receiving
+/// side can tell whose event it got.
+fn click_for(user_id: i32, code: &str) -> ClickEvent {
+    ClickEvent {
+        link_id: 1,
+        link_code: code.to_string(),
+        user_id: Some(user_id),
+        click_count: 7,
+        country: Some("US".to_string()),
+        city: Some("NYC".to_string()),
+        device: Some("Desktop".to_string()),
+        browser: Some("Firefox".to_string()),
+        timestamp: "2026-07-11T00:00:00Z".to_string(),
     }
 }
 
-// ============= WebSocket Connection State Tests =============
-
-#[cfg(test)]
-mod websocket_state_tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-
-    struct Connection {
-        user_id: Option<i32>,
-        subscribed_links: Vec<i32>,
-    }
-
-    struct WsState {
-        connections: Arc<RwLock<HashMap<String, Connection>>>,
-    }
-
-    impl WsState {
-        fn new() -> Self {
-            Self {
-                connections: Arc::new(RwLock::new(HashMap::new())),
-            }
+/// Wait until the handler has actually subscribed to the broadcast channel.
+/// `broadcast` only delivers to receivers that existed at send time, so
+/// broadcasting before the socket's `subscribe()` runs would race; gating on
+/// `receiver_count` makes the delivery test deterministic.
+async fn wait_for_subscriber(ws: &WsState) {
+    for _ in 0..200 {
+        if ws.click_tx.receiver_count() >= 1 {
+            return;
         }
-
-        async fn add_connection(&self, id: &str, user_id: Option<i32>) {
-            let mut conns = self.connections.write().await;
-            conns.insert(id.to_string(), Connection {
-                user_id,
-                subscribed_links: vec![],
-            });
-        }
-
-        async fn remove_connection(&self, id: &str) {
-            let mut conns = self.connections.write().await;
-            conns.remove(id);
-        }
-
-        async fn connection_count(&self) -> usize {
-            self.connections.read().await.len()
-        }
-
-        async fn subscribe_to_link(&self, conn_id: &str, link_id: i32) {
-            let mut conns = self.connections.write().await;
-            if let Some(conn) = conns.get_mut(conn_id) {
-                if !conn.subscribed_links.contains(&link_id) {
-                    conn.subscribed_links.push(link_id);
-                }
-            }
-        }
-
-        async fn get_subscribers(&self, link_id: i32) -> Vec<String> {
-            let conns = self.connections.read().await;
-            conns.iter()
-                .filter(|(_, conn)| conn.subscribed_links.contains(&link_id))
-                .map(|(id, _)| id.clone())
-                .collect()
-        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-
-    #[tokio::test]
-    async fn test_add_connection() {
-        let state = WsState::new();
-        
-        state.add_connection("conn1", Some(1)).await;
-        
-        assert_eq!(state.connection_count().await, 1);
-    }
-
-    #[tokio::test]
-    async fn test_remove_connection() {
-        let state = WsState::new();
-        
-        state.add_connection("conn1", Some(1)).await;
-        state.remove_connection("conn1").await;
-        
-        assert_eq!(state.connection_count().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_multiple_connections() {
-        let state = WsState::new();
-        
-        state.add_connection("conn1", Some(1)).await;
-        state.add_connection("conn2", Some(2)).await;
-        state.add_connection("conn3", None).await;
-        
-        assert_eq!(state.connection_count().await, 3);
-    }
-
-    #[tokio::test]
-    async fn test_subscribe_to_link() {
-        let state = WsState::new();
-        
-        state.add_connection("conn1", Some(1)).await;
-        state.subscribe_to_link("conn1", 42).await;
-        
-        let subs = state.get_subscribers(42).await;
-        assert_eq!(subs.len(), 1);
-        assert_eq!(subs[0], "conn1");
-    }
-
-    #[tokio::test]
-    async fn test_multiple_subscribers() {
-        let state = WsState::new();
-        
-        state.add_connection("conn1", Some(1)).await;
-        state.add_connection("conn2", Some(2)).await;
-        
-        state.subscribe_to_link("conn1", 42).await;
-        state.subscribe_to_link("conn2", 42).await;
-        
-        let subs = state.get_subscribers(42).await;
-        assert_eq!(subs.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_no_subscribers() {
-        let state = WsState::new();
-        
-        state.add_connection("conn1", Some(1)).await;
-        state.subscribe_to_link("conn1", 42).await;
-        
-        let subs = state.get_subscribers(99).await;
-        assert_eq!(subs.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_duplicate_subscription() {
-        let state = WsState::new();
-        
-        state.add_connection("conn1", Some(1)).await;
-        state.subscribe_to_link("conn1", 42).await;
-        state.subscribe_to_link("conn1", 42).await;
-        
-        let subs = state.get_subscribers(42).await;
-        assert_eq!(subs.len(), 1);
-    }
+    panic!("socket never subscribed to the broadcast channel");
 }
 
-// ============= WebSocket Message Broadcasting Tests =============
+#[tokio::test]
+async fn ws_rejects_missing_and_bad_tokens() {
+    let (server, _db, _ws) = spawn_real_app_ws().await;
 
-#[cfg(test)]
-mod broadcast_tests {
-    use std::collections::HashSet;
+    // No token at all.
+    let res = server.get_websocket("/ws").expect_failure().await;
+    assert_eq!(res.status_code(), 401, "missing token must be 401");
 
-    struct BroadcastResult {
-        sent_to: HashSet<String>,
-        failed: HashSet<String>,
-    }
-
-    fn simulate_broadcast(
-        recipients: &[&str],
-        connected: &HashSet<&str>,
-    ) -> BroadcastResult {
-        let mut sent_to = HashSet::new();
-        let mut failed = HashSet::new();
-
-        for recipient in recipients {
-            if connected.contains(recipient) {
-                sent_to.insert(recipient.to_string());
-            } else {
-                failed.insert(recipient.to_string());
-            }
-        }
-
-        BroadcastResult { sent_to, failed }
-    }
-
-    #[test]
-    fn test_broadcast_to_all_connected() {
-        let connected: HashSet<&str> = ["conn1", "conn2", "conn3"].iter().cloned().collect();
-        let recipients = vec!["conn1", "conn2", "conn3"];
-
-        let result = simulate_broadcast(&recipients, &connected);
-        
-        assert_eq!(result.sent_to.len(), 3);
-        assert_eq!(result.failed.len(), 0);
-    }
-
-    #[test]
-    fn test_broadcast_with_disconnected() {
-        let connected: HashSet<&str> = ["conn1", "conn2"].iter().cloned().collect();
-        let recipients = vec!["conn1", "conn2", "conn3"];
-
-        let result = simulate_broadcast(&recipients, &connected);
-        
-        assert_eq!(result.sent_to.len(), 2);
-        assert_eq!(result.failed.len(), 1);
-        assert!(result.failed.contains("conn3"));
-    }
-
-    #[test]
-    fn test_broadcast_to_none() {
-        let connected: HashSet<&str> = HashSet::new();
-        let recipients = vec!["conn1", "conn2"];
-
-        let result = simulate_broadcast(&recipients, &connected);
-        
-        assert_eq!(result.sent_to.len(), 0);
-        assert_eq!(result.failed.len(), 2);
-    }
-
-    #[test]
-    fn test_empty_broadcast() {
-        let connected: HashSet<&str> = ["conn1"].iter().cloned().collect();
-        let recipients: Vec<&str> = vec![];
-
-        let result = simulate_broadcast(&recipients, &connected);
-        
-        assert_eq!(result.sent_to.len(), 0);
-        assert_eq!(result.failed.len(), 0);
-    }
+    // A syntactically-present but invalid token.
+    let res = server
+        .get_websocket("/ws")
+        .add_query_param("token", "not.a.jwt")
+        .expect_failure()
+        .await;
+    assert_eq!(res.status_code(), 401, "garbage token must be 401");
 }
 
-// ============= WebSocket Rate Limiting Tests =============
+#[tokio::test]
+async fn ws_rejects_token_revoked_by_version_bump() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
 
-#[cfg(test)]
-mod ws_rate_limit_tests {
-    use std::collections::HashMap;
-    use std::time::{Duration, Instant};
+    let (server, db, _ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
 
-    struct WsRateLimiter {
-        limits: HashMap<String, (u32, Instant)>,
-        max_messages: u32,
-        window: Duration,
-    }
+    // Simulate a password change/reset: bump token_version so the issued JWT is
+    // now stale. The WS handshake must honor that, not just the signature.
+    let user = users::Entity::find_by_id(user_id).one(&db).await.unwrap().unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
 
-    impl WsRateLimiter {
-        fn new(max_messages: u32, window_secs: u64) -> Self {
-            Self {
-                limits: HashMap::new(),
-                max_messages,
-                window: Duration::from_secs(window_secs),
-            }
-        }
-
-        fn allow(&mut self, conn_id: &str) -> bool {
-            let now = Instant::now();
-            
-            if let Some((count, start)) = self.limits.get_mut(conn_id) {
-                if now.duration_since(*start) >= self.window {
-                    *count = 1;
-                    *start = now;
-                    return true;
-                }
-                
-                if *count >= self.max_messages {
-                    return false;
-                }
-                
-                *count += 1;
-                true
-            } else {
-                self.limits.insert(conn_id.to_string(), (1, now));
-                true
-            }
-        }
-    }
-
-    #[test]
-    fn test_allows_under_limit() {
-        let mut limiter = WsRateLimiter::new(10, 60);
-        
-        for _ in 0..10 {
-            assert!(limiter.allow("conn1"));
-        }
-    }
-
-    #[test]
-    fn test_blocks_over_limit() {
-        let mut limiter = WsRateLimiter::new(5, 60);
-        
-        for _ in 0..5 {
-            assert!(limiter.allow("conn1"));
-        }
-        
-        assert!(!limiter.allow("conn1"));
-    }
-
-    #[test]
-    fn test_separate_connections_independent() {
-        let mut limiter = WsRateLimiter::new(2, 60);
-        
-        assert!(limiter.allow("conn1"));
-        assert!(limiter.allow("conn1"));
-        assert!(!limiter.allow("conn1"));
-        
-        assert!(limiter.allow("conn2"));
-    }
+    let res = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .expect_failure()
+        .await;
+    assert_eq!(res.status_code(), 401, "revoked token must be 401 on /ws");
 }
 
-// ============= WebSocket Authentication Tests =============
+#[tokio::test]
+async fn ws_delivers_owner_click_and_filters_other_users() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
 
-#[cfg(test)]
-mod ws_auth_tests {
-    fn validate_ws_token(token: &str) -> Result<i32, &'static str> {
-        // Simplified token validation
-        if token.is_empty() {
-            return Err("Empty token");
-        }
-        if token == "valid-token" {
-            return Ok(1);
-        }
-        if token.starts_with("user-") {
-            if let Ok(id) = token.strip_prefix("user-").unwrap().parse::<i32>() {
-                return Ok(id);
-            }
-        }
-        Err("Invalid token")
-    }
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
 
-    #[test]
-    fn test_valid_token() {
-        let result = validate_ws_token("valid-token");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1);
-    }
+    wait_for_subscriber(&ws).await;
 
-    #[test]
-    fn test_user_token() {
-        let result = validate_ws_token("user-42");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42);
-    }
+    // Broadcast an event for a DIFFERENT user first, then one for the connected
+    // user. The socket must skip the first and deliver the second — if the
+    // per-user filter regressed, the first message received would be the other
+    // user's event and the code assertion below would fail.
+    let other_user = user_id + 100_000;
+    ws.broadcast_click(click_for(other_user, "OTHER-USER-EVENT"));
+    ws.broadcast_click(click_for(user_id, "MY-EVENT"));
 
-    #[test]
-    fn test_empty_token() {
-        let result = validate_ws_token("");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Empty token");
-    }
+    let msg: Value = socket.receive_json().await;
+    assert_eq!(msg["type"], "click", "expected a click frame: {msg}");
+    assert_eq!(
+        msg["link_code"], "MY-EVENT",
+        "socket must receive its own event, never another user's: {msg}"
+    );
+    assert_eq!(msg["user_id"], user_id);
 
-    #[test]
-    fn test_invalid_token() {
-        let result = validate_ws_token("invalid");
-        assert!(result.is_err());
-    }
+    socket.close().await;
 }
 
+#[tokio::test]
+async fn sse_rejects_missing_and_revoked_tokens() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
 
+    let (server, db, _ws) = spawn_real_app_ws().await;
+
+    // No token → 401 before the stream opens.
+    let res = server.get("/sse").expect_failure().await;
+    assert_eq!(res.status_code(), 401, "missing token must be 401 on /sse");
+
+    // Revoked token → 401 (same DB-backed check as /ws and the HTTP API).
+    let (token, user_id) = register(&server, &unique_email()).await;
+    let user = users::Entity::find_by_id(user_id).one(&db).await.unwrap().unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .get("/sse")
+        .add_query_param("token", &token)
+        .expect_failure()
+        .await;
+    assert_eq!(res.status_code(), 401, "revoked token must be 401 on /sse");
+}

@@ -62,5 +62,6 @@ npm run test:e2e   # Playwright E2E
 ## Testing conventions
 
 - Backend integration tests live in `backend/tests/*.rs` and use `common::spawn_real_app()` (real router + real Postgres via `axum_test::TestServer`). Write new tests this way — do not stub the router or hit a running server with shell scripts.
+- For WebSocket/SSE tests use `common::spawn_real_app_ws()`, which builds the router over an HTTP transport (mock transport can't upgrade) with a real `WsState` so you can broadcast and observe what a `/ws` subscriber receives (see `tests/websocket_comprehensive_tests.rs`). Requires the `axum-test` `ws` feature.
 - Tests run in parallel against one shared database: generate unique emails/codes via `common::unique_email()` / `unique_code()`, and don't assert on global counts.
 - Frontend unit tests colocate as `*.test.tsx` next to the component (Vitest + Testing Library, jsdom).

@@ -80,6 +80,21 @@ fn validate_username(name: &str) -> Result<String, String> {
 }
 
 /// Update the caller's link-in-bio settings (username, enabled, theme).
+#[utoipa::path(
+    put,
+    path = "/auth/bio",
+    request_body = BioSettingsRequest,
+    responses(
+        (status = 200, description = "Updated bio settings", body = BioSettingsResponse),
+        (status = 400, description = "Invalid username or bio enabled without a username"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Link-in-bio is not enabled on this instance"),
+        (status = 404, description = "User not found"),
+        (status = 409, description = "Username is taken"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []))
+)]
 pub async fn update_bio_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -161,6 +176,16 @@ pub async fn update_bio_settings(
 /// Public bio page data. Returns 404 unless the instance flag AND the user's
 /// `bio_enabled` are both on (and the user isn't deleted) — 404 rather than 403
 /// so a disabled page never reveals whether a username exists.
+#[utoipa::path(
+    get,
+    path = "/api/bio/{username}",
+    params(("username" = String, Path, description = "Public bio username")),
+    responses(
+        (status = 200, description = "Public bio profile and visible links", body = BioProfileResponse),
+        (status = 404, description = "No public bio for this username"),
+    ),
+    tag = "Bio"
+)]
 pub async fn get_public_bio(
     State(state): State<AppState>,
     Path(username): Path<String>,

@@ -98,6 +98,36 @@ pub async fn spawn_real_app() -> (axum_test::TestServer, DatabaseConnection) {
     (server, db)
 }
 
+/// Spawn the REAL router over an HTTP transport (required for WebSocket
+/// upgrades — the default mock transport cannot upgrade) with a REAL
+/// `WsState` installed on `AppState`. Returns the shared `WsState` handle so a
+/// test can broadcast click events and observe what a connected `/ws` or `/sse`
+/// subscriber receives. Same DB/JWT rules as [`spawn_real_app`].
+#[allow(dead_code)]
+pub async fn spawn_real_app_ws() -> (
+    axum_test::TestServer,
+    DatabaseConnection,
+    std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
+) {
+    use std::sync::Arc;
+    std::env::set_var("FORCE_HTTPS", "false");
+    std::env::set_var("TRUST_PROXY_HEADERS", "false");
+    if std::env::var("JWT_SECRET").is_err() {
+        std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef");
+    }
+
+    let db = setup_test_db().await;
+    let ws_state = Arc::new(opn_onl_backend::handlers::websocket::WsState::new());
+    let mut state = opn_onl_backend::AppState::for_tests(db.clone()).await;
+    state.ws_state = Some(ws_state.clone());
+
+    let server = axum_test::TestServer::builder()
+        .http_transport()
+        .build(opn_onl_backend::build_router(state))
+        .expect("failed to start ws test server");
+    (server, db, ws_state)
+}
+
 /// Flip `email_verified` directly in the database (there is no SMTP in tests,
 /// so the verification email flow can't be exercised end-to-end here).
 #[allow(dead_code)]

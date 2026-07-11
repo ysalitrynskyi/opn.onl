@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Github, LogOut, Menu, X, User, Settings, LayoutDashboard, Shield } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
 import Logo from './Logo';
 
 export default function Layout() {
@@ -84,42 +83,34 @@ export default function Layout() {
                                         <User className="h-4 w-4 text-primary-600" />
                                     </button>
 
-                                    <AnimatePresence>
-                                        {userMenuOpen && (
-                                            <>
-                                                <div className="fixed inset-0 z-10" onClick={() => setUserMenuOpen(false)} />
-                                                <motion.div
-                                                    initial={{ opacity: 0, y: 8 }}
-                                                    animate={{ opacity: 1, y: 0 }}
-                                                    exit={{ opacity: 0, y: 8 }}
-                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                                                    className="absolute right-0 top-full mt-2 w-52 rounded-xl border border-line bg-surface py-1.5 shadow-lift z-20"
+                                    {userMenuOpen && (
+                                        <>
+                                            <div className="fixed inset-0 z-10" onClick={() => setUserMenuOpen(false)} />
+                                            <div className="absolute right-0 top-full mt-2 w-52 rounded-xl border border-line bg-surface py-1.5 shadow-lift z-20 animate-menu-in">
+                                                <Link
+                                                    to="/dashboard"
+                                                    onClick={(e) => {
+                                                        if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); }
+                                                    }}
+                                                    className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60"
                                                 >
-                                                    <Link
-                                                        to="/dashboard"
-                                                        onClick={(e) => {
-                                                            if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); }
-                                                        }}
-                                                        className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60"
-                                                    >
-                                                        <LayoutDashboard className="h-4 w-4 text-muted" /> Dashboard
+                                                    <LayoutDashboard className="h-4 w-4 text-muted" /> Dashboard
+                                                </Link>
+                                                <Link to="/settings" className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60">
+                                                    <Settings className="h-4 w-4 text-muted" /> Settings
+                                                </Link>
+                                                {isAdmin && (
+                                                    <Link to="/admin" className="flex items-center gap-2.5 px-4 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50/60">
+                                                        <Shield className="h-4 w-4" /> Admin Panel
                                                     </Link>
-                                                    <Link to="/settings" className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60">
-                                                        <Settings className="h-4 w-4 text-muted" /> Settings
-                                                    </Link>
-                                                    {isAdmin && (
-                                                        <Link to="/admin" className="flex items-center gap-2.5 px-4 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50/60">
-                                                            <Shield className="h-4 w-4" /> Admin Panel
-                                                        </Link>
-                                                    )}
-                                                    <hr className="my-1.5 border-line" />
-                                                    <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-danger hover:bg-danger/5">
-                                                        <LogOut className="h-4 w-4" /> Log out
-                                                    </button>
-                                                </motion.div>
-                                            </>
-                                        )}
-                                    </AnimatePresence>
+                                                )}
+                                                <hr className="my-1.5 border-line" />
+                                                <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-danger hover:bg-danger/5">
+                                                    <LogOut className="h-4 w-4" /> Log out
+                                                </button>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="flex items-center gap-2">
@@ -143,52 +134,45 @@ export default function Layout() {
                     </div>
                 </div>
 
-                <AnimatePresence>
-                    {mobileMenuOpen && (
-                        <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: 'auto' }}
-                            exit={{ opacity: 0, height: 0 }}
-                            className="md:hidden overflow-hidden border-t border-line bg-surface"
-                        >
-                            <div className="px-4 py-4 space-y-1">
-                                {navLinks.map(link => (
-                                    <Link
-                                        key={link.href}
-                                        to={link.href}
-                                        className={`block rounded-lg px-2 py-2.5 text-base font-medium ${
-                                            location.pathname === link.href ? 'text-primary-600' : 'text-muted'
-                                        }`}
-                                    >
-                                        {link.label}
+                {mobileMenuOpen && (
+                    <div className="md:hidden overflow-hidden border-t border-line bg-surface animate-fade-in-down">
+                        <div className="px-4 py-4 space-y-1">
+                            {navLinks.map(link => (
+                                <Link
+                                    key={link.href}
+                                    to={link.href}
+                                    className={`block rounded-lg px-2 py-2.5 text-base font-medium ${
+                                        location.pathname === link.href ? 'text-primary-600' : 'text-muted'
+                                    }`}
+                                >
+                                    {link.label}
+                                </Link>
+                            ))}
+                            <hr className="my-2 border-line" />
+                            {token ? (
+                                <>
+                                    <Link to="/dashboard" onClick={(e) => { if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); } }} className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
+                                        <LayoutDashboard className="h-5 w-5 text-muted" /> Dashboard
                                     </Link>
-                                ))}
-                                <hr className="my-2 border-line" />
-                                {token ? (
-                                    <>
-                                        <Link to="/dashboard" onClick={(e) => { if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); } }} className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
-                                            <LayoutDashboard className="h-5 w-5 text-muted" /> Dashboard
-                                        </Link>
-                                        <Link to="/settings" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
-                                            <Settings className="h-5 w-5 text-muted" /> Settings
-                                        </Link>
-                                        <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-2 py-2.5 text-base font-medium text-danger">
-                                            <LogOut className="h-5 w-5" /> Log out
-                                        </button>
-                                    </>
-                                ) : (
-                                    <div className="flex flex-col gap-2 pt-1">
-                                        <Link to="/login" className="rounded-xl border border-line2 px-4 py-2.5 text-center text-base font-medium text-ink">Log in</Link>
-                                        <Link to="/register" className="rounded-xl bg-primary-600 px-4 py-2.5 text-center text-base font-semibold text-white">Sign up</Link>
-                                    </div>
-                                )}
-                                <a href="https://github.com/ysalitrynskyi/opn.onl" target="_blank" rel="noreferrer" className="flex items-center gap-2 px-2 pt-3 text-sm text-faint">
-                                    <Github className="h-5 w-5" /> View on GitHub
-                                </a>
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
+                                    <Link to="/settings" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
+                                        <Settings className="h-5 w-5 text-muted" /> Settings
+                                    </Link>
+                                    <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-2 py-2.5 text-base font-medium text-danger">
+                                        <LogOut className="h-5 w-5" /> Log out
+                                    </button>
+                                </>
+                            ) : (
+                                <div className="flex flex-col gap-2 pt-1">
+                                    <Link to="/login" className="rounded-xl border border-line2 px-4 py-2.5 text-center text-base font-medium text-ink">Log in</Link>
+                                    <Link to="/register" className="rounded-xl bg-primary-600 px-4 py-2.5 text-center text-base font-semibold text-white">Sign up</Link>
+                                </div>
+                            )}
+                            <a href="https://github.com/ysalitrynskyi/opn.onl" target="_blank" rel="noreferrer" className="flex items-center gap-2 px-2 pt-3 text-sm text-faint">
+                                <Github className="h-5 w-5" /> View on GitHub
+                            </a>
+                        </div>
+                    </div>
+                )}
             </header>
 
             <main className="flex-grow">
