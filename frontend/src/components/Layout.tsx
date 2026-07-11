@@ -135,46 +135,44 @@ export default function Layout() {
                 </div>
 
                 {mobileMenuOpen && (
-                        <div
-                            className="md:hidden overflow-hidden border-t border-line bg-surface animate-fade-in-down"
-                        >
-                            <div className="px-4 py-4 space-y-1">
-                                {navLinks.map(link => (
-                                    <Link
-                                        key={link.href}
-                                        to={link.href}
-                                        className={`block rounded-lg px-2 py-2.5 text-base font-medium ${
-                                            location.pathname === link.href ? 'text-primary-600' : 'text-muted'
-                                        }`}
-                                    >
-                                        {link.label}
+                    <div className="md:hidden overflow-hidden border-t border-line bg-surface animate-fade-in-down">
+                        <div className="px-4 py-4 space-y-1">
+                            {navLinks.map(link => (
+                                <Link
+                                    key={link.href}
+                                    to={link.href}
+                                    className={`block rounded-lg px-2 py-2.5 text-base font-medium ${
+                                        location.pathname === link.href ? 'text-primary-600' : 'text-muted'
+                                    }`}
+                                >
+                                    {link.label}
+                                </Link>
+                            ))}
+                            <hr className="my-2 border-line" />
+                            {token ? (
+                                <>
+                                    <Link to="/dashboard" onClick={(e) => { if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); } }} className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
+                                        <LayoutDashboard className="h-5 w-5 text-muted" /> Dashboard
                                     </Link>
-                                ))}
-                                <hr className="my-2 border-line" />
-                                {token ? (
-                                    <>
-                                        <Link to="/dashboard" onClick={(e) => { if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); } }} className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
-                                            <LayoutDashboard className="h-5 w-5 text-muted" /> Dashboard
-                                        </Link>
-                                        <Link to="/settings" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
-                                            <Settings className="h-5 w-5 text-muted" /> Settings
-                                        </Link>
-                                        <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-2 py-2.5 text-base font-medium text-danger">
-                                            <LogOut className="h-5 w-5" /> Log out
-                                        </button>
-                                    </>
-                                ) : (
-                                    <div className="flex flex-col gap-2 pt-1">
-                                        <Link to="/login" className="rounded-xl border border-line2 px-4 py-2.5 text-center text-base font-medium text-ink">Log in</Link>
-                                        <Link to="/register" className="rounded-xl bg-primary-600 px-4 py-2.5 text-center text-base font-semibold text-white">Sign up</Link>
-                                    </div>
-                                )}
-                                <a href="https://github.com/ysalitrynskyi/opn.onl" target="_blank" rel="noreferrer" className="flex items-center gap-2 px-2 pt-3 text-sm text-faint">
-                                    <Github className="h-5 w-5" /> View on GitHub
-                                </a>
-                            </div>
+                                    <Link to="/settings" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
+                                        <Settings className="h-5 w-5 text-muted" /> Settings
+                                    </Link>
+                                    <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-2 py-2.5 text-base font-medium text-danger">
+                                        <LogOut className="h-5 w-5" /> Log out
+                                    </button>
+                                </>
+                            ) : (
+                                <div className="flex flex-col gap-2 pt-1">
+                                    <Link to="/login" className="rounded-xl border border-line2 px-4 py-2.5 text-center text-base font-medium text-ink">Log in</Link>
+                                    <Link to="/register" className="rounded-xl bg-primary-600 px-4 py-2.5 text-center text-base font-semibold text-white">Sign up</Link>
+                                </div>
+                            )}
+                            <a href="https://github.com/ysalitrynskyi/opn.onl" target="_blank" rel="noreferrer" className="flex items-center gap-2 px-2 pt-3 text-sm text-faint">
+                                <Github className="h-5 w-5" /> View on GitHub
+                            </a>
                         </div>
-                    )}
+                    </div>
+                )}
             </header>
 
             <main className="flex-grow">
