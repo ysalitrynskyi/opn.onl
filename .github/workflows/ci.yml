@@ -86,3 +86,38 @@ jobs:
       - name: Typecheck
         working-directory: frontend
         run: npx tsc -b
+
+  frontend-production-smoke:
+    name: Frontend production headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production nginx configuration
+        run: >-
+          docker build
+          --target csp-config
+          --build-arg VITE_API_URL=https://api.smoke.test
+          --tag opn-frontend-csp-smoke
+          frontend
+
+      - name: Verify served security headers
+        run: |
+          container_id=$(docker run --detach --publish 127.0.0.1:8080:80 opn-frontend-csp-smoke)
+          trap 'docker rm --force "$container_id"' EXIT
+
+          for attempt in $(seq 1 20); do
+            if headers=$(curl --fail --silent --show-error --head http://127.0.0.1:8080/); then
+              break
+            fi
+            sleep 1
+          done
+
+          test -n "${headers:-}"
+          printf '%s\n' "$headers" | grep -iF "content-security-policy:"
+          printf '%s\n' "$headers" | grep -iF "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://static.cloudflareinsights.com;"
+          printf '%s\n' "$headers" | grep -iF "connect-src 'self' https://api.smoke.test wss://api.smoke.test https://www.google-analytics.com https://region1.google-analytics.com https://cloudflareinsights.com;"
+          printf '%s\n' "$headers" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
+          ! printf '%s\n' "$headers" | grep -Fq '__API_CONNECT_SRC__'
+          ! docker exec "$container_id" grep -Rq '__API_CONNECT_SRC__' /etc/nginx/conf.d
+          ! grep -R "fonts.googleapis.com" frontend/src

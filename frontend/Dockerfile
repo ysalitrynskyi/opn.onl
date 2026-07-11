@@ -1,3 +1,25 @@
+# Shared production nginx configuration. CI targets this stage directly for a
+# cheap smoke test without running the Chromium-based frontend build.
+FROM nginx:alpine AS csp-config
+
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Bake the API origin into the CSP connect-src. The frontend fetches the API
+# cross-origin (VITE_API_URL, e.g. https://l.opn.onl), so the document CSP must
+# allow that origin - otherwise connect-src 'self' blocks every API call and the
+# app loads no data. Derived from the same build arg the JS bundle uses, so the
+# CSP and the baked-in API URL cannot drift. Also allow the WebSocket origin.
+ARG VITE_API_URL
+RUN if [ -n "$VITE_API_URL" ]; then \
+        WS_ORIGIN=$(printf '%s' "$VITE_API_URL" | sed -e 's#^https://#wss://#' -e 's#^http://#ws://#'); \
+        CONNECT_SRC="$VITE_API_URL $WS_ORIGIN"; \
+    else \
+        CONNECT_SRC=""; \
+    fi; \
+    sed -i "s#__API_CONNECT_SRC__#${CONNECT_SRC}#g" /etc/nginx/conf.d/default.conf; \
+    ! grep -q '__API_CONNECT_SRC__' /etc/nginx/conf.d/default.conf; \
+    echo "CSP connect-src extra sources: '${CONNECT_SRC}'"
+
 # Build stage - use full Node image for Puppeteer/Chromium support
 FROM node:22-slim AS builder
 
@@ -38,30 +60,11 @@ ENV VITE_FRONTEND_URL=$VITE_FRONTEND_URL
 RUN PUPPETEER_EXECUTABLE_PATH="$(find /root/.cache/ms-playwright -name chrome -type f | head -1)" \
     npm run build
 
-# Production stage with nginx
-FROM nginx:alpine
+# Production stage with the already-validated nginx configuration
+FROM csp-config
 
 # Install curl for health checks
 RUN apk add --no-cache curl
-
-# Copy custom nginx config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-# Bake the API origin into the CSP connect-src. The frontend fetches the API
-# cross-origin (VITE_API_URL, e.g. https://l.opn.onl), so the document CSP must
-# allow that origin — otherwise connect-src 'self' blocks every API call and the
-# app loads no data. Derived from the same build arg the JS bundle uses, so the
-# CSP and the baked-in API URL can never drift. Also allow the wss:// form for
-# any future WebSocket/SSE use. Empty when VITE_API_URL is unset (same-origin dev).
-ARG VITE_API_URL
-RUN if [ -n "$VITE_API_URL" ]; then \
-        WS_ORIGIN=$(printf '%s' "$VITE_API_URL" | sed -e 's#^https://#wss://#' -e 's#^http://#ws://#'); \
-        CONNECT_SRC="$VITE_API_URL $WS_ORIGIN"; \
-    else \
-        CONNECT_SRC=""; \
-    fi; \
-    sed -i "s#__API_CONNECT_SRC__#${CONNECT_SRC}#g" /etc/nginx/conf.d/default.conf; \
-    echo "CSP connect-src extra sources: '${CONNECT_SRC}'"
 
 # Copy docker entrypoint script
 COPY docker-entrypoint.sh /docker-entrypoint.sh
@@ -87,4 +90,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 # Use entrypoint for runtime env injection
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
-
