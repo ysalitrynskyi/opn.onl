@@ -60,6 +60,30 @@ async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &Hea
     crate::handlers::links::get_user_id_from_header(db, headers).await
 }
 
+/// Count links carrying a tag, excluding soft-deleted links so the reported
+/// `link_count` matches what the tag's link listing actually shows. Counting
+/// raw `link_tags` rows over-counts, since deleting a link is a soft delete that
+/// leaves its tag rows in place.
+async fn count_active_tagged_links(db: &sea_orm::DatabaseConnection, tag_id: i32) -> i64 {
+    let link_ids: Vec<i32> = link_tags::Entity::find()
+        .filter(link_tags::Column::TagId.eq(tag_id))
+        .all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|lt| lt.link_id)
+        .collect();
+    if link_ids.is_empty() {
+        return 0;
+    }
+    links::Entity::find()
+        .filter(links::Column::Id.is_in(link_ids))
+        .filter(links::Column::DeletedAt.is_null())
+        .count(db)
+        .await
+        .unwrap_or(0) as i64
+}
+
 // ============= Handlers =============
 
 /// Create a new tag
@@ -187,11 +211,7 @@ pub async fn get_tags(
 
     let mut responses = Vec::new();
     for tag in tags_list {
-        let link_count = link_tags::Entity::find()
-            .filter(link_tags::Column::TagId.eq(tag.id))
-            .count(&state.db)
-            .await
-            .unwrap_or(0) as i64;
+        let link_count = count_active_tagged_links(&state.db, tag.id).await;
 
         responses.push(TagResponse {
             id: tag.id,
@@ -274,11 +294,7 @@ pub async fn get_tag(
         ));
     }
 
-    let link_count = link_tags::Entity::find()
-        .filter(link_tags::Column::TagId.eq(tag.id))
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let link_count = count_active_tagged_links(&state.db, tag.id).await;
 
     Ok(Json(TagResponse {
         id: tag.id,
@@ -386,11 +402,7 @@ pub async fn update_tag(
         )
     })?;
 
-    let link_count = link_tags::Entity::find()
-        .filter(link_tags::Column::TagId.eq(tag.id))
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let link_count = count_active_tagged_links(&state.db, tag.id).await;
 
     Ok(Json(TagResponse {
         id: tag.id,
