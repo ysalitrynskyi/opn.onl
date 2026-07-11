@@ -26,6 +26,7 @@ mod m20220101_000023_add_link_in_bio;
 mod m20220101_000024_create_api_keys;
 mod m20220101_000025_add_fk_indexes;
 mod m20220101_000026_restrict_org_owner_fk;
+mod m20220101_000027_links_not_null;
 
 pub struct Migrator;
 
@@ -59,6 +60,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000024_create_api_keys::Migration),
             Box::new(m20220101_000025_add_fk_indexes::Migration),
             Box::new(m20220101_000026_restrict_org_owner_fk::Migration),
+            Box::new(m20220101_000027_links_not_null::Migration),
         ]
     }
 }
