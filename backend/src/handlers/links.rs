@@ -2189,6 +2189,49 @@ mod ssrf_tests {
         let body = resp.text().await.unwrap();
         assert!(body.to_lowercase().contains("example domain"));
     }
+
+    /// The avatar proxy is public and top-level-navigable, so what it returns is
+    /// rendered in this origin. `canonical_avatar_content_type` is the gate that
+    /// keeps active content (SVG, or a spoofed image label on an HTML/JS body)
+    /// from being served. Regression guard: it must reject SVG and anything not
+    /// on the inert-raster allowlist, and it must return a fixed canonical type
+    /// rather than echoing the upstream header. If someone reverts to a
+    /// `starts_with("image/")` check, the SVG assertions here fail.
+    #[test]
+    fn avatar_content_type_allows_only_inert_raster_images() {
+        use super::canonical_avatar_content_type as classify;
+
+        // Allowed raster types, including case/charset/whitespace variants, map
+        // to a fixed canonical value.
+        assert_eq!(classify("image/png"), Some("image/png"));
+        assert_eq!(classify("IMAGE/PNG"), Some("image/png"));
+        assert_eq!(classify("image/jpeg"), Some("image/jpeg"));
+        assert_eq!(classify("image/jpg"), Some("image/jpeg"));
+        assert_eq!(classify("image/jpeg; charset=binary"), Some("image/jpeg"));
+        assert_eq!(classify("  image/webp  "), Some("image/webp"));
+        assert_eq!(classify("image/gif"), Some("image/gif"));
+        assert_eq!(classify("image/avif"), Some("image/avif"));
+        assert_eq!(classify("image/bmp"), Some("image/bmp"));
+        assert_eq!(classify("image/x-icon"), Some("image/x-icon"));
+        assert_eq!(classify("image/vnd.microsoft.icon"), Some("image/x-icon"));
+
+        // Active or non-image content must be rejected. SVG is the important one:
+        // it is `image/*` yet can execute script.
+        for bad in [
+            "image/svg+xml",
+            "image/svg+xml; charset=utf-8",
+            "text/html",
+            "application/xhtml+xml",
+            "application/javascript",
+            "text/xml",
+            "image/svg",
+            "",
+            "image/",
+            "img/png",
+        ] {
+            assert_eq!(classify(bad), None, "{bad:?} must not be served as an avatar");
+        }
+    }
 }
 
 /// A single routing rule as accepted from the API.
@@ -3655,11 +3698,40 @@ pub struct AvatarProxyQuery {
     pub url: String,
 }
 
+/// Map an upstream `Content-Type` to a safe, canonical avatar type, or `None` if
+/// it is not an allowed raster image.
+///
+/// This endpoint is public and reachable by top-level navigation, so whatever we
+/// return is rendered by the browser *in this origin*. Reflecting the upstream
+/// content-type verbatim (the old `starts_with("image/")` check) let two things
+/// through that are XSS, not images:
+///   * `image/svg+xml` — an SVG can carry `<script>`, which runs on navigation.
+///   * a spoofed `image/png` header on an HTML/JS body — a sniffing browser
+///     could execute it.
+/// So we allow only inert raster types and return a fixed canonical string for
+/// each (never the raw upstream header). SVG is deliberately excluded. The
+/// handler additionally sends `X-Content-Type-Options: nosniff` and a locked-down
+/// CSP so even a mislabeled body cannot execute.
+fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
+    // Strip any `; charset=…` parameter and normalize case/whitespace.
+    let base = raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    match base.as_str() {
+        "image/png" => Some("image/png"),
+        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
+        "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        "image/avif" => Some("image/avif"),
+        "image/bmp" => Some("image/bmp"),
+        "image/x-icon" | "image/vnd.microsoft.icon" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
 /// Proxy a public-bio avatar image through the server so a bio VISITOR's browser
 /// only ever connects to this origin — the external avatar host never learns the
 /// visitor's IP (the link-in-bio privacy leak). The fetch is SSRF-guarded
 /// (validated + DNS-pinned, redirects re-validated), restricted to successful
-/// http(s) image responses, and size-capped.
+/// http(s) responses carrying an allowed raster image type, and size-capped.
 pub async fn proxy_bio_avatar(
     axum::extract::Query(query): axum::extract::Query<AvatarProxyQuery>,
 ) -> axum::response::Response {
@@ -3675,15 +3747,16 @@ pub async fn proxy_bio_avatar(
         _ => return (StatusCode::BAD_GATEWAY, "Could not fetch avatar").into_response(),
     };
 
-    let content_type = response
+    let raw_content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    if !content_type.starts_with("image/") {
-        return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Avatar is not an image").into_response();
-    }
+        .unwrap_or("");
+    // Only inert raster images pass, and we serve a fixed canonical type — never
+    // the upstream header, and never SVG (which can execute script).
+    let Some(safe_content_type) = canonical_avatar_content_type(raw_content_type) else {
+        return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Avatar is not a supported image type").into_response();
+    };
 
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
@@ -3703,8 +3776,13 @@ pub async fn proxy_bio_avatar(
 
     (
         [
-            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_TYPE, safe_content_type.to_string()),
             (header::CACHE_CONTROL, "public, max-age=86400".to_string()),
+            // Defense in depth: never sniff the body past the declared type, and
+            // forbid any active content from executing even if one slips through.
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox".to_string()),
+            (header::CONTENT_DISPOSITION, "inline".to_string()),
         ],
         buf,
     )
