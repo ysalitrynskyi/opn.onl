@@ -28,6 +28,7 @@ export default function Bio() {
     const [profile, setProfile] = useState<BioProfile | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
+    const [avatarFailed, setAvatarFailed] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -97,11 +98,12 @@ export default function Bio() {
             >
                 {/* Header */}
                 <div className="text-center mb-8">
-                    {profile.avatar_url ? (
+                    {profile.avatar_url && !avatarFailed ? (
                         <img
-                            src={profile.avatar_url}
+                            src={API_ENDPOINTS.bioAvatar(profile.avatar_url)}
                             alt={name}
                             className="h-24 w-24 rounded-full object-cover mx-auto mb-4 border border-slate-200"
+                            onError={() => setAvatarFailed(true)}
                         />
                     ) : (
                         <div className="h-24 w-24 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center mx-auto mb-4 text-3xl font-bold">

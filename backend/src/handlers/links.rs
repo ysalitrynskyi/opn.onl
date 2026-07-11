@@ -3650,6 +3650,67 @@ pub struct PreviewMetadataRequest {
     pub url: String,
 }
 
+#[derive(Deserialize)]
+pub struct AvatarProxyQuery {
+    pub url: String,
+}
+
+/// Proxy a public-bio avatar image through the server so a bio VISITOR's browser
+/// only ever connects to this origin — the external avatar host never learns the
+/// visitor's IP (the link-in-bio privacy leak). The fetch is SSRF-guarded
+/// (validated + DNS-pinned, redirects re-validated), restricted to successful
+/// http(s) image responses, and size-capped.
+pub async fn proxy_bio_avatar(
+    axum::extract::Query(query): axum::extract::Query<AvatarProxyQuery>,
+) -> axum::response::Response {
+    use axum::http::header;
+    const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+
+    if validate_url(&query.url).is_err() {
+        return (StatusCode::BAD_REQUEST, "Invalid avatar URL").into_response();
+    }
+
+    let response = match ssrf_guarded_fetch(reqwest::Method::GET, &query.url, None).await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return (StatusCode::BAD_GATEWAY, "Could not fetch avatar").into_response(),
+    };
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !content_type.starts_with("image/") {
+        return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Avatar is not an image").into_response();
+    }
+
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(c) => {
+                buf.extend_from_slice(&c);
+                if buf.len() >= MAX_AVATAR_BYTES {
+                    buf.truncate(MAX_AVATAR_BYTES);
+                    break;
+                }
+            }
+            Err(_) => return (StatusCode::BAD_GATEWAY, "Failed to read avatar").into_response(),
+        }
+    }
+
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "public, max-age=86400".to_string()),
+        ],
+        buf,
+    )
+        .into_response()
+}
+
 /// Fetch Open Graph preview data for a URL
 #[utoipa::path(
     post,
