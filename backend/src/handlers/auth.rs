@@ -495,6 +495,8 @@ pub async fn change_password(
 
         // Update password and bump token_version to revoke prior JWTs.
         let next_token_version = user.token_version + 1;
+        let token_user_id = user.id;
+        let token_email = user.email.clone();
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
         active_user.token_version = Set(next_token_version);
@@ -503,7 +505,16 @@ pub async fn change_password(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to change password".to_string() })).into_response();
         }
 
-        return (StatusCode::OK, Json(MessageResponse { message: "Password changed successfully".to_string() })).into_response();
+        // Return a fresh token carrying the new version so the current session
+        // stays valid; the bump just revoked the client's existing token, and
+        // without a replacement its next request would 401 and log the user out.
+        return match create_jwt(token_user_id, &token_email, next_token_version) {
+            Ok(token) => (StatusCode::OK, Json(serde_json::json!({
+                "message": "Password changed successfully",
+                "token": token,
+            }))).into_response(),
+            Err(_) => (StatusCode::OK, Json(MessageResponse { message: "Password changed successfully".to_string() })).into_response(),
+        };
     }
 
     (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()

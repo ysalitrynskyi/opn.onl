@@ -284,9 +284,16 @@ export default function Settings() {
                 }),
             });
 
+            const data = await res.json();
             if (!res.ok) {
-                const data = await res.json();
                 throw new Error(data.error || 'Failed to change password');
+            }
+
+            // The backend rotates our JWT on password change (revoking the old
+            // one). Store the fresh token so we stay logged in instead of 401-ing
+            // on the next request and being bounced to /login.
+            if (data.token) {
+                localStorage.setItem('token', data.token);
             }
 
             setSuccess('Password changed successfully');

@@ -808,12 +808,6 @@ pub async fn create_link(
         .parse::<bool>()
         .unwrap_or(true);
     
-    // Check if reusing deleted slugs is allowed
-    let allow_deleted_slug_reuse = std::env::var("ALLOW_DELETED_SLUG_REUSE")
-        .unwrap_or_else(|_| "false".to_string())
-        .parse::<bool>()
-        .unwrap_or(false);
-
     let code = if let Some(alias) = payload.custom_alias {
         // Check if custom aliases are enabled
         if !custom_aliases_enabled {
@@ -837,20 +831,19 @@ pub async fn create_link(
             return (StatusCode::CONFLICT, Json(ErrorResponse { error: "Alias already taken".to_string() })).into_response();
         }
         
-        // Check if alias was used by a deleted link
-        if !allow_deleted_slug_reuse {
-            let exists_deleted = links::Entity::find()
-                .filter(links::Column::Code.eq(&alias))
-                .filter(links::Column::DeletedAt.is_not_null())
-                .one(&state.db)
-                .await
-                .unwrap_or(None);
-            
-            if exists_deleted.is_some() {
-                return (StatusCode::CONFLICT, Json(ErrorResponse { error: "This alias was previously used and cannot be reused".to_string() })).into_response();
-            }
+        // An alias previously used by a now-deleted link cannot be reused: the
+        // global UNIQUE on links.code still holds that code, so an insert would
+        // fail. Reject explicitly with a clear message rather than 500 later.
+        let exists_deleted = links::Entity::find()
+            .filter(links::Column::Code.eq(&alias))
+            .filter(links::Column::DeletedAt.is_not_null())
+            .one(&state.db)
+            .await
+            .unwrap_or(None);
+        if exists_deleted.is_some() {
+            return (StatusCode::CONFLICT, Json(ErrorResponse { error: "This alias was previously used and cannot be reused".to_string() })).into_response();
         }
-        
+
         alias
     } else {
         let mut code = generate_short_code();
@@ -3320,23 +3313,14 @@ pub async fn check_code_availability(
         })).into_response();
     }
 
-    // Check if code exists (including deleted, if reuse is disabled)
-    let allow_deleted_slug_reuse = std::env::var("ALLOW_DELETED_SLUG_REUSE")
-        .unwrap_or_else(|_| "false".to_string())
-        .parse::<bool>()
-        .unwrap_or(false);
-
-    let mut exists_query = links::Entity::find()
-        .filter(links::Column::Code.eq(code));
-    
-    if !allow_deleted_slug_reuse {
-        // Check all links including deleted
-    } else {
-        // Only check non-deleted links
-        exists_query = exists_query.filter(links::Column::DeletedAt.is_null());
-    }
-
-    let exists = exists_query.one(&state.db).await.unwrap_or(None).is_some();
+    // Consider deleted links too: their code is still held by the global UNIQUE
+    // constraint on links.code, so it is not actually available for reuse.
+    let exists = links::Entity::find()
+        .filter(links::Column::Code.eq(code))
+        .one(&state.db)
+        .await
+        .unwrap_or(None)
+        .is_some();
 
     if exists {
         (StatusCode::OK, Json(CheckCodeResponse {

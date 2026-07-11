@@ -254,6 +254,14 @@ export default function Dashboard() {
         setCurrentPage(1);
     }, [searchQuery]);
 
+    // Clamp the current page when the list shrinks (e.g. deleting the last link
+    // on the final page) so the user is never stranded on an empty page.
+    useEffect(() => {
+        if (totalPages > 0 && currentPage > totalPages) {
+            setCurrentPage(totalPages);
+        }
+    }, [totalPages, currentPage]);
+
     const fetchLinks = async () => {
         try {
             const res = await authFetch(API_ENDPOINTS.links);
