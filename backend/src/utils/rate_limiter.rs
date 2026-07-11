@@ -133,6 +133,9 @@ pub struct RateLimiters {
     pub redirect: Arc<RateLimiter>,
     /// Password verification rate limiter (5 per minute per IP+code - anti-bruteforce)
     pub password_verify: Arc<RateLimiter>,
+    /// Contact form limiter (a few per hour per IP). The contact endpoint sends
+    /// email, so it must be strict regardless of the general API tier.
+    pub contact: Arc<RateLimiter>,
 }
 
 impl Default for RateLimiters {
@@ -147,6 +150,8 @@ impl Default for RateLimiters {
             redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 1))),
             // Anti-bruteforce: only 5 password attempts per minute per IP+code
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(5, 60))),
+            // Contact form sends email: cap at 10 per hour per IP.
+            contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 3600))),
         }
     }
 }
@@ -168,6 +173,7 @@ impl RateLimiters {
                 limiters.auth.cleanup();
                 limiters.redirect.cleanup();
                 limiters.password_verify.cleanup();
+                limiters.contact.cleanup();
                 tracing::debug!("Rate limiter cleanup completed");
             }
         });
@@ -300,6 +306,28 @@ pub fn extract_ip(req: &Request<Body>) -> String {
     "unknown".to_string()
 }
 
+/// Known top-level API path segments. Anything whose first segment is one of
+/// these is a normal API request, never a short-code redirect. Keep in sync with
+/// the routes registered in `build_router`.
+const API_PREFIXES: &[&str] = &[
+    "auth", "links", "orgs", "folders", "tags", "analytics", "admin", "contact",
+    "ws", "sse", "health", "api", "swagger-ui", "api-docs",
+];
+
+/// Classify a request path as a short-code redirect vs a normal API call.
+///
+/// Redirect routes are `/{code}`, `/{code}/preview` and `/{code}/verify` — their
+/// first path segment is the code, which is never one of the known API prefixes.
+/// This replaces an earlier first-letter/length heuristic that misfiled ~13% of
+/// generated codes and, worse, routed `POST /contact` into the relaxed 100 req/s
+/// redirect bucket (an email-flood vector).
+fn is_redirect_path(path: &str) -> bool {
+    match path.trim_start_matches('/').split('/').next() {
+        Some(first) => !first.is_empty() && !API_PREFIXES.contains(&first),
+        None => false,
+    }
+}
+
 /// Rate limit middleware for general API endpoints
 pub async fn rate_limit_middleware(
     State(limiters): State<Arc<RateLimiters>>,
@@ -309,11 +337,10 @@ pub async fn rate_limit_middleware(
     let ip = extract_ip(&req);
     let path = req.uri().path();
 
-    // First check per-second rate limit (1 req/sec per IP) for non-redirect paths
-    let is_redirect = path.len() <= 10 && !path.starts_with("/a") && !path.starts_with("/l") 
-        && !path.starts_with("/o") && !path.starts_with("/f") && !path.starts_with("/t") 
-        && !path.starts_with("/w") && !path.starts_with("/s") && !path.starts_with("/h");
-    
+    // Redirects are high-volume and skip the strict per-second gate; everything
+    // else (including /contact) is classified by its route, not a path heuristic.
+    let is_redirect = is_redirect_path(path);
+
     if !is_redirect {
         if let RateLimitResult::Limited { retry_after_secs, limit, remaining } = 
             limiters.per_second.check(&format!("sec:{}", ip)) 
@@ -346,6 +373,8 @@ pub async fn rate_limit_middleware(
         limiters.auth.check(&format!("auth:{}", ip))
     } else if path.starts_with("/links") && req.method() == axum::http::Method::POST {
         limiters.link_creation.check(&format!("create:{}", ip))
+    } else if path.starts_with("/contact") && req.method() == axum::http::Method::POST {
+        limiters.contact.check(&format!("contact:{}", ip))
     } else if is_redirect {
         // Short code redirect - more relaxed
         limiters.redirect.check(&format!("redirect:{}", ip))
@@ -385,6 +414,29 @@ pub async fn rate_limit_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redirect_classifier_separates_codes_from_api_routes() {
+        // Short-code redirect routes: first segment is the code.
+        assert!(is_redirect_path("/abc123"));
+        assert!(is_redirect_path("/abc123/preview"));
+        assert!(is_redirect_path("/abc123/verify"));
+        // Regression: codes starting with a/l/o/f/t/w/s/h and long custom codes
+        // were misclassified by the old first-letter/length heuristic.
+        assert!(is_redirect_path("/link42"));
+        assert!(is_redirect_path("/awesome-promo-code-2026"));
+        // API routes must never be treated as redirects — /contact especially,
+        // since the relaxed redirect bucket was an email-flood vector.
+        assert!(!is_redirect_path("/contact"));
+        assert!(!is_redirect_path("/auth/login"));
+        assert!(!is_redirect_path("/links"));
+        assert!(!is_redirect_path("/links/bulk"));
+        assert!(!is_redirect_path("/admin/stats"));
+        assert!(!is_redirect_path("/api/bio/someone"));
+        assert!(!is_redirect_path("/health"));
+        // Root / empty is not a redirect.
+        assert!(!is_redirect_path("/"));
+    }
 
     #[test]
     fn test_rate_limiter_allows_within_limit() {
@@ -572,6 +624,7 @@ mod tests {
                 auth: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
                 redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
                 password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+                contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
             });
 
             let app = Router::new()

@@ -470,7 +470,19 @@ pub async fn delete_passkey(
         .await;
 
     match result {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"message": "Passkey deleted successfully"}))).into_response(),
+        Ok(_) => {
+            // Revoking an authentication factor must invalidate existing sessions.
+            // Bump token_version so JWTs minted before the revoke stop being
+            // accepted, matching the documented invariant (a password change /
+            // reset / account-delete / passkey-revoke all bump the version).
+            if let Some(u) = users::Entity::find_by_id(user_id).one(&state.db).await.unwrap_or(None) {
+                let next = u.token_version + 1;
+                let mut active: users::ActiveModel = u.into();
+                active.token_version = Set(next);
+                let _ = active.update(&state.db).await;
+            }
+            (StatusCode::OK, Json(serde_json::json!({"message": "Passkey deleted successfully"}))).into_response()
+        }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to delete passkey"}))).into_response(),
     }
 }

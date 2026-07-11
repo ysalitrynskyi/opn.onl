@@ -606,6 +606,11 @@ pub async fn delete_account(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() })).into_response();
         }
 
+        // Capture the codes before the soft-delete so their cached redirects can
+        // be dropped afterwards (soft-delete is an UPDATE — nothing else clears
+        // the cache, so a deleted account's links would keep redirecting).
+        let cached_codes = crate::handlers::links::active_link_codes_for_user(&state, user_id).await;
+
         // Soft delete all user's links
         use sea_orm::sea_query::Expr;
         use crate::entity::links;
@@ -616,6 +621,8 @@ pub async fn delete_account(
             .exec(&state.db)
             .await
             .ok();
+
+        crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
 
         // Remove the user's passkeys so the deleted account cannot re-authenticate
         // via WebAuthn (soft-delete is an UPDATE, so the FK cascade never fires).
