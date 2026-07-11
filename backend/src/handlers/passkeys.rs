@@ -247,6 +247,22 @@ pub async fn register_finish(
     let passkey_json = serde_json::to_string(&passkey).unwrap_or_default();
     let cred_id_str = format!("{:?}", passkey.cred_id());
 
+    // A credential id is globally unique to one authenticator credential.
+    // Reject a re-registration of an already-known credential instead of
+    // silently creating a duplicate row (the insert result was previously
+    // discarded, so a duplicate — or, with the new UNIQUE index, a constraint
+    // violation — went unnoticed).
+    let already_registered = passkeys::Entity::find()
+        .filter(passkeys::Column::CredId.eq(&cred_id_str))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if already_registered {
+        return (StatusCode::CONFLICT, "This passkey is already registered").into_response();
+    }
+
     let passkey_model = passkeys::ActiveModel {
         user_id: Set(user.id),
         cred_id: Set(cred_id_str),
@@ -255,9 +271,10 @@ pub async fn register_finish(
         ..Default::default()
     };
 
-    let _ = passkeys::Entity::insert(passkey_model).exec(&state.db).await;
-
-    (StatusCode::OK, "Passkey registered").into_response()
+    match passkeys::Entity::insert(passkey_model).exec(&state.db).await {
+        Ok(_) => (StatusCode::OK, "Passkey registered").into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to register passkey").into_response(),
+    }
 }
 
 pub async fn login_start(

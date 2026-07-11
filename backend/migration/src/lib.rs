@@ -28,6 +28,7 @@ mod m20220101_000025_add_fk_indexes;
 mod m20220101_000026_restrict_org_owner_fk;
 mod m20220101_000027_links_not_null;
 mod m20220101_000028_normalize_blocked_domains;
+mod m20220101_000029_passkey_cred_id_unique;
 
 pub struct Migrator;
 
@@ -63,6 +64,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000026_restrict_org_owner_fk::Migration),
             Box::new(m20220101_000027_links_not_null::Migration),
             Box::new(m20220101_000028_normalize_blocked_domains::Migration),
+            Box::new(m20220101_000029_passkey_cred_id_unique::Migration),
         ]
     }
 }
