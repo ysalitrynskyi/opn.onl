@@ -151,17 +151,20 @@ services:
     networks:
       - opn-network
 
-  # Optional: Database admin UI
-  # Expose via Cloudflare tunnel only when needed (e.g., db.opn.onl)
+  # Optional: Database admin UI.
+  # SECURITY: this is a full Postgres admin console. If exposed (e.g. tunneled to
+  # db.opn.onl) it must require login — SERVER_MODE=True forces the login screen,
+  # MASTER_PASSWORD_REQUIRED=True protects saved server credentials. Prefer gating
+  # it behind Cloudflare Access as well, and only enable this service when needed.
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: opn_onl_pgadmin
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@opn.onl}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?PGADMIN_PASSWORD must be set to run pgAdmin}
+      PGADMIN_CONFIG_SERVER_MODE: "True"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "True"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:
