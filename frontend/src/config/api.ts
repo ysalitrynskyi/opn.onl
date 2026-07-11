@@ -21,7 +21,10 @@ export const API_ENDPOINTS = {
     updateProfile: `${API_BASE_URL}/auth/profile`,
     bioSettings: `${API_BASE_URL}/auth/bio`,
     bioPublic: (username: string) => `${API_BASE_URL}/api/bio/${encodeURIComponent(username)}`,
-    
+    // Proxy an external avatar through the backend so a public-bio visitor's
+    // browser never connects to the avatar host directly (no IP leak).
+    bioAvatar: (url: string) => `${API_BASE_URL}/api/bio/avatar?url=${encodeURIComponent(url)}`,
+
     // Passkeys
     passkeys: `${API_BASE_URL}/auth/passkeys`,
     apiKeys: `${API_BASE_URL}/auth/api-keys`,

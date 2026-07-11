@@ -367,6 +367,10 @@ pub fn build_router(app_state: AppState) -> Router {
 
         // Health check
         .route("/health", get(health_check))
+        // Server-side avatar proxy so a public-bio visitor's browser never
+        // connects to the (user-supplied) external avatar host directly.
+        // Registered before /api/bio/:username so the static path is unambiguous.
+        .route("/api/bio/avatar", get(handlers::links::proxy_bio_avatar))
         .route("/api/bio/:username", get(handlers::bio::get_public_bio))
 
         // Redirect route (must be last to not conflict with other routes)
