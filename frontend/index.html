@@ -7,11 +7,16 @@
     <!-- Runtime config - GA_ID is injected by docker-entrypoint.sh -->
     <script>window.GA_ID = "%%GA_ID%%";</script>
     
-    <!-- Google Analytics initialization (runs after GA_ID is set above) -->
+    <!-- Google Analytics initialization (runs after GA_ID is set above).
+         Honors the visitor's Do-Not-Track / Global Privacy Control signal — GA is
+         not loaded when the browser opts out. NOTE: a full consent banner is still
+         recommended for GDPR before enabling GA in EU-facing deployments. -->
     <script>
       (function() {
         var gaId = window.GA_ID || '';
-        if (gaId && gaId.length > 0 && gaId.startsWith('G-')) {
+        var optedOut = navigator.doNotTrack === '1' || window.doNotTrack === '1'
+          || navigator.msDoNotTrack === '1' || navigator.globalPrivacyControl === true;
+        if (!optedOut && gaId && gaId.length > 0 && gaId.startsWith('G-')) {
           var script = document.createElement('script');
           script.async = true;
           script.src = 'https://www.googletagmanager.com/gtag/js?id=' + gaId;

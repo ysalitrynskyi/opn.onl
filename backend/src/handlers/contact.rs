@@ -100,7 +100,9 @@ pub async fn send_contact_message(
     // Send email to admin
     match email_service.send_email_with_reply_to(&admin_email, &subject, &html_body, &payload.email).await {
         Ok(_) => {
-            tracing::info!("Contact form message sent from {} <{}>", payload.name, payload.email);
+            // Don't log the sender's name/email — that is PII sitting in log
+            // aggregation. The message was delivered to the admin inbox already.
+            tracing::info!("Contact form message forwarded to admin inbox");
             (
                 StatusCode::OK,
                 Json(ContactResponse {
