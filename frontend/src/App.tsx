@@ -4,6 +4,7 @@ import { Suspense, lazy, useEffect } from 'react';
 import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import { ToastContainer } from './components/Toast';
+import ConsentBanner from './components/ConsentBanner';
 import Home from './pages/Home';
 import Login from './pages/Login';
 import Register from './pages/Register';
@@ -62,6 +63,7 @@ function App() {
       <ErrorBoundary>
         <ScrollToTop />
         <ToastContainer />
+        <ConsentBanner />
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/" element={<Layout />}>

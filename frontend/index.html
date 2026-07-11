@@ -7,30 +7,33 @@
     <!-- Runtime config - GA_ID is injected by docker-entrypoint.sh -->
     <script>window.GA_ID = "%%GA_ID%%";</script>
     
-    <!-- Google Analytics initialization (runs after GA_ID is set above).
-         Honors the visitor's Do-Not-Track / Global Privacy Control signal — GA is
-         not loaded when the browser opts out. NOTE: a full consent banner is still
-         recommended for GDPR before enabling GA in EU-facing deployments. -->
+    <!-- Google Analytics (loaded only with consent). loadAnalytics injects gtag;
+         it runs on load when the visitor has already consented, or is called by
+         the ConsentBanner when they accept. GA never loads under Do-Not-Track /
+         Global Privacy Control or before an explicit Accept. -->
     <script>
-      (function() {
+      window.loadAnalytics = function() {
         var gaId = window.GA_ID || '';
+        if (!gaId.startsWith('G-') || window.__gaLoaded) return;
+        window.__gaLoaded = true;
+        var script = document.createElement('script');
+        script.async = true;
+        script.src = 'https://www.googletagmanager.com/gtag/js?id=' + gaId;
+        document.head.appendChild(script);
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', gaId, { page_path: window.location.pathname, anonymize_ip: true });
+        window.gtag = gtag;
+      };
+      (function() {
         var optedOut = navigator.doNotTrack === '1' || window.doNotTrack === '1'
           || navigator.msDoNotTrack === '1' || navigator.globalPrivacyControl === true;
-        if (!optedOut && gaId && gaId.length > 0 && gaId.startsWith('G-')) {
-          var script = document.createElement('script');
-          script.async = true;
-          script.src = 'https://www.googletagmanager.com/gtag/js?id=' + gaId;
-          document.head.appendChild(script);
-          
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', gaId, {
-            page_path: window.location.pathname,
-            anonymize_ip: true
-          });
-          window.gtag = gtag;
-        }
+        try {
+          if (!optedOut && localStorage.getItem('analytics_consent') === 'granted') {
+            window.loadAnalytics();
+          }
+        } catch (e) { /* localStorage unavailable: stay off */ }
       })();
     </script>
     
