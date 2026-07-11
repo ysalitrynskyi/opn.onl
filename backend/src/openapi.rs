@@ -2,7 +2,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
-    admin, auth, links, analytics, organizations, folders, tags,
+    admin, auth, links, analytics, organizations, folders, tags, contact,
 };
 
 #[derive(OpenApi)]
@@ -33,14 +33,22 @@ use crate::handlers::{
         (name = "Folders", description = "Organize links into folders"),
         (name = "Tags", description = "Tag and categorize links"),
         (name = "Admin", description = "Instance administration: users, links, organizations, blocking, backups"),
+        (name = "Contact", description = "Contact form"),
     ),
     paths(
         // Authentication
         auth::register,
         auth::login,
+        auth::verify_email,
+        auth::resend_verification,
+        auth::forgot_password,
+        auth::reset_password,
         auth::change_password,
         auth::delete_account,
-        
+        auth::get_app_settings,
+        auth::get_current_user,
+        auth::update_profile,
+
         // Links
         links::create_link,
         links::redirect_link,
@@ -53,7 +61,15 @@ use crate::handlers::{
         links::bulk_delete_links,
         links::bulk_update_links,
         links::export_links_csv,
-        
+        links::clone_link,
+        links::toggle_pin,
+        links::check_code_availability,
+        links::check_url_health,
+        links::build_utm_url,
+        links::get_sparklines,
+        links::get_link_preview_metadata,
+        links::preview_link,
+
         // Analytics
         analytics::get_link_stats,
         analytics::get_dashboard_stats,
@@ -117,6 +133,9 @@ use crate::handlers::{
         admin::create_backup,
         admin::list_backups,
         admin::cleanup_backups,
+
+        // Contact
+        contact::send_contact_message,
     ),
     components(
         schemas(
