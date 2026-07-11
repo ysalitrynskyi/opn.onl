@@ -41,4 +41,33 @@ async fn openapi_spec_serves_and_documents_newly_registered_handlers() {
             paths.keys().collect::<Vec<_>>()
         );
     }
+
+    let schemas = spec["components"]["schemas"]
+        .as_object()
+        .expect("spec must have components.schemas");
+
+    // PasskeyAuthResponse was renamed specifically to avoid colliding with
+    // auth::AuthResponse as a schema key — both must remain distinct.
+    assert!(schemas.contains_key("AuthResponse"));
+    assert!(schemas.contains_key("PasskeyAuthResponse"));
+    assert_ne!(
+        schemas["AuthResponse"], schemas["PasskeyAuthResponse"],
+        "AuthResponse and PasskeyAuthResponse must not collapse into one schema"
+    );
+
+    // MessageResponse is $ref'd by several auth success responses. It was
+    // missing from ApiDoc's schemas(...) — a dangling ref in the published
+    // spec. Keep it registered.
+    assert!(
+        schemas.contains_key("MessageResponse"),
+        "MessageResponse must be registered — auth paths $ref it"
+    );
+    let verify = &spec["paths"]["/auth/verify-email"]["post"]["responses"]["200"];
+    let verify_ref = verify["content"]["application/json"]["schema"]["$ref"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(
+        verify_ref, "#/components/schemas/MessageResponse",
+        "verify-email success must $ref MessageResponse"
+    );
 }

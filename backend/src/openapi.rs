@@ -162,6 +162,7 @@ use crate::handlers::{
             auth::RegisterRequest,
             auth::LoginRequest,
             auth::AuthResponse,
+            auth::MessageResponse,
 
             // API key schemas
             api_keys::CreateApiKeyRequest,
