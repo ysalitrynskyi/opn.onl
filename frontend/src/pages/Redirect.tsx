@@ -117,13 +117,13 @@ export default function Redirect() {
                         </div>
                         <div className="p-6 space-y-5">
                             <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl">
+                                {/* Domain initial instead of a third-party favicon service:
+                                    fetching favicons from Google leaked the destination
+                                    domain and the visitor's IP to a third party. */}
                                 <div className="h-10 w-10 bg-white rounded-lg border border-slate-200 flex items-center justify-center flex-shrink-0">
-                                    <img
-                                        src={`https://www.google.com/s2/favicons?domain=${interstitial.domain}&sz=32`}
-                                        alt=""
-                                        className="h-5 w-5"
-                                        onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
-                                    />
+                                    <span className="text-sm font-bold text-slate-500 uppercase">
+                                        {interstitial.domain?.charAt(0) || '?'}
+                                    </span>
                                 </div>
                                 <div className="min-w-0 flex-1">
                                     <p className="font-medium text-slate-900 truncate">{interstitial.domain}</p>

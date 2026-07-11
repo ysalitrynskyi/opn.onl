@@ -284,6 +284,10 @@ pub async fn delete_user(
 
         crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
 
+        // Right to erasure: drop per-visitor identifiers from the deleted user's
+        // link analytics, not just the aggregate dimensions.
+        let _ = crate::utils::privacy::purge_click_pii_for_user(&state.db, user_id).await;
+
         // Remove the user's passkeys. Soft-delete is an UPDATE so the FK cascade
         // never fires; without this a deleted account could still re-authenticate
         // via WebAuthn and mint a fresh token.

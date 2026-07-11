@@ -32,6 +32,17 @@ pub fn anonymize_ip(ip_str: &str) -> Option<String> {
     }
 }
 
+/// Reduce a `Referer` header to just its host before storage. The full referring
+/// URL can carry personal data in its path/query (search terms, session IDs,
+/// tokens), which analytics does not need and we should not retain. Returns e.g.
+/// `example.com` for `https://example.com/path?q=secret`; hostless or unparseable
+/// input is dropped.
+pub fn anonymize_referer(referer: &str) -> Option<String> {
+    url::Url::parse(referer.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+}
+
 /// Retention window in days, from `ANALYTICS_PII_RETENTION_DAYS`.
 /// `0` disables the sweep; unset or invalid falls back to the default.
 pub fn pii_retention_days() -> Option<i32> {
@@ -59,6 +70,26 @@ pub async fn scrub_expired_click_pii(
              WHERE created_at < NOW() - make_interval(days => $1) \
                AND (ip_address IS NOT NULL OR user_agent IS NOT NULL)",
             [days.into()],
+        ))
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Erase visitor PII (IP, user-agent, referer) from every click event on a
+/// user's links. Called on account deletion so a departing user's link
+/// analytics stop retaining per-visitor identifiers immediately, rather than
+/// waiting out the retention window. Aggregate dimensions (country, city,
+/// device, browser, …) are kept so historical counts still work.
+pub async fn purge_click_pii_for_user(
+    db: &DatabaseConnection,
+    user_id: i32,
+) -> Result<u64, sea_orm::DbErr> {
+    let res = db
+        .execute(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "UPDATE click_events SET ip_address = NULL, user_agent = NULL, referer = NULL \
+             WHERE link_id IN (SELECT id FROM links WHERE user_id = $1)",
+            [user_id.into()],
         ))
         .await?;
     Ok(res.rows_affected())
@@ -121,5 +152,22 @@ mod tests {
     #[test]
     fn already_truncated_is_stable() {
         assert_eq!(anonymize_ip("203.0.113.0").as_deref(), Some("203.0.113.0"));
+    }
+
+    #[test]
+    fn referer_reduced_to_host_only() {
+        // Path and query (potential PII) are dropped; only the host is kept.
+        assert_eq!(
+            anonymize_referer("https://example.com/search?q=secret+terms").as_deref(),
+            Some("example.com")
+        );
+        // Host is normalized to lowercase.
+        assert_eq!(
+            anonymize_referer("http://Sub.Example.COM/a/b").as_deref(),
+            Some("sub.example.com")
+        );
+        // Non-URL / hostless input is dropped rather than stored.
+        assert_eq!(anonymize_referer("not a url"), None);
+        assert_eq!(anonymize_referer(""), None);
     }
 }

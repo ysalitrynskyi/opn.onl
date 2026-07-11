@@ -1497,9 +1497,11 @@ fn record_click_buffered(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
+    // Store only the referring host, never the full URL — its path/query can
+    // carry visitor PII we neither need nor want to retain.
     let referer = headers.get("referer")
         .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string());
+        .and_then(crate::utils::privacy::anonymize_referer);
 
     // GeoIP lookup
     let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
