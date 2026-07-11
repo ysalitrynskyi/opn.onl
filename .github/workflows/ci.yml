@@ -116,7 +116,7 @@ jobs:
           test -n "${headers:-}"
           printf '%s\n' "$headers" | grep -iF "content-security-policy:"
           printf '%s\n' "$headers" | grep -iF "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://static.cloudflareinsights.com;"
-          printf '%s\n' "$headers" | grep -iF "connect-src 'self' https://api.smoke.test wss://api.smoke.test https://www.google-analytics.com https://region1.google-analytics.com https://cloudflareinsights.com;"
+          printf '%s\n' "$headers" | grep -iF "connect-src 'self' https://api.smoke.test wss://api.smoke.test https://www.google-analytics.com https://region1.google-analytics.com https://www.google.com https://cloudflareinsights.com;"
           printf '%s\n' "$headers" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
           ! printf '%s\n' "$headers" | grep -Fq '__API_CONNECT_SRC__'
           ! docker exec "$container_id" grep -Rq '__API_CONNECT_SRC__' /etc/nginx/conf.d
