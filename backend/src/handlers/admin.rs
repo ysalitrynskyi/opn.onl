@@ -268,6 +268,11 @@ pub async fn delete_user(
             })).into_response();
         }
 
+        // Capture codes before the soft-delete so their cached redirects can be
+        // dropped afterwards (soft-delete is an UPDATE — nothing else clears the
+        // cache, so a deleted user's links would keep redirecting until the TTL).
+        let cached_codes = crate::handlers::links::active_link_codes_for_user(&state, user_id).await;
+
         // Soft delete all user's links
         links::Entity::update_many()
             .col_expr(links::Column::DeletedAt, Expr::value(Utc::now().naive_utc()))
@@ -276,6 +281,8 @@ pub async fn delete_user(
             .exec(&state.db)
             .await
             .ok();
+
+        crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
 
         // Remove the user's passkeys. Soft-delete is an UPDATE so the FK cascade
         // never fires; without this a deleted account could still re-authenticate

@@ -596,6 +596,33 @@ pub async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: 
     }
 }
 
+/// Invalidate cached redirect entries for these codes. No-op when Redis is not
+/// configured. Any handler that changes link state (block/edit/delete/expire)
+/// must call this, or a stale redirect keeps serving from cache until the TTL.
+pub async fn invalidate_cached_codes(state: &AppState, codes: &[String]) {
+    if let Some(cache) = &state.redis_cache {
+        for code in codes {
+            let _ = cache.invalidate_link(code).await;
+        }
+    }
+}
+
+/// Codes of a user's currently-active links, captured *before* a bulk soft-delete
+/// so their cache entries can be dropped afterwards (soft-delete is an UPDATE, so
+/// nothing else clears them). `invalidate_cached_codes` no-ops without Redis, so
+/// callers pass the result unconditionally.
+pub async fn active_link_codes_for_user(state: &AppState, user_id: i32) -> Vec<String> {
+    links::Entity::find()
+        .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::DeletedAt.is_null())
+        .all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.code)
+        .collect()
+}
+
 /// sha256(key) base64-encoded — the value stored in `api_keys.key_hash`. Keys are
 /// high-entropy random strings, so a fast hash (not bcrypt) is appropriate and
 /// keeps per-request authentication O(1) via the unique index.
@@ -2730,6 +2757,16 @@ pub async fn bulk_create_links(
 ) -> impl IntoResponse {
     let user_id = get_user_id_from_header(&state.db, &headers).await;
 
+    // Bulk create is authenticated-only. Anonymous single-create is a feature,
+    // but a 500-URLs-per-request batch reachable without an account is a
+    // rate-limit amplification vector (one create token buys hundreds of links).
+    if user_id.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(BulkCreateLinkResponse {
+            links: vec![],
+            errors: vec!["Authentication required for bulk link creation".to_string()],
+        })).into_response();
+    }
+
     // Cap batch size to avoid unbounded per-item work / DoS.
     if payload.urls.len() > 500 {
         return (StatusCode::BAD_REQUEST, Json(BulkCreateLinkResponse {
@@ -2786,6 +2823,10 @@ pub async fn bulk_create_links(
     let mut result_links = Vec::new();
     let mut errors = Vec::new();
     let base_url = get_base_url();
+    // Per-link rate key: charged once per URL below so a bulk request cannot
+    // create more links than the single-create budget allows.
+    let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Per-user link cap (MAX_LINKS_PER_USER), enforced across the whole batch so
     // bulk create can't be used to exceed the limit. `None` = unlimited /
@@ -2802,6 +2843,16 @@ pub async fn bulk_create_links(
     }
 
     for url in payload.urls {
+        // Charge the per-IP create budget per link. A bulk request is not a
+        // discount: once the hourly create budget is spent, the remaining URLs
+        // are reported as rate-limited instead of silently amplifying past it.
+        if let crate::utils::rate_limiter::RateLimitResult::Limited { retry_after_secs, .. } =
+            state.rate_limiters.link_creation.check(&format!("create:{}", ip))
+        {
+            errors.push(format!("{}: rate limit reached, try again in {}s", url, retry_after_secs));
+            continue;
+        }
+
         // Validate URL before creating link. Surface the specific reason
         // (bad format, dangerous file type, raw IP, …) rather than a generic
         // message, so a bulk upload tells the user which links were rejected why.
@@ -2883,6 +2934,7 @@ pub async fn bulk_delete_links(
     }
 
     let mut deleted = 0u64;
+    let mut invalidated: Vec<String> = Vec::new();
 
     for id in payload.ids {
         let link = links::Entity::find_by_id(id)
@@ -2894,15 +2946,21 @@ pub async fn bulk_delete_links(
         if let Some(link) = link {
             if link.user_id == Some(user_id) && link.deleted_at.is_none() {
                 // Soft delete instead of hard delete
+                let code = link.code.clone();
                 let mut active_link: links::ActiveModel = link.into();
                 active_link.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
 
                 if active_link.update(&state.db).await.is_ok() {
                     deleted += 1;
+                    invalidated.push(code);
                 }
             }
         }
     }
+
+    // Drop cached redirects for the deleted codes so they stop resolving now,
+    // not after the cache TTL.
+    invalidate_cached_codes(&state, &invalidated).await;
 
     (StatusCode::OK, Json(BulkDeleteResponse { deleted })).into_response()
 }
@@ -2933,6 +2991,7 @@ pub async fn bulk_update_links(
     }
 
     let mut updated = 0u64;
+    let mut invalidated: Vec<String> = Vec::new();
 
     for id in payload.ids {
         let link = links::Entity::find_by_id(id)
@@ -2943,6 +3002,7 @@ pub async fn bulk_update_links(
 
         if let Some(link) = link {
             if link.user_id == Some(user_id) {
+                let code = link.code.clone();
                 let mut active_link: links::ActiveModel = link.into();
 
                 if let Some(folder_id) = payload.folder_id {
@@ -2960,10 +3020,15 @@ pub async fn bulk_update_links(
 
                 if active_link.update(&state.db).await.is_ok() {
                     updated += 1;
+                    invalidated.push(code);
                 }
             }
         }
     }
+
+    // An expiry/state change must drop the cached redirect, or the old target
+    // keeps serving until the cache TTL.
+    invalidate_cached_codes(&state, &invalidated).await;
 
     (StatusCode::OK, Json(BulkUpdateResponse { updated })).into_response()
 }
