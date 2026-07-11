@@ -283,7 +283,6 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 |--------|----------|-------------|
 | GET | `/links` | List user's links |
 | POST | `/links` | Create new link |
-| GET | `/links/{id}` | Get link details |
 | PUT | `/links/{id}` | Update link |
 | DELETE | `/links/{id}` | Delete link |
 | GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
