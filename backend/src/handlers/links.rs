@@ -2304,6 +2304,18 @@ pub async fn replace_routing_rules(
         }
     };
 
+    // For an org-owned link, a member who is not the direct owner may rewrite
+    // routing destinations only if their role grants edit rights. Viewers can
+    // read the rules (get_routing_rules) but must not mutate them — mirrors the
+    // member_can_edit gate used by folders.rs / tags.rs.
+    if let Some(org_id) = link.org_id {
+        if link.user_id != Some(user_id)
+            && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
+        {
+            return (StatusCode::FORBIDDEN, "You don't have permission to modify this link").into_response();
+        }
+    }
+
     if payload.rules.len() > MAX_ROUTING_RULES {
         return (
             StatusCode::BAD_REQUEST,

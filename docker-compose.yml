@@ -10,7 +10,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (no insecure default)}
       POSTGRES_DB: ${POSTGRES_DB:-opn_onl}
     volumes:
       - db_data:/var/lib/postgresql/data
@@ -56,7 +56,7 @@ services:
         condition: service_healthy
     environment:
       # Database
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-opn_onl}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (no insecure default)}@db:5432/${POSTGRES_DB:-opn_onl}
       
       # JWT Secret (REQUIRED, min 32 bytes - the backend refuses to start otherwise)
       JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET to a strong random value (openssl rand -base64 64)}"
