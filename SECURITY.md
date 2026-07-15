@@ -20,8 +20,9 @@ to ship a fix before public disclosure.
 
 ## Scope notes for self-hosters
 
-- Keep `JWT_SECRET` long and random; the server refuses to start with a weak
-  one, but rotate it if it ever leaks (rotating it invalidates all sessions).
+- Keep `JWT_SECRET` long and random (`openssl rand -base64 64`). The server
+  refuses to start with a weak or known-placeholder secret; rotate it if it
+  ever leaks (rotating it invalidates all sessions).
 - Set `TRUST_PROXY_HEADERS=true` only behind a reverse proxy you control —
   otherwise clients can spoof their IP for rate limiting and analytics.
 - `FORCE_HTTPS=true` is expected in production behind TLS termination.
