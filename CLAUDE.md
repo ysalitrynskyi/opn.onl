@@ -9,6 +9,7 @@ Cross-repo / MCP / disk / Azure / efficiency unlocks:
 
 - Registry: `~/.config/agent-coordination/AGENT-REGISTRY.md`
 - Runbooks (on demand): `~/work/_runbooks/` - azure-models, disk-cleanup, deploy-verify, ...
+- **SSH:** never connect without operator OK naming exact host — `~/work/_runbooks/ssh-and-hosts.md` (many servers; do not guess).
 - **Efficiency unlocks:** fast env help -> DIY if safe, or ask operator once (what / why / ~sec). Not invent-scope.
 - **Azure:** credit cutoff ~2026-07-20 -> ask before any Azure call after that (`_runbooks/azure-models.md`).
 
