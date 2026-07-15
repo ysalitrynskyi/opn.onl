@@ -15,10 +15,21 @@ interface EditModalProps {
     bioEnabled?: boolean;
 }
 
+function expiryDateInputValue(value: string | null): string {
+    if (!value) return '';
+    return value.match(/^(\d{4}-\d{2}-\d{2})(?:T| |$)/)?.[1] ?? '';
+}
+
+async function responseError(response: Response, fallback: string): Promise<string> {
+    const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
+    return body?.error || body?.message || fallback;
+}
+
 export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false, routingEnabled = false, bioEnabled = false }: EditModalProps) {
     const [url, setUrl] = useState(link.original_url);
     const [password, setPassword] = useState('');
-    const [expiresAt, setExpiresAt] = useState(link.expires_at?.split('T')[0] || '');
+    const originalExpiryDate = expiryDateInputValue(link.expires_at);
+    const [expiresAt, setExpiresAt] = useState(originalExpiryDate);
     const [removePassword, setRemovePassword] = useState(false);
     const [removeExpiration, setRemoveExpiration] = useState(false);
     const [burnAfterReading, setBurnAfterReading] = useState(link.burn_after_reading ?? false);
@@ -27,6 +38,7 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
     const [showRouting, setShowRouting] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [saveError, setSaveError] = useState('');
 
     useEffect(() => {
         if (!routingEnabled) return;
@@ -48,27 +60,44 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
 
     const handleSave = async () => {
         setSaving(true);
-        await onSave(link.id, {
+        setSaveError('');
+
+        const expirationChanged = expiresAt !== originalExpiryDate;
+        const shouldRemoveExpiration = removeExpiration
+            || (Boolean(link.expires_at) && expirationChanged && !expiresAt);
+        const payload: LinkUpdatePayload = {
             original_url: url !== link.original_url ? url : undefined,
             password: password || undefined,
-            expires_at: expiresAt && !removeExpiration ? new Date(expiresAt).toISOString() : undefined,
             remove_password: removePassword || undefined,
-            remove_expiration: removeExpiration || undefined,
+            remove_expiration: shouldRemoveExpiration || undefined,
             burn_after_reading: burnEnabled ? burnAfterReading : undefined,
             safe_link_interstitial: interstitialEnabled ? safeLinkInterstitial : undefined,
             bio_visible: bioEnabled ? bioVisible : undefined,
-        });
-        if (routingEnabled) {
-            const rules = routingRules.filter(r => r.destination_url.trim());
-            try {
-                await authFetch(API_ENDPOINTS.linkRules(link.id), {
+        };
+        if (expirationChanged && expiresAt && !shouldRemoveExpiration) {
+            payload.expires_at = new Date(expiresAt).toISOString();
+        }
+
+        try {
+            await onSave(link.id, payload);
+
+            if (routingEnabled) {
+                const rules = routingRules.filter(r => r.destination_url.trim());
+                const response = await authFetch(API_ENDPOINTS.linkRules(link.id), {
                     method: 'PUT',
                     body: JSON.stringify({ rules }),
                 });
-            } catch { /* surfaced on next open */ }
+                if (!response.ok) {
+                    throw new Error(await responseError(response, 'Failed to update routing rules'));
+                }
+            }
+
+            onClose();
+        } catch (error) {
+            setSaveError(error instanceof Error ? error.message : 'Failed to update link');
+        } finally {
+            setSaving(false);
         }
-        setSaving(false);
-        onClose();
     };
 
     return (
@@ -232,6 +261,12 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                         </div>
                     )}
                 </div>
+
+                {saveError && (
+                    <div role="alert" className="mt-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+                        {saveError}
+                    </div>
+                )}
 
                 <div className="flex gap-3 mt-6">
                     <button

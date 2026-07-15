@@ -422,7 +422,7 @@ fn validate_alias(alias: &str) -> Result<(), String> {
         "health", "links", "link", "auth", "admin", "orgs", "org", "organizations",
         "folders", "tags", "analytics", "contact", "ws", "sse", "api", "api-docs",
         "swagger-ui", "password", "verify", "preview", "me", "profile",
-        "robots.txt", "favicon.ico", "sitemap.xml",
+        "robots.txt", "favicon.ico", "sitemap.xml", "404",
         // frontend SPA routes (opn.onl/<route>)
         "features", "pricing", "about", "privacy", "terms", "faq", "docs",
         "developers", "login", "register", "dashboard", "settings",

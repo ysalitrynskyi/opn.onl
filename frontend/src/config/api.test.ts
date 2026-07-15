@@ -4,6 +4,7 @@ import {
     API_ENDPOINTS, 
     getAuthHeaders, 
     apiCall,
+    authFetch,
 } from './api';
 
 describe('API Configuration', () => {
@@ -154,6 +155,32 @@ describe('getAuthHeaders', () => {
         localStorage.setItem('token', 'test-jwt-token');
         const headers = getAuthHeaders() as Record<string, string>;
         expect(headers['Authorization']).toBe('Bearer test-jwt-token');
+    });
+});
+
+describe('authFetch', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        localStorage.clear();
+    });
+
+    it('does not clear a newer token when an older request returns 401', async () => {
+        let resolveResponse!: (response: Response) => void;
+        vi.mocked(global.fetch).mockImplementation(() => new Promise((resolve) => {
+            resolveResponse = resolve;
+        }));
+        localStorage.setItem('token', 'old-token');
+        localStorage.setItem('is_admin', 'false');
+
+        const request = authFetch('https://api.test.com/protected');
+        localStorage.setItem('token', 'new-token');
+        localStorage.setItem('is_admin', 'true');
+        resolveResponse({ status: 401 } as Response);
+
+        await expect(request).rejects.toThrow('Session expired');
+        expect(localStorage.getItem('token')).toBe('new-token');
+        expect(localStorage.getItem('is_admin')).toBe('true');
+        expect(localStorage.removeItem).not.toHaveBeenCalled();
     });
 });
 

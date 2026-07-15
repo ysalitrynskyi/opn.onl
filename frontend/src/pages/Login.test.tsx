@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '../test/test-utils';
 import Login from './Login';
 import { mockFetchResponse, mockFetchError, mockToken } from '../test/test-utils';
@@ -8,6 +8,17 @@ describe('Login Page', () => {
     vi.mocked(global.fetch).mockReset();
     vi.mocked(localStorage.getItem).mockReturnValue(null);
     vi.mocked(localStorage.setItem).mockClear();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'PublicKeyCredential', {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(navigator, 'credentials', {
+      configurable: true,
+      value: undefined,
+    });
   });
 
   it('renders login form', () => {
@@ -67,6 +78,53 @@ describe('Login Page', () => {
 
     await waitFor(() => {
       expect(localStorage.setItem).toHaveBeenCalledWith('token', mockToken);
+    });
+  });
+
+  it('stores admin metadata on successful passkey login', async () => {
+    Object.defineProperty(window, 'PublicKeyCredential', {
+      configurable: true,
+      value: class PublicKeyCredentialMock {},
+    });
+    const credential = {
+      id: 'credential-id',
+      rawId: new Uint8Array([1, 2, 3]).buffer,
+      type: 'public-key',
+      response: {
+        authenticatorData: new Uint8Array([4]).buffer,
+        clientDataJSON: new Uint8Array([5]).buffer,
+        signature: new Uint8Array([6]).buffer,
+        userHandle: null,
+      },
+    } as unknown as PublicKeyCredential;
+    Object.defineProperty(navigator, 'credentials', {
+      configurable: true,
+      value: {
+        get: vi.fn().mockResolvedValue(credential),
+      },
+    });
+    vi.mocked(global.fetch)
+      .mockResolvedValueOnce(mockFetchResponse({
+        options: {
+          publicKey: {
+            challenge: 'AQID',
+            allowCredentials: [{ id: 'BAUG', type: 'public-key' }],
+          },
+        },
+      }) as any)
+      .mockResolvedValueOnce(mockFetchResponse({
+        token: mockToken,
+        email_verified: true,
+        is_admin: true,
+      }) as any);
+
+    const { user } = render(<Login />);
+    await user.type(screen.getByLabelText(/email address/i), 'admin@example.com');
+    await user.click(screen.getByRole('button', { name: /sign in with passkey/i }));
+
+    await waitFor(() => {
+      expect(localStorage.setItem).toHaveBeenCalledWith('token', mockToken);
+      expect(localStorage.setItem).toHaveBeenCalledWith('is_admin', 'true');
     });
   });
 

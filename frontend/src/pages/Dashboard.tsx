@@ -402,14 +402,19 @@ export default function Dashboard() {
                 method: 'PUT',
                 body: JSON.stringify(data),
             });
-            if (res.ok) {
-                fetchLinks();
-            } else {
-                setError('Failed to update link');
+            if (!res.ok) {
+                const response = await res.json().catch(() => null) as { error?: string } | null;
+                throw new Error(response?.error || 'Failed to update link');
             }
+
+            await fetchLinks();
         } catch (error) {
             logger.error('Failed to update link', error);
-            setError('Network error. Please try again.');
+            const updateError = error instanceof Error
+                ? error
+                : new Error('Network error. Please try again.');
+            setError(updateError.message);
+            throw updateError;
         }
     };
 

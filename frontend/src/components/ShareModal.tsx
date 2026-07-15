@@ -9,6 +9,10 @@ interface ShareModalProps {
     onClose: () => void;
 }
 
+const openShareWindow = (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+};
+
 export default function ShareModal({ url, title = 'Check out this link', onClose }: ShareModalProps) {
     const [copied, setCopied] = useState(false);
     
@@ -34,31 +38,31 @@ export default function ShareModal({ url, title = 'Check out this link', onClose
             name: 'Email',
             icon: Mail,
             color: 'bg-blue-100 text-blue-700 hover:bg-blue-200',
-            onClick: () => window.open(`mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(url)}`),
+            onClick: () => openShareWindow(`mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(url)}`),
         },
         {
             name: 'Twitter',
             icon: Twitter,
             color: 'bg-sky-100 text-sky-700 hover:bg-sky-200',
-            onClick: () => window.open(`https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(title)}`, '_blank'),
+            onClick: () => openShareWindow(`https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(title)}`),
         },
         {
             name: 'Facebook',
             icon: Facebook,
             color: 'bg-blue-100 text-blue-700 hover:bg-blue-200',
-            onClick: () => window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`, '_blank'),
+            onClick: () => openShareWindow(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`),
         },
         {
             name: 'LinkedIn',
             icon: Linkedin,
             color: 'bg-blue-100 text-blue-700 hover:bg-blue-200',
-            onClick: () => window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`, '_blank'),
+            onClick: () => openShareWindow(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`),
         },
         {
             name: 'WhatsApp',
             icon: MessageCircle,
             color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200',
-            onClick: () => window.open(`https://wa.me/?text=${encodeURIComponent(title + ' ' + url)}`, '_blank'),
+            onClick: () => openShareWindow(`https://wa.me/?text=${encodeURIComponent(title + ' ' + url)}`),
         },
     ];
     

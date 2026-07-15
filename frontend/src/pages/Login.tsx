@@ -155,6 +155,13 @@ export default function Login() {
             }
 
             localStorage.setItem('token', data.token);
+            localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
+
+            if (data.email_verified === false) {
+                setNeedsVerification(true);
+                return;
+            }
+
             navigate('/dashboard');
         } catch (err: unknown) {
             logger.error('Passkey login error:', err);

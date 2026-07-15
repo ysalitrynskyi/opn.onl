@@ -155,6 +155,8 @@ pub struct LoginFinishRequest {
 #[derive(Serialize, ToSchema)]
 pub struct PasskeyAuthResponse {
     pub token: String,
+    pub email_verified: bool,
+    pub is_admin: bool,
 }
 
 /// Begin passkey enrollment for the authenticated caller. Returns a WebAuthn
@@ -448,7 +450,11 @@ pub async fn login_finish(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token").into_response(),
     };
 
-    (StatusCode::OK, Json(PasskeyAuthResponse { token })).into_response()
+    (StatusCode::OK, Json(PasskeyAuthResponse {
+        token,
+        email_verified: user.email_verified,
+        is_admin: user.is_admin,
+    })).into_response()
 }
 
 #[derive(Serialize, ToSchema)]
