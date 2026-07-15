@@ -55,11 +55,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-backend
+          # Disable flavor latest=auto — otherwise a vX.Y.Z tag build tags
+          # each single-arch image as :latest and stomps the multi-arch index.
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest-${{ steps.platform.outputs.suffix }},enable=${{ github.ref == 'refs/heads/release' }}
             type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
             # Per-platform semver tags; the create-manifests job merges them
-            # into a single multi-arch :X.Y.Z manifest.
+            # into a single multi-arch :X.Y.Z (and :latest) manifest.
             type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push
@@ -118,11 +122,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/opn-frontend
+          # Disable flavor latest=auto — otherwise a vX.Y.Z tag build tags
+          # each single-arch image as :latest and stomps the multi-arch index.
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest-${{ steps.platform.outputs.suffix }},enable=${{ github.ref == 'refs/heads/release' }}
             type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
             # Per-platform semver tags; the create-manifests job merges them
-            # into a single multi-arch :X.Y.Z manifest.
+            # into a single multi-arch :X.Y.Z (and :latest) manifest.
             type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push
@@ -185,6 +193,12 @@ jobs:
           for image in opn-backend opn-frontend; do
             docker buildx imagetools create \
               --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION \
+              ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-amd64 \
+              ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-arm64
+            # Keep rolling :latest as a multi-arch index pointing at this release
+            # (must not push single-arch :latest from the build jobs — see flavor).
+            docker buildx imagetools create \
+              --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:latest \
               ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-amd64 \
               ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-arm64
           done
