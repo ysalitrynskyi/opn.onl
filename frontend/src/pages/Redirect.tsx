@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link as RouterLink } from 'react-router-dom';
 import { ExternalLink, ShieldCheck, ShieldAlert, ShieldQuestion, ArrowRight } from 'lucide-react';
 import { API_ENDPOINTS } from '../config/api';
 
@@ -21,6 +21,8 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 export default function Redirect() {
     const { code } = useParams<{ code: string }>();
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
+    const unlock = searchParams.get('unlock');
     const [checking, setChecking] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [interstitial, setInterstitial] = useState<Interstitial | null>(null);
@@ -33,12 +35,14 @@ export default function Redirect() {
 
         const checkAndRedirect = async () => {
             try {
-                const previewRes = await fetch(`${API_ENDPOINTS.preview(code)}`);
+                const previewUrl = new URL(API_ENDPOINTS.preview(code));
+                if (unlock) previewUrl.searchParams.set('unlock', unlock);
+                const previewRes = await fetch(previewUrl.toString());
 
                 if (previewRes.ok) {
                     const data = await previewRes.json();
 
-                    if (data.has_password) {
+                    if (data.has_password && !unlock) {
                         navigate(`/password/${code}`, { replace: true });
                         return;
                     }
@@ -63,7 +67,9 @@ export default function Redirect() {
                     }
 
                     // Redirect via the backend (records the click, then 302s).
-                    window.location.href = `${API_URL}/${code}`;
+                    const redirectUrl = new URL(`${API_URL}/${encodeURIComponent(code)}`);
+                    if (unlock) redirectUrl.searchParams.set('unlock', unlock);
+                    window.location.assign(redirectUrl.toString());
                 } else if (previewRes.status === 404) {
                     navigate('/404', { replace: true });
                 } else {
@@ -73,12 +79,14 @@ export default function Redirect() {
             } catch (err) {
                 console.error('Redirect error:', err);
                 // On network error, still try to redirect via API (might work)
-                window.location.href = `${API_URL}/${code}`;
+                const redirectUrl = new URL(`${API_URL}/${encodeURIComponent(code)}`);
+                if (unlock) redirectUrl.searchParams.set('unlock', unlock);
+                window.location.assign(redirectUrl.toString());
             }
         };
 
         checkAndRedirect();
-    }, [code, navigate]);
+    }, [code, navigate, unlock]);
 
     if (error) {
         return (
@@ -92,6 +100,9 @@ export default function Redirect() {
     }
 
     if (interstitial) {
+        const continueUrl = new URL(`${API_URL}/${encodeURIComponent(code || '')}`);
+        continueUrl.searchParams.set('confirm', '1');
+        if (unlock) continueUrl.searchParams.set('unlock', unlock);
         const verdict = interstitial.verdict;
         const safe = verdict === 'safe';
         const danger = verdict === 'malicious' || verdict === 'suspicious';
@@ -145,7 +156,7 @@ export default function Redirect() {
                                     Cancel
                                 </RouterLink>
                                 <a
-                                    href={`${API_URL}/${code}?confirm=1`}
+                                    href={continueUrl.toString()}
                                     className="flex-1 flex items-center justify-center gap-2 bg-primary-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-primary-700 transition-colors"
                                 >
                                     Continue

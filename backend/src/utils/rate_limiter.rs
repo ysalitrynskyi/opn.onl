@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{State, ConnectInfo},
+    extract::{ConnectInfo, State},
     http::{HeaderMap, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -54,7 +54,7 @@ impl RateLimiter {
     /// Check if a request is allowed and increment counter
     pub fn check(&self, key: &str) -> RateLimitResult {
         let now = Instant::now();
-        
+
         // Get or create entry
         let entry = self.entries.entry(key.to_string()).or_insert_with(|| {
             Mutex::new(RateLimitEntry {
@@ -73,10 +73,12 @@ impl RateLimiter {
 
         // Check limit
         if entry.count >= self.config.max_requests {
-            let retry_after = self.config.window_duration
+            let retry_after = self
+                .config
+                .window_duration
                 .checked_sub(now.duration_since(entry.window_start))
                 .unwrap_or(Duration::ZERO);
-            
+
             return RateLimitResult::Limited {
                 retry_after_secs: retry_after.as_secs(),
                 limit: self.config.max_requests,
@@ -133,6 +135,9 @@ pub struct RateLimiters {
     pub redirect: Arc<RateLimiter>,
     /// Password verification rate limiter (5 per minute per IP+code - anti-bruteforce)
     pub password_verify: Arc<RateLimiter>,
+    /// Password verification CPU budget shared across every code for one IP.
+    /// Prevents bypassing the bcrypt limit by rotating through many short codes.
+    pub password_verify_ip: Arc<RateLimiter>,
     /// Contact form limiter (a few per hour per IP). The contact endpoint sends
     /// email, so it must be strict regardless of the general API tier.
     pub contact: Arc<RateLimiter>,
@@ -150,6 +155,8 @@ impl Default for RateLimiters {
             redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 1))),
             // Anti-bruteforce: only 5 password attempts per minute per IP+code
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(5, 60))),
+            // Bound total bcrypt work even when an attacker rotates link codes.
+            password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(20, 60))),
             // Contact form sends email: cap at 10 per hour per IP.
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 3600))),
         }
@@ -173,6 +180,7 @@ impl RateLimiters {
                 limiters.auth.cleanup();
                 limiters.redirect.cleanup();
                 limiters.password_verify.cleanup();
+                limiters.password_verify_ip.cleanup();
                 limiters.contact.cleanup();
                 tracing::debug!("Rate limiter cleanup completed");
             }
@@ -241,11 +249,7 @@ fn client_ip_config() -> &'static ClientIpConfig {
 
 /// Parse a single header/XFF token into a canonical IP string.
 fn parse_ip(token: &str) -> Option<String> {
-    token
-        .trim()
-        .parse::<IpAddr>()
-        .ok()
-        .map(|ip| ip.to_string())
+    token.trim().parse::<IpAddr>().ok().map(|ip| ip.to_string())
 }
 
 /// Resolve the real client IP from forwarding headers per `config`.
@@ -310,8 +314,20 @@ pub fn extract_ip(req: &Request<Body>) -> String {
 /// these is a normal API request, never a short-code redirect. Keep in sync with
 /// the routes registered in `build_router`.
 const API_PREFIXES: &[&str] = &[
-    "auth", "links", "orgs", "folders", "tags", "analytics", "admin", "contact",
-    "ws", "sse", "health", "api", "swagger-ui", "api-docs",
+    "auth",
+    "links",
+    "orgs",
+    "folders",
+    "tags",
+    "analytics",
+    "admin",
+    "contact",
+    "ws",
+    "sse",
+    "health",
+    "api",
+    "swagger-ui",
+    "api-docs",
 ];
 
 /// Classify a request path as a short-code redirect vs a normal API call.
@@ -342,8 +358,11 @@ pub async fn rate_limit_middleware(
     let is_redirect = is_redirect_path(path);
 
     if !is_redirect {
-        if let RateLimitResult::Limited { retry_after_secs, limit, remaining } = 
-            limiters.per_second.check(&format!("sec:{}", ip)) 
+        if let RateLimitResult::Limited {
+            retry_after_secs,
+            limit,
+            remaining,
+        } = limiters.per_second.check(&format!("sec:{}", ip))
         {
             let mut response = (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -351,24 +370,40 @@ pub async fn rate_limit_middleware(
                     "error": "Too many requests",
                     "retry_after": retry_after_secs,
                     "message": format!("Rate limit: maximum {} requests per second", limit)
-                }).to_string(),
-            ).into_response();
-            
+                })
+                .to_string(),
+            )
+                .into_response();
+
             let headers = response.headers_mut();
             headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
-            headers.insert("X-RateLimit-Remaining", remaining.to_string().parse().unwrap());
+            headers.insert(
+                "X-RateLimit-Remaining",
+                remaining.to_string().parse().unwrap(),
+            );
             headers.insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
             headers.insert("Content-Type", "application/json".parse().unwrap());
-            
+
             return response;
         }
     }
 
     // Choose appropriate limiter based on path
     let result = if path.ends_with("/verify") && req.method() == axum::http::Method::POST {
-        // Password verification - strict anti-bruteforce (5 per minute per IP+code)
-        let code = path.split('/').find(|s| !s.is_empty()).unwrap_or("unknown");
-        limiters.password_verify.check(&format!("pwverify:{}:{}", ip, code))
+        // Enforce both a per-code guessing budget and a total per-IP bcrypt
+        // budget. Without the latter, rotating codes creates unlimited buckets.
+        match limiters
+            .password_verify_ip
+            .check(&format!("pwverify-ip:{}", ip))
+        {
+            limited @ RateLimitResult::Limited { .. } => limited,
+            RateLimitResult::Allowed { .. } => {
+                let code = path.split('/').find(|s| !s.is_empty()).unwrap_or("unknown");
+                limiters
+                    .password_verify
+                    .check(&format!("pwverify:{}:{}", ip, code))
+            }
+        }
     } else if path.starts_with("/auth") {
         limiters.auth.check(&format!("auth:{}", ip))
     } else if path.starts_with("/links") && req.method() == axum::http::Method::POST {
@@ -387,10 +422,17 @@ pub async fn rate_limit_middleware(
             let mut response = next.run(req).await;
             let headers = response.headers_mut();
             headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
-            headers.insert("X-RateLimit-Remaining", remaining.to_string().parse().unwrap());
+            headers.insert(
+                "X-RateLimit-Remaining",
+                remaining.to_string().parse().unwrap(),
+            );
             response
         }
-        RateLimitResult::Limited { retry_after_secs, limit, remaining } => {
+        RateLimitResult::Limited {
+            retry_after_secs,
+            limit,
+            remaining,
+        } => {
             let mut response = (
                 StatusCode::TOO_MANY_REQUESTS,
                 serde_json::json!({
@@ -399,13 +441,16 @@ pub async fn rate_limit_middleware(
                     "message": format!("Rate limit exceeded. Please try again in {} seconds.", retry_after_secs)
                 }).to_string(),
             ).into_response();
-            
+
             let headers = response.headers_mut();
             headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
-            headers.insert("X-RateLimit-Remaining", remaining.to_string().parse().unwrap());
+            headers.insert(
+                "X-RateLimit-Remaining",
+                remaining.to_string().parse().unwrap(),
+            );
             headers.insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
             headers.insert("Content-Type", "application/json".parse().unwrap());
-            
+
             response
         }
     }
@@ -441,29 +486,87 @@ mod tests {
     #[test]
     fn test_rate_limiter_allows_within_limit() {
         let limiter = RateLimiter::new(RateLimitConfig::new(3, 60));
-        
-        assert!(matches!(limiter.check("test"), RateLimitResult::Allowed { remaining: 2, .. }));
-        assert!(matches!(limiter.check("test"), RateLimitResult::Allowed { remaining: 1, .. }));
-        assert!(matches!(limiter.check("test"), RateLimitResult::Allowed { remaining: 0, .. }));
+
+        assert!(matches!(
+            limiter.check("test"),
+            RateLimitResult::Allowed { remaining: 2, .. }
+        ));
+        assert!(matches!(
+            limiter.check("test"),
+            RateLimitResult::Allowed { remaining: 1, .. }
+        ));
+        assert!(matches!(
+            limiter.check("test"),
+            RateLimitResult::Allowed { remaining: 0, .. }
+        ));
     }
 
     #[test]
     fn test_rate_limiter_blocks_over_limit() {
         let limiter = RateLimiter::new(RateLimitConfig::new(2, 60));
-        
+
         limiter.check("test");
         limiter.check("test");
-        
-        assert!(matches!(limiter.check("test"), RateLimitResult::Limited { .. }));
+
+        assert!(matches!(
+            limiter.check("test"),
+            RateLimitResult::Limited { .. }
+        ));
     }
 
     #[test]
     fn test_rate_limiter_separate_keys() {
         let limiter = RateLimiter::new(RateLimitConfig::new(1, 60));
 
-        assert!(matches!(limiter.check("user1"), RateLimitResult::Allowed { .. }));
-        assert!(matches!(limiter.check("user2"), RateLimitResult::Allowed { .. }));
-        assert!(matches!(limiter.check("user1"), RateLimitResult::Limited { .. }));
+        assert!(matches!(
+            limiter.check("user1"),
+            RateLimitResult::Allowed { .. }
+        ));
+        assert!(matches!(
+            limiter.check("user2"),
+            RateLimitResult::Allowed { .. }
+        ));
+        assert!(matches!(
+            limiter.check("user1"),
+            RateLimitResult::Limited { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn password_ip_budget_cannot_be_bypassed_by_rotating_codes() {
+        use axum::{middleware, routing::post, Router};
+
+        let limiters = Arc::new(RateLimiters {
+            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            general: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            auth: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 60))),
+            password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
+            contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+        });
+        let app = Router::new()
+            .route("/:code/verify", post(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limiters,
+                rate_limit_middleware,
+            ));
+        let server = axum_test::TestServer::new(app).unwrap();
+
+        assert_eq!(
+            server.post("/first/verify").await.status_code(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            server.post("/second/verify").await.status_code(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            server.post("/third/verify").await.status_code(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "different codes must still consume one shared per-IP bcrypt budget"
+        );
     }
 
     mod client_ip_resolution {
@@ -496,7 +599,10 @@ mod tests {
                 ("x-forwarded-for", "203.0.113.7"),
                 ("x-real-ip", "203.0.113.7"),
             ]);
-            assert_eq!(client_ip_with(&headers, &cfg(false, Some("cf-connecting-ip"), 0)), None);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(false, Some("cf-connecting-ip"), 0)),
+                None
+            );
         }
 
         #[test]
@@ -538,7 +644,10 @@ mod tests {
         #[test]
         fn x_real_ip_is_not_implicitly_trusted() {
             let headers = headers_of(&[("x-real-ip", "203.0.113.7")]);
-            assert_eq!(client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)), None);
+            assert_eq!(
+                client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)),
+                None
+            );
         }
 
         #[test]
@@ -553,10 +662,8 @@ mod tests {
         #[test]
         fn malformed_values_resolve_to_none_without_panicking() {
             for value in ["", "not-an-ip", "  ,  ,", "999.999.999.999", "1.2.3.4;evil"] {
-                let headers = headers_of(&[
-                    ("cf-connecting-ip", value),
-                    ("x-forwarded-for", value),
-                ]);
+                let headers =
+                    headers_of(&[("cf-connecting-ip", value), ("x-forwarded-for", value)]);
                 assert_eq!(
                     client_ip_with(&headers, &cfg(true, Some("cf-connecting-ip"), 0)),
                     None,
@@ -624,6 +731,7 @@ mod tests {
                 auth: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
                 redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
                 password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+                password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
                 contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
             });
 
@@ -634,9 +742,7 @@ mod tests {
                     rate_limit_middleware,
                 ));
 
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tokio::spawn(async move {
                 axum::serve(
@@ -716,4 +822,3 @@ mod tests {
         }
     }
 }
-

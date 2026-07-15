@@ -1,12 +1,14 @@
 use parking_lot::RwLock;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set, TransactionTrait};
-use std::collections::HashMap;
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set, TransactionTrait,
+};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::entity::click_events;
+use crate::entity::{click_events, links};
 
 /// Click event data to be batched
 #[derive(Clone, Debug)]
@@ -56,7 +58,7 @@ impl ClickBuffer {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(100);
-        
+
         let flush_interval_secs = std::env::var("CLICK_FLUSH_INTERVAL")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -118,7 +120,11 @@ impl ClickBuffer {
     /// Number of clicks buffered (not yet flushed to the DB) for a link.
     /// Used so click limits account for in-flight clicks, not just the DB count.
     pub fn pending_count(&self, link_id: i32) -> i32 {
-        self.counters.read().get(&link_id).map(|c| c.count).unwrap_or(0)
+        self.counters
+            .read()
+            .get(&link_id)
+            .map(|c| c.count)
+            .unwrap_or(0)
     }
 
     /// Flush the buffer to the database
@@ -128,7 +134,7 @@ impl ClickBuffer {
             let mut buffer = self.events.write();
             std::mem::take(&mut *buffer)
         };
-        
+
         // Take counters from buffer
         let counters: HashMap<i32, ClickCounter> = {
             let mut buffer = self.counters.write();
@@ -139,77 +145,167 @@ impl ClickBuffer {
             return;
         }
 
-        info!("Flushing {} click events and {} counter updates", events.len(), counters.len());
+        info!(
+            "Flushing {} click events and {} counter updates",
+            events.len(),
+            counters.len()
+        );
 
-        // Persist the event rows and the aggregate count bumps in a single
-        // transaction so a partial failure can't leave click_events and
-        // links.click_count divergent. On any error we roll back and log — the
-        // batch is lost but the two stores stay consistent.
-        let txn = match db.begin().await {
-            Ok(t) => t,
-            Err(e) => {
-                error!("Click flush: failed to open transaction ({} events, {} counters lost): {}", events.len(), counters.len(), e);
-                return;
+        // Isolate each link in its own transaction. A hard-deleted parent can
+        // leave an orphan event in memory; one FK failure must not roll back and
+        // lose every unrelated click in the batch.
+        let mut events_by_link: HashMap<i32, Vec<ClickData>> = HashMap::new();
+        for event in events {
+            events_by_link.entry(event.link_id).or_default().push(event);
+        }
+        let mut counts: HashMap<i32, i32> = counters
+            .into_iter()
+            .map(|(link_id, counter)| (link_id, counter.count))
+            .collect();
+        let link_ids: HashSet<i32> = events_by_link
+            .keys()
+            .chain(counts.keys())
+            .copied()
+            .collect();
+
+        let mut retry_events = Vec::new();
+        let mut retry_counts: HashMap<i32, i32> = HashMap::new();
+
+        for link_id in link_ids {
+            let link_events = events_by_link.remove(&link_id).unwrap_or_default();
+            let count = counts.remove(&link_id).unwrap_or(0);
+
+            let txn = match db.begin().await {
+                Ok(txn) => txn,
+                Err(e) => {
+                    error!(
+                        "Click flush: failed to open transaction for link {}: {}",
+                        link_id, e
+                    );
+                    retry_events.extend(link_events);
+                    if count > 0 {
+                        retry_counts.insert(link_id, count);
+                    }
+                    continue;
+                }
+            };
+
+            // Lock the active parent while its events and counter are written.
+            // Missing/deleted parents are isolated and discarded; they cannot
+            // poison valid links in the same flush.
+            let parent = links::Entity::find_by_id(link_id)
+                .filter(links::Column::DeletedAt.is_null())
+                .lock_shared()
+                .one(&txn)
+                .await;
+            match parent {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    warn!(
+                        "Click flush: discarded {} orphan events and {} counter increments for link {}",
+                        link_events.len(),
+                        count,
+                        link_id
+                    );
+                    let _ = txn.rollback().await;
+                    continue;
+                }
+                Err(e) => {
+                    error!(
+                        "Click flush: failed to validate parent link {}: {}",
+                        link_id, e
+                    );
+                    let _ = txn.rollback().await;
+                    retry_events.extend(link_events);
+                    if count > 0 {
+                        retry_counts.insert(link_id, count);
+                    }
+                    continue;
+                }
             }
-        };
 
-        // Batch insert click events
-        if !events.is_empty() {
-            let models: Vec<click_events::ActiveModel> = events
-                .into_iter()
-                .map(|e| click_events::ActiveModel {
-                    link_id: Set(e.link_id),
-                    ip_address: Set(e.ip_address),
-                    user_agent: Set(e.user_agent),
-                    referer: Set(e.referer),
-                    country: Set(e.country),
-                    city: Set(e.city),
-                    region: Set(e.region),
-                    latitude: Set(e.latitude),
-                    longitude: Set(e.longitude),
-                    device: Set(e.device),
-                    browser: Set(e.browser),
-                    os: Set(e.os),
-                    ..Default::default()
-                })
-                .collect();
+            let persist_result = async {
+                if !link_events.is_empty() {
+                    let models: Vec<click_events::ActiveModel> = link_events
+                        .iter()
+                        .cloned()
+                        .map(|e| click_events::ActiveModel {
+                            link_id: Set(e.link_id),
+                            ip_address: Set(e.ip_address),
+                            user_agent: Set(e.user_agent),
+                            referer: Set(e.referer),
+                            country: Set(e.country),
+                            city: Set(e.city),
+                            region: Set(e.region),
+                            latitude: Set(e.latitude),
+                            longitude: Set(e.longitude),
+                            device: Set(e.device),
+                            browser: Set(e.browser),
+                            os: Set(e.os),
+                            ..Default::default()
+                        })
+                        .collect();
+                    click_events::Entity::insert_many(models).exec(&txn).await?;
+                }
 
-            if let Err(e) = click_events::Entity::insert_many(models).exec(&txn).await {
-                error!("Failed to batch insert click events (rolling back flush): {}", e);
-                let _ = txn.rollback().await;
-                return;
+                if count > 0 {
+                    use sea_orm::sea_query::Expr;
+                    links::Entity::update_many()
+                        .col_expr(
+                            links::Column::ClickCount,
+                            Expr::col(links::Column::ClickCount).add(count),
+                        )
+                        .filter(links::Column::Id.eq(link_id))
+                        .exec(&txn)
+                        .await?;
+                }
+
+                txn.commit().await
+            }
+            .await;
+
+            if let Err(e) = persist_result {
+                error!(
+                    "Click flush: failed to persist link {} (will retry {} events / {} increments): {}",
+                    link_id,
+                    link_events.len(),
+                    count,
+                    e
+                );
+                retry_events.extend(link_events);
+                if count > 0 {
+                    retry_counts.insert(link_id, count);
+                }
             }
         }
 
-        // Update click counts
-        for (link_id, counter) in counters {
-            use sea_orm::sea_query::Expr;
-            use crate::entity::links;
-
-            if let Err(e) = links::Entity::update_many()
-                .col_expr(
-                    links::Column::ClickCount,
-                    Expr::col(links::Column::ClickCount).add(counter.count),
-                )
-                .filter(links::Column::Id.eq(link_id))
-                .exec(&txn)
-                .await
-            {
-                error!("Failed to update click count for link {} (rolling back flush): {}", link_id, e);
-                let _ = txn.rollback().await;
-                return;
+        // Transient DB failures are requeued ahead of newly arrived clicks.
+        // Orphans are deliberately not requeued, avoiding an infinite poison
+        // loop after their parent link has been hard-deleted.
+        if !retry_events.is_empty() {
+            let mut buffer = self.events.write();
+            retry_events.append(&mut *buffer);
+            *buffer = retry_events;
+        }
+        if !retry_counts.is_empty() {
+            let mut buffer = self.counters.write();
+            for (link_id, count) in retry_counts {
+                buffer
+                    .entry(link_id)
+                    .and_modify(|counter| counter.count += count)
+                    .or_insert(ClickCounter { count });
             }
         }
 
-        if let Err(e) = txn.commit().await {
-            error!("Click flush: failed to commit transaction: {}", e);
+        if self.should_flush() {
+            self.flush_notify.notify_one();
         }
     }
 
     /// Start the background flush task
     pub fn start_flush_task(self: Arc<Self>, db: DatabaseConnection) {
         let interval_secs = self.flush_interval_secs;
-        
+
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(interval_secs));
 
@@ -236,4 +332,3 @@ impl Clone for ClickBuffer {
         }
     }
 }
-

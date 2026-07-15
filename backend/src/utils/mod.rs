@@ -8,6 +8,7 @@ pub mod backup;
 pub mod privacy;
 pub mod routing;
 pub mod url_policy;
+pub mod link_unlock;
 
 pub use jwt::*;
 pub use email::EmailService;

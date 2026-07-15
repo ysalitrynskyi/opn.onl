@@ -26,11 +26,16 @@ export default function PasswordPrompt() {
 
             const data = await res.json();
 
-            if (res.ok && data.url) {
-                // Redirect to the actual destination
-                window.location.href = data.url;
+            if (res.ok && data.redirect_url) {
+                // Re-enter the backend redirect endpoint with a short-lived
+                // unlock token. The backend still applies blocklists,
+                // interstitials, routing rules, click caps, and accounting.
+                window.location.assign(data.redirect_url);
             } else if (res.status === 401) {
                 setError('Incorrect password. Please try again.');
+            } else if (res.status === 429) {
+                const retryAfter = res.headers.get('Retry-After');
+                setError(`Too many attempts. Please try again in ${retryAfter || '60'} seconds.`);
             } else if (res.status === 410) {
                 setError('This link has expired.');
             } else if (res.status === 404) {

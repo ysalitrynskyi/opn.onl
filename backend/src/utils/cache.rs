@@ -1,4 +1,4 @@
-use redis::{AsyncCommands, Client};
+use redis::{Client, Script};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -30,7 +30,8 @@ impl CachedLink {
             "click_count": self.click_count,
             "user_id": self.user_id,
             "safe_link_interstitial": self.safe_link_interstitial,
-        }).to_string()
+        })
+        .to_string()
     }
 
     pub fn from_redis_value(value: &str) -> Option<Self> {
@@ -67,22 +68,20 @@ impl RedisCache {
             .unwrap_or(300); // Default 5 minutes
 
         match Client::open(redis_url.as_str()) {
-            Ok(client) => {
-                match client.get_connection_manager().await {
-                    Ok(conn) => {
-                        info!("Redis cache connected successfully");
-                        Some(Self {
-                            client: Some(client),
-                            connection: Arc::new(RwLock::new(Some(conn))),
-                            ttl_seconds: ttl,
-                        })
-                    }
-                    Err(e) => {
-                        warn!("Failed to connect to Redis: {}. Cache disabled.", e);
-                        None
-                    }
+            Ok(client) => match client.get_connection_manager().await {
+                Ok(conn) => {
+                    info!("Redis cache connected successfully");
+                    Some(Self {
+                        client: Some(client),
+                        connection: Arc::new(RwLock::new(Some(conn))),
+                        ttl_seconds: ttl,
+                    })
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to connect to Redis: {}. Cache disabled.", e);
+                    None
+                }
+            },
             Err(e) => {
                 warn!("Failed to create Redis client: {}. Cache disabled.", e);
                 None
@@ -90,34 +89,93 @@ impl RedisCache {
         }
     }
 
-    /// Get a cached link by code
-    pub async fn get_link(&self, code: &str) -> Option<CachedLink> {
-        let conn_guard = self.connection.read().await;
-        let conn = conn_guard.as_ref()?;
-        
-        let key = format!("link:{}", code);
-        let result: Option<String> = conn.clone().get(&key).await.ok()?;
-        
-        result.and_then(|v| CachedLink::from_redis_value(&v))
+    fn link_key(code: &str) -> String {
+        format!("link:{}", code)
     }
 
-    /// Cache a link
-    pub async fn set_link(&self, code: &str, link: &CachedLink) -> Result<(), redis::RedisError> {
-        let conn_guard = self.connection.read().await;
-        if let Some(conn) = conn_guard.as_ref() {
-            let key = format!("link:{}", code);
-            let value = link.to_redis_value();
-            let _: () = conn.clone().set_ex(&key, value, self.ttl_seconds).await?;
-        }
-        Ok(())
+    fn generation_key(code: &str) -> String {
+        format!("link_generation:{}", code)
     }
 
-    /// Invalidate a cached link
+    /// Read a cached link and its invalidation generation in one Redis command.
+    ///
+    /// Writers capture this generation before loading from Postgres and may only
+    /// populate the cache if it is unchanged. An invalidation that races the DB
+    /// lookup therefore prevents the stale row from being written back.
+    pub async fn get_link_versioned(
+        &self,
+        code: &str,
+    ) -> Result<(Option<CachedLink>, u64), redis::RedisError> {
+        let conn_guard = self.connection.read().await;
+        let Some(conn) = conn_guard.as_ref() else {
+            return Ok((None, 0));
+        };
+
+        let mut conn = conn.clone();
+        let (value, generation): (Option<String>, Option<u64>) = redis::cmd("MGET")
+            .arg(Self::link_key(code))
+            .arg(Self::generation_key(code))
+            .query_async(&mut conn)
+            .await?;
+
+        Ok((
+            value.as_deref().and_then(CachedLink::from_redis_value),
+            generation.unwrap_or(0),
+        ))
+    }
+
+    /// Cache a link only if no invalidation occurred since the caller's read.
+    pub async fn set_link_if_generation(
+        &self,
+        code: &str,
+        expected_generation: u64,
+        link: &CachedLink,
+    ) -> Result<bool, redis::RedisError> {
+        let conn_guard = self.connection.read().await;
+        let Some(conn) = conn_guard.as_ref() else {
+            return Ok(false);
+        };
+
+        let mut conn = conn.clone();
+        let wrote: i32 = Script::new(
+            r#"
+            local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+            if current ~= tonumber(ARGV[1]) then
+                return 0
+            end
+            redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+            return 1
+            "#,
+        )
+        .key(Self::generation_key(code))
+        .key(Self::link_key(code))
+        .arg(expected_generation)
+        .arg(link.to_redis_value())
+        .arg(self.ttl_seconds)
+        .invoke_async(&mut conn)
+        .await?;
+
+        Ok(wrote == 1)
+    }
+
+    /// Atomically advance the invalidation generation and delete the cached row.
+    ///
+    /// The generation key intentionally outlives cached values. Expiring it could
+    /// let a very slow stale writer observe generation zero again.
     pub async fn invalidate_link(&self, code: &str) -> Result<(), redis::RedisError> {
         let conn_guard = self.connection.read().await;
         if let Some(conn) = conn_guard.as_ref() {
-            let key = format!("link:{}", code);
-            let _: () = conn.clone().del(&key).await?;
+            let mut conn = conn.clone();
+            let _: i32 = Script::new(
+                r#"
+                redis.call('INCR', KEYS[1])
+                return redis.call('DEL', KEYS[2])
+                "#,
+            )
+            .key(Self::generation_key(code))
+            .key(Self::link_key(code))
+            .invoke_async(&mut conn)
+            .await?;
         }
         Ok(())
     }
@@ -144,7 +202,56 @@ impl Clone for RedisCache {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    fn cached(url: &str) -> CachedLink {
+        CachedLink {
+            id: 1,
+            original_url: url.to_string(),
+            has_password: false,
+            expires_at: None,
+            starts_at: None,
+            max_clicks: None,
+            click_count: 0,
+            user_id: Some(1),
+            safe_link_interstitial: false,
+        }
+    }
 
+    #[test]
+    fn cached_link_roundtrips() {
+        let original = cached("https://example.com/path");
+        let decoded = CachedLink::from_redis_value(&original.to_redis_value()).unwrap();
+        assert_eq!(decoded.id, original.id);
+        assert_eq!(decoded.original_url, original.original_url);
+        assert_eq!(decoded.user_id, original.user_id);
+    }
 
+    #[tokio::test]
+    async fn invalidation_generation_rejects_stale_writer() {
+        let Some(cache) = RedisCache::new().await else {
+            eprintln!("skipping Redis race test: REDIS_URL is not set or unavailable");
+            return;
+        };
+        let code = format!("cache-race-{}", uuid::Uuid::new_v4());
 
+        let (_, generation) = cache.get_link_versioned(&code).await.unwrap();
+        cache.invalidate_link(&code).await.unwrap();
+
+        assert!(
+            !cache
+                .set_link_if_generation(&code, generation, &cached("https://stale.example"))
+                .await
+                .unwrap(),
+            "a writer that started before invalidation must not repopulate stale data"
+        );
+
+        let (value, new_generation) = cache.get_link_versioned(&code).await.unwrap();
+        assert!(value.is_none());
+        assert!(new_generation > generation);
+
+        cache.invalidate_link(&code).await.unwrap();
+    }
+}

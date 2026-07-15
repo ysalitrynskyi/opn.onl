@@ -1,29 +1,34 @@
 use axum::{
-    extract::{State, Path, Query},
-    http::{StatusCode, HeaderMap},
-    Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
+    Json,
 };
-use serde::{Deserialize, Serialize};
-use sea_orm::*;
-use validator::Validate;
-use rand::{thread_rng, Rng};
-use rand::distributions::Alphanumeric;
-use chrono::{DateTime, Utc};
 use bcrypt::{hash, DEFAULT_COST};
+use chrono::{DateTime, Utc};
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
+use sea_orm::*;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::Validate;
 
-use crate::AppState;
-use crate::entity::{links, link_tags, tags, blocked_links, blocked_domains, users, click_events};
-use crate::utils::jwt::decode_jwt;
-use crate::utils::geoip::{lookup_ip, parse_user_agent};
+use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::websocket::ClickEvent;
+use crate::utils::geoip::{lookup_ip, parse_user_agent};
+use crate::utils::jwt::decode_jwt;
+use crate::AppState;
 
-/// Check if URL or its domain is blocked
-async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String> {
+/// Check if URL or its domain is blocked. Database failures fail closed: a cache
+/// hit must never become an unchecked redirect because the blocklist query died.
+async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), String> {
     let parsed_url = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
     // Normalized host: lowercase + strip trailing dot (defeats simple casing / FQDN-dot bypass).
-    let host = parsed_url.host_str().unwrap_or("").trim_end_matches('.').to_lowercase();
+    let host = parsed_url
+        .host_str()
+        .unwrap_or("")
+        .trim_end_matches('.')
+        .to_lowercase();
 
     // Exact-URL block. Also check the trailing-slash-trimmed form so a "/" tweak can't bypass.
     let mut url_candidates = vec![url.to_string()];
@@ -35,10 +40,14 @@ async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String>
         .filter(blocked_links::Column::Url.is_in(url_candidates))
         .one(db)
         .await
-        .ok()
-        .flatten();
+        .map_err(|_| "Unable to verify link safety".to_string())?;
     if let Some(blocked) = blocked_url {
-        return Err(format!("This URL is blocked: {}", blocked.reason.unwrap_or_else(|| "Policy violation".to_string())));
+        return Err(format!(
+            "This URL is blocked: {}",
+            blocked
+                .reason
+                .unwrap_or_else(|| "Policy violation".to_string())
+        ));
     }
 
     // Domain block (host + subdomains). A block on "evil.com" must also block
@@ -62,39 +71,121 @@ async fn check_blocked(db: &DatabaseConnection, url: &str) -> Result<(), String>
             .filter(blocked_domains::Column::Domain.is_in(candidates))
             .one(db)
             .await
-            .ok()
-            .flatten();
+            .map_err(|_| "Unable to verify link safety".to_string())?;
         if let Some(bd) = hit {
-            return Err(format!("This domain is blocked: {}", bd.reason.unwrap_or_else(|| "Policy violation".to_string())));
+            return Err(format!(
+                "This domain is blocked: {}",
+                bd.reason.unwrap_or_else(|| "Policy violation".to_string())
+            ));
         }
     }
 
     Ok(())
 }
 
-/// Returns true if the folder exists and the user may place links in it: either
-/// they personally own it, or it belongs to an organization they are a member
-/// of. Prevents assigning a link into another user's folder (cross-tenant IDOR).
-async fn user_can_use_folder(db: &DatabaseConnection, folder_id: i32, user_id: i32) -> bool {
-    use crate::entity::{folders, org_members};
-    let folder = match folders::Entity::find_by_id(folder_id).one(db).await.ok().flatten() {
-        Some(f) => f,
-        None => return false,
+/// Confirm that a cached redirect still represents the active database row.
+///
+/// Generation checks prevent stale writes after successful invalidation. This
+/// read is the fail-closed backstop for a security-state invalidation that could
+/// not reach Redis (delete, password/cap/interstitial change, or routing rules).
+async fn cached_link_is_still_plain(
+    db: &DatabaseConnection,
+    code: &str,
+    cached: &crate::utils::cache::CachedLink,
+) -> Result<bool, DbErr> {
+    let Some(current) = links::Entity::find_by_id(cached.id)
+        .filter(links::Column::Code.eq(code))
+        .filter(links::Column::DeletedAt.is_null())
+        .one(db)
+        .await?
+    else {
+        return Ok(false);
     };
-    if folder.user_id == Some(user_id) {
-        return true;
+
+    if !current.is_active()
+        || current.original_url != cached.original_url
+        || current.password_hash.is_some()
+        || current.max_clicks.is_some()
+        || current.burn_after_reading
+        || current.safe_link_interstitial
+        || current.user_id != cached.user_id
+        || current.expires_at.map(|value| value.and_utc().timestamp()) != cached.expires_at
+        || current.starts_at.map(|value| value.and_utc().timestamp()) != cached.starts_at
+    {
+        return Ok(false);
     }
-    if let Some(org_id) = folder.org_id {
-        return org_members::Entity::find()
+
+    let routing_rule_count = crate::entity::routing_rules::Entity::find()
+        .filter(crate::entity::routing_rules::Column::LinkId.eq(current.id))
+        .count(db)
+        .await?;
+    Ok(routing_rule_count == 0)
+}
+
+/// Validate organization membership plus exact folder/tag ownership scope.
+///
+/// Call this inside the same transaction that inserts or updates the link. Row
+/// locks prevent a concurrent membership/resource deletion from slipping between
+/// authorization and persistence.
+pub(crate) async fn validate_link_resource_scope<C: ConnectionTrait>(
+    db: &C,
+    user_id: i32,
+    org_id: Option<i32>,
+    folder_id: Option<i32>,
+    tag_ids: &[i32],
+) -> Result<bool, DbErr> {
+    use crate::entity::{folders, org_members};
+
+    if let Some(org_id) = org_id {
+        let member = org_members::Entity::find()
             .filter(org_members::Column::OrgId.eq(org_id))
             .filter(org_members::Column::UserId.eq(user_id))
+            .lock_shared()
             .one(db)
-            .await
-            .ok()
-            .flatten()
-            .is_some();
+            .await?;
+        if member.is_none() {
+            return Ok(false);
+        }
     }
-    false
+
+    if let Some(folder_id) = folder_id {
+        let Some(folder) = folders::Entity::find_by_id(folder_id)
+            .lock_shared()
+            .one(db)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let matches = match org_id {
+            Some(org_id) => folder.org_id == Some(org_id),
+            None => folder.org_id.is_none() && folder.user_id == Some(user_id),
+        };
+        if !matches {
+            return Ok(false);
+        }
+    }
+
+    let mut unique_tag_ids = tag_ids.to_vec();
+    unique_tag_ids.sort_unstable();
+    unique_tag_ids.dedup();
+    if !unique_tag_ids.is_empty() {
+        let found = tags::Entity::find()
+            .filter(tags::Column::Id.is_in(unique_tag_ids.clone()))
+            .lock_shared()
+            .all(db)
+            .await?;
+        if found.len() != unique_tag_ids.len() {
+            return Ok(false);
+        }
+        if found.iter().any(|tag| match org_id {
+            Some(org_id) => tag.org_id != Some(org_id),
+            None => tag.org_id.is_some() || tag.user_id != Some(user_id),
+        }) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }
 
 // ============= Configuration =============
@@ -623,6 +714,29 @@ pub async fn invalidate_cached_codes(state: &AppState, codes: &[String]) {
     }
 }
 
+async fn invalidate_cached_code_required(state: &AppState, code: &str) -> Result<(), String> {
+    if let Some(cache) = &state.redis_cache {
+        cache
+            .invalidate_link(code)
+            .await
+            .map_err(|error| format!("Cache invalidation failed: {error}"))?;
+    }
+    Ok(())
+}
+
+async fn invalidate_cached_codes_required(
+    state: &AppState,
+    codes: &[String],
+) -> Result<(), String> {
+    let mut first_error = None;
+    for code in codes {
+        if let Err(error) = invalidate_cached_code_required(state, code).await {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 /// Codes of a user's currently-active links, captured *before* a bulk soft-delete
 /// so their cache entries can be dropped afterwards (soft-delete is an UPDATE, so
 /// nothing else clears them). `invalidate_cached_codes` no-ops without Redis, so
@@ -694,15 +808,33 @@ fn interstitial_feature_enabled() -> bool {
 }
 
 fn redirect_confirmed(confirm: Option<&str>) -> bool {
-    confirm.map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+    confirm
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
-fn frontend_interstitial_redirect(code: &str) -> axum::response::Response {
+fn frontend_interstitial_redirect(code: &str, unlock: Option<&str>) -> axum::response::Response {
     // Send to the SPA interstitial route (/r/<code>), NOT the bare short link —
     // the bare path is proxied straight back here and would loop. The SPA shows
     // the "you're leaving" screen and re-hits this endpoint with ?confirm=1.
     let frontend = get_base_url().trim_end_matches('/').to_string();
-    Redirect::temporary(&format!("{frontend}/r/{code}")).into_response()
+    let mut location = format!("{frontend}/r/{code}");
+    if let Some(unlock) = unlock {
+        location.push_str("?unlock=");
+        location.push_str(&urlencoding::encode(unlock));
+    }
+    Redirect::temporary(&location).into_response()
+}
+
+/// Redirect to a destination without leaking a short-lived unlock query in the
+/// next request's Referer header.
+fn destination_redirect(url: &str) -> axum::response::Response {
+    let mut response = Redirect::temporary(url).into_response();
+    response.headers_mut().insert(
+        axum::http::header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    response
 }
 
 async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
@@ -878,27 +1010,6 @@ pub async fn create_link(
         None
     };
 
-    // If org_id is provided, verify user is a member
-    if let Some(org_id) = payload.org_id {
-        if let Some(uid) = user_id {
-            use crate::entity::org_members;
-            let is_member = org_members::Entity::find()
-                .filter(org_members::Column::OrgId.eq(org_id))
-                .filter(org_members::Column::UserId.eq(uid))
-                .one(&state.db)
-                .await
-                .ok()
-                .flatten()
-                .is_some();
-            
-            if !is_member {
-                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Not a member of this organization".to_string() })).into_response();
-            }
-        } else {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Authentication required to create org links".to_string() })).into_response();
-        }
-    }
-
     // Validate scheduling / limit inputs.
     if let Some(max) = payload.max_clicks {
         if max <= 0 {
@@ -907,19 +1018,13 @@ pub async fn create_link(
     }
     if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at) {
         if starts >= expires {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "starts_at must be before expires_at".to_string() })).into_response();
-        }
-    }
-
-    // Verify folder ownership if one was specified (prevents assigning the link
-    // into another user's folder).
-    if let Some(folder_id) = payload.folder_id {
-        let allowed = match user_id {
-            Some(uid) => user_can_use_folder(&state.db, folder_id, uid).await,
-            None => false,
-        };
-        if !allowed {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Folder not found or access denied".to_string() })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "starts_at must be before expires_at".to_string(),
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -959,12 +1064,63 @@ pub async fn create_link(
         ..Default::default()
     };
 
-    // Insert the link and its tags atomically so a tag failure can't leave a
-    // half-created link behind.
+    let mut tag_ids = payload.tag_ids.clone().unwrap_or_default();
+    tag_ids.sort_unstable();
+    tag_ids.dedup();
+
+    // Authorize folder/tag/org scope and insert everything in one transaction.
+    // This closes both direct cross-tenant IDs and authorization/deletion races.
     let txn = match state.db.begin().await {
         Ok(t) => t,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
+
+    if payload.org_id.is_some() || payload.folder_id.is_some() || !tag_ids.is_empty() {
+        let Some(uid) = user_id else {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Authentication required for folders, tags, or organization links"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        };
+        match validate_link_resource_scope(&txn, uid, payload.org_id, payload.folder_id, &tag_ids)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = txn.rollback().await;
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Folder, tag, or organization access denied".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Database error".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
 
     let link_id = match links::Entity::insert(link).exec(&txn).await {
         Ok(link_res) => link_res.last_insert_id,
@@ -974,18 +1130,21 @@ pub async fn create_link(
         }
     };
 
-    // Add tags if provided
-    if let Some(tag_ids) = payload.tag_ids {
-        for tag_id in tag_ids {
-            let link_tag = link_tags::ActiveModel {
-                link_id: Set(link_id),
-                tag_id: Set(tag_id),
-                ..Default::default()
-            };
-            if link_tag.insert(&txn).await.is_err() {
-                let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to attach tags".to_string() })).into_response();
-            }
+    for tag_id in tag_ids {
+        let link_tag = link_tags::ActiveModel {
+            link_id: Set(link_id),
+            tag_id: Set(tag_id),
+            ..Default::default()
+        };
+        if link_tag.insert(&txn).await.is_err() {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to attach tags".to_string(),
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -1048,6 +1207,11 @@ pub struct LinkPreviewResponse {
     pub safe_link_interstitial: bool,
 }
 
+#[derive(Deserialize, Default)]
+pub struct PreviewQuery {
+    unlock: Option<String>,
+}
+
 /// Get link preview (add + to any short link URL to see preview)
 #[utoipa::path(
     get,
@@ -1064,6 +1228,7 @@ pub struct LinkPreviewResponse {
 pub async fn preview_link(
     State(state): State<AppState>,
     Path(code): Path<String>,
+    Query(query): Query<PreviewQuery>,
 ) -> impl IntoResponse {
     // Remove trailing + if present (for URL compatibility)
     let clean_code = code.trim_end_matches('+');
@@ -1104,13 +1269,23 @@ pub async fn preview_link(
                 "unknown"
             };
 
-            // Do not disclose the destination of a password-protected or
-            // burn-after-reading link through the public, unauthenticated
-            // preview: the password gate exists to keep the destination secret,
-            // and a burn link is a one-time secret (preview does not consume the
-            // burn). Plain links — including plain safe-link-interstitial links —
-            // still show their destination so the interstitial can render it.
-            let protected = link.password_hash.is_some() || link.burn_after_reading;
+            let password_unlocked = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
+                (Some(password_hash), Some(token)) => {
+                    crate::utils::link_unlock::validate_link_unlock_token(
+                        token,
+                        link.id,
+                        &link.code,
+                        password_hash,
+                    )
+                }
+                _ => false,
+            };
+
+            // A valid unlock may reveal an ordinary password-protected target so
+            // the interstitial can describe it. Burn links stay secret until the
+            // authoritative redirect consumes their one-time click.
+            let protected =
+                (link.password_hash.is_some() && !password_unlocked) || link.burn_after_reading;
             let (shown_url, shown_domain) = if protected {
                 (String::new(), String::new())
             } else {
@@ -1144,6 +1319,8 @@ pub async fn preview_link(
 pub struct RedirectQuery {
     /// Set to `1` after the visitor confirms the safe-link interstitial in the SPA.
     confirm: Option<String>,
+    /// Short-lived password proof issued by POST /{code}/verify.
+    unlock: Option<String>,
 }
 
 /// Redirect to original URL
@@ -1168,57 +1345,111 @@ pub async fn redirect_link(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     use crate::utils::cache::CachedLink;
-    
+
+    let mut cache_generation = None;
+
     // Try to get from Redis cache first (for non-password-protected links)
     if let Some(cache) = &state.redis_cache {
-        if let Some(cached) = cache.get_link(&code).await {
-            // Skip cache for password-protected links, max_clicks links, and
-            // interstitial links (need per-request interstitial/confirm handling).
-            if !cached.has_password && cached.max_clicks.is_none() && !cached.safe_link_interstitial {
-                // Check if link is active based on cached data
-                let now = chrono::Utc::now().timestamp();
-                
-                if let Some(starts_at) = cached.starts_at {
-                    if now < starts_at {
-                        return (StatusCode::GONE, "Link is scheduled to activate later").into_response();
+        match cache.get_link_versioned(&code).await {
+            Ok((cached, generation)) => {
+                cache_generation = Some(generation);
+                if let Some(cached) = cached {
+                    // Skip cache for password-protected links, max_clicks links,
+                    // and interstitial links (need per-request handling).
+                    if !cached.has_password
+                        && cached.max_clicks.is_none()
+                        && !cached.safe_link_interstitial
+                    {
+                        let still_plain =
+                            match cached_link_is_still_plain(&state.db, &code, &cached).await {
+                                Ok(still_plain) => still_plain,
+                                Err(error) => {
+                                    tracing::error!(
+                                        "Failed to verify cached link state for {}: {}",
+                                        code,
+                                        error
+                                    );
+                                    return (
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        "Unable to verify link state",
+                                    )
+                                        .into_response();
+                                }
+                            };
+                        if !still_plain {
+                            if let Err(error) = cache.invalidate_link(&code).await {
+                                tracing::error!(
+                                    "Failed to invalidate stale cached link {}: {}",
+                                    code,
+                                    error
+                                );
+                            }
+                        } else {
+                            // Blocklist checks remain authoritative on cache hits.
+                            if check_blocked(&state.db, &cached.original_url)
+                                .await
+                                .is_err()
+                            {
+                                if let Err(error) = cache.invalidate_link(&code).await {
+                                    tracing::error!(
+                                        "Failed to invalidate blocked cached link {}: {}",
+                                        code,
+                                        error
+                                    );
+                                }
+                                return (StatusCode::GONE, "This link has been disabled")
+                                    .into_response();
+                            }
+
+                            let now = chrono::Utc::now().timestamp();
+
+                            if let Some(starts_at) = cached.starts_at {
+                                if now < starts_at {
+                                    return (
+                                        StatusCode::GONE,
+                                        "Link is scheduled to activate later",
+                                    )
+                                        .into_response();
+                                }
+                            }
+
+                            if let Some(expires_at) = cached.expires_at {
+                                if now > expires_at {
+                                    return (StatusCode::GONE, "Link has expired").into_response();
+                                }
+                            }
+
+                            // Record click using buffer (synchronous, non-blocking).
+                            // Only uncapped links reach the cache fast-path.
+                            record_click_buffered(
+                                &state.click_buffer,
+                                state.ws_state.as_ref().map(|w| w.as_ref()),
+                                cached.id,
+                                &code,
+                                cached.user_id,
+                                ClickAccounting::Buffered {
+                                    db_click_count: cached.click_count,
+                                },
+                                &headers,
+                            );
+
+                            // Invalidate after click so any cached accounting snapshot
+                            // is not reused. Failure is non-security-critical here.
+                            let cache_clone = state.redis_cache.clone();
+                            let code_clone = code.clone();
+                            tokio::spawn(async move {
+                                if let Some(c) = cache_clone {
+                                    let _ = c.invalidate_link(&code_clone).await;
+                                }
+                            });
+
+                            return destination_redirect(&cached.original_url);
+                        }
                     }
                 }
-                
-                if let Some(expires_at) = cached.expires_at {
-                    if now > expires_at {
-                        return (StatusCode::GONE, "Link has expired").into_response();
-                    }
-                }
-                
-                if let Some(max_clicks) = cached.max_clicks {
-                    if cached.click_count >= max_clicks {
-                        return (StatusCode::GONE, "Link has reached maximum clicks").into_response();
-                    }
-                }
-                
-                // Record click using buffer (synchronous, non-blocking).
-                // Only uncapped links reach the cache fast-path (gated above),
-                // so the buffer owns the aggregate count here.
-                record_click_buffered(
-                    &state.click_buffer,
-                    state.ws_state.as_ref().map(|w| w.as_ref()),
-                    cached.id,
-                    &code,
-                    cached.user_id,
-                    ClickAccounting::Buffered { db_click_count: cached.click_count },
-                    &headers,
-                );
-                
-                // Invalidate cache after click
-                let cache_clone = state.redis_cache.clone();
-                let code_clone = code.clone();
-                tokio::spawn(async move {
-                    if let Some(c) = cache_clone {
-                        let _ = c.invalidate_link(&code_clone).await;
-                    }
-                });
-                
-                return Redirect::temporary(&cached.original_url).into_response();
+            }
+            Err(error) => {
+                tracing::warn!("Redis cache read failed for {}: {}", code, error);
             }
         }
     }
@@ -1263,47 +1494,85 @@ pub async fn redirect_link(
             }
         }
 
-        if link.password_hash.is_some() {
-            let provided_password = headers.get("x-link-password")
-                .and_then(|h| h.to_str().ok());
+        let mut active_unlock = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
+            (Some(password_hash), Some(token))
+                if crate::utils::link_unlock::validate_link_unlock_token(
+                    token,
+                    link.id,
+                    &link.code,
+                    password_hash,
+                ) =>
+            {
+                Some(token.to_string())
+            }
+            _ => None,
+        };
 
-            if let Some(pwd) = provided_password {
-                // Anti-bruteforce: this inline password check lives on the redirect
-                // hot path, which the rate-limit middleware classifies as a redirect
-                // (100/s) — so it is NOT covered by the 5/min password_verify limiter
-                // that guards POST /:code/verify. Enforce that same limiter here,
-                // keyed by IP+code, before spending a (deliberately slow) bcrypt.
+        if let Some(password_hash) = link.password_hash.as_deref() {
+            if active_unlock.is_none() {
+                let Some(pwd) = headers
+                    .get("x-link-password")
+                    .and_then(|header| header.to_str().ok())
+                else {
+                    let frontend_url = std::env::var("FRONTEND_URL")
+                        .unwrap_or_else(|_| "http://localhost:5173".to_string());
+                    return Redirect::temporary(&format!("{}/password/{}", frontend_url, code))
+                        .into_response();
+                };
+
+                // Header-based password checks bypass the /verify middleware, so
+                // enforce both the per-IP CPU budget and per-IP+code budget here.
                 let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
                     .unwrap_or_else(|| "unknown".to_string());
-                if let crate::utils::rate_limiter::RateLimitResult::Limited { retry_after_secs, .. } =
-                    state.rate_limiters.password_verify.check(&format!("pwverify:{}:{}", ip, code))
-                {
-                    return (
-                        StatusCode::TOO_MANY_REQUESTS,
-                        [("Retry-After", retry_after_secs.to_string())],
-                        "Too many password attempts. Try again later.",
-                    )
-                        .into_response();
-                }
-
-                if let Some(hash_str) = &link.password_hash {
-                    // bcrypt::verify is CPU-heavy (cost 12, ~250ms) and blocking.
-                    // Run it on the blocking pool so a burst of attempts can't
-                    // starve the async runtime's worker threads.
-                    let pwd = pwd.to_string();
-                    let hash_str = hash_str.clone();
-                    let verified = tokio::task::spawn_blocking(move || {
-                        bcrypt::verify(&pwd, &hash_str).unwrap_or(false)
-                    })
-                    .await
-                    .unwrap_or(false);
-                    if !verified {
-                        return (StatusCode::UNAUTHORIZED, "Invalid password").into_response();
+                for (limiter, key) in [
+                    (
+                        &state.rate_limiters.password_verify_ip,
+                        format!("pwverify-ip:{ip}"),
+                    ),
+                    (
+                        &state.rate_limiters.password_verify,
+                        format!("pwverify:{ip}:{code}"),
+                    ),
+                ] {
+                    if let crate::utils::rate_limiter::RateLimitResult::Limited {
+                        retry_after_secs,
+                        ..
+                    } = limiter.check(&key)
+                    {
+                        return (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            [("Retry-After", retry_after_secs.to_string())],
+                            "Too many password attempts. Try again later.",
+                        )
+                            .into_response();
                     }
                 }
-            } else {
-                let frontend_url = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
-                return Redirect::temporary(&format!("{}/password/{}", frontend_url, code)).into_response();
+
+                let pwd = pwd.to_string();
+                let password_hash_owned = password_hash.to_string();
+                let verified = tokio::task::spawn_blocking(move || {
+                    bcrypt::verify(&pwd, &password_hash_owned).unwrap_or(false)
+                })
+                .await
+                .unwrap_or(false);
+                if !verified {
+                    return (StatusCode::UNAUTHORIZED, "Invalid password").into_response();
+                }
+
+                active_unlock = match crate::utils::link_unlock::create_link_unlock_token(
+                    link.id,
+                    &link.code,
+                    password_hash,
+                ) {
+                    Some(token) => Some(token),
+                    None => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Unable to create password unlock",
+                        )
+                            .into_response();
+                    }
+                };
             }
         }
 
@@ -1311,7 +1580,7 @@ pub async fn redirect_link(
             && interstitial_feature_enabled()
             && !redirect_confirmed(query.confirm.as_deref())
         {
-            return frontend_interstitial_redirect(&code);
+            return frontend_interstitial_redirect(&code, active_unlock.as_deref());
         }
 
         // Smart conditional routing. When enabled and this link has rules, resolve a
@@ -1401,13 +1670,14 @@ pub async fn redirect_link(
                 accounting,
                 &headers,
             );
-            return Redirect::temporary(&destination).into_response();
+            return destination_redirect(&destination);
         }
 
         // Cache the link for future requests (only plain redirects — no password,
         // click cap, or interstitial, which need the DB path).
-        if link.password_hash.is_none() && link.max_clicks.is_none() && !link.safe_link_interstitial {
-            if let Some(cache) = &state.redis_cache {
+        if link.password_hash.is_none() && link.max_clicks.is_none() && !link.safe_link_interstitial
+        {
+            if let (Some(cache), Some(generation)) = (&state.redis_cache, cache_generation) {
                 let cached = CachedLink {
                     id: link.id,
                     original_url: link.original_url.clone(),
@@ -1419,7 +1689,12 @@ pub async fn redirect_link(
                     user_id: link.user_id,
                     safe_link_interstitial: link.safe_link_interstitial,
                 };
-                let _ = cache.set_link(&code, &cached).await;
+                if let Err(error) = cache
+                    .set_link_if_generation(&code, generation, &cached)
+                    .await
+                {
+                    tracing::warn!("Redis cache write failed for {}: {}", code, error);
+                }
             }
         }
 
@@ -1437,7 +1712,7 @@ pub async fn redirect_link(
             &headers,
         );
 
-        Redirect::temporary(&link.original_url).into_response()
+        destination_redirect(&link.original_url)
     } else {
         (StatusCode::NOT_FOUND, "Link not found").into_response()
     }
@@ -1580,86 +1855,121 @@ fn record_click_buffered(
 pub async fn verify_link_password(
     State(state): State<AppState>,
     Path(code): Path<String>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Json(payload): Json<VerifyPasswordRequest>,
 ) -> impl IntoResponse {
-    let link = links::Entity::find()
+    let link = match links::Entity::find()
         .filter(links::Column::Code.eq(&code))
         .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
-        .unwrap_or(None);
-
-    if let Some(link) = link {
-        if !link.is_active() {
-            let reason = link.inactive_reason().unwrap_or("Link is inactive");
-            return (StatusCode::GONE, Json(ErrorResponse { error: reason.to_string() })).into_response();
+    {
+        Ok(Some(link)) => link,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Link not found".to_string(),
+                }),
+            )
+                .into_response();
         }
-
-        // Advisory parity with redirect_link: respect clicks still buffered
-        // from before a cap was added. The atomic consume below is the
-        // enforcement point.
-        if let Some(max) = link.max_clicks {
-            if link.click_count + state.click_buffer.pending_count(link.id) >= max {
-                let msg = if link.burn_after_reading {
-                    "This one-time link has already been opened"
-                } else {
-                    "Link has reached maximum clicks"
-                };
-                return (StatusCode::GONE, Json(ErrorResponse { error: msg.to_string() })).into_response();
-            }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response();
         }
+    };
 
-        if let Some(hash_str) = &link.password_hash {
-            if !bcrypt::verify(&payload.password, hash_str).unwrap_or(false) {
-                return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid password".to_string() })).into_response();
-            }
-        }
-
-        // This endpoint discloses the destination URL (after verification for
-        // password links; historically for passwordless links too), so capped
-        // links must consume their click atomically here exactly like a
-        // redirect — otherwise a burst of verifies opens a burn link more than
-        // once, and the passwordless form would leak it without any count.
-        let accounting = if link.max_clicks.is_some() {
-            match consume_capped_click(&state.db, link.id).await {
-                Ok(Some(new_count)) => ClickAccounting::Consumed { new_click_count: new_count },
-                Ok(None) => {
-                    let msg = if link.burn_after_reading {
-                        "This one-time link has already been opened"
-                    } else {
-                        "Link has reached maximum clicks"
-                    };
-                    return (StatusCode::GONE, Json(ErrorResponse { error: msg.to_string() })).into_response();
-                }
-                // Fail closed: never disclose the URL uncounted.
-                Err(_) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
-                }
-            }
-        } else {
-            ClickAccounting::Buffered { db_click_count: link.click_count }
-        };
-
-        // Password links count every unlock as a click (legacy behavior, same
-        // as a redirect). Passwordless links only record when the cap consumed
-        // one above — uncapped passwordless verifies stay uncounted as before.
-        if link.password_hash.is_some() || matches!(accounting, ClickAccounting::Consumed { .. }) {
-            record_click_buffered(
-                &state.click_buffer,
-                state.ws_state.as_ref().map(|w| w.as_ref()),
-                link.id,
-                &link.code,
-                link.user_id,
-                accounting,
-                &headers,
-            );
-        }
-
-        return (StatusCode::OK, Json(serde_json::json!({ "url": link.original_url }))).into_response();
+    if !link.is_active() {
+        let reason = link.inactive_reason().unwrap_or("Link is inactive");
+        return (
+            StatusCode::GONE,
+            Json(ErrorResponse {
+                error: reason.to_string(),
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+    if let Some(max) = link.max_clicks {
+        if link.click_count + state.click_buffer.pending_count(link.id) >= max {
+            let msg = if link.burn_after_reading {
+                "This one-time link has already been opened"
+            } else {
+                "Link has reached maximum clicks"
+            };
+            return (
+                StatusCode::GONE,
+                Json(ErrorResponse {
+                    error: msg.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let Some(password_hash) = link.password_hash.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Link does not require a password".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // bcrypt is deliberately expensive; never block a Tokio worker thread.
+    let supplied_password = payload.password;
+    let hash_for_verify = password_hash.to_string();
+    let valid = tokio::task::spawn_blocking(move || {
+        bcrypt::verify(&supplied_password, &hash_for_verify).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+    if !valid {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Invalid password".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let Some(unlock) =
+        crate::utils::link_unlock::create_link_unlock_token(link.id, &link.code, password_hash)
+    else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Unable to create password unlock".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Verification is only a proof exchange. The browser must re-enter the
+    // authoritative GET /{code} pipeline, which performs blocklist,
+    // interstitial, conditional routing, cap consumption, and click accounting.
+    let redirect_url = format!(
+        "{}/{}?unlock={}",
+        get_base_url().trim_end_matches('/'),
+        urlencoding::encode(&link.code),
+        urlencoding::encode(&unlock),
+    );
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "redirect_url": redirect_url,
+            "expires_in_seconds": crate::utils::link_unlock::LINK_UNLOCK_TTL_SECONDS,
+        })),
+    )
+        .into_response()
 }
 
 /// Get QR code for a link
@@ -2425,12 +2735,25 @@ pub async fn replace_routing_rules(
         return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
     }
 
-    // Invalidate the cache so the link leaves the fast path and picks up its rules.
-    if let Some(cache) = &state.redis_cache {
-        let _ = cache.invalidate_link(&link.code).await;
+    // A stale fast-path entry would bypass the newly saved routing rules.
+    if invalidate_cached_code_required(&state, &link.code)
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Routing rules saved, but cache invalidation failed",
+        )
+            .into_response();
     }
 
-    (StatusCode::OK, Json(RoutingRulesSavedResponse { count: validated.len() })).into_response()
+    (
+        StatusCode::OK,
+        Json(RoutingRulesSavedResponse {
+            count: validated.len(),
+        }),
+    )
+        .into_response()
 }
 
 /// Get user's links with filtering
@@ -2586,17 +2909,44 @@ pub async fn delete_link(
         let mut active_link: links::ActiveModel = link.clone().into();
         active_link.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
 
-        // Invalidate cache
-        if let Some(cache) = &state.redis_cache {
-            let _ = cache.invalidate_link(&link.code).await;
-        }
-
         match active_link.update(&state.db).await {
-            Ok(_) => (StatusCode::OK, Json(SuccessResponse { message: "Link deleted successfully".to_string() })).into_response(),
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete link".to_string() })).into_response(),
+            Ok(_) => {
+                if invalidate_cached_code_required(&state, &link.code)
+                    .await
+                    .is_err()
+                {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Link deleted, but cache invalidation failed".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+                (
+                    StatusCode::OK,
+                    Json(SuccessResponse {
+                        message: "Link deleted successfully".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete link".to_string(),
+                }),
+            )
+                .into_response(),
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Link not found".to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -2702,9 +3052,6 @@ pub async fn update_link(
         }
 
         if let Some(folder_id) = payload.folder_id {
-            if !user_can_use_folder(&state.db, folder_id, user_id).await {
-                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Folder not found or access denied".to_string() })).into_response();
-            }
             active_link.folder_id = Set(Some(folder_id));
         }
 
@@ -2764,45 +3111,121 @@ pub async fn update_link(
             }
         }
 
-        match active_link.update(&state.db).await {
+        let txn = match state.db.begin().await {
+            Ok(txn) => txn,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Database error".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        if let Some(folder_id) = payload.folder_id {
+            match validate_link_resource_scope(&txn, user_id, link.org_id, Some(folder_id), &[])
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = txn.rollback().await;
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ErrorResponse {
+                            error: "Folder not found or access denied".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(_) => {
+                    let _ = txn.rollback().await;
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Database error".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        match active_link.update(&txn).await {
             Ok(updated) => {
-                // Invalidate cache
-                if let Some(cache) = &state.redis_cache {
-                    let _ = cache.invalidate_link(&updated.code).await;
+                if txn.commit().await.is_err() {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to update link".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+                if invalidate_cached_code_required(&state, &updated.code)
+                    .await
+                    .is_err()
+                {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Link updated, but cache invalidation failed".to_string(),
+                        }),
+                    )
+                        .into_response();
                 }
 
                 let tags = get_link_tags(&state.db, updated.id).await;
                 let base_url = get_base_url();
                 let api_url = get_api_url();
-                (StatusCode::OK, Json(LinkResponse {
-                    id: updated.id,
-                    code: updated.code.clone(),
-                    short_url: format!("{}/{}", base_url, updated.code),
-                    api_url: format!("{}/{}", api_url, updated.code),
-                    original_url: updated.original_url.clone(),
-                    title: updated.title.clone(),
-                    click_count: updated.click_count,
-                    created_at: updated.created_at.to_string(),
-                    expires_at: updated.expires_at.map(|d| d.to_string()),
-                    has_password: updated.password_hash.is_some(),
-                    notes: updated.notes.clone(),
-                    folder_id: updated.folder_id,
-                    org_id: updated.org_id,
-                    starts_at: updated.starts_at.map(|s| s.to_string()),
-                    max_clicks: updated.max_clicks,
-                    burn_after_reading: updated.burn_after_reading,
-                    burned_at: updated.burned_at.map(|d| d.to_string()),
-                    safe_link_interstitial: updated.safe_link_interstitial,
-                    bio_visible: updated.bio_visible,
-                    is_active: updated.is_active(),
-                    is_pinned: updated.is_pinned,
-                    tags,
-                })).into_response()
+                (
+                    StatusCode::OK,
+                    Json(LinkResponse {
+                        id: updated.id,
+                        code: updated.code.clone(),
+                        short_url: format!("{}/{}", base_url, updated.code),
+                        api_url: format!("{}/{}", api_url, updated.code),
+                        original_url: updated.original_url.clone(),
+                        title: updated.title.clone(),
+                        click_count: updated.click_count,
+                        created_at: updated.created_at.to_string(),
+                        expires_at: updated.expires_at.map(|d| d.to_string()),
+                        has_password: updated.password_hash.is_some(),
+                        notes: updated.notes.clone(),
+                        folder_id: updated.folder_id,
+                        org_id: updated.org_id,
+                        starts_at: updated.starts_at.map(|s| s.to_string()),
+                        max_clicks: updated.max_clicks,
+                        burn_after_reading: updated.burn_after_reading,
+                        burned_at: updated.burned_at.map(|d| d.to_string()),
+                        safe_link_interstitial: updated.safe_link_interstitial,
+                        bio_visible: updated.bio_visible,
+                        is_active: updated.is_active(),
+                        is_pinned: updated.is_pinned,
+                        tags,
+                    }),
+                )
+                    .into_response()
             }
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update link".to_string() })).into_response(),
+            Err(_) => {
+                let _ = txn.rollback().await;
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Failed to update link".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Link not found".to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -2856,33 +3279,6 @@ pub async fn bulk_create_links(
                     errors: vec!["Please verify your email address before creating links".to_string()] 
                 })).into_response();
             }
-        }
-    }
-
-    // If org_id is provided, verify user is a member
-    if let Some(org_id) = payload.org_id {
-        if let Some(uid) = user_id {
-            use crate::entity::org_members;
-            let is_member = org_members::Entity::find()
-                .filter(org_members::Column::OrgId.eq(org_id))
-                .filter(org_members::Column::UserId.eq(uid))
-                .one(&state.db)
-                .await
-                .ok()
-                .flatten()
-                .is_some();
-            
-            if !is_member {
-                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse { 
-                    links: vec![], 
-                    errors: vec!["Not a member of this organization".to_string()] 
-                })).into_response();
-            }
-        } else {
-            return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse { 
-                links: vec![], 
-                errors: vec!["Authentication required to create org links".to_string()] 
-            })).into_response();
         }
     }
 
@@ -2945,6 +3341,36 @@ pub async fn bulk_create_links(
             .map(char::from)
             .collect();
 
+        let txn = match state.db.begin().await {
+            Ok(txn) => txn,
+            Err(error) => {
+                errors.push(format!("Failed to shorten {}: {}", url, error));
+                continue;
+            }
+        };
+
+        let scope_allowed = validate_link_resource_scope(
+            &txn,
+            user_id.expect("bulk create authentication checked above"),
+            payload.org_id,
+            payload.folder_id,
+            &[],
+        )
+        .await;
+        match scope_allowed {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = txn.rollback().await;
+                errors.push(format!("{}: folder or organization access denied", url));
+                continue;
+            }
+            Err(error) => {
+                let _ = txn.rollback().await;
+                errors.push(format!("Failed to shorten {}: {}", url, error));
+                continue;
+            }
+        }
+
         let link = links::ActiveModel {
             original_url: Set(url.clone()),
             code: Set(code.clone()),
@@ -2966,6 +3392,7 @@ pub async fn bulk_create_links(
                 }
             }
             Err(e) => {
+                let _ = txn.rollback().await;
                 errors.push(format!("Failed to shorten {}: {}", url, e));
             }
         }
@@ -3026,7 +3453,18 @@ pub async fn bulk_delete_links(
 
     // Drop cached redirects for the deleted codes so they stop resolving now,
     // not after the cache TTL.
-    invalidate_cached_codes(&state, &invalidated).await;
+    if invalidate_cached_codes_required(&state, &invalidated)
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Links deleted, but cache invalidation failed".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
     (StatusCode::OK, Json(BulkDeleteResponse { deleted })).into_response()
 }
@@ -3069,12 +3507,24 @@ pub async fn bulk_update_links(
         if let Some(link) = link {
             if link.user_id == Some(user_id) {
                 let code = link.code.clone();
+                let org_id = link.org_id;
                 let mut active_link: links::ActiveModel = link.into();
 
+                let txn = match state.db.begin().await {
+                    Ok(txn) => txn,
+                    Err(_) => continue,
+                };
                 if let Some(folder_id) = payload.folder_id {
-                    // Skip the folder move for items whose target folder the user can't use.
-                    if user_can_use_folder(&state.db, folder_id, user_id).await {
-                        active_link.folder_id = Set(Some(folder_id));
+                    match validate_link_resource_scope(&txn, user_id, org_id, Some(folder_id), &[])
+                        .await
+                    {
+                        Ok(true) => {
+                            active_link.folder_id = Set(Some(folder_id));
+                        }
+                        _ => {
+                            let _ = txn.rollback().await;
+                            continue;
+                        }
                     }
                 }
 
@@ -3084,9 +3534,16 @@ pub async fn bulk_update_links(
                     active_link.expires_at = Set(Some(expires.naive_utc()));
                 }
 
-                if active_link.update(&state.db).await.is_ok() {
-                    updated += 1;
-                    invalidated.push(code);
+                match active_link.update(&txn).await {
+                    Ok(_) => {
+                        if txn.commit().await.is_ok() {
+                            updated += 1;
+                            invalidated.push(code);
+                        }
+                    }
+                    Err(_) => {
+                        let _ = txn.rollback().await;
+                    }
                 }
             }
         }
@@ -3094,7 +3551,18 @@ pub async fn bulk_update_links(
 
     // An expiry/state change must drop the cached redirect, or the old target
     // keeps serving until the cache TTL.
-    invalidate_cached_codes(&state, &invalidated).await;
+    if invalidate_cached_codes_required(&state, &invalidated)
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Links updated, but cache invalidation failed".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
     (StatusCode::OK, Json(BulkUpdateResponse { updated })).into_response()
 }
