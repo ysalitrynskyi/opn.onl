@@ -898,14 +898,21 @@ pub async fn update_profile(
             active_user.bio = Set(Some(bio));
         }
         if let Some(website) = payload.website {
-            // Validate website URL
-            if !website.is_empty()
-                && url::Url::parse(&website).is_err() {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid website URL".to_string() })).into_response();
+            // http(s) only — Url::parse alone accepts javascript:/data: (stored XSS).
+            if !website.is_empty() {
+                if let Err(e) = crate::utils::url_policy::validate_http_https_url(&website) {
+                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
                 }
+            }
             active_user.website = Set(if website.is_empty() { None } else { Some(website) });
         }
         if let Some(avatar) = payload.avatar_url {
+            // Same policy as website: only fetchable http(s) public URLs.
+            if !avatar.is_empty() {
+                if let Err(e) = crate::utils::url_policy::validate_http_https_url(&avatar) {
+                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+                }
+            }
             active_user.avatar_url = Set(if avatar.is_empty() { None } else { Some(avatar) });
         }
         if let Some(location) = payload.location {

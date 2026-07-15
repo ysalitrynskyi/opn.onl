@@ -67,6 +67,42 @@ pub fn host_is_raw_ip(url: &str) -> bool {
     )
 }
 
+/// Hostnames that must never be accepted as user-supplied http(s) destinations
+/// (profile website / avatar, and optionally short-link targets). Blocking by
+/// name covers the cases raw-IP checks miss (`localhost`, `.local`, cloud
+/// metadata DNS aliases).
+pub fn is_disallowed_hostname(host: &str) -> bool {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    h.is_empty()
+        || h == "localhost"
+        || h == "metadata.google.internal"
+        || h == "metadata"
+        || h.ends_with(".localhost")
+        || h.ends_with(".local")
+        || h.ends_with(".internal")
+        || h.ends_with(".lan")
+}
+
+/// Require a parseable `http`/`https` URL with a real host that is not an
+/// obvious local/internal name. Used for profile website / avatar fields where
+/// `Url::parse` alone wrongly accepts `javascript:` and `data:`.
+pub fn validate_http_https_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("URL must use http or https protocol".to_string());
+    }
+    let Some(host) = parsed.host_str() else {
+        return Err("URL must have a valid host".to_string());
+    };
+    if is_disallowed_hostname(host) {
+        return Err("Links to local/internal hosts are not allowed".to_string());
+    }
+    if host_is_raw_ip(url) {
+        return Err("Links to raw IP addresses are not allowed".to_string());
+    }
+    Ok(())
+}
+
 /// One-line, human-readable reason a URL looks like abuse, or `None` if it does
 /// not trip any detector. Used by the admin panel to label links.
 pub fn suspicion_reason(url: &str) -> Option<String> {
@@ -126,5 +162,25 @@ mod tests {
     fn domain_that_contains_digits_is_not_raw_ip() {
         assert!(!host_is_raw_ip("https://3m.com/product"));
         assert!(!host_is_raw_ip("https://192-168-1-1.example.com/x"));
+    }
+
+    #[test]
+    fn rejects_javascript_and_data_schemes() {
+        assert!(validate_http_https_url("javascript:alert(1)").is_err());
+        assert!(validate_http_https_url("data:text/html,hi").is_err());
+        assert!(validate_http_https_url("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn rejects_localhost_and_metadata_hosts() {
+        assert!(validate_http_https_url("http://localhost/x").is_err());
+        assert!(validate_http_https_url("https://foo.localhost/x").is_err());
+        assert!(validate_http_https_url("http://metadata.google.internal/").is_err());
+        assert!(validate_http_https_url("http://127.0.0.1/").is_err());
+    }
+
+    #[test]
+    fn accepts_normal_https() {
+        assert!(validate_http_https_url("https://example.com/me").is_ok());
     }
 }

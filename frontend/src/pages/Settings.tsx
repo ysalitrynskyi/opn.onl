@@ -9,6 +9,7 @@ import {
 import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
+import { isSafeHttpUrl } from '../utils';
 
 interface Passkey {
     id: number;
@@ -392,6 +393,9 @@ export default function Settings() {
         setError('');
 
         try {
+            if (website && !isSafeHttpUrl(website)) {
+                throw new Error('Website must be an http or https URL');
+            }
             const res = await authFetch(API_ENDPOINTS.updateProfile, {
                 method: 'PUT',
                 body: JSON.stringify({
@@ -653,16 +657,16 @@ export default function Settings() {
                         ) : (
                             <>
                                 {/* Profile info display */}
-                                {(profile?.bio || profile?.website || profile?.location) && (
+                                {(profile?.bio || isSafeHttpUrl(profile?.website) || profile?.location) && (
                                     <div className="space-y-2 pb-4 border-b border-line">
                                         {profile?.bio && (
                                             <p className="text-muted leading-relaxed">{profile.bio}</p>
                                         )}
-                                        {(profile?.website || profile?.location) && (
+                                        {(isSafeHttpUrl(profile?.website) || profile?.location) && (
                                             <div className="flex flex-wrap gap-4 text-sm text-muted">
-                                                {profile?.website && (
-                                                    <a href={profile.website} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 transition-colors hover:text-primary-600">
-                                                        <Globe className="h-3.5 w-3.5 text-faint" /> {profile.website.replace(/^https?:\/\//, '')}
+                                                {isSafeHttpUrl(profile?.website) && (
+                                                    <a href={profile!.website!} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 transition-colors hover:text-primary-600">
+                                                        <Globe className="h-3.5 w-3.5 text-faint" /> {profile!.website!.replace(/^https?:\/\//, '')}
                                                     </a>
                                                 )}
                                                 {profile?.location && (
