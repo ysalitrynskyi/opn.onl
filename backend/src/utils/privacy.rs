@@ -76,19 +76,19 @@ pub async fn scrub_expired_click_pii(
 }
 
 /// Erase visitor PII (IP, user-agent, referer) from every click event on a
-/// user's links. Called on account deletion so a departing user's link
+/// user's personal links. Called on account deletion so a departing user's link
 /// analytics stop retaining per-visitor identifiers immediately, rather than
 /// waiting out the retention window. Aggregate dimensions (country, city,
 /// device, browser, …) are kept so historical counts still work.
-pub async fn purge_click_pii_for_user(
-    db: &DatabaseConnection,
+pub async fn purge_click_pii_for_user<C: ConnectionTrait>(
+    db: &C,
     user_id: i32,
 ) -> Result<u64, sea_orm::DbErr> {
     let res = db
         .execute(Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Postgres,
             "UPDATE click_events SET ip_address = NULL, user_agent = NULL, referer = NULL \
-             WHERE link_id IN (SELECT id FROM links WHERE user_id = $1)",
+             WHERE link_id IN (SELECT id FROM links WHERE user_id = $1 AND org_id IS NULL)",
             [user_id.into()],
         ))
         .await?;

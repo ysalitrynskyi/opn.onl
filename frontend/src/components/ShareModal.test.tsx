@@ -133,12 +133,13 @@ describe('ShareModal Component', () => {
             const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
             render(<ShareModal {...defaultProps} />);
 
-            // Sharing is handled by <button> elements that call window.open(url, '_blank').
+            // Sharing is handled by buttons that isolate the new browsing context.
             fireEvent.click(screen.getByRole('button', { name: /twitter/i }));
 
             expect(openSpy).toHaveBeenCalledWith(
                 expect.stringContaining('twitter.com'),
-                '_blank'
+                '_blank',
+                'noopener,noreferrer'
             );
             openSpy.mockRestore();
         });

@@ -4,7 +4,9 @@ use std::env;
 pub async fn setup_test_db() -> DatabaseConnection {
     dotenvy::dotenv().ok();
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-    let db = Database::connect(&db_url).await.expect("Failed to connect to test database");
+    let db = Database::connect(&db_url)
+        .await
+        .expect("Failed to connect to test database");
     // Ensure the schema exists. Run migrations exactly once per test process:
     // tests run in parallel, and concurrent Migrator::up calls on a fresh
     // database race on creating the seaql_migrations table.
@@ -12,7 +14,9 @@ pub async fn setup_test_db() -> DatabaseConnection {
     MIGRATIONS
         .get_or_init(|| async {
             use migration::{Migrator, MigratorTrait};
-            Migrator::up(&db, None).await.expect("Failed to run migrations on test database");
+            Migrator::up(&db, None)
+                .await
+                .expect("Failed to run migrations on test database");
         })
         .await;
     db
@@ -20,7 +24,7 @@ pub async fn setup_test_db() -> DatabaseConnection {
 
 pub fn get_test_token() -> String {
     use chrono::{Duration, Utc};
-    use jsonwebtoken::{encode, Header, EncodingKey};
+    use jsonwebtoken::{encode, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -42,13 +46,17 @@ pub fn get_test_token() -> String {
         user_id: 1,
     };
 
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
-        .expect("Failed to create test token")
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .expect("Failed to create test token")
 }
 
 pub fn get_test_admin_token() -> String {
     use chrono::{Duration, Utc};
-    use jsonwebtoken::{encode, Header, EncodingKey};
+    use jsonwebtoken::{encode, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -72,8 +80,12 @@ pub fn get_test_admin_token() -> String {
         is_admin: true,
     };
 
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
-        .expect("Failed to create admin test token")
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .expect("Failed to create admin test token")
 }
 
 /// Spawn the REAL application router (all routes, all middleware) backed by
@@ -110,6 +122,34 @@ pub async fn spawn_real_app_ws() -> (
     std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
 ) {
     use std::sync::Arc;
+    let ws_state = Arc::new(opn_onl_backend::handlers::websocket::WsState::new());
+    spawn_real_app_ws_with_state(ws_state).await
+}
+
+/// WebSocket/SSE app with a short auth-revalidation interval for revocation
+/// tests; production keeps the default 30-second interval.
+#[allow(dead_code)]
+pub async fn spawn_real_app_ws_with_interval(
+    interval: std::time::Duration,
+) -> (
+    axum_test::TestServer,
+    DatabaseConnection,
+    std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
+) {
+    use std::sync::Arc;
+    let ws_state = Arc::new(
+        opn_onl_backend::handlers::websocket::WsState::with_auth_revalidate_interval(interval),
+    );
+    spawn_real_app_ws_with_state(ws_state).await
+}
+
+async fn spawn_real_app_ws_with_state(
+    ws_state: std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
+) -> (
+    axum_test::TestServer,
+    DatabaseConnection,
+    std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
+) {
     std::env::set_var("FORCE_HTTPS", "false");
     std::env::set_var("TRUST_PROXY_HEADERS", "false");
     if std::env::var("JWT_SECRET").is_err() {
@@ -117,7 +157,6 @@ pub async fn spawn_real_app_ws() -> (
     }
 
     let db = setup_test_db().await;
-    let ws_state = Arc::new(opn_onl_backend::handlers::websocket::WsState::new());
     let mut state = opn_onl_backend::AppState::for_tests(db.clone()).await;
     state.ws_state = Some(ws_state.clone());
 
@@ -142,7 +181,10 @@ pub async fn mark_email_verified(db: &DatabaseConnection, user_id: i32) {
         .expect("user not found");
     let mut active: users::ActiveModel = user.into();
     active.email_verified = Set(true);
-    active.update(db).await.expect("failed to mark user verified");
+    active
+        .update(db)
+        .await
+        .expect("failed to mark user verified");
 }
 
 /// Generate a unique test email
@@ -152,9 +194,9 @@ pub fn unique_email() -> String {
 
 /// Generate a unique short code
 pub fn unique_code() -> String {
-    use rand::{thread_rng, Rng};
     use rand::distributions::Alphanumeric;
-    
+    use rand::{thread_rng, Rng};
+
     thread_rng()
         .sample_iter(&Alphanumeric)
         .take(6)

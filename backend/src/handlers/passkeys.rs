@@ -55,7 +55,15 @@ impl<V> ExpiringMap<V> {
 }
 
 static REG_STATE: Lazy<ExpiringMap<PasskeyRegistration>> = Lazy::new(ExpiringMap::new);
-static AUTH_STATE: Lazy<ExpiringMap<PasskeyAuthentication>> = Lazy::new(ExpiringMap::new);
+
+struct PendingPasskeyAuthentication {
+    user_id: i32,
+    token_version: i32,
+    state: PasskeyAuthentication,
+}
+
+static AUTH_STATE: Lazy<ExpiringMap<PendingPasskeyAuthentication>> =
+    Lazy::new(ExpiringMap::new);
 
 // Helper to get Webauthn instance
 fn get_webauthn() -> Webauthn {
@@ -155,6 +163,8 @@ pub struct LoginFinishRequest {
 #[derive(Serialize, ToSchema)]
 pub struct PasskeyAuthResponse {
     pub token: String,
+    pub email_verified: bool,
+    pub is_admin: bool,
 }
 
 /// Begin passkey enrollment for the authenticated caller. Returns a WebAuthn
@@ -186,12 +196,12 @@ pub async fn register_start(
     // authenticated identity, NOT from the client-supplied `username`. This
     // closes the account-takeover hole where anyone who knew a victim's email
     // could enroll their own authenticator onto the victim's account.
-    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
 
-    let user = match users::Entity::find_by_id(user_id)
+    let user = match users::Entity::find_by_id(auth.user_id)
         .filter(users::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
@@ -199,6 +209,13 @@ pub async fn register_start(
         Ok(Some(u)) => u,
         _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
     };
+    if !user.email_verified {
+        return (
+            StatusCode::FORBIDDEN,
+            "Verify your email before registering a passkey",
+        )
+            .into_response();
+    }
 
     // Deterministic UUID from ID for demo purposes
     let user_unique_id = Uuid::from_bytes(user.id.to_le_bytes().repeat(4)[0..16].try_into().unwrap());
@@ -251,12 +268,12 @@ pub async fn register_finish(
     // Same authenticated-identity rule as register_start: the credential is bound
     // to the CALLER's account, never to a client-supplied username. The pending
     // challenge is looked up by the authenticated user id.
-    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
 
-    let reg_state = match REG_STATE.remove(&user_id.to_string()) {
+    let reg_state = match REG_STATE.remove(&auth.user_id.to_string()) {
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, "Registration state not found").into_response(),
     };
@@ -267,13 +284,40 @@ pub async fn register_finish(
         Err(_) => return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response(),
     };
 
-    let user = match users::Entity::find_by_id(user_id)
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to register passkey",
+            )
+                .into_response()
+        }
+    };
+
+    let user = match users::Entity::find_by_id(auth.user_id)
         .filter(users::Column::DeletedAt.is_null())
-        .one(&state.db)
+        .lock_exclusive()
+        .one(&txn)
         .await
     {
-        Ok(Some(user)) => user,
-        _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        Ok(Some(user))
+            if user.token_version == auth.token_version && user.email_verified =>
+        {
+            user
+        }
+        Ok(Some(_)) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::FORBIDDEN,
+                "Verify your email and start registration again",
+            )
+                .into_response();
+        }
+        _ => {
+            let _ = txn.rollback().await;
+            return (StatusCode::NOT_FOUND, "User not found").into_response();
+        }
     };
 
     // Save passkey to DB - serialize the passkey for storage
@@ -287,12 +331,13 @@ pub async fn register_finish(
     // violation — went unnoticed).
     let already_registered = passkeys::Entity::find()
         .filter(passkeys::Column::CredId.eq(&cred_id_str))
-        .one(&state.db)
+        .one(&txn)
         .await
         .ok()
         .flatten()
         .is_some();
     if already_registered {
+        let _ = txn.rollback().await;
         return (StatusCode::CONFLICT, "This passkey is already registered").into_response();
     }
 
@@ -304,10 +349,20 @@ pub async fn register_finish(
         ..Default::default()
     };
 
-    match passkeys::Entity::insert(passkey_model).exec(&state.db).await {
-        Ok(_) => (StatusCode::OK, "Passkey registered").into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to register passkey").into_response(),
+    if passkeys::Entity::insert(passkey_model)
+        .exec(&txn)
+        .await
+        .is_err()
+    {
+        let _ = txn.rollback().await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to register passkey")
+            .into_response();
     }
+    if txn.commit().await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to register passkey")
+            .into_response();
+    }
+    (StatusCode::OK, "Passkey registered").into_response()
 }
 
 /// Begin passkey login. Returns a WebAuthn `RequestChallengeResponse`.
@@ -367,7 +422,14 @@ pub async fn login_start(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to start authentication").into_response(),
     };
 
-    AUTH_STATE.insert(payload.username.clone(), auth_state);
+    AUTH_STATE.insert(
+        payload.username.clone(),
+        PendingPasskeyAuthentication {
+            user_id: user.id,
+            token_version: user.token_version,
+            state: auth_state,
+        },
+    );
 
     (StatusCode::OK, Json(LoginStartResponse { options: rcr })).into_response()
 }
@@ -392,63 +454,108 @@ pub async fn login_finish(
     if !passkeys_enabled() {
         return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
     }
-    let auth_state = match AUTH_STATE.remove(&payload.username) {
+    let pending = match AUTH_STATE.remove(&payload.username) {
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, "Authentication state not found").into_response(),
     };
 
     let webauthn = get_webauthn();
-    let auth_result = match webauthn.finish_passkey_authentication(&payload.credential, &auth_state) {
+    let auth_result =
+        match webauthn.finish_passkey_authentication(&payload.credential, &pending.state) {
         Ok(res) => res,
         Err(_) => return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response(),
     };
 
-    // Auth successful. We need to update the counter in the DB.
     let cred_id_str = format!("{:?}", auth_result.cred_id());
 
-    let passkey_db = passkeys::Entity::find()
-        .filter(passkeys::Column::CredId.eq(&cred_id_str))
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
-
-    if let Some(pk) = passkey_db {
-        // Persist the updated signature counter back into the stored credential
-        // blob (the value the verifier actually reads) so WebAuthn clone/replay
-        // detection works on subsequent logins - not just the separate counter column.
-        let updated_blob = serde_json::from_str::<Passkey>(&pk.cred_public_key)
-            .ok()
-            .and_then(|mut passkey| {
-                passkey.update_credential(&auth_result);
-                serde_json::to_string(&passkey).ok()
-            });
-
-        let mut active_pk: passkeys::ActiveModel = pk.into();
-        if let Some(blob) = updated_blob {
-            active_pk.cred_public_key = Set(blob);
+    // Serialize login completion against factor revocation and every other
+    // token-version transition. Both paths lock the user row first, then the
+    // passkey row. If revocation wins, the version/factor check below fails. If
+    // login wins, the subsequent revoke bumps the version and invalidates this
+    // newly-issued token.
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate")
+                .into_response()
         }
-        active_pk.counter = Set(auth_result.counter() as i32);
-        active_pk.last_used = Set(Some(Utc::now().naive_utc()));
-        let _ = active_pk.update(&state.db).await;
-    }
+    };
 
-    // Fetch user to issue token
-    let user = match users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.username))
+    let user = match users::Entity::find_by_id(pending.user_id)
         .filter(users::Column::DeletedAt.is_null())
-        .one(&state.db)
+        .lock_exclusive()
+        .one(&txn)
         .await
     {
-        Ok(Some(user)) => user,
-        _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        Ok(Some(user)) if user.token_version == pending.token_version => user,
+        _ => {
+            let _ = txn.rollback().await;
+            return (StatusCode::UNAUTHORIZED, "Authentication state was revoked")
+                .into_response();
+        }
+    };
+
+    let passkey_db = match passkeys::Entity::find()
+        .filter(passkeys::Column::CredId.eq(&cred_id_str))
+        .filter(passkeys::Column::UserId.eq(pending.user_id))
+        .lock_exclusive()
+        .one(&txn)
+        .await
+    {
+        Ok(Some(passkey)) => passkey,
+        _ => {
+            let _ = txn.rollback().await;
+            return (StatusCode::UNAUTHORIZED, "Authentication factor was revoked")
+                .into_response();
+        }
+    };
+
+    // Persist the updated signature counter in the credential blob read by the
+    // verifier, not only in the convenience counter column.
+    let mut stored_passkey = match serde_json::from_str::<Passkey>(&passkey_db.cred_public_key) {
+        Ok(passkey) => passkey,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate")
+                .into_response();
+        }
+    };
+    stored_passkey.update_credential(&auth_result);
+    let updated_blob = match serde_json::to_string(&stored_passkey) {
+        Ok(blob) => blob,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate")
+                .into_response();
+        }
+    };
+
+    let mut active_pk: passkeys::ActiveModel = passkey_db.into();
+    active_pk.cred_public_key = Set(updated_blob);
+    active_pk.counter = Set(auth_result.counter() as i32);
+    active_pk.last_used = Set(Some(Utc::now().naive_utc()));
+    if active_pk.update(&txn).await.is_err() {
+        let _ = txn.rollback().await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
     };
 
     let token = match create_jwt(user.id, &user.email, user.token_version) {
         Ok(t) => t,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token").into_response(),
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token").into_response();
+        }
     };
 
-    (StatusCode::OK, Json(PasskeyAuthResponse { token })).into_response()
+    if txn.commit().await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
+    }
+
+    (StatusCode::OK, Json(PasskeyAuthResponse {
+        token,
+        email_verified: user.email_verified,
+        is_admin: user.is_admin,
+    })).into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -479,8 +586,8 @@ pub async fn list_passkeys(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let user_id = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth.user_id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
 
@@ -523,65 +630,109 @@ pub async fn delete_passkey(
     headers: axum::http::HeaderMap,
     Json(payload): Json<DeletePasskeyRequest>,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
 
-    // Verify the passkey belongs to the user
-    let passkey = passkeys::Entity::find_by_id(payload.passkey_id)
-        .filter(passkeys::Column::UserId.eq(user_id))
-        .one(&state.db)
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to delete passkey"})),
+            )
+                .into_response()
+        }
+    };
+
+    // Lock order matches login_finish: user first, factor second.
+    let user = match users::Entity::find_by_id(auth.user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .lock_exclusive()
+        .one(&txn)
         .await
-        .unwrap_or(None);
+    {
+        Ok(Some(user)) if user.token_version == auth.token_version => user,
+        _ => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response();
+        }
+    };
 
-    if passkey.is_none() {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Passkey not found"}))).into_response();
-    }
-
-    // Don't allow deleting last passkey if user has no password
-    let user = users::Entity::find_by_id(user_id)
-        .one(&state.db)
+    let passkey = match passkeys::Entity::find_by_id(payload.passkey_id)
+        .filter(passkeys::Column::UserId.eq(auth.user_id))
+        .lock_exclusive()
+        .one(&txn)
         .await
-        .unwrap_or(None);
+    {
+        Ok(Some(passkey)) => passkey,
+        _ => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Passkey not found"})),
+            )
+                .into_response();
+        }
+    };
 
-    if let Some(user) = user {
-        if user.password_hash.is_empty() {
-            let passkey_count = passkeys::Entity::find()
-                .filter(passkeys::Column::UserId.eq(user_id))
-                .count(&state.db)
-                .await
-                .unwrap_or(0);
-
-            if passkey_count <= 1 {
-                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-                    "error": "Cannot delete the last passkey when no password is set"
-                }))).into_response();
-            }
+    if user.password_hash.is_empty() {
+        let passkey_count = passkeys::Entity::find()
+            .filter(passkeys::Column::UserId.eq(auth.user_id))
+            .count(&txn)
+            .await
+            .unwrap_or(0);
+        if passkey_count <= 1 {
+            let _ = txn.rollback().await;
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "error": "Cannot delete the last passkey when no password is set"
+            })))
+                .into_response();
         }
     }
 
-    // Delete the passkey
-    let result = passkeys::Entity::delete_by_id(payload.passkey_id)
-        .exec(&state.db)
-        .await;
-
-    match result {
-        Ok(_) => {
-            // Revoking an authentication factor must invalidate existing sessions.
-            // Bump token_version so JWTs minted before the revoke stop being
-            // accepted, matching the documented invariant (a password change /
-            // reset / account-delete / passkey-revoke all bump the version).
-            if let Some(u) = users::Entity::find_by_id(user_id).one(&state.db).await.unwrap_or(None) {
-                let next = u.token_version + 1;
-                let mut active: users::ActiveModel = u.into();
-                active.token_version = Set(next);
-                let _ = active.update(&state.db).await;
-            }
-            (StatusCode::OK, Json(serde_json::json!({"message": "Passkey deleted successfully"}))).into_response()
-        }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to delete passkey"}))).into_response(),
+    let Some(next_token_version) = auth.token_version.checked_add(1) else {
+        let _ = txn.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to delete passkey"})),
+        )
+            .into_response();
+    };
+    let mut active_user: users::ActiveModel = user.into();
+    active_user.token_version = Set(next_token_version);
+    let result = async {
+        passkey.delete(&txn).await?;
+        active_user.update(&txn).await?;
+        Ok::<(), DbErr>(())
     }
+    .await;
+
+    if result.is_err() {
+        let _ = txn.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to delete passkey"})),
+        )
+            .into_response();
+    }
+    if txn.commit().await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to delete passkey"})),
+        )
+            .into_response();
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({
+        "message": "Passkey deleted successfully"
+    })))
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -607,8 +758,8 @@ pub async fn rename_passkey(
     headers: axum::http::HeaderMap,
     Json(payload): Json<RenamePasskeyRequest>,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let user_id = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth.user_id,
         None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
     };
 

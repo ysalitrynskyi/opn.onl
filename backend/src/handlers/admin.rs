@@ -221,92 +221,219 @@ pub async fn delete_user(
         })).into_response();
     }
 
-    let user = users::Entity::find_by_id(user_id)
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
-
-    if let Some(user) = user {
-        if user.deleted_at.is_some() {
-            return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-                success: false,
-                message: "User already deleted".to_string(),
-            })).into_response();
-        }
-
-        // Refuse to delete an org owner while other members depend on the
-        // org; ownership must be transferred (or the org deleted) first.
-        match crate::handlers::organizations::split_owned_orgs(&state.db, user_id).await {
-            Ok(split) if !split.blocking.is_empty() => {
-                let slugs: Vec<&str> = split.blocking.iter().map(|o| o.slug.as_str()).collect();
-                return (StatusCode::CONFLICT, Json(AdminResponse {
+    let user = match users::Entity::find_by_id(user_id).one(&state.db).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(AdminResponse {
                     success: false,
-                    message: format!(
-                        "User {} still owns organizations with other members: {}. Transfer ownership or delete them first.",
-                        user_id,
-                        slugs.join(", ")
-                    ),
-                })).into_response();
-            }
-            Ok(_) => {}
-            Err(_) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                    message: "User not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
                     success: false,
                     message: "Failed to delete user".to_string(),
-                })).into_response();
-            }
+                }),
+            )
+                .into_response();
         }
+    };
 
-        // Soft delete user
-        let mut active_user: users::ActiveModel = user.into();
-        active_user.deleted_at = Set(Some(Utc::now().naive_utc()));
-        
-        if active_user.update(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+    if user.deleted_at.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
                 success: false,
-                message: "Failed to delete user".to_string(),
-            })).into_response();
-        }
-
-        // Capture codes before the soft-delete so their cached redirects can be
-        // dropped afterwards (soft-delete is an UPDATE — nothing else clears the
-        // cache, so a deleted user's links would keep redirecting until the TTL).
-        let cached_codes = crate::handlers::links::active_link_codes_for_user(&state, user_id).await;
-
-        // Soft delete all user's links
-        links::Entity::update_many()
-            .col_expr(links::Column::DeletedAt, Expr::value(Utc::now().naive_utc()))
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::DeletedAt.is_null())
-            .exec(&state.db)
-            .await
-            .ok();
-
-        crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
-
-        // Right to erasure: drop per-visitor identifiers from the deleted user's
-        // link analytics, not just the aggregate dimensions.
-        let _ = crate::utils::privacy::purge_click_pii_for_user(&state.db, user_id).await;
-
-        // Remove the user's passkeys. Soft-delete is an UPDATE so the FK cascade
-        // never fires; without this a deleted account could still re-authenticate
-        // via WebAuthn and mint a fresh token.
-        crate::entity::passkeys::Entity::delete_many()
-            .filter(crate::entity::passkeys::Column::UserId.eq(user_id))
-            .exec(&state.db)
-            .await
-            .ok();
-
-        return (StatusCode::OK, Json(AdminResponse {
-            success: true,
-            message: format!("User {} soft deleted", user_id),
-        })).into_response();
+                message: "User already deleted".to_string(),
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::NOT_FOUND, Json(AdminResponse {
-        success: false,
-        message: "User not found".to_string(),
-    })).into_response()
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let user = match users::Entity::find_by_id(user_id)
+        .lock_exclusive()
+        .one(&txn)
+        .await
+    {
+        Ok(Some(user)) if user.deleted_at.is_none() => user,
+        Ok(Some(_)) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(AdminResponse {
+                    success: false,
+                    message: "User already deleted".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        _ => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Check ownership in the same transaction as deletion so cleanup is
+    // all-or-nothing and no partial soft deletion can escape.
+    let split = match crate::handlers::organizations::split_owned_orgs(&txn, user_id).await {
+        Ok(split) => split,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if !split.blocking.is_empty() {
+        let _ = txn.rollback().await;
+        let slugs: Vec<&str> = split.blocking.iter().map(|o| o.slug.as_str()).collect();
+        return (
+            StatusCode::CONFLICT,
+            Json(AdminResponse {
+                success: false,
+                message: format!(
+                    "User {} still owns organizations with other members: {}. Transfer ownership or delete them first.",
+                    user_id,
+                    slugs.join(", ")
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    let cached_codes = match links::Entity::find()
+        .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::OrgId.is_null())
+        .filter(links::Column::DeletedAt.is_null())
+        .all(&txn)
+        .await
+    {
+        Ok(links) => links.into_iter().map(|link| link.code).collect::<Vec<_>>(),
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let deleted_at = Utc::now().naive_utc();
+    let next_token_version = match user.token_version.checked_add(1) {
+        Some(version) => version,
+        None => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let result = async {
+        let mut active_user: users::ActiveModel = user.into();
+        active_user.deleted_at = Set(Some(deleted_at));
+        active_user.token_version = Set(next_token_version);
+        active_user.update(&txn).await?;
+
+        // Organization links belong to the team, not their original creator.
+        // Stamp one exact timestamp so restore can identify only this cascade.
+        links::Entity::update_many()
+            .col_expr(links::Column::DeletedAt, Expr::value(deleted_at))
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_null())
+            .filter(links::Column::DeletedAt.is_null())
+            .exec(&txn)
+            .await?;
+
+        crate::utils::privacy::purge_click_pii_for_user(&txn, user_id).await?;
+
+        api_keys::Entity::delete_many()
+            .filter(api_keys::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+        passkeys::Entity::delete_many()
+            .filter(passkeys::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+
+        Ok::<(), sea_orm::DbErr>(())
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = txn.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to delete user".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if txn.commit().await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to delete user".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
+
+    (
+        StatusCode::OK,
+        Json(AdminResponse {
+            success: true,
+            message: format!("User {} soft deleted", user_id),
+        }),
+    )
+        .into_response()
 }
 
 /// Hard delete a user (admin only, use with caution)
@@ -458,48 +585,165 @@ pub async fn restore_user(
         return e.into_response();
     }
 
-    let user = users::Entity::find_by_id(user_id)
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
+    let user = match users::Entity::find_by_id(user_id).one(&state.db).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(AdminResponse {
+                    success: false,
+                    message: "User not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to restore user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
 
-    if let Some(user) = user {
-        if user.deleted_at.is_none() {
-            return (StatusCode::BAD_REQUEST, Json(AdminResponse {
+    if user.deleted_at.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
                 success: false,
                 message: "User is not deleted".to_string(),
-            })).into_response();
-        }
-
-        // Restore user
-        let mut active_user: users::ActiveModel = user.into();
-        active_user.deleted_at = Set(None);
-        
-        if active_user.update(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to restore user".to_string(),
-            })).into_response();
-        }
-
-        // Restore all user's links
-        links::Entity::update_many()
-            .col_expr(links::Column::DeletedAt, Expr::value(Option::<chrono::NaiveDateTime>::None))
-            .filter(links::Column::UserId.eq(user_id))
-            .exec(&state.db)
-            .await
-            .ok();
-
-        return (StatusCode::OK, Json(AdminResponse {
-            success: true,
-            message: format!("User {} restored", user_id),
-        })).into_response();
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::NOT_FOUND, Json(AdminResponse {
-        success: false,
-        message: "User not found".to_string(),
-    })).into_response()
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to restore user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let user = match users::Entity::find_by_id(user_id)
+        .lock_exclusive()
+        .one(&txn)
+        .await
+    {
+        Ok(Some(user)) if user.deleted_at.is_some() => user,
+        Ok(Some(_)) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(AdminResponse {
+                    success: false,
+                    message: "User is not deleted".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        _ => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to restore user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let account_deleted_at = user.deleted_at.expect("checked above");
+    let next_token_version = match user.token_version.checked_add(1) {
+        Some(version) => version,
+        None => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to restore user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let result = async {
+        let mut active_user: users::ActiveModel = user.into();
+        active_user.deleted_at = Set(None);
+        active_user.token_version = Set(next_token_version);
+        active_user.update(&txn).await?;
+
+        // Accounts deleted before credential cleanup was added may still have
+        // rows here. Delete them again so restore cannot revive legacy factors.
+        api_keys::Entity::delete_many()
+            .filter(api_keys::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+        passkeys::Entity::delete_many()
+            .filter(passkeys::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+
+        // Restore only personal links stamped by this exact account-deletion
+        // cascade. Older takedowns and links deleted later stay deleted.
+        links::Entity::update_many()
+            .col_expr(
+                links::Column::DeletedAt,
+                Expr::value(Option::<chrono::NaiveDateTime>::None),
+            )
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_null())
+            .filter(links::Column::DeletedAt.eq(account_deleted_at))
+            .exec(&txn)
+            .await?;
+
+        Ok::<(), sea_orm::DbErr>(())
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = txn.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to restore user".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if txn.commit().await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to restore user".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(AdminResponse {
+            success: true,
+            message: format!("User {} restored", user_id),
+        }),
+    )
+        .into_response()
 }
 
 /// Create a database backup (admin only)
@@ -657,21 +901,52 @@ pub async fn make_admin(
         return e.into_response();
     }
 
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to update user".to_string(),
+            }))
+                .into_response()
+        }
+    };
     let user = users::Entity::find_by_id(user_id)
         .filter(users::Column::DeletedAt.is_null())
-        .one(&state.db)
+        .lock_exclusive()
+        .one(&txn)
         .await
         .unwrap_or(None);
 
     if let Some(user) = user {
+        let next_token_version = match user.token_version.checked_add(1) {
+            Some(version) => version,
+            None => {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                    success: false,
+                    message: "Failed to update user".to_string(),
+                }))
+                    .into_response();
+            }
+        };
         let mut active_user: users::ActiveModel = user.into();
         active_user.is_admin = Set(true);
+        active_user.token_version = Set(next_token_version);
         
-        if active_user.update(&state.db).await.is_err() {
+        if active_user.update(&txn).await.is_err() {
+            let _ = txn.rollback().await;
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
                 success: false,
                 message: "Failed to update user".to_string(),
             })).into_response();
+        }
+        if txn.commit().await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to update user".to_string(),
+            }))
+                .into_response();
         }
 
         return (StatusCode::OK, Json(AdminResponse {
@@ -680,6 +955,7 @@ pub async fn make_admin(
         })).into_response();
     }
 
+    let _ = txn.rollback().await;
     (StatusCode::NOT_FOUND, Json(AdminResponse {
         success: false,
         message: "User not found".to_string(),

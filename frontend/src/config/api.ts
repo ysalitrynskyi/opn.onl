@@ -133,16 +133,20 @@ export const API_ENDPOINTS = {
 };
 
 // Helper to get auth headers
-export const getAuthHeaders = (): HeadersInit => {
-    const token = localStorage.getItem('token');
+export const getAuthHeaders = (
+    token: string | null = localStorage.getItem('token')
+): HeadersInit => {
     return {
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
     };
 };
 
-// Handle unauthorized - clear token and redirect to login
-const handleUnauthorized = () => {
+// Only log out the session whose token produced this 401. A newer login may
+// have replaced it while the request was in flight.
+const handleUnauthorized = (requestToken: string | null) => {
+    if (!requestToken || localStorage.getItem('token') !== requestToken) return;
+
     localStorage.removeItem('token');
     localStorage.removeItem('is_admin');
     // Redirect to login page
@@ -154,17 +158,18 @@ export async function authFetch(
     url: string,
     options: RequestInit = {}
 ): Promise<Response> {
+    const requestToken = localStorage.getItem('token');
     const response = await fetch(url, {
         ...options,
         headers: {
-            ...getAuthHeaders(),
+            ...getAuthHeaders(requestToken),
             ...options.headers,
         },
     });
 
     // Handle unauthorized - logout user
     if (response.status === 401) {
-        handleUnauthorized();
+        handleUnauthorized(requestToken);
         throw new Error('Session expired. Please log in again.');
     }
 
@@ -177,17 +182,18 @@ export async function apiCall<T>(
     options: RequestInit = {}
 ): Promise<{ data?: T; error?: string }> {
     try {
+        const requestToken = localStorage.getItem('token');
         const response = await fetch(url, {
             ...options,
             headers: {
-                ...getAuthHeaders(),
+                ...getAuthHeaders(requestToken),
                 ...options.headers,
             },
         });
 
         // Handle unauthorized - logout user
         if (response.status === 401) {
-            handleUnauthorized();
+            handleUnauthorized(requestToken);
             return { error: 'Session expired. Please log in again.' };
         }
 

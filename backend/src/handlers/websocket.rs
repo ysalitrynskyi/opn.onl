@@ -1,16 +1,18 @@
+use crate::utils::decode_jwt;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State, Query,
+        Query, State,
     },
     http::{HeaderMap, StatusCode},
-    response::{Response, IntoResponse},
+    response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast;
-use crate::utils::decode_jwt;
+
+const DEFAULT_AUTH_REVALIDATE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// WebSocket state for real-time updates
 #[derive(Clone)]
@@ -19,12 +21,22 @@ pub struct WsState {
     /// filter by user_id; receivers are dropped automatically when a connection
     /// closes, so there is no per-connection state to leak.
     pub click_tx: broadcast::Sender<ClickEvent>,
+    auth_revalidate_interval: Duration,
 }
 
 impl WsState {
     pub fn new() -> Self {
+        Self::with_auth_revalidate_interval(DEFAULT_AUTH_REVALIDATE_INTERVAL)
+    }
+
+    /// Override the revalidation interval, primarily for deterministic transport
+    /// tests. Production uses [`Self::new`] and the 30-second default.
+    pub fn with_auth_revalidate_interval(auth_revalidate_interval: Duration) -> Self {
         let (click_tx, _) = broadcast::channel(1000);
-        Self { click_tx }
+        Self {
+            click_tx,
+            auth_revalidate_interval,
+        }
     }
 
     /// Broadcast a click event. Connections subscribe to `click_tx` and filter
@@ -59,7 +71,10 @@ pub struct ClickEvent {
 #[serde(tag = "type")]
 pub enum WsMessage {
     #[serde(rename = "subscribe")]
-    Subscribe { link_id: Option<i32>, user_id: Option<i32> },
+    Subscribe {
+        link_id: Option<i32>,
+        user_id: Option<i32>,
+    },
     #[serde(rename = "unsubscribe")]
     Unsubscribe { link_id: Option<i32> },
     #[serde(rename = "click")]
@@ -76,6 +91,12 @@ pub enum WsMessage {
 #[derive(Debug, Deserialize)]
 pub struct WsAuthQuery {
     pub token: Option<String>,
+}
+
+#[derive(Clone)]
+struct WsCredentials {
+    token: Option<String>,
+    headers: HeaderMap,
 }
 
 /// Resolve a `?token=` query JWT to a user id WITH the same DB-backed revocation
@@ -122,29 +143,67 @@ pub async fn ws_handler(
     headers: HeaderMap,
     Query(query): Query<WsAuthQuery>,
 ) -> Response {
+    let credentials = WsCredentials {
+        token: query.token,
+        headers,
+    };
+
     // Resolve + DB-verify the subscriber (query token or Authorization header).
-    let user_id = match resolve_ws_user(&state.db, query.token.as_deref(), &headers).await {
+    let user_id = match resolve_ws_user(
+        &state.db,
+        credentials.token.as_deref(),
+        &credentials.headers,
+    )
+    .await
+    {
         Some(id) => id,
         None => {
-            return (StatusCode::UNAUTHORIZED, "Authentication required. Use /ws?token=<jwt_token>").into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                "Authentication required. Use /ws?token=<jwt_token>",
+            )
+                .into_response();
         }
     };
 
-    let ws_state = state.ws_state.clone().unwrap_or_else(|| Arc::new(WsState::new()));
-    ws.on_upgrade(move |socket| handle_socket(socket, ws_state, user_id))
+    let ws_state = state
+        .ws_state
+        .clone()
+        .unwrap_or_else(|| Arc::new(WsState::new()));
+    let db = state.db.clone();
+    ws.on_upgrade(move |socket| handle_socket(socket, ws_state, db, credentials, user_id))
 }
 
-async fn handle_socket(socket: WebSocket, ws_state: Arc<WsState>, user_id: i32) {
+async fn handle_socket(
+    socket: WebSocket,
+    ws_state: Arc<WsState>,
+    db: sea_orm::DatabaseConnection,
+    credentials: WsCredentials,
+    user_id: i32,
+) {
     let (mut sender, mut receiver) = socket.split();
 
     // Subscribe to the global channel and filter by user_id. The receiver is
     // dropped when this task ends, so nothing accumulates server-side.
     let mut global_rx = ws_state.click_tx.subscribe();
+    let mut revalidate = tokio::time::interval(ws_state.auth_revalidate_interval);
+    revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Spawn task to forward click events to client
-    let send_task = tokio::spawn(async move {
-        loop {
-            match global_rx.recv().await {
+    loop {
+        tokio::select! {
+            _ = revalidate.tick() => {
+                let current_user = resolve_ws_user(
+                    &db,
+                    credentials.token.as_deref(),
+                    &credentials.headers,
+                )
+                .await;
+                if current_user != Some(user_id) {
+                    let _ = sender.send(Message::Close(None)).await;
+                    break;
+                }
+            }
+            event = global_rx.recv() => match event {
                 Ok(event) => {
                     // Only forward events for this user's links
                     if event.user_id == Some(user_id) {
@@ -157,15 +216,9 @@ async fn handle_socket(socket: WebSocket, ws_state: Arc<WsState>, user_id: i32) 
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-    
-    // Handle incoming messages
-    let recv_task = tokio::spawn(async move {
-        while let Some(msg) = receiver.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
+            },
+            incoming = receiver.next() => match incoming {
+                Some(Ok(Message::Text(text))) => {
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                         match ws_msg {
                             WsMessage::Ping => {
@@ -178,17 +231,10 @@ async fn handle_socket(socket: WebSocket, ws_state: Arc<WsState>, user_id: i32) 
                         }
                     }
                 }
-                Ok(Message::Close(_)) => break,
-                Err(_) => break,
-                _ => {}
-            }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(_)) => {}
+            },
         }
-    });
-    
-    // Wait for either task to complete
-    tokio::select! {
-        _ = send_task => {}
-        _ = recv_task => {}
     }
 }
 
@@ -202,37 +248,79 @@ pub async fn sse_handler(
 ) -> Response {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use futures::stream;
-    
+
+    let credentials = WsCredentials {
+        token: query.token,
+        headers,
+    };
+
     // Resolve + DB-verify the subscriber (query token or Authorization header).
-    let user_id = match resolve_ws_user(&state.db, query.token.as_deref(), &headers).await {
+    let user_id = match resolve_ws_user(
+        &state.db,
+        credentials.token.as_deref(),
+        &credentials.headers,
+    )
+    .await
+    {
         Some(id) => id,
         None => {
-            return (StatusCode::UNAUTHORIZED, "Authentication required. Use /sse?token=<jwt_token>").into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                "Authentication required. Use /sse?token=<jwt_token>",
+            )
+                .into_response();
         }
     };
 
-    let ws_state = state.ws_state.clone().unwrap_or_else(|| Arc::new(WsState::new()));
+    let ws_state = state
+        .ws_state
+        .clone()
+        .unwrap_or_else(|| Arc::new(WsState::new()));
     let rx = ws_state.click_tx.subscribe();
-    
-    // Filter events to only include this user's links
-    let stream = stream::unfold((rx, user_id), |(mut rx, uid)| async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    // Only send events for this user's links
-                    if event.user_id == Some(uid) {
-                        let json = serde_json::to_string(&event).unwrap_or_default();
-                        return Some((Ok::<_, std::convert::Infallible>(Event::default().data(json)), (rx, uid)));
-                    }
-                    // Skip events for other users
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    });
-    
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
-}
+    let mut revalidate = tokio::time::interval(ws_state.auth_revalidate_interval);
+    revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let db = state.db.clone();
 
+    // Filter events to only include this user's links, and end the stream when
+    // its credential is revoked or the user is soft-deleted.
+    let stream = stream::unfold(
+        (rx, revalidate, db, credentials, user_id),
+        |(mut rx, mut revalidate, db, credentials, uid)| async move {
+            loop {
+                tokio::select! {
+                    _ = revalidate.tick() => {
+                        let current_user = resolve_ws_user(
+                            &db,
+                            credentials.token.as_deref(),
+                            &credentials.headers,
+                        )
+                        .await;
+                        if current_user != Some(uid) {
+                            return None;
+                        }
+                    }
+                    event = rx.recv() => match event {
+                        Ok(event) => {
+                            // Only send events for this user's links
+                            if event.user_id == Some(uid) {
+                                let json = serde_json::to_string(&event).unwrap_or_default();
+                                return Some((
+                                    Ok::<_, std::convert::Infallible>(Event::default().data(json)),
+                                    (rx, revalidate, db, credentials, uid),
+                                ));
+                            }
+                            // Skip events for other users
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    },
+                }
+            }
+        },
+    );
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}

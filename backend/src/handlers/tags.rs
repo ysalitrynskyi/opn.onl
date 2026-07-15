@@ -9,8 +9,8 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::entity::{link_tags, links, org_members, tags};
 use crate::AppState;
-use crate::entity::{tags, link_tags, links};
 
 // ============= DTOs =============
 
@@ -55,9 +55,56 @@ pub struct RemoveTagsFromLinkRequest {
 
 // ============= Helper Functions =============
 
-async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
+async fn get_user_id_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Option<i32> {
     // Delegate to the shared resolver (handles both JWT and `opn_` API keys).
     crate::handlers::links::get_user_id_from_header(db, headers).await
+}
+
+/// Organization ownership always wins over the legacy `user_id` creator field.
+/// A removed creator must not retain access to an organization tag.
+async fn can_view_tag(db: &sea_orm::DatabaseConnection, tag: &tags::Model, user_id: i32) -> bool {
+    match tag.org_id {
+        Some(org_id) => org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+            .is_some(),
+        None => tag.user_id == Some(user_id),
+    }
+}
+
+async fn can_edit_tag(db: &sea_orm::DatabaseConnection, tag: &tags::Model, user_id: i32) -> bool {
+    match tag.org_id {
+        Some(org_id) => crate::handlers::organizations::member_can_edit(db, org_id, user_id).await,
+        None => tag.user_id == Some(user_id),
+    }
+}
+
+async fn can_edit_link(
+    db: &sea_orm::DatabaseConnection,
+    link: &links::Model,
+    user_id: i32,
+) -> bool {
+    match link.org_id {
+        Some(org_id) => crate::handlers::organizations::member_can_edit(db, org_id, user_id).await,
+        None => link.user_id == Some(user_id),
+    }
+}
+
+/// Tags and links cannot cross personal/organization ownership boundaries.
+/// In particular, `None == None` is not enough for personal tags: the caller
+/// must own the tag.
+fn tag_matches_link_scope(tag: &tags::Model, link: &links::Model, user_id: i32) -> bool {
+    match link.org_id {
+        Some(org_id) => tag.org_id == Some(org_id),
+        None => tag.org_id.is_none() && tag.user_id == Some(user_id),
+    }
 }
 
 /// Count links carrying a tag, excluding soft-deleted links so the reported
@@ -103,19 +150,23 @@ pub async fn create_tag(
     headers: HeaderMap,
     Json(payload): Json<CreateTagRequest>,
 ) -> Result<(StatusCode, Json<TagResponse>), (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Org tags can only be created by members with edit rights (not viewers).
     if let Some(org_id) = payload.org_id {
         if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
             return Err((
                 StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Insufficient permissions to create an organization tag"})),
+                Json(
+                    serde_json::json!({"error": "Insufficient permissions to create an organization tag"}),
+                ),
             ));
         }
     }
@@ -123,7 +174,11 @@ pub async fn create_tag(
     let tag = tags::ActiveModel {
         name: Set(payload.name.clone()),
         color: Set(payload.color.clone()),
-        user_id: Set(if payload.org_id.is_some() { None } else { Some(user_id) }),
+        user_id: Set(if payload.org_id.is_some() {
+            None
+        } else {
+            Some(user_id)
+        }),
         org_id: Set(payload.org_id),
         ..Default::default()
     };
@@ -165,12 +220,14 @@ pub async fn get_tags(
     headers: HeaderMap,
     Query(query): Query<TagQuery>,
 ) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let mut tag_query = tags::Entity::find();
 
@@ -185,14 +242,14 @@ pub async fn get_tags(
             .ok()
             .flatten()
             .is_some();
-        
+
         if !is_member {
             return Err((
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({"error": "Not a member of this organization"})),
             ));
         }
-        
+
         tag_query = tag_query.filter(tags::Column::OrgId.eq(org_id));
     } else {
         tag_query = tag_query.filter(tags::Column::UserId.eq(user_id));
@@ -247,12 +304,14 @@ pub async fn get_tag(
     headers: HeaderMap,
     Path(tag_id): Path<i32>,
 ) -> Result<Json<TagResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let tag = tags::Entity::find_by_id(tag_id)
         .one(&state.db)
@@ -270,24 +329,7 @@ pub async fn get_tag(
             )
         })?;
 
-    // Check ownership - must own the tag directly, or be member of the org that owns it
-    let has_access = if tag.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = tag.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_view_tag(&state.db, &tag, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -329,12 +371,14 @@ pub async fn update_tag(
     Path(tag_id): Path<i32>,
     Json(payload): Json<UpdateTagRequest>,
 ) -> Result<Json<TagResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let tag = tags::Entity::find_by_id(tag_id)
         .one(&state.db)
@@ -352,38 +396,11 @@ pub async fn update_tag(
             )
         })?;
 
-    // Check ownership - must own the tag directly, or be member of the org that owns it
-    let has_access = if tag.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = tag.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_edit_tag(&state.db, &tag, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
+            Json(serde_json::json!({"error": "Insufficient permissions"})),
         ));
-    }
-
-    // Org tags may only be modified by editors and above; viewers are read-only.
-    if let Some(org_id) = tag.org_id {
-        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Insufficient permissions"})),
-            ));
-        }
     }
 
     let mut tag: tags::ActiveModel = tag.into();
@@ -435,12 +452,14 @@ pub async fn delete_tag(
     headers: HeaderMap,
     Path(tag_id): Path<i32>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let tag = tags::Entity::find_by_id(tag_id)
         .one(&state.db)
@@ -458,38 +477,11 @@ pub async fn delete_tag(
             )
         })?;
 
-    // Check ownership - must own the tag directly, or be member of the org that owns it
-    let has_access = if tag.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = tag.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_edit_tag(&state.db, &tag, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
+            Json(serde_json::json!({"error": "Insufficient permissions"})),
         ));
-    }
-
-    // Org tags may only be deleted by editors and above; viewers are read-only.
-    if let Some(org_id) = tag.org_id {
-        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Insufficient permissions"})),
-            ));
-        }
     }
 
     tags::Entity::delete_by_id(tag_id)
@@ -527,12 +519,14 @@ pub async fn add_tags_to_link(
     Path(link_id): Path<i32>,
     Json(payload): Json<AddTagsToLinkRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Verify link exists, not deleted, and user has access
     let link = links::Entity::find_by_id(link_id)
@@ -552,7 +546,7 @@ pub async fn add_tags_to_link(
             )
         })?;
 
-    if link.user_id != Some(user_id) {
+    if !can_edit_link(&state.db, &link, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -561,7 +555,6 @@ pub async fn add_tags_to_link(
 
     let mut added_count = 0;
     for tag_id in payload.tag_ids {
-        // Check if tag belongs to user
         let tag = tags::Entity::find_by_id(tag_id)
             .one(&state.db)
             .await
@@ -569,7 +562,7 @@ pub async fn add_tags_to_link(
             .flatten();
 
         if let Some(tag) = tag {
-            if tag.user_id == Some(user_id) || tag.org_id == link.org_id {
+            if tag_matches_link_scope(&tag, &link, user_id) {
                 // Check if already linked
                 let existing = link_tags::Entity::find()
                     .filter(link_tags::Column::LinkId.eq(link_id))
@@ -619,12 +612,14 @@ pub async fn remove_tags_from_link(
     Path(link_id): Path<i32>,
     Json(payload): Json<RemoveTagsFromLinkRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Verify link exists, not deleted, and user has access
     let link = links::Entity::find_by_id(link_id)
@@ -644,7 +639,7 @@ pub async fn remove_tags_from_link(
             )
         })?;
 
-    if link.user_id != Some(user_id) {
+    if !can_edit_link(&state.db, &link, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -653,6 +648,18 @@ pub async fn remove_tags_from_link(
 
     let mut removed_count = 0;
     for tag_id in payload.tag_ids {
+        let tag = tags::Entity::find_by_id(tag_id)
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten();
+        if !tag
+            .as_ref()
+            .is_some_and(|tag| tag_matches_link_scope(tag, &link, user_id))
+        {
+            continue;
+        }
+
         let result = link_tags::Entity::delete_many()
             .filter(link_tags::Column::LinkId.eq(link_id))
             .filter(link_tags::Column::TagId.eq(tag_id))
@@ -688,13 +695,16 @@ pub async fn get_links_by_tag(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(tag_id): Path<i32>,
-) -> Result<Json<Vec<crate::handlers::links::LinkResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+) -> Result<Json<Vec<crate::handlers::links::LinkResponse>>, (StatusCode, Json<serde_json::Value>)>
+{
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Verify tag exists and user has access
     let tag = tags::Entity::find_by_id(tag_id)
@@ -713,24 +723,7 @@ pub async fn get_links_by_tag(
             )
         })?;
 
-    // Check ownership - must own the tag directly, or be member of the org that owns it
-    let has_access = if tag.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = tag.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_view_tag(&state.db, &tag, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -751,19 +744,25 @@ pub async fn get_links_by_tag(
 
     let link_ids: Vec<i32> = link_tags_list.iter().map(|lt| lt.link_id).collect();
 
-    let links_list = links::Entity::find()
+    let mut links_query = links::Entity::find()
         .filter(links::Column::Id.is_in(link_ids))
-        .filter(links::Column::DeletedAt.is_null())
-        .all(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database error"})),
-            )
-        })?;
+        .filter(links::Column::DeletedAt.is_null());
+    links_query = match tag.org_id {
+        Some(org_id) => links_query.filter(links::Column::OrgId.eq(org_id)),
+        None => links_query
+            .filter(links::Column::OrgId.is_null())
+            .filter(links::Column::UserId.eq(user_id)),
+    };
 
-    let base_url = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let links_list = links_query.all(&state.db).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Database error"})),
+        )
+    })?;
+
+    let base_url =
+        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
     let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let responses: Vec<crate::handlers::links::LinkResponse> = links_list
         .into_iter()
@@ -795,4 +794,3 @@ pub async fn get_links_by_tag(
 
     Ok(Json(responses))
 }
-

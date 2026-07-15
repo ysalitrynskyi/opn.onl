@@ -10,8 +10,10 @@ use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::entity::api_keys;
-use crate::handlers::links::{get_user_id_from_header, hash_api_key};
+use crate::entity::{api_keys, users};
+use crate::handlers::links::{
+    get_jwt_auth_from_header, get_user_id_from_header, hash_api_key,
+};
 use crate::AppState;
 
 const MAX_API_KEYS: u64 = 20;
@@ -68,17 +70,46 @@ pub async fn create_api_key(
     if !api_keys_enabled() {
         return (StatusCode::FORBIDDEN, "API keys are disabled on this instance").into_response();
     }
-    let user_id = match get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
 
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key")
+                .into_response()
+        }
+    };
+    let user = match users::Entity::find_by_id(auth.user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .lock_exclusive()
+        .one(&txn)
+        .await
+    {
+        Ok(Some(user)) if user.token_version == auth.token_version => user,
+        _ => {
+            let _ = txn.rollback().await;
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    };
+    if !user.email_verified {
+        let _ = txn.rollback().await;
+        return (
+            StatusCode::FORBIDDEN,
+            "Verify your email before creating an API key",
+        )
+            .into_response();
+    }
+
     let count = api_keys::Entity::find()
-        .filter(api_keys::Column::UserId.eq(user_id))
-        .count(&state.db)
+        .filter(api_keys::Column::UserId.eq(auth.user_id))
+        .count(&txn)
         .await
         .unwrap_or(0);
     if count >= MAX_API_KEYS {
+        let _ = txn.rollback().await;
         return (
             StatusCode::BAD_REQUEST,
             format!("You can have at most {} API keys", MAX_API_KEYS),
@@ -102,26 +133,34 @@ pub async fn create_api_key(
     let key_hash = hash_api_key(&key);
 
     let am = api_keys::ActiveModel {
-        user_id: Set(user_id),
+        user_id: Set(auth.user_id),
         name: Set(name.clone()),
         key_hash: Set(key_hash),
         key_prefix: Set(key_prefix.clone()),
         ..Default::default()
     };
-    match am.insert(&state.db).await {
-        Ok(rec) => (
-            StatusCode::CREATED,
-            Json(CreateApiKeyResponse {
-                id: rec.id,
-                name,
-                key,
-                key_prefix,
-                created_at: rec.created_at.to_string(),
-            }),
-        )
-            .into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key").into_response(),
+    let rec = match am.insert(&txn).await {
+        Ok(rec) => rec,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key")
+                .into_response();
+        }
+    };
+    if txn.commit().await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key").into_response();
     }
+    (
+        StatusCode::CREATED,
+        Json(CreateApiKeyResponse {
+            id: rec.id,
+            name,
+            key,
+            key_prefix,
+            created_at: rec.created_at.to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// List the caller's API keys (never returns the secret).

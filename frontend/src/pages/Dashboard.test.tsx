@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '../test/test-utils';
 import Dashboard from './Dashboard';
-import { mockFetchResponse, mockToken, mockLink } from '../test/test-utils';
+import { mockFetchError, mockFetchResponse, mockToken, mockLink } from '../test/test-utils';
 
 describe('Dashboard Page', () => {
   beforeEach(() => {
@@ -149,6 +149,36 @@ describe('Dashboard Page', () => {
     await waitFor(() => {
       // Should show link count and click count in header
       expect(screen.getByText(/1 link/i)).toBeInTheDocument();
+    });
+  });
+
+  it('keeps the edit modal open when the update endpoint rejects the save', async () => {
+    vi.mocked(global.fetch).mockImplementation((url, options) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/auth/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 50,
+          conditional_routing_enabled: false,
+        }) as any;
+      }
+      if (requestUrl.endsWith('/links/1') && options?.method === 'PUT') {
+        return mockFetchError('Update rejected', 422) as any;
+      }
+      if (requestUrl.includes('/links/sparklines')) {
+        return mockFetchResponse({ sparklines: [] }) as any;
+      }
+      return mockFetchResponse([mockLink]) as any;
+    });
+
+    const { user } = render(<Dashboard />);
+    await user.click(await screen.findByRole('button', { name: /edit link/i }));
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /edit link/i })).toBeInTheDocument();
+      expect(screen.getAllByText('Update rejected').length).toBeGreaterThan(0);
     });
   });
 });

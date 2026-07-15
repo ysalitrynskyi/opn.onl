@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Machine context (this host)
+
+Cross-repo / MCP / disk / Azure / efficiency unlocks:
+`~/work/AGENTS.md` (walk-up discovery; **this file does not replace it**).
+
+- Registry: `~/.config/agent-coordination/AGENT-REGISTRY.md`
+- Runbooks (on demand): `~/work/_runbooks/` - azure-models, disk-cleanup, deploy-verify, ...
+- **Efficiency unlocks:** fast env help -> DIY if safe, or ask operator once (what / why / ~sec). Not invent-scope.
+- **Azure:** credit cutoff ~2026-07-20 -> ask before any Azure call after that (`_runbooks/azure-models.md`).
+
 ## What this is
 
 opn.onl — privacy-focused, self-hostable URL shortener. Rust/Axum/SeaORM/PostgreSQL backend (`backend/`), React 19/TypeScript/Vite/Tailwind frontend (`frontend/`). AGPL-3.0.

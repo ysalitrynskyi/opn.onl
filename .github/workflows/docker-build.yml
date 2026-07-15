@@ -8,6 +8,13 @@ on:
     types: [published]
   workflow_dispatch:
 
+# Serialize GHCR publication across release, tag, and manual runs. Matrix jobs
+# still run in parallel within one workflow, but separate runs cannot interleave
+# per-architecture tags and manifest promotion.
+concurrency:
+  group: ghcr-publish-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
 
@@ -63,7 +70,8 @@ jobs:
             type=raw,value=latest-${{ steps.platform.outputs.suffix }},enable=${{ github.ref == 'refs/heads/release' }}
             type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
             # Per-platform semver tags; the create-manifests job merges them
-            # into a single multi-arch :X.Y.Z (and :latest) manifest.
+            # into a single multi-arch :X.Y.Z manifest. Only the release branch
+            # owns the rolling :latest tag.
             type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push
@@ -130,7 +138,8 @@ jobs:
             type=raw,value=latest-${{ steps.platform.outputs.suffix }},enable=${{ github.ref == 'refs/heads/release' }}
             type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
             # Per-platform semver tags; the create-manifests job merges them
-            # into a single multi-arch :X.Y.Z (and :latest) manifest.
+            # into a single multi-arch :X.Y.Z manifest. Only the release branch
+            # owns the rolling :latest tag.
             type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push
@@ -195,16 +204,10 @@ jobs:
               --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION \
               ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-amd64 \
               ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-arm64
-            # Keep rolling :latest as a multi-arch index pointing at this release
-            # (must not push single-arch :latest from the build jobs — see flavor).
-            docker buildx imagetools create \
-              --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:latest \
-              ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-amd64 \
-              ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-arm64
           done
 
-      - name: Verify :latest is multi-arch (amd64 + arm64)
-        if: github.ref == 'refs/heads/release' || startsWith(github.ref, 'refs/tags/v')
+      - name: Verify release :latest is multi-arch (amd64 + arm64)
+        if: github.ref == 'refs/heads/release'
         run: |
           set -euo pipefail
           for image in opn-backend opn-frontend; do
