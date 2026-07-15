@@ -901,21 +901,52 @@ pub async fn make_admin(
         return e.into_response();
     }
 
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to update user".to_string(),
+            }))
+                .into_response()
+        }
+    };
     let user = users::Entity::find_by_id(user_id)
         .filter(users::Column::DeletedAt.is_null())
-        .one(&state.db)
+        .lock_exclusive()
+        .one(&txn)
         .await
         .unwrap_or(None);
 
     if let Some(user) = user {
+        let next_token_version = match user.token_version.checked_add(1) {
+            Some(version) => version,
+            None => {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                    success: false,
+                    message: "Failed to update user".to_string(),
+                }))
+                    .into_response();
+            }
+        };
         let mut active_user: users::ActiveModel = user.into();
         active_user.is_admin = Set(true);
+        active_user.token_version = Set(next_token_version);
         
-        if active_user.update(&state.db).await.is_err() {
+        if active_user.update(&txn).await.is_err() {
+            let _ = txn.rollback().await;
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
                 success: false,
                 message: "Failed to update user".to_string(),
             })).into_response();
+        }
+        if txn.commit().await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+                success: false,
+                message: "Failed to update user".to_string(),
+            }))
+                .into_response();
         }
 
         return (StatusCode::OK, Json(AdminResponse {
@@ -924,6 +955,7 @@ pub async fn make_admin(
         })).into_response();
     }
 
+    let _ = txn.rollback().await;
     (StatusCode::NOT_FOUND, Json(AdminResponse {
         success: false,
         message: "User not found".to_string(),

@@ -4,6 +4,12 @@ use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey}
 use serde::{Deserialize, Serialize};
 use std::env;
 
+const KNOWN_INSECURE_JWT_SECRETS: &[&str] = &[
+    "your-super-secret-jwt-key-minimum-32-characters-long",
+    "your-super-secret-jwt-key-change-in-production",
+    "your-very-long-random-jwt-secret-min-32-chars",
+];
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String, // email
@@ -32,14 +38,34 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, bcrypt::Bcryp
 /// publicly-known key.
 fn jwt_secret() -> String {
     let secret = env::var("JWT_SECRET").unwrap_or_default();
+    if let Err(message) = validate_jwt_secret_value(&secret) {
+        panic!("{message}");
+    }
+    secret
+}
+
+fn validate_jwt_secret_value(secret: &str) -> Result<(), String> {
     if secret.len() < 32 {
-        panic!(
+        return Err(format!(
             "JWT_SECRET must be set and at least 32 bytes long (got {} bytes). \
              Generate one with `openssl rand -base64 64`.",
             secret.len()
+        ));
+    }
+
+    let candidate = secret.trim();
+    if KNOWN_INSECURE_JWT_SECRETS
+        .iter()
+        .any(|placeholder| candidate.eq_ignore_ascii_case(placeholder))
+    {
+        return Err(
+            "JWT_SECRET is a publicly known placeholder. \
+             Generate a unique secret with `openssl rand -base64 64`."
+                .to_string(),
         );
     }
-    secret
+
+    Ok(())
 }
 
 /// Validate the JWT secret at startup so the process refuses to boot when it is
@@ -89,6 +115,23 @@ mod tests {
         std::env::set_var("JWT_SECRET", "short");
         let weak = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
         assert!(weak.is_err(), "create_jwt must panic on a <32 byte JWT_SECRET");
+
+        // Length alone is insufficient: sample values are public signing keys.
+        for placeholder in KNOWN_INSECURE_JWT_SECRETS {
+            assert!(
+                validate_jwt_secret_value(placeholder).is_err(),
+                "known placeholder must be rejected: {placeholder}"
+            );
+        }
+        std::env::set_var(
+            "JWT_SECRET",
+            "your-super-secret-jwt-key-minimum-32-characters-long",
+        );
+        let placeholder = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
+        assert!(
+            placeholder.is_err(),
+            "create_jwt must panic on a known placeholder"
+        );
 
         // A strong secret round-trips and preserves the claims.
         std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");

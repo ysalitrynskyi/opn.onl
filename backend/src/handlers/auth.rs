@@ -391,10 +391,20 @@ pub async fn reset_password(
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
     }
 
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to reset password".to_string(),
+            }))
+                .into_response()
+        }
+    };
     let user = users::Entity::find()
         .filter(users::Column::PasswordResetToken.eq(&payload.token))
         .filter(users::Column::DeletedAt.is_null())
-        .one(&state.db)
+        .lock_exclusive()
+        .one(&txn)
         .await
         .unwrap_or(None);
 
@@ -402,30 +412,48 @@ pub async fn reset_password(
         // Check if token is expired
         if let Some(expires) = user.password_reset_expires {
             if Utc::now().naive_utc() > expires {
+                let _ = txn.rollback().await;
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Token expired".to_string() })).into_response();
             }
         }
 
         let hashed_password = match hash_password(&payload.password) {
             Ok(h) => h,
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response(),
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response();
+            }
         };
 
         // Bump token_version to revoke any JWTs issued before this reset.
-        let next_token_version = user.token_version + 1;
+        let Some(next_token_version) = user.token_version.checked_add(1) else {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to reset password".to_string(),
+            }))
+                .into_response();
+        };
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
         active_user.password_reset_token = Set(None);
         active_user.password_reset_expires = Set(None);
         active_user.token_version = Set(next_token_version);
 
-        if active_user.update(&state.db).await.is_err() {
+        if active_user.update(&txn).await.is_err() {
+            let _ = txn.rollback().await;
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to reset password".to_string() })).into_response();
+        }
+        if txn.commit().await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to reset password".to_string(),
+            }))
+                .into_response();
         }
 
         return (StatusCode::OK, Json(MessageResponse { message: "Password reset successfully".to_string() })).into_response();
     }
 
+    let _ = txn.rollback().await;
     (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid token".to_string() })).into_response()
 }
 
@@ -460,29 +488,42 @@ pub async fn change_password(
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
     }
 
-    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
 
-    let user = users::Entity::find_by_id(user_id)
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to change password".to_string(),
+            }))
+                .into_response()
+        }
+    };
+    let user = users::Entity::find_by_id(auth.user_id)
         .filter(users::Column::DeletedAt.is_null())
-        .one(&state.db)
+        .lock_exclusive()
+        .one(&txn)
         .await
         .unwrap_or(None);
 
-    if let Some(user) = user {
+    if let Some(user) = user.filter(|user| user.token_version == auth.token_version) {
         // Verify current password
         if user.password_hash.is_empty() {
+            let _ = txn.rollback().await;
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "No password set for this account".to_string() })).into_response();
         }
         
         match verify_password(&payload.current_password, &user.password_hash) {
             Ok(true) => {},
             Ok(false) => {
+                let _ = txn.rollback().await;
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Current password is incorrect".to_string() })).into_response();
             }
             Err(_) => {
+                let _ = txn.rollback().await;
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password verification failed".to_string() })).into_response();
             }
         }
@@ -490,19 +531,37 @@ pub async fn change_password(
         // Hash new password
         let hashed_password = match hash_password(&payload.new_password) {
             Ok(h) => h,
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response(),
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response();
+            }
         };
 
-        // Update password and bump token_version to revoke prior JWTs.
-        let next_token_version = user.token_version + 1;
+        // Update password, consume any outstanding reset token, and revoke prior JWTs.
+        let Some(next_token_version) = user.token_version.checked_add(1) else {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to change password".to_string(),
+            }))
+                .into_response();
+        };
         let token_user_id = user.id;
         let token_email = user.email.clone();
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
+        active_user.password_reset_token = Set(None);
+        active_user.password_reset_expires = Set(None);
         active_user.token_version = Set(next_token_version);
 
-        if active_user.update(&state.db).await.is_err() {
+        if active_user.update(&txn).await.is_err() {
+            let _ = txn.rollback().await;
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to change password".to_string() })).into_response();
+        }
+        if txn.commit().await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to change password".to_string(),
+            }))
+                .into_response();
         }
 
         // Return a fresh token carrying the new version so the current session
@@ -517,7 +576,8 @@ pub async fn change_password(
         };
     }
 
-    (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+    let _ = txn.rollback().await;
+    (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response()
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -559,10 +619,11 @@ pub async fn delete_account(
         })).into_response();
     }
 
-    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
     };
+    let user_id = auth.user_id;
 
     let user = users::Entity::find_by_id(user_id)
         .filter(users::Column::DeletedAt.is_null())
@@ -605,7 +666,7 @@ pub async fn delete_account(
             .one(&txn)
             .await
         {
-            Ok(Some(user)) => user,
+            Ok(Some(user)) if user.token_version == auth.token_version => user,
             _ => {
                 let _ = txn.rollback().await;
                 return (StatusCode::UNAUTHORIZED, Json(ErrorResponse {

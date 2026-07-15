@@ -676,18 +676,45 @@ fn generate_short_code() -> String {
         .collect()
 }
 
-/// Authenticate a request from its bearer token AND verify it against the DB:
-/// the user must exist, must not be soft-deleted, and the token's `token_version`
-/// must match the user's current version. This is what makes JWTs revocable
-/// (a password change / reset / account-delete / passkey-revoke bumps the version).
-pub async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JwtAuthentication {
+    pub user_id: i32,
+    pub token_version: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Authentication {
+    Jwt(JwtAuthentication),
+    ApiKey { user_id: i32 },
+}
+
+impl Authentication {
+    pub fn user_id(self) -> i32 {
+        match self {
+            Self::Jwt(auth) => auth.user_id,
+            Self::ApiKey { user_id } => user_id,
+        }
+    }
+}
+
+/// Authenticate a bearer credential and preserve its type. JWTs are checked
+/// against the user's current `token_version`; API keys are resolved separately.
+/// Security-sensitive credential-management endpoints must explicitly require
+/// [`Authentication::Jwt`] rather than flattening both credential types to a
+/// user id.
+pub async fn authenticate_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Option<Authentication> {
     let auth_header = headers.get("Authorization")?.to_str().ok()?;
     let token = auth_header.strip_prefix("Bearer ")?;
 
     // API key path: tokens prefixed `opn_` are personal access tokens (used by the
     // MCP server / external API clients), looked up by their sha256 hash.
     if token.starts_with("opn_") {
-        return resolve_api_key(db, token).await;
+        return resolve_api_key(db, token)
+            .await
+            .map(|user_id| Authentication::ApiKey { user_id });
     }
 
     let claims = decode_jwt(token).ok()?;
@@ -697,9 +724,34 @@ pub async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: 
         .await
         .ok()??;
     if user.token_version == claims.token_version {
-        Some(user.id)
+        Some(Authentication::Jwt(JwtAuthentication {
+            user_id: user.id,
+            token_version: claims.token_version,
+        }))
     } else {
         None
+    }
+}
+
+/// Authenticate either a JWT or API key for ordinary API operations.
+pub async fn get_user_id_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Option<i32> {
+    authenticate_from_header(db, headers)
+        .await
+        .map(Authentication::user_id)
+}
+
+/// Require a revocable JWT. API keys are intentionally rejected even when they
+/// belong to the same user.
+pub async fn get_jwt_auth_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Option<JwtAuthentication> {
+    match authenticate_from_header(db, headers).await? {
+        Authentication::Jwt(auth) => Some(auth),
+        Authentication::ApiKey { .. } => None,
     }
 }
 
