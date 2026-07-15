@@ -68,6 +68,31 @@ export function isValidUrl(url: string): boolean {
     }
 }
 
+/** Only http(s) with a host — blocks javascript:/data: stored-XSS hrefs. */
+export function isSafeHttpUrl(url: string | null | undefined): boolean {
+    if (!url) return false;
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+        if (!parsed.hostname) return false;
+        const host = parsed.hostname.toLowerCase();
+        if (
+            host === 'localhost' ||
+            host.endsWith('.localhost') ||
+            host.endsWith('.local') ||
+            host.endsWith('.internal') ||
+            host.endsWith('.lan') ||
+            host === 'metadata.google.internal' ||
+            host === 'metadata'
+        ) {
+            return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // Debounce function
 export function debounce<T extends (...args: unknown[]) => void>(
     fn: T,

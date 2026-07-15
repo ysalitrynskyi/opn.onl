@@ -182,10 +182,13 @@ fn validate_url(url: &str) -> Result<String, String> {
     }
     
     // Must have a host
-    if parsed.host_str().is_none() {
+    let Some(host) = parsed.host_str() else {
         return Err("URL must have a valid host".to_string());
+    };
+    if crate::utils::url_policy::is_disallowed_hostname(host) {
+        return Err("Links to local/internal hosts are not allowed".to_string());
     }
-    
+
     // Sanitization checks (if enabled)
     if is_url_sanitization_enabled() {
         let url_lower = url.to_lowercase();

@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { MapPin, Globe, AlertTriangle, ArrowUpRight } from 'lucide-react';
 import { API_ENDPOINTS } from '../config/api';
 import SEO from '../components/SEO';
+import { isSafeHttpUrl } from '../utils';
 
 interface BioLink {
     code: string;
@@ -98,9 +99,9 @@ export default function Bio() {
             >
                 {/* Header */}
                 <div className="text-center mb-8">
-                    {profile.avatar_url && !avatarFailed ? (
+                    {isSafeHttpUrl(profile.avatar_url) && !avatarFailed ? (
                         <img
-                            src={API_ENDPOINTS.bioAvatar(profile.avatar_url)}
+                            src={API_ENDPOINTS.bioAvatar(profile.avatar_url!)}
                             alt={name}
                             className="h-24 w-24 rounded-full object-cover mx-auto mb-4 border border-slate-200"
                             onError={() => setAvatarFailed(true)}
@@ -118,11 +119,11 @@ export default function Bio() {
                                 <MapPin className="h-4 w-4" /> {profile.location}
                             </span>
                         )}
-                        {profile.website && (
+                        {isSafeHttpUrl(profile.website) && (
                             <a
-                                href={profile.website}
+                                href={profile.website!}
                                 target="_blank"
-                                rel="noreferrer"
+                                rel="noopener noreferrer"
                                 className="inline-flex items-center gap-1 text-primary-600 hover:text-primary-700"
                             >
                                 <Globe className="h-4 w-4" /> Website
