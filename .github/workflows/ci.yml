@@ -3,8 +3,11 @@ name: CI
 on:
   pull_request:
   push:
+    # Protect `release` and require all CI jobs before merging into it. Docker
+    # publication then runs only for commits admitted by that branch gate.
     branches:
       - main
+      - release
       - security-audit-fixes
 
 # Cancel in-progress runs on the same ref
@@ -48,9 +51,9 @@ jobs:
         with:
           workspaces: backend
 
-      - name: Clippy (non-blocking)
+      - name: Clippy
         working-directory: backend
-        run: cargo clippy --all-targets || true
+        run: cargo clippy --all-targets
 
       - name: Run tests
         working-directory: backend

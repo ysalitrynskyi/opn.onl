@@ -29,7 +29,7 @@ COPY assets ./assets
 RUN cargo build --release
 
 # Stage 4: Runtime
-FROM alpine:3.19
+FROM alpine:3.21
 RUN apk add --no-cache ca-certificates libgcc postgresql-client wget curl
 RUN addgroup -g 1000 app && adduser -u 1000 -G app -s /bin/sh -D app
 
