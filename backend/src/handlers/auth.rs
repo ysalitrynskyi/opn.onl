@@ -11,7 +11,7 @@ use validator::Validate;
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::entity::users;
+use crate::entity::{api_keys, passkeys, users};
 use crate::utils::jwt::{hash_password, verify_password, create_jwt};
 use axum::http::HeaderMap;
 use crate::utils::email::generate_token;
@@ -586,68 +586,152 @@ pub async fn delete_account(
             }
         }
 
-        // An org owner cannot delete their account while the org still has
-        // other members — that would leave the team headless (and a later
-        // hard delete would be blocked by the owner_id FK). Ownership must be
-        // transferred first. Solo orgs (owner is the only member) are left
-        // intact: soft delete is reversible and the org is unreachable while
-        // its only member is deleted.
-        match crate::handlers::organizations::split_owned_orgs(&state.db, user_id).await {
-            Ok(split) if !split.blocking.is_empty() => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(crate::handlers::organizations::ownership_conflict_body(&split.blocking)),
-                )
+        let txn = match state.db.begin().await {
+            Ok(txn) => txn,
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }))
                     .into_response();
             }
-            Ok(_) => {}
-            Err(_) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() })).into_response();
-            }
-        }
+        };
 
-        // Soft delete user
-        let mut active_user: users::ActiveModel = user.into();
-        active_user.deleted_at = Set(Some(Utc::now().naive_utc()));
-        // Free the bio username for reuse and take the public page down.
-        active_user.bio_username = Set(None);
-        active_user.bio_enabled = Set(false);
-
-        if active_user.update(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() })).into_response();
-        }
-
-        // Capture the codes before the soft-delete so their cached redirects can
-        // be dropped afterwards (soft-delete is an UPDATE — nothing else clears
-        // the cache, so a deleted account's links would keep redirecting).
-        let cached_codes = crate::handlers::links::active_link_codes_for_user(&state, user_id).await;
-
-        // Soft delete all user's links
-        use sea_orm::sea_query::Expr;
-        use crate::entity::links;
-        links::Entity::update_many()
-            .col_expr(links::Column::DeletedAt, Expr::value(Utc::now().naive_utc()))
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::DeletedAt.is_null())
-            .exec(&state.db)
+        // Re-read under a row lock. Credential changes and passkey revocation use
+        // the same lock, preventing a stale token_version write from surviving a
+        // concurrent account deletion.
+        let user = match users::Entity::find_by_id(user_id)
+            .filter(users::Column::DeletedAt.is_null())
+            .lock_exclusive()
+            .one(&txn)
             .await
-            .ok();
+        {
+            Ok(Some(user)) => user,
+            _ => {
+                let _ = txn.rollback().await;
+                return (StatusCode::UNAUTHORIZED, Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }))
+                    .into_response();
+            }
+        };
+        if !verify_password(&payload.password, &user.password_hash).unwrap_or(false) {
+            let _ = txn.rollback().await;
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+                error: "Password is incorrect".to_string(),
+            }))
+                .into_response();
+        }
+
+        // An org owner cannot delete their account while the org still has
+        // other members. Check inside the deletion transaction so all database
+        // cleanup either commits together or fails together.
+        let split = match crate::handlers::organizations::split_owned_orgs(&txn, user_id).await {
+            Ok(split) => split,
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }))
+                    .into_response();
+            }
+        };
+        if !split.blocking.is_empty() {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::CONFLICT,
+                Json(crate::handlers::organizations::ownership_conflict_body(
+                    &split.blocking,
+                )),
+            )
+                .into_response();
+        }
+
+        use crate::entity::links;
+        use sea_orm::sea_query::Expr;
+
+        let cached_codes = match links::Entity::find()
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_null())
+            .filter(links::Column::DeletedAt.is_null())
+            .all(&txn)
+            .await
+        {
+            Ok(links) => links.into_iter().map(|link| link.code).collect::<Vec<_>>(),
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }))
+                    .into_response();
+            }
+        };
+
+        let deleted_at = Utc::now().naive_utc();
+        let next_token_version = match user.token_version.checked_add(1) {
+            Some(version) => version,
+            None => {
+                let _ = txn.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }))
+                    .into_response();
+            }
+        };
+
+        let result = async {
+            let mut active_user: users::ActiveModel = user.into();
+            active_user.deleted_at = Set(Some(deleted_at));
+            active_user.token_version = Set(next_token_version);
+            // Free the bio username for reuse and take the public page down.
+            active_user.bio_username = Set(None);
+            active_user.bio_enabled = Set(false);
+            active_user.update(&txn).await?;
+
+            // Organization links belong to the team, not their creator.
+            links::Entity::update_many()
+                .col_expr(links::Column::DeletedAt, Expr::value(deleted_at))
+                .filter(links::Column::UserId.eq(user_id))
+                .filter(links::Column::OrgId.is_null())
+                .filter(links::Column::DeletedAt.is_null())
+                .exec(&txn)
+                .await?;
+
+            crate::utils::privacy::purge_click_pii_for_user(&txn, user_id).await?;
+
+            api_keys::Entity::delete_many()
+                .filter(api_keys::Column::UserId.eq(user_id))
+                .exec(&txn)
+                .await?;
+            passkeys::Entity::delete_many()
+                .filter(passkeys::Column::UserId.eq(user_id))
+                .exec(&txn)
+                .await?;
+
+            Ok::<(), sea_orm::DbErr>(())
+        }
+        .await;
+
+        if result.is_err() {
+            let _ = txn.rollback().await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to delete account".to_string(),
+            }))
+                .into_response();
+        }
+
+        if txn.commit().await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Failed to delete account".to_string(),
+            }))
+                .into_response();
+        }
 
         crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
 
-        // Right to erasure: drop per-visitor identifiers from this user's link
-        // analytics now, rather than waiting out the retention window.
-        let _ = crate::utils::privacy::purge_click_pii_for_user(&state.db, user_id).await;
-
-        // Remove the user's passkeys so the deleted account cannot re-authenticate
-        // via WebAuthn (soft-delete is an UPDATE, so the FK cascade never fires).
-        crate::entity::passkeys::Entity::delete_many()
-            .filter(crate::entity::passkeys::Column::UserId.eq(user_id))
-            .exec(&state.db)
-            .await
-            .ok();
-
-        return (StatusCode::OK, Json(MessageResponse { message: "Account deleted successfully".to_string() })).into_response();
+        return (StatusCode::OK, Json(MessageResponse {
+            message: "Account deleted successfully".to_string(),
+        }))
+            .into_response();
     }
 
     (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()

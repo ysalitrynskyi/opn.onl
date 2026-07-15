@@ -16,7 +16,7 @@ const RESERVED_USERNAMES: &[&str] = &[
     "dashboard", "settings", "analytics", "password", "login", "register", "admin", "docs",
     "api", "faq", "pricing", "about", "privacy", "terms", "contact", "features", "verify-email",
     "reset-password", "forgot-password", "health", "links", "auth", "orgs", "folders", "tags",
-    "ws", "sse", "sitemap", "robots", "swagger-ui", "api-docs", "404", "bio",
+    "ws", "sse", "sitemap", "robots", "swagger-ui", "api-docs", "404", "bio", "avatar",
 ];
 
 fn link_in_bio_enabled() -> bool {
@@ -271,5 +271,6 @@ mod tests {
         assert!(validate_username("trail_").is_err());
         assert!(validate_username("dashboard").is_err()); // reserved
         assert!(validate_username("admin").is_err()); // reserved
+        assert!(validate_username("avatar").is_err()); // `/api/bio/avatar`
     }
 }

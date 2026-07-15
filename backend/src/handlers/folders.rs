@@ -9,9 +9,9 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::AppState;
-use crate::entity::{folders, links, link_tags, tags};
+use crate::entity::{folders, link_tags, links, org_members, tags};
 use crate::handlers::links::TagInfo;
+use crate::AppState;
 
 // ============= DTOs =============
 
@@ -51,9 +51,43 @@ pub struct MoveLinkToFolderRequest {
 
 // ============= Helper Functions =============
 
-async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
+async fn get_user_id_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Option<i32> {
     // Delegate to the shared resolver (handles both JWT and `opn_` API keys).
     crate::handlers::links::get_user_id_from_header(db, headers).await
+}
+
+/// Organization ownership always wins over the legacy `user_id` creator field.
+/// A removed creator must not retain access to an organization folder.
+async fn can_view_folder(
+    db: &sea_orm::DatabaseConnection,
+    folder: &folders::Model,
+    user_id: i32,
+) -> bool {
+    match folder.org_id {
+        Some(org_id) => org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(user_id))
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+            .is_some(),
+        None => folder.user_id == Some(user_id),
+    }
+}
+
+async fn can_edit_folder(
+    db: &sea_orm::DatabaseConnection,
+    folder: &folders::Model,
+    user_id: i32,
+) -> bool {
+    match folder.org_id {
+        Some(org_id) => crate::handlers::organizations::member_can_edit(db, org_id, user_id).await,
+        None => folder.user_id == Some(user_id),
+    }
 }
 
 async fn get_link_tags(db: &sea_orm::DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
@@ -75,11 +109,14 @@ async fn get_link_tags(db: &sea_orm::DatabaseConnection, link_id: i32) -> Vec<Ta
         .await
         .unwrap_or_default();
 
-    tags_list.into_iter().map(|t| TagInfo {
-        id: t.id,
-        name: t.name,
-        color: t.color,
-    }).collect()
+    tags_list
+        .into_iter()
+        .map(|t| TagInfo {
+            id: t.id,
+            name: t.name,
+            color: t.color,
+        })
+        .collect()
 }
 
 // ============= Handlers =============
@@ -101,19 +138,23 @@ pub async fn create_folder(
     headers: HeaderMap,
     Json(payload): Json<CreateFolderRequest>,
 ) -> Result<(StatusCode, Json<FolderResponse>), (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Org folders can only be created by members with edit rights (not viewers).
     if let Some(org_id) = payload.org_id {
         if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
             return Err((
                 StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Insufficient permissions to create an organization folder"})),
+                Json(
+                    serde_json::json!({"error": "Insufficient permissions to create an organization folder"}),
+                ),
             ));
         }
     }
@@ -121,7 +162,11 @@ pub async fn create_folder(
     let folder = folders::ActiveModel {
         name: Set(payload.name.clone()),
         color: Set(payload.color.clone()),
-        user_id: Set(if payload.org_id.is_some() { None } else { Some(user_id) }),
+        user_id: Set(if payload.org_id.is_some() {
+            None
+        } else {
+            Some(user_id)
+        }),
         org_id: Set(payload.org_id),
         ..Default::default()
     };
@@ -163,12 +208,14 @@ pub async fn get_folders(
     headers: HeaderMap,
     Query(query): Query<FolderQuery>,
 ) -> Result<Json<Vec<FolderResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let mut folder_query = folders::Entity::find();
 
@@ -183,14 +230,14 @@ pub async fn get_folders(
             .ok()
             .flatten()
             .is_some();
-        
+
         if !is_member {
             return Err((
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({"error": "Not a member of this organization"})),
             ));
         }
-        
+
         folder_query = folder_query.filter(folders::Column::OrgId.eq(org_id));
     } else {
         folder_query = folder_query.filter(folders::Column::UserId.eq(user_id));
@@ -250,12 +297,14 @@ pub async fn get_folder(
     headers: HeaderMap,
     Path(folder_id): Path<i32>,
 ) -> Result<Json<FolderResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let folder = folders::Entity::find_by_id(folder_id)
         .one(&state.db)
@@ -273,24 +322,7 @@ pub async fn get_folder(
             )
         })?;
 
-    // Check ownership - must own the folder directly, or be member of the org that owns it
-    let has_access = if folder.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = folder.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_view_folder(&state.db, &folder, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -337,12 +369,14 @@ pub async fn update_folder(
     Path(folder_id): Path<i32>,
     Json(payload): Json<UpdateFolderRequest>,
 ) -> Result<Json<FolderResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let folder = folders::Entity::find_by_id(folder_id)
         .one(&state.db)
@@ -360,38 +394,11 @@ pub async fn update_folder(
             )
         })?;
 
-    // Check ownership - must own the folder directly, or be member of the org that owns it
-    let has_access = if folder.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = folder.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_edit_folder(&state.db, &folder, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
+            Json(serde_json::json!({"error": "Insufficient permissions"})),
         ));
-    }
-
-    // Org folders may only be modified by editors and above; viewers are read-only.
-    if let Some(org_id) = folder.org_id {
-        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Insufficient permissions"})),
-            ));
-        }
     }
 
     let mut folder: folders::ActiveModel = folder.into();
@@ -448,12 +455,14 @@ pub async fn delete_folder(
     headers: HeaderMap,
     Path(folder_id): Path<i32>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     let folder = folders::Entity::find_by_id(folder_id)
         .one(&state.db)
@@ -471,38 +480,11 @@ pub async fn delete_folder(
             )
         })?;
 
-    // Check ownership - must own the folder directly, or be member of the org that owns it
-    let has_access = if folder.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = folder.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_edit_folder(&state.db, &folder, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
+            Json(serde_json::json!({"error": "Insufficient permissions"})),
         ));
-    }
-
-    // Org folders may only be deleted by editors and above; viewers are read-only.
-    if let Some(org_id) = folder.org_id {
-        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Insufficient permissions"})),
-            ));
-        }
     }
 
     // Clear folder_id on all links in this folder before deleting
@@ -554,12 +536,14 @@ pub async fn move_links_to_folder(
     Path(folder_id): Path<i32>,
     Json(payload): Json<MoveLinkToFolderRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Verify folder exists and user has access
     let folder = folders::Entity::find_by_id(folder_id)
@@ -578,24 +562,9 @@ pub async fn move_links_to_folder(
             )
         })?;
 
-    // Check folder ownership - must own directly or be member of org
-    let folder_access = if folder.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = folder.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !folder_access {
+    // Moving links mutates both the folder and every selected link. Organization
+    // folders therefore require current edit membership, not creator identity.
+    if !can_edit_folder(&state.db, &folder, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -612,15 +581,15 @@ pub async fn move_links_to_folder(
             .flatten();
 
         if let Some(link) = link {
-            // Check link ownership - must own directly or be member of same org
-            let link_access = if link.user_id == Some(user_id) {
-                true
-            } else if let Some(link_org) = link.org_id {
-                folder.org_id == Some(link_org) // Only if moving within same org
-            } else {
-                false
-            };
-            
+            // Never cross personal/organization boundaries. For an org folder,
+            // `can_edit_folder` already proved current edit membership in this
+            // exact org; creator `user_id` is intentionally irrelevant.
+            let link_access = link.org_id == folder.org_id
+                && match link.org_id {
+                    Some(_) => true,
+                    None => link.user_id == Some(user_id),
+                };
+
             if link_access {
                 let mut link: links::ActiveModel = link.into();
                 link.folder_id = Set(Some(folder_id));
@@ -654,13 +623,16 @@ pub async fn get_folder_links(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(folder_id): Path<i32>,
-) -> Result<Json<Vec<crate::handlers::links::LinkResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+) -> Result<Json<Vec<crate::handlers::links::LinkResponse>>, (StatusCode, Json<serde_json::Value>)>
+{
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Verify folder exists and user has access
     let folder = folders::Entity::find_by_id(folder_id)
@@ -679,24 +651,7 @@ pub async fn get_folder_links(
             )
         })?;
 
-    // Check ownership - must own the folder directly, or be member of the org that owns it
-    let has_access = if folder.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = folder.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-    
-    if !has_access {
+    if !can_view_folder(&state.db, &folder, user_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Access denied"})),
@@ -716,7 +671,8 @@ pub async fn get_folder_links(
             )
         })?;
 
-    let base_url = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let base_url =
+        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
     let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let mut responses = Vec::new();
     for l in links_list {
@@ -749,4 +705,3 @@ pub async fn get_folder_links(
 
     Ok(Json(responses))
 }
-

@@ -126,8 +126,9 @@ async fn check_org_permission(
     Ok(member)
 }
 
-/// True if the user is a member of the org who may modify its resources
-/// (any role except `viewer`). Keeps viewers read-only on shared folders/tags.
+/// True if the user is a member of the org who may modify its resources.
+/// Use the entity's explicit role allowlist so unknown/future roles remain
+/// read-only until their permissions are deliberately defined.
 pub(crate) async fn member_can_edit(
     db: &sea_orm::DatabaseConnection,
     org_id: i32,
@@ -140,7 +141,7 @@ pub(crate) async fn member_can_edit(
         .await
         .ok()
         .flatten()
-        .map(|m| m.role != "viewer")
+        .map(|m| m.can_edit())
         .unwrap_or(false)
 }
 
@@ -289,12 +290,14 @@ pub async fn create_organization(
     headers: HeaderMap,
     Json(payload): Json<CreateOrgRequest>,
 ) -> Result<(StatusCode, Json<OrgResponse>), (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Check if slug already exists
     let existing = organizations::Entity::find()
@@ -346,7 +349,17 @@ pub async fn create_organization(
     })?;
 
     // Log audit
-    log_audit(&state.db, org.id, user_id, "create", "organization", Some(org.id), None, None).await;
+    log_audit(
+        &state.db,
+        org.id,
+        user_id,
+        "create",
+        "organization",
+        Some(org.id),
+        None,
+        None,
+    )
+    .await;
 
     Ok((
         StatusCode::CREATED,
@@ -376,12 +389,14 @@ pub async fn get_user_organizations(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<OrgResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     // Get all organizations where user is a member
     let memberships = org_members::Entity::find()
@@ -459,12 +474,14 @@ pub async fn get_organization(
     headers: HeaderMap,
     Path(org_id): Path<i32>,
 ) -> Result<Json<OrgResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "viewer").await?;
 
@@ -529,12 +546,14 @@ pub async fn update_organization(
     Path(org_id): Path<i32>,
     Json(payload): Json<UpdateOrgRequest>,
 ) -> Result<Json<OrgResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
@@ -570,7 +589,17 @@ pub async fn update_organization(
         )
     })?;
 
-    log_audit(&state.db, org_id, user_id, "update", "organization", Some(org_id), None, None).await;
+    log_audit(
+        &state.db,
+        org_id,
+        user_id,
+        "update",
+        "organization",
+        Some(org_id),
+        None,
+        None,
+    )
+    .await;
 
     let member_count = org_members::Entity::find()
         .filter(org_members::Column::OrgId.eq(org.id))
@@ -615,12 +644,14 @@ pub async fn delete_organization(
     headers: HeaderMap,
     Path(org_id): Path<i32>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "owner").await?;
 
@@ -667,12 +698,14 @@ pub async fn get_organization_members(
     headers: HeaderMap,
     Path(org_id): Path<i32>,
 ) -> Result<Json<Vec<OrgMemberResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "viewer").await?;
 
@@ -732,12 +765,14 @@ pub async fn invite_member(
     Path(org_id): Path<i32>,
     Json(payload): Json<InviteMemberRequest>,
 ) -> Result<(StatusCode, Json<OrgMemberResponse>), (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
@@ -850,12 +885,14 @@ pub async fn update_member_role(
     Path((org_id, member_id)): Path<(i32, i32)>,
     Json(payload): Json<UpdateMemberRoleRequest>,
 ) -> Result<Json<OrgMemberResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
@@ -950,12 +987,14 @@ pub async fn remove_member(
     headers: HeaderMap,
     Path((org_id, member_id)): Path<(i32, i32)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
@@ -994,7 +1033,17 @@ pub async fn remove_member(
             )
         })?;
 
-    log_audit(&state.db, org_id, user_id, "remove", "member", Some(member_id), None, None).await;
+    log_audit(
+        &state.db,
+        org_id,
+        user_id,
+        "remove",
+        "member",
+        Some(member_id),
+        None,
+        None,
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1023,12 +1072,14 @@ pub async fn transfer_ownership(
     Path(org_id): Path<i32>,
     Json(payload): Json<TransferOwnershipRequest>,
 ) -> Result<Json<OrgResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "owner").await?;
 
@@ -1088,7 +1139,9 @@ pub async fn transfer_ownership(
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "New owner must be a member of the organization"})),
+                Json(
+                    serde_json::json!({"error": "New owner must be a member of the organization"}),
+                ),
             )
         })?;
 
@@ -1206,12 +1259,14 @@ pub async fn get_audit_log(
     headers: HeaderMap,
     Path(org_id): Path<i32>,
 ) -> Result<Json<Vec<AuditLogResponse>>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers).await.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Unauthorized"})),
-        )
-    })?;
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
 
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
@@ -1255,4 +1310,3 @@ pub async fn get_audit_log(
 
     Ok(Json(responses))
 }
-

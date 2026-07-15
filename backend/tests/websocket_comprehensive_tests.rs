@@ -12,7 +12,10 @@
 
 mod common;
 
-use common::{mark_email_verified, spawn_real_app_ws, unique_email};
+use common::{
+    mark_email_verified, spawn_real_app_ws, spawn_real_app_ws_with_interval, unique_email,
+};
+use futures_util::StreamExt;
 use opn_onl_backend::handlers::websocket::{ClickEvent, WsState};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -88,7 +91,11 @@ async fn ws_rejects_token_revoked_by_version_bump() {
 
     // Simulate a password change/reset: bump token_version so the issued JWT is
     // now stale. The WS handshake must honor that, not just the signature.
-    let user = users::Entity::find_by_id(user_id).one(&db).await.unwrap().unwrap();
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
     let current = user.token_version;
     let mut active: users::ActiveModel = user.into();
     active.token_version = Set(current + 1);
@@ -149,7 +156,11 @@ async fn sse_rejects_missing_and_revoked_tokens() {
 
     // Revoked token → 401 (same DB-backed check as /ws and the HTTP API).
     let (token, user_id) = register(&server, &unique_email()).await;
-    let user = users::Entity::find_by_id(user_id).one(&db).await.unwrap().unwrap();
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
     let current = user.token_version;
     let mut active: users::ActiveModel = user.into();
     active.token_version = Set(current + 1);
@@ -161,4 +172,80 @@ async fn sse_rejects_missing_and_revoked_tokens() {
         .expect_failure()
         .await;
     assert_eq!(res.status_code(), 401, "revoked token must be 401 on /sse");
+}
+
+#[tokio::test]
+async fn ws_connection_closes_after_token_is_revoked() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let (server, db, ws) = spawn_real_app_ws_with_interval(Duration::from_millis(50)).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
+
+    let close = tokio::time::timeout(Duration::from_secs(2), socket.receive_message())
+        .await
+        .expect("revoked WebSocket stayed open");
+    assert!(
+        matches!(close, axum_test::WsMessage::Close(_)),
+        "expected close frame after token revocation, got {close:?}"
+    );
+}
+
+#[tokio::test]
+async fn sse_stream_ends_after_token_is_revoked() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let (server, db, _ws) = spawn_real_app_ws_with_interval(Duration::from_millis(50)).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let mut body = response.bytes_stream();
+
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(chunk) = body.next().await {
+            chunk.expect("read SSE body");
+        }
+    })
+    .await
+    .expect("revoked SSE stream stayed open");
 }
