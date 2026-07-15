@@ -2,8 +2,9 @@
 
 ## Supported Versions
 
-The latest release (and the `latest` Docker images built from `main`) is the
-only supported version. Older tags do not receive backported fixes.
+The latest release (and the multi-arch `latest` Docker images built from the
+`release` branch / version tags) is the only supported version. Older tags do
+not receive backported fixes.
 
 ## Reporting a Vulnerability
 

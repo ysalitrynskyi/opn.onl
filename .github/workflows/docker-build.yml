@@ -203,6 +203,24 @@ jobs:
               ${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:$VERSION-arm64
           done
 
+      - name: Verify :latest is multi-arch (amd64 + arm64)
+        if: github.ref == 'refs/heads/release' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          for image in opn-backend opn-frontend; do
+            ref="${{ env.REGISTRY }}/${{ github.repository_owner }}/$image:latest"
+            platforms="$(docker buildx imagetools inspect "$ref" \
+              --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')"
+            echo "$ref => $platforms"
+            echo "$platforms" | grep -q 'linux/amd64' || { echo "ERROR: $ref missing linux/amd64"; exit 1; }
+            echo "$platforms" | grep -q 'linux/arm64' || { echo "ERROR: $ref missing linux/arm64"; exit 1; }
+            # Single-arch manifest.v2 has empty Manifests — catch that too.
+            [ -n "$(echo "$platforms" | tr -d '[:space:]')" ] || {
+              echo "ERROR: $ref is not a multi-arch index"
+              exit 1
+            }
+          done
+
   cleanup:
     name: Prune Old GHCR Versions
     runs-on: ubuntu-latest
