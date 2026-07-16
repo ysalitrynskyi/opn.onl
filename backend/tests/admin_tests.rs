@@ -112,7 +112,7 @@ async fn admin_sees_other_users_links_with_owner_data() {
     let (admin_token, _) = register_admin(&server, &db).await;
     let (user_token, user_id, user_email) = register_verified(&server, &db).await;
 
-    let (link_id, code) = create_link(&server, &user_token, "https://example.com/owned").await;
+    let (link_id, code) = create_link(&server, &user_token, "https://iana.org/owned").await;
 
     let res = server
         .get("/admin/links")
@@ -130,7 +130,7 @@ async fn admin_sees_other_users_links_with_owner_data() {
     assert_eq!(link["user_email"].as_str(), Some(user_email.as_str()));
     assert_eq!(
         link["original_url"].as_str(),
-        Some("https://example.com/owned")
+        Some("https://iana.org/owned")
     );
     assert_eq!(link["is_active"].as_bool(), Some(true));
     assert_eq!(link["has_password"].as_bool(), Some(false));
@@ -144,12 +144,7 @@ async fn admin_links_support_pagination_and_user_filter() {
     let (user_token, user_id, _) = register_verified(&server, &db).await;
 
     for i in 0..3 {
-        create_link(
-            &server,
-            &user_token,
-            &format!("https://example.com/page-{i}"),
-        )
-        .await;
+        create_link(&server, &user_token, &format!("https://iana.org/page-{i}")).await;
     }
 
     let res = server
@@ -182,7 +177,7 @@ async fn admin_can_delete_and_restore_any_link() {
     let (admin_token, _) = register_admin(&server, &db).await;
     let (user_token, _, _) = register_verified(&server, &db).await;
 
-    let (link_id, code) = create_link(&server, &user_token, "https://example.com/takedown").await;
+    let (link_id, code) = create_link(&server, &user_token, "https://iana.org/takedown").await;
 
     // Redirect works while the link is live.
     let res = server.get(&format!("/{code}")).await;
@@ -241,8 +236,8 @@ async fn admin_users_list_is_paginated_with_aggregates() {
     let (admin_token, _) = register_admin(&server, &db).await;
     let (user_token, user_id, user_email) = register_verified(&server, &db).await;
 
-    create_link(&server, &user_token, "https://example.com/counted-1").await;
-    create_link(&server, &user_token, "https://example.com/counted-2").await;
+    create_link(&server, &user_token, "https://iana.org/counted-1").await;
+    create_link(&server, &user_token, "https://iana.org/counted-2").await;
 
     let res = server
         .get("/admin/users")
@@ -303,7 +298,7 @@ async fn admin_can_force_verify_email() {
     let res = server
         .post("/links")
         .authorization_bearer(&user_token)
-        .json(&json!({ "original_url": "https://example.com/blocked" }))
+        .json(&json!({ "original_url": "https://iana.org/blocked" }))
         .await;
     assert_ne!(
         res.status_code(),
@@ -328,7 +323,7 @@ async fn admin_can_force_verify_email() {
     let res = server
         .post("/links")
         .authorization_bearer(&user_token)
-        .json(&json!({ "original_url": "https://example.com/now-allowed" }))
+        .json(&json!({ "original_url": "https://iana.org/now-allowed" }))
         .await;
     assert_eq!(res.status_code(), 201, "{}", res.text());
 }
@@ -338,7 +333,7 @@ async fn admin_stats_have_full_shape() {
     let (server, db) = spawn_real_app().await;
     let (admin_token, _) = register_admin(&server, &db).await;
     let (user_token, _, _) = register_verified(&server, &db).await;
-    create_link(&server, &user_token, "https://example.com/for-stats").await;
+    create_link(&server, &user_token, "https://iana.org/for-stats").await;
 
     let res = server
         .get("/admin/stats")

@@ -110,6 +110,7 @@ async fn resolve_ws_token(db: &sea_orm::DatabaseConnection, token: &str) -> Opti
     let claims = decode_jwt(token).ok()?;
     let user = users::Entity::find_by_id(claims.user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(db)
         .await
         .ok()??;

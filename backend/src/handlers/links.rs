@@ -22,6 +22,8 @@ use crate::AppState;
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
 /// hit must never become an unchecked redirect because the blocklist query died.
 async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), String> {
+    validate_url(url)?;
+
     let parsed_url = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
     // Normalized host: lowercase + strip trailing dot (defeats simple casing / FQDN-dot bypass).
     let host = parsed_url
@@ -774,6 +776,7 @@ pub async fn authenticate_from_header(
     let claims = decode_jwt(token).ok()?;
     let user = users::Entity::find_by_id(claims.user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(db)
         .await
         .ok()??;
@@ -888,6 +891,7 @@ async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<
         .ok()??;
     let user = users::Entity::find_by_id(rec.user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(db)
         .await
         .ok()??;

@@ -46,7 +46,7 @@ async fn put_rules(server: &axum_test::TestServer, token: &str, link_id: i64) ->
     server
         .put(&format!("/links/{link_id}/rules"))
         .authorization_bearer(token)
-        .json(&json!({ "rules": [{ "destination_url": "https://example.com/routed" }] }))
+        .json(&json!({ "rules": [{ "destination_url": "https://iana.org/routed" }] }))
         .await
         .status_code()
         .as_u16()
@@ -56,7 +56,7 @@ async fn post_org_link(server: &axum_test::TestServer, token: &str, org_id: i32)
     server
         .post("/links")
         .authorization_bearer(token)
-        .json(&json!({ "original_url": "https://example.com/new", "org_id": org_id }))
+        .json(&json!({ "original_url": "https://iana.org/new", "org_id": org_id }))
         .await
         .status_code()
         .as_u16()
@@ -80,7 +80,7 @@ async fn viewer_cannot_rewrite_org_link_routing() {
     let link = server
         .post("/links")
         .authorization_bearer(&owner_token)
-        .json(&json!({ "original_url": "https://example.com/target", "org_id": org_id }))
+        .json(&json!({ "original_url": "https://iana.org/target", "org_id": org_id }))
         .await;
     assert_eq!(link.status_code(), 201, "create org link: {}", link.text());
     let link_id = link.json::<Value>()["id"].as_i64().unwrap();
@@ -162,7 +162,7 @@ async fn viewer_cannot_bulk_create_org_links() {
     let res = server
         .post("/links/bulk")
         .authorization_bearer(&viewer_token)
-        .json(&json!({ "urls": ["https://example.com/bulk"], "org_id": org_id }))
+        .json(&json!({ "urls": ["https://iana.org/bulk"], "org_id": org_id }))
         .await;
     assert_eq!(res.status_code(), 200, "bulk create: {}", res.text());
     let body = res.json::<Value>();

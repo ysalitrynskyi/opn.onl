@@ -121,7 +121,7 @@ async fn redirect_password_attempts_are_rate_limited() {
         .post("/links")
         .authorization_bearer(&token)
         .json(&json!({
-            "original_url": "https://example.com/secret",
+            "original_url": "https://iana.org/secret",
             "password": "correct-horse-battery-staple"
         }))
         .await;

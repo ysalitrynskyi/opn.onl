@@ -74,11 +74,11 @@ async fn profile_accepts_https_website() {
     let res = server
         .put("/auth/profile")
         .authorization_bearer(&token)
-        .json(&json!({ "website": "https://example.com/me" }))
+        .json(&json!({ "website": "https://iana.org/me" }))
         .await;
     assert_eq!(res.status_code(), 200, "body: {}", res.text());
     let body: Value = res.json();
-    assert_eq!(body["website"], "https://example.com/me");
+    assert_eq!(body["website"], "https://iana.org/me");
 }
 
 #[tokio::test]

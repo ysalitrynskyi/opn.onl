@@ -41,7 +41,7 @@ pub fn get_test_token() -> String {
         .timestamp();
 
     let claims = Claims {
-        sub: "test@example.com".to_owned(),
+        sub: "test@iana.org".to_owned(),
         exp: expiration as usize,
         user_id: 1,
     };
@@ -74,7 +74,7 @@ pub fn get_test_admin_token() -> String {
         .timestamp();
 
     let claims = Claims {
-        sub: "admin@example.com".to_owned(),
+        sub: "admin@iana.org".to_owned(),
         exp: expiration as usize,
         user_id: 1,
         is_admin: true,
@@ -189,7 +189,7 @@ pub async fn mark_email_verified(db: &DatabaseConnection, user_id: i32) {
 
 /// Generate a unique test email
 pub fn unique_email() -> String {
-    format!("test_{}@example.com", uuid::Uuid::new_v4())
+    format!("test_{}@users.opn.onl", uuid::Uuid::new_v4())
 }
 
 /// Generate a unique short code
@@ -207,7 +207,7 @@ pub fn unique_code() -> String {
 /// Test data generators
 pub mod test_data {
     pub fn valid_url() -> &'static str {
-        "https://example.com/test-page"
+        "https://www.iana.org/test-page"
     }
 
     pub fn valid_password() -> &'static str {

@@ -62,9 +62,9 @@ fn path_and_query(absolute_url: &str) -> String {
 async fn password_verify_reenters_interstitial_routing_and_blocklist_pipeline() {
     let (server, db) = spawn_real_app().await;
     let (token, _) = register_verified(&server, &db).await;
-    let routed_host = format!("{}.example", uuid::Uuid::new_v4());
+    let routed_host = format!("{}.iana.org", uuid::Uuid::new_v4());
     let routed_destination = format!("https://{routed_host}/routed-secret");
-    let original_destination = "https://example.com/original-secret";
+    let original_destination = "https://iana.org/original-secret";
 
     let (link_id, code) = create_link(
         &server,
@@ -209,7 +209,7 @@ async fn create_and_bulk_operations_reject_cross_tenant_folder_and_tags() {
         .post("/links")
         .authorization_bearer(&attacker_token)
         .json(&json!({
-            "original_url": "https://example.com/foreign-folder",
+            "original_url": "https://iana.org/foreign-folder",
             "folder_id": folder_id,
         }))
         .await;
@@ -224,7 +224,7 @@ async fn create_and_bulk_operations_reject_cross_tenant_folder_and_tags() {
         .post("/links")
         .authorization_bearer(&attacker_token)
         .json(&json!({
-            "original_url": "https://example.com/foreign-tag",
+            "original_url": "https://iana.org/foreign-tag",
             "tag_ids": [tag_id],
         }))
         .await;
@@ -239,7 +239,7 @@ async fn create_and_bulk_operations_reject_cross_tenant_folder_and_tags() {
         .post("/links/bulk")
         .authorization_bearer(&attacker_token)
         .json(&json!({
-            "urls": ["https://example.com/foreign-bulk-folder"],
+            "urls": ["https://iana.org/foreign-bulk-folder"],
             "folder_id": folder_id,
         }))
         .await;
@@ -254,7 +254,7 @@ async fn create_and_bulk_operations_reject_cross_tenant_folder_and_tags() {
     let (attacker_link_id, _) = create_link(
         &server,
         &attacker_token,
-        json!({ "original_url": "https://example.com/attacker-link" }),
+        json!({ "original_url": "https://iana.org/attacker-link" }),
     )
     .await;
     let bulk_update = server
@@ -305,7 +305,7 @@ async fn click_flush_isolates_orphan_without_dropping_valid_link_batch() {
     let (link_id, _) = create_link(
         &server,
         &token,
-        json!({ "original_url": "https://example.com/click-buffer" }),
+        json!({ "original_url": "https://iana.org/click-buffer" }),
     )
     .await;
 

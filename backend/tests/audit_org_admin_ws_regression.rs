@@ -67,7 +67,7 @@ async fn add_member(db: &DatabaseConnection, org_id: i32, user_id: i32, role: &s
 }
 
 async fn create_link(server: &axum_test::TestServer, token: &str, org_id: Option<i32>) -> i32 {
-    let mut payload = json!({ "original_url": "https://example.com/audit" });
+    let mut payload = json!({ "original_url": "https://iana.org/audit" });
     if let Some(org_id) = org_id {
         payload["org_id"] = json!(org_id);
     }

@@ -51,8 +51,8 @@ async fn active_link_codes_track_soft_delete() {
     let (token, user_id) = register(&server, &unique_email()).await;
     mark_email_verified(&db, user_id).await;
 
-    let code_a = create_link(&server, &token, "https://example.com/a").await;
-    let code_b = create_link(&server, &token, "https://example.com/b").await;
+    let code_a = create_link(&server, &token, "https://iana.org/a").await;
+    let code_b = create_link(&server, &token, "https://iana.org/b").await;
 
     let state = opn_onl_backend::AppState::for_tests(db.clone()).await;
     let codes = opn_onl_backend::handlers::links::active_link_codes_for_user(&state, user_id).await;
@@ -93,7 +93,7 @@ async fn contact_form_is_rate_limited() {
     let (server, _db) = spawn_real_app().await;
     let payload = json!({
         "name": "Test User",
-        "email": "sender@example.com",
+        "email": "sender@iana.org",
         "subject": "Hello",
         "message": "This is a test contact message body."
     });
@@ -128,7 +128,7 @@ async fn bulk_create_requires_authentication() {
     let (server, _db) = spawn_real_app().await;
     let res = server
         .post("/links/bulk")
-        .json(&json!({ "urls": ["https://example.com/a", "https://example.com/b"] }))
+        .json(&json!({ "urls": ["https://iana.org/a", "https://iana.org/b"] }))
         .await;
     assert_eq!(
         res.status_code(),
@@ -148,7 +148,7 @@ async fn bulk_create_is_charged_per_link() {
     mark_email_verified(&db, user_id).await;
 
     let urls: Vec<String> = (0..105)
-        .map(|i| format!("https://example.com/bulk/{i}"))
+        .map(|i| format!("https://iana.org/bulk/{i}"))
         .collect();
     let res = server
         .post("/links/bulk")

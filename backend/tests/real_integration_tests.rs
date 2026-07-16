@@ -78,7 +78,7 @@ async fn register_login_create_link_redirect() {
     // Link creation requires a verified email.
     common::mark_email_verified(&db, user_id).await;
 
-    let destination = "https://example.com/integration-test-target";
+    let destination = "https://iana.org/integration-test-target";
     let (_, code) = create_link(&server, &token, json!({ "original_url": destination })).await;
 
     // The public redirect must send visitors to the destination.
@@ -102,7 +102,7 @@ async fn user_cannot_modify_another_users_link() {
 
     let (token_a, user_a) = register(&server, &common::unique_email()).await;
     common::mark_email_verified(&db, user_a).await;
-    let destination = "https://example.com/owned-by-a";
+    let destination = "https://iana.org/owned-by-a";
     let (link_id, code) =
         create_link(&server, &token_a, json!({ "original_url": destination })).await;
 
@@ -112,7 +112,7 @@ async fn user_cannot_modify_another_users_link() {
     let res = server
         .put(&format!("/links/{link_id}"))
         .authorization_bearer(&token_b)
-        .json(&json!({ "original_url": "https://evil.example.com" }))
+        .json(&json!({ "original_url": "https://evil.iana.org" }))
         .await;
     assert_eq!(
         res.status_code(),
@@ -151,7 +151,7 @@ async fn deleted_link_cannot_be_updated() {
     let (link_id, _code) = create_link(
         &server,
         &token,
-        json!({ "original_url": "https://example.com/deleted" }),
+        json!({ "original_url": "https://iana.org/deleted" }),
     )
     .await;
 
@@ -164,7 +164,7 @@ async fn deleted_link_cannot_be_updated() {
     let res = server
         .put(&format!("/links/{link_id}"))
         .authorization_bearer(&token)
-        .json(&json!({ "original_url": "https://example.com/revived" }))
+        .json(&json!({ "original_url": "https://iana.org/revived" }))
         .await;
     assert_eq!(
         res.status_code(),
@@ -183,7 +183,7 @@ async fn passkey_register_start_requires_auth() {
 
     let res = server
         .post("/auth/passkey/register/start")
-        .json(&json!({ "username": "victim@example.com" }))
+        .json(&json!({ "username": "victim@iana.org" }))
         .await;
     assert_eq!(
         res.status_code(),
@@ -202,7 +202,7 @@ async fn preview_hides_password_protected_destination() {
     let (token, user_id) = register(&server, &common::unique_email()).await;
     common::mark_email_verified(&db, user_id).await;
 
-    let secret_destination = "https://example.com/secret-destination";
+    let secret_destination = "https://iana.org/secret-destination";
     let (_, protected_code) = create_link(
         &server,
         &token,
@@ -220,7 +220,7 @@ async fn preview_hides_password_protected_destination() {
     );
 
     // Control: a plain link's preview does show its destination.
-    let plain_destination = "https://example.com/plain-destination";
+    let plain_destination = "https://iana.org/plain-destination";
     let (_, plain_code) = create_link(
         &server,
         &token,

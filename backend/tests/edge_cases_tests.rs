@@ -14,59 +14,59 @@ mod url_validation {
 
     #[test]
     fn test_valid_http_url() {
-        assert!(is_valid_url("http://example.com"));
+        assert!(is_valid_url("http://iana.org"));
     }
 
     #[test]
     fn test_valid_https_url() {
-        assert!(is_valid_url("https://example.com"));
+        assert!(is_valid_url("https://iana.org"));
     }
 
     #[test]
     fn test_url_with_port() {
-        assert!(is_valid_url("https://example.com:8080"));
+        assert!(is_valid_url("https://iana.org:8080"));
     }
 
     #[test]
     fn test_url_with_path() {
-        assert!(is_valid_url("https://example.com/path/to/resource"));
+        assert!(is_valid_url("https://iana.org/path/to/resource"));
     }
 
     #[test]
     fn test_url_with_query() {
-        assert!(is_valid_url("https://example.com?foo=bar&baz=qux"));
+        assert!(is_valid_url("https://iana.org?foo=bar&baz=qux"));
     }
 
     #[test]
     fn test_url_with_fragment() {
-        assert!(is_valid_url("https://example.com#section"));
+        assert!(is_valid_url("https://iana.org#section"));
     }
 
     #[test]
     fn test_url_with_auth() {
-        assert!(is_valid_url("https://user:pass@example.com"));
+        assert!(is_valid_url("https://user:pass@iana.org"));
     }
 
     #[test]
     fn test_url_with_unicode() {
-        assert!(is_valid_url("https://example.com/путь"));
+        assert!(is_valid_url("https://iana.org/путь"));
     }
 
     #[test]
     fn test_url_with_encoded_chars() {
-        assert!(is_valid_url("https://example.com/path%20with%20spaces"));
+        assert!(is_valid_url("https://iana.org/path%20with%20spaces"));
     }
 
     #[test]
     fn test_very_long_url() {
         let long_path = "a".repeat(2000);
-        let url = format!("https://example.com/{}", long_path);
+        let url = format!("https://iana.org/{}", long_path);
         assert!(is_valid_url(&url));
     }
 
     #[test]
     fn test_invalid_url_no_scheme() {
-        assert!(!is_valid_url("example.com"));
+        assert!(!is_valid_url("iana.org"));
     }
 
     #[test]

@@ -39,7 +39,7 @@ mod jwt_comprehensive_tests {
 
     #[test]
     fn test_create_valid_token() {
-        let token = create_test_token(1, "test@example.com", 24);
+        let token = create_test_token(1, "test@iana.org", 24);
         assert!(!token.is_empty());
         assert!(token.contains('.'));
         assert_eq!(token.matches('.').count(), 2); // JWT has 3 parts
@@ -62,7 +62,7 @@ mod jwt_comprehensive_tests {
 
     #[test]
     fn test_expired_token_rejected() {
-        let token = create_test_token(1, "test@example.com", -1);
+        let token = create_test_token(1, "test@iana.org", -1);
 
         let result = decode::<Claims>(
             &token,
@@ -75,7 +75,7 @@ mod jwt_comprehensive_tests {
 
     #[test]
     fn test_wrong_secret_rejected() {
-        let token = create_test_token(1, "test@example.com", 24);
+        let token = create_test_token(1, "test@iana.org", 24);
 
         let result = decode::<Claims>(
             &token,
@@ -88,7 +88,7 @@ mod jwt_comprehensive_tests {
 
     #[test]
     fn test_tampered_token_rejected() {
-        let mut token = create_test_token(1, "test@example.com", 24);
+        let mut token = create_test_token(1, "test@iana.org", 24);
         // Tamper with the token
         token.push('x');
 
@@ -103,7 +103,7 @@ mod jwt_comprehensive_tests {
 
     #[test]
     fn test_token_header_algorithm() {
-        let token = create_test_token(1, "test@example.com", 24);
+        let token = create_test_token(1, "test@iana.org", 24);
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3);
 
@@ -413,7 +413,7 @@ mod cache_tests {
             "abc123",
             CachedLink {
                 id: 1,
-                original_url: "https://example.com".to_string(),
+                original_url: "https://iana.org".to_string(),
                 has_password: false,
                 expires_at: None,
                 cached_at: Instant::now(),
@@ -422,7 +422,7 @@ mod cache_tests {
 
         let entry = cache.get("abc123");
         assert!(entry.is_some());
-        assert_eq!(entry.unwrap().original_url, "https://example.com");
+        assert_eq!(entry.unwrap().original_url, "https://iana.org");
     }
 
     #[test]
@@ -439,7 +439,7 @@ mod cache_tests {
             "abc123",
             CachedLink {
                 id: 1,
-                original_url: "https://example.com".to_string(),
+                original_url: "https://iana.org".to_string(),
                 has_password: false,
                 expires_at: None,
                 cached_at: Instant::now(),
@@ -458,7 +458,7 @@ mod cache_tests {
             "abc123",
             CachedLink {
                 id: 1,
-                original_url: "https://example.com".to_string(),
+                original_url: "https://iana.org".to_string(),
                 has_password: false,
                 expires_at: None,
                 cached_at: Instant::now() - Duration::from_secs(1), // Already expired

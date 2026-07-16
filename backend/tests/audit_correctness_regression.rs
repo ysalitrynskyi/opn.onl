@@ -54,8 +54,8 @@ async fn tag_link_count_excludes_soft_deleted_links() {
         .as_i64()
         .unwrap();
 
-    let id1 = create_link(&server, &token, "https://example.com/1").await;
-    let id2 = create_link(&server, &token, "https://example.com/2").await;
+    let id1 = create_link(&server, &token, "https://iana.org/1").await;
+    let id2 = create_link(&server, &token, "https://iana.org/2").await;
     for id in [id1, id2] {
         let res = server
             .post(&format!("/links/{id}/tags"))
@@ -108,7 +108,7 @@ async fn deleted_alias_cannot_be_reused() {
     let created = server
         .post("/links")
         .authorization_bearer(&token)
-        .json(&json!({ "original_url": "https://example.com/orig", "custom_alias": alias }))
+        .json(&json!({ "original_url": "https://iana.org/orig", "custom_alias": alias }))
         .await;
     assert_eq!(created.status_code(), 201, "create: {}", created.text());
     let id = created.json::<Value>()["id"].as_i64().unwrap();
@@ -135,7 +135,7 @@ async fn deleted_alias_cannot_be_reused() {
     let reuse = server
         .post("/links")
         .authorization_bearer(&token)
-        .json(&json!({ "original_url": "https://example.com/new", "custom_alias": alias }))
+        .json(&json!({ "original_url": "https://iana.org/new", "custom_alias": alias }))
         .await;
     assert_eq!(
         reuse.status_code(),

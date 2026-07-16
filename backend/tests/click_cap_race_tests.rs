@@ -106,7 +106,7 @@ async fn burn_link_is_exactly_once_under_concurrency() {
         let code = create_link(
             &base,
             serde_json::json!({
-                "original_url": "https://example.com/burn-race-secret",
+                "original_url": "https://iana.org/burn-race-secret",
                 "burn_after_reading": true,
             }),
         )
@@ -156,7 +156,7 @@ async fn capped_link_never_overshoots_and_count_settles_exactly() {
     let code = create_link(
         &base,
         serde_json::json!({
-            "original_url": "https://example.com/capped-race",
+            "original_url": "https://iana.org/capped-race",
             "max_clicks": MAX,
         }),
     )
@@ -209,7 +209,7 @@ async fn verify_endpoint_consumes_burn_link_exactly_once() {
     let code = create_link(
         &base,
         serde_json::json!({
-            "original_url": "https://example.com/verify-burn-secret",
+            "original_url": "https://iana.org/verify-burn-secret",
             "burn_after_reading": true,
         }),
     )

@@ -9,7 +9,7 @@ use serde_json::json;
 mod url_validation_tests {
     #[test]
     fn test_valid_http_url() {
-        let url = "http://example.com";
+        let url = "http://iana.org";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap().scheme(), "http");
@@ -17,7 +17,7 @@ mod url_validation_tests {
 
     #[test]
     fn test_valid_https_url() {
-        let url = "https://example.com";
+        let url = "https://iana.org";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap().scheme(), "https");
@@ -25,7 +25,7 @@ mod url_validation_tests {
 
     #[test]
     fn test_url_with_path() {
-        let url = "https://example.com/path/to/page";
+        let url = "https://iana.org/path/to/page";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap().path(), "/path/to/page");
@@ -33,7 +33,7 @@ mod url_validation_tests {
 
     #[test]
     fn test_url_with_query() {
-        let url = "https://example.com/search?q=test&page=1";
+        let url = "https://iana.org/search?q=test&page=1";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap().query(), Some("q=test&page=1"));
@@ -41,7 +41,7 @@ mod url_validation_tests {
 
     #[test]
     fn test_url_with_fragment() {
-        let url = "https://example.com/page#section";
+        let url = "https://iana.org/page#section";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap().fragment(), Some("section"));
@@ -49,7 +49,7 @@ mod url_validation_tests {
 
     #[test]
     fn test_url_with_port() {
-        let url = "https://example.com:8080/api";
+        let url = "https://iana.org:8080/api";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap().port(), Some(8080));
@@ -57,14 +57,14 @@ mod url_validation_tests {
 
     #[test]
     fn test_invalid_url_no_scheme() {
-        let url = "example.com";
+        let url = "iana.org";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_err());
     }
 
     #[test]
     fn test_invalid_url_ftp_scheme() {
-        let url = "ftp://example.com/file";
+        let url = "ftp://iana.org/file";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         // But we should reject non-http/https schemes
@@ -83,14 +83,14 @@ mod url_validation_tests {
     #[test]
     fn test_very_long_url() {
         let long_path = "a".repeat(2000);
-        let url = format!("https://example.com/{}", long_path);
+        let url = format!("https://iana.org/{}", long_path);
         let parsed = url::Url::parse(&url);
         assert!(parsed.is_ok());
     }
 
     #[test]
     fn test_url_with_credentials() {
-        let url = "https://user:pass@example.com/";
+        let url = "https://user:pass@iana.org/";
         let parsed = url::Url::parse(url);
         assert!(parsed.is_ok());
         let parsed = parsed.unwrap();
@@ -129,14 +129,14 @@ mod xss_prevention_tests {
     #[test]
     fn test_detect_script_tag() {
         assert!(contains_xss_pattern(
-            "https://example.com/<script>alert(1)</script>"
+            "https://iana.org/<script>alert(1)</script>"
         ));
     }
 
     #[test]
     fn test_detect_onerror() {
         assert!(contains_xss_pattern(
-            "https://example.com/img?onerror=alert(1)"
+            "https://iana.org/img?onerror=alert(1)"
         ));
     }
 
@@ -148,12 +148,12 @@ mod xss_prevention_tests {
 
     #[test]
     fn test_clean_url() {
-        assert!(!contains_xss_pattern("https://example.com/page?id=123"));
+        assert!(!contains_xss_pattern("https://iana.org/page?id=123"));
     }
 
     #[test]
     fn test_detect_encoded_xss() {
-        let encoded = "https://example.com/%3Cscript%3Ealert(1)%3C/script%3E";
+        let encoded = "https://iana.org/%3Cscript%3Ealert(1)%3C/script%3E";
         let decoded = urlencoding::decode(encoded).unwrap_or_default();
         assert!(decoded.to_lowercase().contains("<script"));
     }
@@ -470,7 +470,7 @@ mod csv_export_tests {
 
     #[test]
     fn test_escape_comma_in_url() {
-        let url = "https://example.com/path?a=1,b=2";
+        let url = "https://iana.org/path?a=1,b=2";
         let escaped = escape_csv_field(url);
         assert!(!escaped.contains(','));
     }
@@ -489,7 +489,7 @@ mod csv_export_tests {
             "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             1,
             "abc123",
-            "https://example.com".replace(',', "%2C"),
+            "https://iana.org".replace(',', "%2C"),
             "https://short.url/abc123",
             42,
             "2024-01-01 00:00:00",
@@ -513,14 +513,14 @@ mod qr_code_tests {
 
     #[test]
     fn test_qr_code_generation() {
-        let url = "https://example.com/abc123";
+        let url = "https://iana.org/abc123";
         let qr = QrCode::new(url.as_bytes());
         assert!(qr.is_ok());
     }
 
     #[test]
     fn test_qr_code_long_url() {
-        let long_url = format!("https://example.com/{}", "a".repeat(500));
+        let long_url = format!("https://iana.org/{}", "a".repeat(500));
         let qr = QrCode::new(long_url.as_bytes());
         assert!(qr.is_ok());
     }
@@ -547,10 +547,10 @@ mod bulk_operations_tests {
     #[test]
     fn test_bulk_url_validation() {
         let urls = vec![
-            "https://example.com/1",
-            "https://example.com/2",
+            "https://iana.org/1",
+            "https://iana.org/2",
             "invalid-url",
-            "https://example.com/3",
+            "https://iana.org/3",
         ];
 
         let valid_count = urls.iter().filter(|u| url::Url::parse(u).is_ok()).count();
@@ -574,9 +574,9 @@ mod bulk_operations_tests {
     #[test]
     fn test_bulk_deduplication() {
         let urls = vec![
-            "https://example.com/page",
-            "https://example.com/page",
-            "https://example.com/other",
+            "https://iana.org/page",
+            "https://iana.org/page",
+            "https://iana.org/other",
         ];
 
         let unique: std::collections::HashSet<_> = urls.iter().collect();

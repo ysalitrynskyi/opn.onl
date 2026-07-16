@@ -169,7 +169,7 @@ mod edge_cases {
         let limiter = RateLimiter::new(RateLimitConfig::new(5, 60));
 
         let special_keys = vec![
-            "user@example.com",
+            "user@iana.org",
             "192.168.1.1",
             "key:with:colons",
             "key/with/slashes",

@@ -28,6 +28,8 @@ describe('Admin Page', () => {
         clicks_today: 900,
         blocked_links_count: 25,
         blocked_domains_count: 10,
+        blocked_email_domains_count: 4,
+        disabled_users_count: 1,
         suspicious_links_count: 2,
     };
 
@@ -47,6 +49,9 @@ describe('Admin Page', () => {
         api_keys_count: 1,
         passkeys_count: 0,
         orgs_owned: 0,
+        disabled_at: null,
+        disabled_reason: null,
+        disabled_by: null,
     };
 
     const mockUsers = {
@@ -87,8 +92,20 @@ describe('Admin Page', () => {
                 created_at: '2024-01-04T00:00:00Z',
                 deleted_at: '2024-01-05T00:00:00Z',
             },
+            {
+                ...userDefaults,
+                id: 5,
+                email: 'blocked@throwaway.testmail',
+                is_admin: false,
+                email_verified: true,
+                created_at: '2024-01-06T00:00:00Z',
+                deleted_at: null,
+                disabled_at: '2024-01-07T00:00:00Z',
+                disabled_reason: 'Email domain blocked',
+                disabled_by: 1,
+            },
         ],
-        total: 4,
+        total: 5,
         page: 1,
         per_page: 25,
     };
@@ -204,6 +221,18 @@ describe('Admin Page', () => {
             reason: 'Malware',
             blocked_by: 1,
             created_at: '2024-01-01T00:00:00Z',
+            affected_links: 2,
+        },
+    ];
+
+    const mockBlockedEmailDomains = [
+        {
+            id: 1,
+            domain: 'throwaway.testmail',
+            reason: 'Disposable mail',
+            blocked_by: 1,
+            created_at: '2024-01-01T00:00:00Z',
+            affected_users: 1,
         },
     ];
 
@@ -231,6 +260,7 @@ describe('Admin Page', () => {
             if (url.includes('/admin/stats')) return respond(mockStats);
             if (url.includes('/admin/activity')) return respond(mockActivity);
             if (url.includes('/admin/blocked/links')) return respond(mockBlockedLinks);
+            if (url.includes('/admin/blocked/email-domains')) return respond(mockBlockedEmailDomains);
             if (url.includes('/admin/blocked/domains')) return respond(mockBlockedDomains);
             if (url.includes('/admin/users')) return respond(mockUsers);
             if (url.includes('/admin/links')) return respond(mockLinks);
@@ -415,6 +445,14 @@ describe('Admin Page', () => {
             expect(await screen.findByRole('heading', { name: /block domain/i })).toBeInTheDocument();
         });
 
+        it('displays blocked email domains section', async () => {
+            render(<Admin />);
+            await openBlockedTab();
+
+            expect(await screen.findByRole('heading', { name: /block email domain/i })).toBeInTheDocument();
+            expect(await screen.findByText(/throwaway\.testmail/)).toBeInTheDocument();
+        });
+
         it('can add blocked URL', async () => {
             render(<Admin />);
             await openBlockedTab();
@@ -441,6 +479,24 @@ describe('Admin Page', () => {
             fireEvent.change(domainInput, { target: { value: 'evil.com' } });
 
             expect(domainInput).toHaveValue('evil.com');
+        });
+
+        it('can add blocked email domain', async () => {
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/throwaway-mail/i);
+            fireEvent.change(domainInput, { target: { value: 'burner.examplemail' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[2]);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/blocked/email-domains'),
+                    expect.objectContaining({ method: 'POST' })
+                );
+            });
         });
 
         it('displays existing blocked URLs', async () => {
@@ -513,6 +569,14 @@ describe('Admin Page', () => {
             await openUsersTab();
 
             expect(await screen.findByText(/^deleted$/i)).toBeInTheDocument();
+        });
+
+        it('shows disabled users and enable action', async () => {
+            render(<Admin />);
+            await openUsersTab();
+
+            expect(await screen.findByText(/^disabled$/i)).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /^enable$/i })).toBeInTheDocument();
         });
 
         it('offers verify action for unverified users', async () => {

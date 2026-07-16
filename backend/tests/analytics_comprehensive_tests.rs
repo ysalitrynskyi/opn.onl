@@ -315,8 +315,8 @@ mod referer_tests {
             Some("www.google.com".to_string())
         );
         assert_eq!(
-            extract_domain("http://example.com"),
-            Some("example.com".to_string())
+            extract_domain("http://iana.org"),
+            Some("iana.org".to_string())
         );
         assert_eq!(
             extract_domain("https://sub.domain.com/path"),

@@ -29,22 +29,22 @@ mod url_validation_tests {
 
     #[test]
     fn test_valid_urls() {
-        assert!(is_valid_url("https://example.com"));
-        assert!(is_valid_url("http://example.com"));
-        assert!(is_valid_url("https://www.example.com/path/to/page"));
-        assert!(is_valid_url("https://example.com:8080/path"));
-        assert!(is_valid_url("https://example.com/path?query=value"));
-        assert!(is_valid_url("https://example.com/path#anchor"));
-        assert!(is_valid_url("https://sub.domain.example.com"));
-        assert!(is_valid_url("https://example.com/path/with%20space"));
+        assert!(is_valid_url("https://iana.org"));
+        assert!(is_valid_url("http://iana.org"));
+        assert!(is_valid_url("https://www.iana.org/path/to/page"));
+        assert!(is_valid_url("https://iana.org:8080/path"));
+        assert!(is_valid_url("https://iana.org/path?query=value"));
+        assert!(is_valid_url("https://iana.org/path#anchor"));
+        assert!(is_valid_url("https://sub.domain.iana.org"));
+        assert!(is_valid_url("https://iana.org/path/with%20space"));
     }
 
     #[test]
     fn test_invalid_urls() {
         assert!(!is_valid_url(""));
-        assert!(!is_valid_url("example.com"));
-        assert!(!is_valid_url("ftp://example.com"));
-        assert!(!is_valid_url("//example.com"));
+        assert!(!is_valid_url("iana.org"));
+        assert!(!is_valid_url("ftp://iana.org"));
+        assert!(!is_valid_url("//iana.org"));
         assert!(!is_valid_url("https://"));
         assert!(!is_valid_url("http://"));
         assert!(!is_valid_url("not a url at all"));
@@ -453,11 +453,7 @@ mod bulk_operations_tests {
 
     #[test]
     fn test_all_valid() {
-        let urls = vec![
-            "https://example.com",
-            "http://test.com",
-            "https://another.org",
-        ];
+        let urls = vec!["https://iana.org", "http://test.com", "https://another.org"];
 
         let (valid, invalid) = validate_bulk_urls(&urls);
 
@@ -467,7 +463,7 @@ mod bulk_operations_tests {
 
     #[test]
     fn test_all_invalid() {
-        let urls = vec!["example.com", "ftp://test.com", "not a url"];
+        let urls = vec!["iana.org", "ftp://test.com", "not a url"];
 
         let (valid, invalid) = validate_bulk_urls(&urls);
 
@@ -541,13 +537,13 @@ mod csv_export_tests {
 
     #[test]
     fn test_generate_row() {
-        let row = generate_csv_row(&["1", "abc123", "https://example.com"]);
-        assert_eq!(row, "1,abc123,https://example.com");
+        let row = generate_csv_row(&["1", "abc123", "https://iana.org"]);
+        assert_eq!(row, "1,abc123,https://iana.org");
     }
 
     #[test]
     fn test_generate_row_with_special_chars() {
-        let row = generate_csv_row(&["1", "code", "https://example.com/path?a=1,2"]);
-        assert!(row.contains("\"https://example.com/path?a=1,2\""));
+        let row = generate_csv_row(&["1", "code", "https://iana.org/path?a=1,2"]);
+        assert!(row.contains("\"https://iana.org/path?a=1,2\""));
     }
 }

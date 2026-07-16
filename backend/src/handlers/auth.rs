@@ -7,6 +7,7 @@ use validator::Validate;
 
 use crate::entity::{api_keys, passkeys, users};
 use crate::utils::email::generate_token;
+use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
 use crate::utils::jwt::{create_jwt, hash_password, verify_password};
 use crate::AppState;
 use axum::http::HeaderMap;
@@ -92,6 +93,17 @@ pub async fn register(
             .into_response();
     }
 
+    let email = normalize_email(&payload.email);
+    if let Err(rejection) = ensure_email_domain_allowed(&state.db, &email).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: rejection.public_message().to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let hashed_password = match hash_password(&payload.password) {
         Ok(h) => h,
         Err(_) => {
@@ -114,7 +126,7 @@ pub async fn register(
     let is_first_user = user_count == 0;
 
     let new_user = users::ActiveModel {
-        email: Set(payload.email.clone()),
+        email: Set(email.clone()),
         password_hash: Set(hashed_password),
         email_verified: Set(false),
         verification_token: Set(Some(verification_token.clone())),
@@ -131,7 +143,7 @@ pub async fn register(
             if let Some(email_service) = &state.email_service {
                 if email_service.is_configured() {
                     if let Err(e) = email_service
-                        .send_verification_email(&payload.email, &verification_token)
+                        .send_verification_email(&email, &verification_token)
                         .await
                     {
                         tracing::error!("Failed to send verification email: {}", e);
@@ -139,7 +151,7 @@ pub async fn register(
                 }
             }
 
-            let token = match create_jwt(user_res.last_insert_id, &payload.email, 0) {
+            let token = match create_jwt(user_res.last_insert_id, &email, 0) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to create JWT: {}", e);
@@ -157,7 +169,7 @@ pub async fn register(
                 Json(AuthResponse {
                     token,
                     user_id: user_res.last_insert_id,
-                    email: payload.email,
+                    email,
                     email_verified: false,
                     is_admin: is_first_user,
                 }),
@@ -208,9 +220,25 @@ pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
+    let email = normalize_email(&payload.email);
+    if ensure_email_domain_allowed(&state.db, &email)
+        .await
+        .is_err()
+    {
+        let _ = verify_password(&payload.password, dummy_password_hash());
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Invalid credentials".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let user = users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.email))
+        .filter(users::Column::Email.eq(&email))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
@@ -284,11 +312,25 @@ pub async fn verify_email(
     let user = users::Entity::find()
         .filter(users::Column::VerificationToken.eq(&payload.token))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
 
     if let Some(user) = user {
+        if ensure_email_domain_allowed(&state.db, &user.email)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Invalid token".to_string(),
+                }),
+            )
+                .into_response();
+        }
+
         // Check if token is expired
         if let Some(expires) = user.verification_token_expires {
             if Utc::now().naive_utc() > expires {
@@ -360,9 +402,21 @@ pub async fn resend_verification(
     State(state): State<AppState>,
     Json(payload): Json<ResendVerificationRequest>,
 ) -> impl IntoResponse {
+    let email = normalize_email(&payload.email);
+    if let Err(rejection) = ensure_email_domain_allowed(&state.db, &email).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: rejection.public_message().to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let user = users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.email))
+        .filter(users::Column::Email.eq(&email))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
@@ -441,9 +495,24 @@ pub async fn forgot_password(
     State(state): State<AppState>,
     Json(payload): Json<ForgotPasswordRequest>,
 ) -> impl IntoResponse {
+    let email = normalize_email(&payload.email);
+    if ensure_email_domain_allowed(&state.db, &email)
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::OK,
+            Json(MessageResponse {
+                message: "If account exists, password reset email sent".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let user = users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.email))
+        .filter(users::Column::Email.eq(&email))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
@@ -529,12 +598,27 @@ pub async fn reset_password(
     let user = users::Entity::find()
         .filter(users::Column::PasswordResetToken.eq(&payload.token))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .lock_exclusive()
         .one(&txn)
         .await
         .unwrap_or(None);
 
     if let Some(user) = user {
+        if ensure_email_domain_allowed(&txn, &user.email)
+            .await
+            .is_err()
+        {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Invalid token".to_string(),
+                }),
+            )
+                .into_response();
+        }
+
         // Check if token is expired
         if let Some(expires) = user.password_reset_expires {
             if Utc::now().naive_utc() > expires {
