@@ -29,7 +29,7 @@ async fn retention_sweep_anonymizes_only_expired_click_identifiers() {
     let res = server
         .post("/links")
         .authorization_bearer(&token)
-        .json(&json!({ "original_url": "https://example.com/retention" }))
+        .json(&json!({ "original_url": "https://iana.org/retention" }))
         .await;
     assert!(
         res.status_code().is_success(),

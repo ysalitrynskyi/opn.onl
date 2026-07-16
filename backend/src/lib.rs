@@ -464,6 +464,10 @@ pub fn build_router(app_state: AppState) -> Router {
             post(handlers::admin::restore_user),
         )
         .route(
+            "/admin/users/:user_id/enable",
+            post(handlers::admin::enable_user),
+        )
+        .route(
             "/admin/users/:user_id/make-admin",
             post(handlers::admin::make_admin),
         )
@@ -520,6 +524,15 @@ pub fn build_router(app_state: AppState) -> Router {
         .route(
             "/admin/blocked/domains/:id",
             delete(handlers::admin::unblock_domain),
+        )
+        .route(
+            "/admin/blocked/email-domains",
+            get(handlers::admin::get_blocked_email_domains)
+                .post(handlers::admin::block_email_domain),
+        )
+        .route(
+            "/admin/blocked/email-domains/:id",
+            delete(handlers::admin::unblock_email_domain),
         )
         // WebSocket for real-time updates
         .route("/ws", get(handlers::websocket::ws_handler))

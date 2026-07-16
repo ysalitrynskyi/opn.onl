@@ -12,7 +12,7 @@ fn base_link() -> links::Model {
     links::Model {
         id: 1,
         code: "abc123".to_string(),
-        original_url: "https://example.com".to_string(),
+        original_url: "https://iana.org".to_string(),
         user_id: Some(1),
         created_at: Utc::now().naive_utc(),
         click_count: 0,

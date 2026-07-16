@@ -42,7 +42,7 @@ async fn clone_creates_new_code_and_resets_state() {
     let original = create_link(
         &server,
         &token,
-        json!({ "original_url": "https://example.com/page", "title": "My Link" }),
+        json!({ "original_url": "https://iana.org/page", "title": "My Link" }),
     )
     .await;
     let original_id = original["id"].as_i64().unwrap();
@@ -67,7 +67,7 @@ async fn clone_creates_new_code_and_resets_state() {
     assert_ne!(clone_body["code"].as_str().unwrap(), original_code);
     assert_eq!(
         clone_body["original_url"].as_str().unwrap(),
-        "https://example.com/page"
+        "https://iana.org/page"
     );
 
     // Inspect the cloned link in the listing: "(copy)" title, unpinned, 0 clicks.
@@ -102,7 +102,7 @@ async fn toggle_pin_flips_state() {
     let link = create_link(
         &server,
         &token,
-        json!({ "original_url": "https://example.com/p" }),
+        json!({ "original_url": "https://iana.org/p" }),
     )
     .await;
     let id = link["id"].as_i64().unwrap();
@@ -151,7 +151,7 @@ async fn check_code_availability_reflects_taken_codes() {
     create_link(
         &server,
         &token,
-        json!({ "original_url": "https://example.com/x", "custom_alias": alias }),
+        json!({ "original_url": "https://iana.org/x", "custom_alias": alias }),
     )
     .await;
 
@@ -188,7 +188,7 @@ async fn build_utm_url_appends_parameters() {
     let res = server
         .post("/links/build-utm")
         .json(&json!({
-            "url": "https://example.com/landing",
+            "url": "https://iana.org/landing",
             "utm_source": "newsletter",
             "utm_medium": "email",
             "utm_campaign": "spring_sale"

@@ -76,7 +76,7 @@ async fn create_rejects_dangerous_file_extension() {
     let res = server
         .post("/links")
         .authorization_bearer(&token)
-        .json(&json!({ "original_url": "http://malware.test/30/puregolds.hta" }))
+        .json(&json!({ "original_url": "http://malware.iana.org/30/puregolds.hta" }))
         .await;
     assert_eq!(res.status_code(), 400, "{}", res.text());
     let body: Value = res.json();
@@ -100,7 +100,7 @@ async fn create_rejects_dangerous_extension_even_with_lure_query() {
         .post("/links")
         .authorization_bearer(&token)
         .json(&json!({
-            "original_url": "http://mal.test/31/goodbrainthings.hta?id=foxbusiness.com/media/story"
+            "original_url": "http://mal.iana.org/31/goodbrainthings.hta?id=foxbusiness.com/media/story"
         }))
         .await;
     assert_eq!(res.status_code(), 400, "{}", res.text());
@@ -150,7 +150,7 @@ async fn bulk_create_rejects_only_the_bad_urls_with_reasons() {
         .post("/links/bulk")
         .authorization_bearer(&token)
         .json(&json!({ "urls": [
-            "https://example.com/ok",
+            "https://iana.org/ok",
             "http://107.173.143.45/15/givemebless.hta",
             "https://github.com/opn/repo"
         ] }))
@@ -178,7 +178,7 @@ async fn admin_suspicious_filter_finds_preexisting_malicious_links() {
     // Two malicious links inserted directly (as if pre-guard), one benign.
     let (hta_id, _) = insert_raw_link(&db, user_id, "http://185.99.1.7/x/payload.hta").await;
     let (ip_id, _) = insert_raw_link(&db, user_id, "http://69.12.83.125/30/file").await;
-    let (benign_id, _) = insert_raw_link(&db, user_id, "https://good.example.com/article").await;
+    let (benign_id, _) = insert_raw_link(&db, user_id, "https://good.iana.org/article").await;
 
     let res = server
         .get("/admin/links")
@@ -218,8 +218,9 @@ async fn admin_bulk_delete_and_restore_links() {
     let admin_token = register_admin(&server, &db).await;
     let (_, user_id) = register_verified(&server, &db).await;
 
-    let (id1, code1) = insert_raw_link(&db, user_id, "http://1.2.3.4/a.hta").await;
-    let (id2, code2) = insert_raw_link(&db, user_id, "http://5.6.7.8/b.hta").await;
+    let host = format!("bulkdel-{}.iana.org", unique_code().to_lowercase());
+    let (id1, code1) = insert_raw_link(&db, user_id, &format!("https://{host}/a")).await;
+    let (id2, code2) = insert_raw_link(&db, user_id, &format!("https://{host}/b")).await;
 
     // Both redirect before takedown.
     assert!(server
@@ -278,7 +279,7 @@ async fn admin_block_domain_from_link_blocks_host_and_deletes_link() {
     // handler refuses already-blocked domains, so a hardcoded host would break
     // on the second run. Extension guard would block .hta on create, so this
     // uses a plain path — the point is the host takedown.
-    let domain = format!("evil-{}.test", unique_code().to_lowercase());
+    let domain = format!("evil-{}.iana.org", unique_code().to_lowercase());
     let url = format!("https://{domain}/malware/page");
     let (link_id, code) = insert_raw_link(&db, user_id, &url).await;
     assert!(server

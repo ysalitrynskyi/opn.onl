@@ -32,7 +32,7 @@ async fn purge_click_pii_erases_identifiers_keeps_aggregates() {
     let link = server
         .post("/links")
         .authorization_bearer(&token)
-        .json(&json!({ "original_url": "https://example.com/x" }))
+        .json(&json!({ "original_url": "https://iana.org/x" }))
         .await;
     assert_eq!(link.status_code(), 201, "create link: {}", link.text());
     let link_id = link.json::<Value>()["id"].as_i64().unwrap() as i32;

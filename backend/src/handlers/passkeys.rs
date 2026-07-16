@@ -13,6 +13,7 @@ use webauthn_rs::prelude::*;
 use webauthn_rs::Webauthn;
 
 use crate::entity::{passkeys, users};
+use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
 use crate::utils::jwt::create_jwt;
 use crate::AppState;
 
@@ -214,6 +215,7 @@ pub async fn register_start(
 
     let user = match users::Entity::find_by_id(auth.user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
     {
@@ -321,6 +323,7 @@ pub async fn register_finish(
 
     let user = match users::Entity::find_by_id(auth.user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .lock_exclusive()
         .one(&txn)
         .await
@@ -414,9 +417,18 @@ pub async fn login_start(
         )
             .into_response();
     }
+    let username = normalize_email(&payload.username);
+    if ensure_email_domain_allowed(&state.db, &username)
+        .await
+        .is_err()
+    {
+        return (StatusCode::NOT_FOUND, "User not found").into_response();
+    }
+
     let user = users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.username))
+        .filter(users::Column::Email.eq(&username))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
@@ -464,7 +476,7 @@ pub async fn login_start(
     };
 
     AUTH_STATE.insert(
-        payload.username.clone(),
+        username,
         PendingPasskeyAuthentication {
             user_id: user.id,
             token_version: user.token_version,
@@ -499,7 +511,8 @@ pub async fn login_finish(
         )
             .into_response();
     }
-    let pending = match AUTH_STATE.remove(&payload.username) {
+    let username = normalize_email(&payload.username);
+    let pending = match AUTH_STATE.remove(&username) {
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, "Authentication state not found").into_response(),
     };
@@ -527,6 +540,7 @@ pub async fn login_finish(
 
     let user = match users::Entity::find_by_id(pending.user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .lock_exclusive()
         .one(&txn)
         .await

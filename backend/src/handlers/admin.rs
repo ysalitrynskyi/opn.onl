@@ -13,10 +13,12 @@ use std::collections::HashMap;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::entity::{
-    api_keys, blocked_domains, blocked_links, click_events, links, org_members, organizations,
-    passkeys, users,
+    api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events, links,
+    org_members, organizations, passkeys, users,
 };
 use crate::utils::decode_jwt;
+use crate::utils::email_domain_policy::is_reserved_email_domain;
+use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
 use crate::AppState;
 
 /// Clamp pagination params: 1-based page, 1..=100 per_page (default 25).
@@ -117,6 +119,7 @@ async fn require_admin(
     // still-valid token cannot keep authorizing /admin/* actions.
     let user = users::Entity::find_by_id(claims.user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -206,6 +209,102 @@ async fn invalidate_cache_for_domain(state: &AppState, domain: &str) {
             }
         }
     }
+}
+
+fn url_matches_domain(url: &str, domain: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|host| domain_matches(domain, host)))
+        .unwrap_or(false)
+}
+
+async fn soft_disable_links_for_domain<C: ConnectionTrait>(
+    db: &C,
+    domain: &str,
+) -> Result<Vec<String>, DbErr> {
+    let matching = links::Entity::find()
+        .filter(links::Column::DeletedAt.is_null())
+        .all(db)
+        .await?
+        .into_iter()
+        .filter(|link| url_matches_domain(&link.original_url, domain))
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids = matching.iter().map(|link| link.id).collect::<Vec<_>>();
+    let codes = matching
+        .into_iter()
+        .map(|link| link.code)
+        .collect::<Vec<_>>();
+
+    links::Entity::update_many()
+        .col_expr(
+            links::Column::DeletedAt,
+            Expr::value(Utc::now().naive_utc()),
+        )
+        .filter(links::Column::Id.is_in(ids))
+        .exec(db)
+        .await?;
+
+    Ok(codes)
+}
+
+fn user_matches_email_domain(user: &users::Model, domain: &str) -> bool {
+    crate::utils::email_domain_policy::email_domain(&user.email)
+        .map(|email_domain| domain_matches(domain, &email_domain))
+        .unwrap_or(false)
+}
+
+fn normalize_email_domain_input(input: &str) -> Option<String> {
+    crate::utils::email_domain_policy::email_domain(input)
+        .or_else(|| normalize_domain_input(input))
+        .or_else(|| normalize_hostname(input))
+}
+
+async fn disable_users_for_email_domain<C: ConnectionTrait>(
+    db: &C,
+    domain: &str,
+    admin_id: i32,
+    reason: Option<&str>,
+) -> Result<u64, DbErr> {
+    let matching = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
+        .all(db)
+        .await?
+        .into_iter()
+        .filter(|user| user_matches_email_domain(user, domain))
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        return Ok(0);
+    }
+
+    let ids = matching.iter().map(|user| user.id).collect::<Vec<_>>();
+    let disabled_reason = reason
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("Email domain {domain} blocked by admin"));
+
+    let result = users::Entity::update_many()
+        .col_expr(
+            users::Column::DisabledAt,
+            Expr::value(Utc::now().naive_utc()),
+        )
+        .col_expr(users::Column::DisabledReason, Expr::value(disabled_reason))
+        .col_expr(users::Column::DisabledBy, Expr::value(admin_id))
+        .col_expr(
+            users::Column::TokenVersion,
+            Expr::col(users::Column::TokenVersion).add(1),
+        )
+        .filter(users::Column::Id.is_in(ids))
+        .exec(db)
+        .await?;
+
+    Ok(result.rows_affected)
 }
 
 /// Soft delete a user (admin only)
@@ -798,6 +897,133 @@ pub async fn restore_user(
         .into_response()
 }
 
+/// Re-enable a disabled user after the relevant email-domain block has been removed.
+#[utoipa::path(
+    post,
+    path = "/admin/users/{user_id}/enable",
+    params(
+        ("user_id" = i32, Path, description = "User ID to enable")
+    ),
+    responses(
+        (status = 200, description = "User enabled successfully", body = AdminResponse),
+        (status = 400, description = "User is deleted or not disabled"),
+        (status = 403, description = "Admin access required"),
+        (status = 404, description = "User not found"),
+        (status = 409, description = "User email domain remains blocked"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn enable_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<i32>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let user = match users::Entity::find_by_id(user_id).one(&state.db).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(AdminResponse {
+                    success: false,
+                    message: "User not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to enable user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if user.deleted_at.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Restore the deleted user before enabling".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if user.disabled_at.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "User is not disabled".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if crate::utils::email_domain_policy::ensure_email_domain_allowed(&state.db, &user.email)
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(AdminResponse {
+                success: false,
+                message: "User email domain is still blocked".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let next_token_version = match user.token_version.checked_add(1) {
+        Some(version) => version,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to enable user".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let mut active_user: users::ActiveModel = user.into();
+    active_user.disabled_at = Set(None);
+    active_user.disabled_reason = Set(None);
+    active_user.disabled_by = Set(None);
+    active_user.token_version = Set(next_token_version);
+
+    if active_user.update(&state.db).await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to enable user".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(AdminResponse {
+            success: true,
+            message: format!("User {} enabled", user_id),
+        }),
+    )
+        .into_response()
+}
+
 /// Create a database backup (admin only)
 #[utoipa::path(
     post,
@@ -1152,6 +1378,12 @@ pub struct BlockDomainRequest {
     pub reason: Option<String>,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct BlockEmailDomainRequest {
+    pub domain: String,
+    pub reason: Option<String>,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct BlockedLinkResponse {
     pub id: i32,
@@ -1168,6 +1400,17 @@ pub struct BlockedDomainResponse {
     pub reason: Option<String>,
     pub blocked_by: Option<i32>,
     pub created_at: String,
+    pub affected_links: u64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BlockedEmailDomainResponse {
+    pub id: i32,
+    pub domain: String,
+    pub reason: Option<String>,
+    pub blocked_by: Option<i32>,
+    pub created_at: String,
+    pub affected_users: u64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1185,6 +1428,8 @@ pub struct AdminStatsResponse {
     pub clicks_today: i64,
     pub blocked_links_count: i64,
     pub blocked_domains_count: i64,
+    pub blocked_email_domains_count: i64,
+    pub disabled_users_count: i64,
     /// Live (non-deleted) links whose destination trips the abuse heuristic.
     pub suspicious_links_count: i64,
 }
@@ -1198,6 +1443,9 @@ pub struct AdminUserResponse {
     pub email_verified: bool,
     pub created_at: String,
     pub deleted_at: Option<String>,
+    pub disabled_at: Option<String>,
+    pub disabled_reason: Option<String>,
+    pub disabled_by: Option<i32>,
     pub bio_username: Option<String>,
     pub bio_enabled: bool,
     pub links_count: i64,
@@ -1223,7 +1471,7 @@ pub struct AdminUsersQuery {
     pub per_page: Option<u64>,
     /// Substring match on email, display name, or bio username
     pub search: Option<String>,
-    /// Filter: all (default) | active | deleted | admins | unverified
+    /// Filter: all (default) | active | deleted | disabled | admins | unverified
     pub status: Option<String>,
     /// Sort order for created_at: desc (default) | asc
     pub order: Option<String>,
@@ -1253,6 +1501,7 @@ pub async fn get_admin_stats(
     let total_users = users::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let active_users = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .count(&state.db)
         .await
         .unwrap_or(0) as i64;
@@ -1317,6 +1566,16 @@ pub async fn get_admin_stats(
         .count(&state.db)
         .await
         .unwrap_or(0) as i64;
+    let blocked_email_domains_count = blocked_email_domains::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
+    let disabled_users_count = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_not_null())
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
 
     let suspicious_links_count = links::Entity::find()
         .filter(links::Column::DeletedAt.is_null())
@@ -1341,6 +1600,8 @@ pub async fn get_admin_stats(
             clicks_today,
             blocked_links_count,
             blocked_domains_count,
+            blocked_email_domains_count,
+            disabled_users_count,
             suspicious_links_count,
         }),
     )
@@ -1532,24 +1793,40 @@ pub async fn block_domain(
         Err(e) => return e.into_response(),
     };
 
-    // Lowercase first so an uppercase scheme (HTTPS://) is still stripped.
-    let domain = payload
-        .domain
-        .to_lowercase()
-        .replace("https://", "")
-        .replace("http://", "")
-        .trim_end_matches('/')
-        .trim_end_matches('.')
-        .to_string();
+    let Some(domain) = normalize_domain_input(&payload.domain) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Invalid domain".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block domain".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
 
     let existing = blocked_domains::Entity::find()
         .filter(blocked_domains::Column::Domain.eq(&domain))
-        .one(&state.db)
+        .one(&txn)
         .await
         .ok()
         .flatten();
 
     if existing.is_some() {
+        let _ = txn.rollback().await;
         return (
             StatusCode::CONFLICT,
             Json(AdminResponse {
@@ -1567,31 +1844,62 @@ pub async fn block_domain(
         ..Default::default()
     };
 
-    match blocked.insert(&state.db).await {
-        Ok(result) => {
-            // Make the block retroactive for any already-cached redirects.
-            invalidate_cache_for_domain(&state, &domain).await;
-            (
-                StatusCode::CREATED,
-                Json(BlockedDomainResponse {
-                    id: result.id,
-                    domain: result.domain,
-                    reason: result.reason,
-                    blocked_by: result.blocked_by,
-                    created_at: result.created_at.to_string(),
+    let result = match blocked.insert(&txn).await {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block domain".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
-        Err(_) => (
+    };
+
+    let affected_codes = match soft_disable_links_for_domain(&txn, &domain).await {
+        Ok(codes) => codes,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to disable matching links".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if txn.commit().await.is_err() {
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(AdminResponse {
                 success: false,
                 message: "Failed to block domain".to_string(),
             }),
         )
-            .into_response(),
+            .into_response();
     }
+
+    invalidate_cache_for_domain(&state, &domain).await;
+    crate::handlers::links::invalidate_cached_codes(&state, &affected_codes).await;
+
+    (
+        StatusCode::CREATED,
+        Json(BlockedDomainResponse {
+            id: result.id,
+            domain: result.domain,
+            reason: result.reason,
+            blocked_by: result.blocked_by,
+            created_at: result.created_at.to_string(),
+            affected_links: affected_codes.len() as u64,
+        }),
+    )
+        .into_response()
 }
 
 /// Get all blocked domains (admin only)
@@ -1627,6 +1935,7 @@ pub async fn get_blocked_domains(
             reason: b.reason,
             blocked_by: b.blocked_by,
             created_at: b.created_at.to_string(),
+            affected_links: 0,
         })
         .collect();
 
@@ -1681,6 +1990,238 @@ pub async fn unblock_domain(
     }
 }
 
+/// Block an email domain and disable matching existing users.
+#[utoipa::path(
+    post,
+    path = "/admin/blocked/email-domains",
+    request_body = BlockEmailDomainRequest,
+    responses(
+        (status = 201, description = "Email domain blocked", body = BlockedEmailDomainResponse),
+        (status = 400, description = "Invalid email domain"),
+        (status = 403, description = "Admin access required"),
+        (status = 409, description = "Email domain already blocked"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn block_email_domain(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<BlockEmailDomainRequest>,
+) -> impl IntoResponse {
+    let admin_id = match require_admin(&state, &headers).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let Some(domain) = normalize_email_domain_input(&payload.domain) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Invalid email domain".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    if is_reserved_email_domain(&domain) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Email domain is already blocked by reserved-domain policy".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block email domain".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let existing = blocked_email_domains::Entity::find()
+        .filter(blocked_email_domains::Column::Domain.eq(&domain))
+        .one(&txn)
+        .await
+        .ok()
+        .flatten();
+
+    if existing.is_some() {
+        let _ = txn.rollback().await;
+        return (
+            StatusCode::CONFLICT,
+            Json(AdminResponse {
+                success: false,
+                message: "Email domain is already blocked".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let blocked = blocked_email_domains::ActiveModel {
+        domain: Set(domain.clone()),
+        reason: Set(payload.reason.clone()),
+        blocked_by: Set(Some(admin_id)),
+        ..Default::default()
+    };
+
+    let result = match blocked.insert(&txn).await {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block email domain".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let affected_users =
+        match disable_users_for_email_domain(&txn, &domain, admin_id, payload.reason.as_deref())
+            .await
+        {
+            Ok(count) => count,
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(AdminResponse {
+                        success: false,
+                        message: "Failed to disable matching users".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+    if txn.commit().await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to block email domain".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(BlockedEmailDomainResponse {
+            id: result.id,
+            domain: result.domain,
+            reason: result.reason,
+            blocked_by: result.blocked_by,
+            created_at: result.created_at.to_string(),
+            affected_users,
+        }),
+    )
+        .into_response()
+}
+
+/// Get all blocked email domains.
+#[utoipa::path(
+    get,
+    path = "/admin/blocked/email-domains",
+    responses(
+        (status = 200, description = "List of blocked email domains", body = Vec<BlockedEmailDomainResponse>),
+        (status = 403, description = "Admin access required"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn get_blocked_email_domains(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let blocked = blocked_email_domains::Entity::find()
+        .order_by_desc(blocked_email_domains::Column::CreatedAt)
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let responses = blocked
+        .into_iter()
+        .map(|b| BlockedEmailDomainResponse {
+            id: b.id,
+            domain: b.domain,
+            reason: b.reason,
+            blocked_by: b.blocked_by,
+            created_at: b.created_at.to_string(),
+            affected_users: 0,
+        })
+        .collect::<Vec<_>>();
+
+    (StatusCode::OK, Json(responses)).into_response()
+}
+
+/// Unblock an email domain. Existing disabled users are not auto-restored.
+#[utoipa::path(
+    delete,
+    path = "/admin/blocked/email-domains/{id}",
+    params(
+        ("id" = i32, Path, description = "Blocked email domain ID")
+    ),
+    responses(
+        (status = 200, description = "Email domain unblocked", body = AdminResponse),
+        (status = 403, description = "Admin access required"),
+        (status = 404, description = "Blocked email domain not found"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn unblock_email_domain(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i32>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let result = blocked_email_domains::Entity::delete_by_id(id)
+        .exec(&state.db)
+        .await;
+
+    match result {
+        Ok(res) if res.rows_affected > 0 => (
+            StatusCode::OK,
+            Json(AdminResponse {
+                success: true,
+                message: "Email domain unblocked".to_string(),
+            }),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(AdminResponse {
+                success: false,
+                message: "Blocked email domain not found".to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 /// Get all users with per-user aggregates (admin only)
 #[utoipa::path(
     get,
@@ -1707,8 +2248,17 @@ pub async fn get_all_users(
     let mut finder = users::Entity::find();
 
     match query.status.as_deref() {
-        Some("active") => finder = finder.filter(users::Column::DeletedAt.is_null()),
+        Some("active") => {
+            finder = finder
+                .filter(users::Column::DeletedAt.is_null())
+                .filter(users::Column::DisabledAt.is_null())
+        }
         Some("deleted") => finder = finder.filter(users::Column::DeletedAt.is_not_null()),
+        Some("disabled") => {
+            finder = finder
+                .filter(users::Column::DeletedAt.is_null())
+                .filter(users::Column::DisabledAt.is_not_null())
+        }
         Some("admins") => {
             finder = finder
                 .filter(users::Column::IsAdmin.eq(true))
@@ -1823,6 +2373,9 @@ pub async fn get_all_users(
                 email_verified: u.email_verified,
                 created_at: u.created_at.to_string(),
                 deleted_at: u.deleted_at.map(|d| d.to_string()),
+                disabled_at: u.disabled_at.map(|d| d.to_string()),
+                disabled_reason: u.disabled_reason,
+                disabled_by: u.disabled_by,
                 bio_username: u.bio_username,
                 bio_enabled: u.bio_enabled,
                 links_count,
@@ -2345,6 +2898,7 @@ pub async fn admin_bulk_restore_links(
 pub struct BlockFromLinkResponse {
     pub success: bool,
     pub domain: String,
+    pub affected_links: u64,
     pub message: String,
 }
 
@@ -2394,7 +2948,7 @@ pub async fn admin_block_domain_from_link(
 
     let host = url::Url::parse(&link.original_url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_lowercase()));
+        .and_then(|u| u.host_str().and_then(normalize_hostname));
 
     let Some(domain) = host.filter(|h| !h.is_empty()) else {
         return (
@@ -2407,10 +2961,24 @@ pub async fn admin_block_domain_from_link(
             .into_response();
     };
 
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block domain".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
     // Block the domain if not already blocked (idempotent).
     let already = blocked_domains::Entity::find()
         .filter(blocked_domains::Column::Domain.eq(&domain))
-        .one(&state.db)
+        .one(&txn)
         .await
         .ok()
         .flatten();
@@ -2421,7 +2989,8 @@ pub async fn admin_block_domain_from_link(
             blocked_by: Set(Some(admin_id)),
             ..Default::default()
         };
-        if blocked.insert(&state.db).await.is_err() {
+        if blocked.insert(&txn).await.is_err() {
+            let _ = txn.rollback().await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(AdminResponse {
@@ -2433,23 +3002,48 @@ pub async fn admin_block_domain_from_link(
         }
     }
 
-    // Soft-delete this link and purge the whole domain from the redirect cache
-    // (covers every already-cached link pointing at the now-blocked host).
     let code = link.code.clone();
-    let mut active: links::ActiveModel = link.into();
-    active.deleted_at = Set(Some(Utc::now().naive_utc()));
-    let _ = active.update(&state.db).await;
-    invalidate_cache_for_domain(&state, &domain).await;
-    if let Some(cache) = &state.redis_cache {
-        let _ = cache.invalidate_link(&code).await;
+    let affected_codes = match soft_disable_links_for_domain(&txn, &domain).await {
+        Ok(codes) => codes,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to disable matching links".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if txn.commit().await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to block domain".to_string(),
+            }),
+        )
+            .into_response();
     }
+
+    invalidate_cache_for_domain(&state, &domain).await;
+    crate::handlers::links::invalidate_cached_codes(&state, &affected_codes).await;
 
     (
         StatusCode::OK,
         Json(BlockFromLinkResponse {
             success: true,
             domain: domain.clone(),
-            message: format!("Blocked {} and deleted link {}", domain, code),
+            affected_links: affected_codes.len() as u64,
+            message: format!(
+                "Blocked {} and disabled {} matching link(s), including {}",
+                domain,
+                affected_codes.len(),
+                code
+            ),
         }),
     )
         .into_response()

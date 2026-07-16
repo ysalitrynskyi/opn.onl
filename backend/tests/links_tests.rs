@@ -39,7 +39,7 @@ mod unit_tests {
     #[test]
     fn test_valid_url_validation() {
         let request = TestCreateLinkRequest {
-            original_url: "https://example.com".to_string(),
+            original_url: "https://iana.org".to_string(),
             custom_alias: None,
         };
 
@@ -59,7 +59,7 @@ mod unit_tests {
     #[test]
     fn test_alias_too_short() {
         let request = TestCreateLinkRequest {
-            original_url: "https://example.com".to_string(),
+            original_url: "https://iana.org".to_string(),
             custom_alias: Some("ab".to_string()), // Too short (min 3)
         };
 
@@ -69,7 +69,7 @@ mod unit_tests {
     #[test]
     fn test_alias_too_long() {
         let request = TestCreateLinkRequest {
-            original_url: "https://example.com".to_string(),
+            original_url: "https://iana.org".to_string(),
             custom_alias: Some("this_alias_is_way_too_long_for_validation".to_string()),
         };
 
@@ -79,7 +79,7 @@ mod unit_tests {
     #[test]
     fn test_valid_alias() {
         let request = TestCreateLinkRequest {
-            original_url: "https://example.com".to_string(),
+            original_url: "https://iana.org".to_string(),
             custom_alias: Some("my-link".to_string()),
         };
 

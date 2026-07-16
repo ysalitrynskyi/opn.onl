@@ -160,7 +160,7 @@ mod email_validation_tests {
     #[test]
     fn test_valid_email() {
         let email = EmailTest {
-            email: "test@example.com".to_string(),
+            email: "test@iana.org".to_string(),
         };
         assert!(email.validate().is_ok());
     }
@@ -168,7 +168,7 @@ mod email_validation_tests {
     #[test]
     fn test_valid_email_with_subdomain() {
         let email = EmailTest {
-            email: "test@mail.example.com".to_string(),
+            email: "test@mail.iana.org".to_string(),
         };
         assert!(email.validate().is_ok());
     }
@@ -176,7 +176,7 @@ mod email_validation_tests {
     #[test]
     fn test_valid_email_with_plus() {
         let email = EmailTest {
-            email: "test+alias@example.com".to_string(),
+            email: "test+alias@iana.org".to_string(),
         };
         assert!(email.validate().is_ok());
     }
@@ -184,7 +184,7 @@ mod email_validation_tests {
     #[test]
     fn test_invalid_email_no_at() {
         let email = EmailTest {
-            email: "testexample.com".to_string(),
+            email: "testiana.org".to_string(),
         };
         assert!(email.validate().is_err());
     }
@@ -286,7 +286,7 @@ mod claims_tests {
             .timestamp();
 
         let claims = Claims {
-            sub: "test@example.com".to_string(),
+            sub: "test@iana.org".to_string(),
             exp: expiration as usize,
             user_id: 42,
         };
@@ -305,7 +305,7 @@ mod claims_tests {
         )
         .expect("Failed to decode JWT");
 
-        assert_eq!(decoded.claims.sub, "test@example.com");
+        assert_eq!(decoded.claims.sub, "test@iana.org");
         assert_eq!(decoded.claims.user_id, 42);
     }
 
@@ -317,7 +317,7 @@ mod claims_tests {
             .timestamp();
 
         let claims = Claims {
-            sub: "test@example.com".to_string(),
+            sub: "test@iana.org".to_string(),
             exp: expiration as usize,
             user_id: 42,
         };
@@ -346,7 +346,7 @@ mod claims_tests {
             .timestamp();
 
         let claims = Claims {
-            sub: "test@example.com".to_string(),
+            sub: "test@iana.org".to_string(),
             exp: expiration as usize,
             user_id: 42,
         };

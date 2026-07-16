@@ -17,6 +17,9 @@ pub struct Model {
     pub password_reset_expires: Option<DateTime>,
     pub is_admin: bool,
     pub deleted_at: Option<DateTime>,
+    pub disabled_at: Option<DateTime>,
+    pub disabled_reason: Option<String>,
+    pub disabled_by: Option<i32>,
     // Profile fields
     pub display_name: Option<String>,
     pub bio: Option<String>,
@@ -51,5 +54,9 @@ impl Model {
     #[allow(dead_code)]
     pub fn is_deleted(&self) -> bool {
         self.deleted_at.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.disabled_at.is_some()
     }
 }

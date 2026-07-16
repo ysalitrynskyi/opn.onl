@@ -55,8 +55,8 @@ async fn blocked_domain_matches_host_and_subdomains_only() {
     mark_email_verified(&db, user_id).await;
 
     // Use a unique blocked domain so parallel tests don't interfere.
-    let suffix = format!("blk{}.example", admin_id);
-    let blocked = format!("evil-{suffix}.com");
+    let suffix = format!("blk{}", admin_id);
+    let blocked = format!("evil-{suffix}.iana.org");
     let res = server
         .post("/admin/blocked/domains")
         .authorization_bearer(&admin_token)

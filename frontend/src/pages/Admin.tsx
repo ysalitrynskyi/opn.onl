@@ -28,6 +28,8 @@ interface AdminStats {
     clicks_today: number;
     blocked_links_count: number;
     blocked_domains_count: number;
+    blocked_email_domains_count: number;
+    disabled_users_count: number;
     suspicious_links_count: number;
 }
 
@@ -44,6 +46,16 @@ interface BlockedLink {
     reason: string | null;
     blocked_by: number | null;
     created_at: string;
+    affected_links?: number;
+}
+
+interface BlockedEmailDomain {
+    id: number;
+    domain: string;
+    reason: string | null;
+    blocked_by: number | null;
+    created_at: string;
+    affected_users?: number;
 }
 
 interface BlockedDomain {
@@ -62,6 +74,9 @@ interface AdminUser {
     email_verified: boolean;
     created_at: string;
     deleted_at: string | null;
+    disabled_at: string | null;
+    disabled_reason: string | null;
+    disabled_by: number | null;
     bio_username: string | null;
     bio_enabled: boolean;
     links_count: number;
@@ -160,10 +175,13 @@ export default function Admin() {
     // Blocked content
     const [blockedLinks, setBlockedLinks] = useState<BlockedLink[]>([]);
     const [blockedDomains, setBlockedDomains] = useState<BlockedDomain[]>([]);
+    const [blockedEmailDomains, setBlockedEmailDomains] = useState<BlockedEmailDomain[]>([]);
     const [newBlockedUrl, setNewBlockedUrl] = useState('');
     const [newBlockedUrlReason, setNewBlockedUrlReason] = useState('');
     const [newBlockedDomain, setNewBlockedDomain] = useState('');
     const [newBlockedDomainReason, setNewBlockedDomainReason] = useState('');
+    const [newBlockedEmailDomain, setNewBlockedEmailDomain] = useState('');
+    const [newBlockedEmailDomainReason, setNewBlockedEmailDomainReason] = useState('');
 
     const flash = (setter: (v: string) => void, message: string) => {
         setter(message);
@@ -243,12 +261,14 @@ export default function Admin() {
     }, [orgsPage, orgSearch]);
 
     const loadBlocked = useCallback(async () => {
-        const [linksRes, domainsRes] = await Promise.all([
+        const [linksRes, domainsRes, emailDomainsRes] = await Promise.all([
             authFetch(API_ENDPOINTS.adminBlockedLinks),
             authFetch(API_ENDPOINTS.adminBlockedDomains),
+            authFetch(API_ENDPOINTS.adminBlockedEmailDomains),
         ]);
         if (linksRes.ok) setBlockedLinks(await linksRes.json());
         if (domainsRes.ok) setBlockedDomains(await domainsRes.json());
+        if (emailDomainsRes.ok) setBlockedEmailDomains(await emailDomainsRes.json());
     }, []);
 
     // Initial load: overview decides whether the visitor is an admin at all.
@@ -304,7 +324,13 @@ export default function Admin() {
             const res = await action();
             const data = await res.json().catch(() => ({}));
             if (res.ok) {
-                flash(setSuccess, data.message || successMessage);
+                const affectedSuffix =
+                    typeof data.affected_links === 'number'
+                        ? ` (${data.affected_links} link${data.affected_links === 1 ? '' : 's'} disabled)`
+                        : typeof data.affected_users === 'number'
+                          ? ` (${data.affected_users} user${data.affected_users === 1 ? '' : 's'} disabled)`
+                          : '';
+                flash(setSuccess, `${data.message || successMessage}${affectedSuffix}`);
                 await reload();
             } else {
                 flash(setError, data.message || 'Action failed');
@@ -337,6 +363,12 @@ export default function Admin() {
     const restoreUser = (userId: number) => doAction(
         () => authFetch(API_ENDPOINTS.adminUserRestore(userId), { method: 'POST' }),
         'User restored',
+        loadUsers,
+    );
+
+    const enableUser = (userId: number) => doAction(
+        () => authFetch(API_ENDPOINTS.adminUserEnable(userId), { method: 'POST' }),
+        'User enabled',
         loadUsers,
     );
 
@@ -482,6 +514,31 @@ export default function Admin() {
         loadBlocked,
     );
 
+    const blockEmailDomain = () => {
+        if (!newBlockedEmailDomain.trim()) return;
+        doAction(
+            () => authFetch(API_ENDPOINTS.adminBlockedEmailDomains, {
+                method: 'POST',
+                body: JSON.stringify({
+                    domain: newBlockedEmailDomain.trim(),
+                    reason: newBlockedEmailDomainReason.trim() || null,
+                }),
+            }),
+            'Email domain blocked successfully',
+            () => {
+                setNewBlockedEmailDomain('');
+                setNewBlockedEmailDomainReason('');
+                return loadBlocked();
+            },
+        );
+    };
+
+    const unblockEmailDomain = (id: number) => doAction(
+        () => authFetch(API_ENDPOINTS.adminBlockedEmailDomain(id), { method: 'DELETE' }),
+        'Email domain unblocked',
+        loadBlocked,
+    );
+
     const createBackup = () => doAction(
         () => authFetch(API_ENDPOINTS.adminBackup, { method: 'POST' }),
         'Backup created',
@@ -570,6 +627,8 @@ export default function Admin() {
                         <StatCard label="Organizations" value={stats.total_orgs} icon={Building2} color="blue" />
                         <StatCard label="Blocked URLs" value={stats.blocked_links_count} icon={Ban} color="red" />
                         <StatCard label="Blocked Domains" value={stats.blocked_domains_count} icon={Globe} color="red" />
+                        <StatCard label="Blocked Email Domains" value={stats.blocked_email_domains_count} icon={MailCheck} color="red" />
+                        <StatCard label="Disabled Users" value={stats.disabled_users_count} icon={Users} color="red" />
                     </div>
 
                     {stats.suspicious_links_count > 0 && (
@@ -659,6 +718,7 @@ export default function Admin() {
                             <option value="all">All users</option>
                             <option value="active">Active</option>
                             <option value="deleted">Deleted</option>
+                            <option value="disabled">Disabled</option>
                             <option value="admins">Admins</option>
                             <option value="unverified">Unverified</option>
                         </select>
@@ -683,7 +743,7 @@ export default function Admin() {
                             </thead>
                             <tbody className="divide-y divide-slate-200">
                                 {users.map((user) => (
-                                    <tr key={user.id} className={user.deleted_at ? 'bg-red-50' : ''}>
+                                    <tr key={user.id} className={user.deleted_at ? 'bg-red-50' : user.disabled_at ? 'bg-amber-50' : ''}>
                                         <td className="px-4 py-3 text-sm text-slate-600">{user.id}</td>
                                         <td className="px-4 py-3">
                                             <div className="text-sm font-medium text-slate-900">{user.email}</div>
@@ -699,6 +759,8 @@ export default function Admin() {
                                         <td className="px-4 py-3">
                                             {user.deleted_at ? (
                                                 <Badge color="red">Deleted</Badge>
+                                            ) : user.disabled_at ? (
+                                                <Badge color="red" title={user.disabled_reason ?? 'Disabled'}>Disabled</Badge>
                                             ) : user.email_verified ? (
                                                 <Badge color="green">Verified</Badge>
                                             ) : (
@@ -736,6 +798,15 @@ export default function Admin() {
                                                 </button>
                                             ) : (
                                                 <>
+                                                    {user.disabled_at && (
+                                                        <button
+                                                            onClick={() => enableUser(user.id)}
+                                                            className="text-green-600 hover:text-green-800 text-sm font-medium"
+                                                            title={user.disabled_reason ?? 'Enable user'}
+                                                        >
+                                                            Enable
+                                                        </button>
+                                                    )}
                                                     {!user.email_verified && (
                                                         <button
                                                             onClick={() => verifyUserEmail(user.id)}
@@ -1147,6 +1218,60 @@ export default function Admin() {
                                             onClick={() => unblockDomain(domain.id)}
                                             className="text-red-600 hover:text-red-800"
                                             aria-label={`Unblock ${domain.domain}`}
+                                        >
+                                            <Trash2 className="h-4 w-4" />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Block Email Domain */}
+                    <div className="bg-white rounded-xl border border-slate-200 p-6">
+                        <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
+                            <MailCheck className="h-5 w-5 text-red-600" />
+                            Block Email Domain
+                        </h3>
+                        <p className="text-sm text-slate-500 mb-4">
+                            Rejects future signups/resets for this email domain and disables existing matching users without deleting their data.
+                        </p>
+                        <div className="flex flex-wrap gap-3">
+                            <input
+                                type="text"
+                                value={newBlockedEmailDomain}
+                                onChange={(e) => setNewBlockedEmailDomain(e.target.value)}
+                                placeholder="throwaway-mail.com"
+                                className="flex-1 min-w-[220px] px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                            />
+                            <input
+                                type="text"
+                                value={newBlockedEmailDomainReason}
+                                onChange={(e) => setNewBlockedEmailDomainReason(e.target.value)}
+                                placeholder="Reason (optional)"
+                                className="w-48 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                            />
+                            <button
+                                onClick={blockEmailDomain}
+                                className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                            >
+                                <Plus className="h-4 w-4" />
+                                Block
+                            </button>
+                        </div>
+
+                        {blockedEmailDomains.length > 0 && (
+                            <div className="mt-4 space-y-2">
+                                {blockedEmailDomains.map((domain) => (
+                                    <div key={domain.id} className="flex items-center justify-between bg-red-50 p-3 rounded-lg">
+                                        <div>
+                                            <span className="font-mono text-sm text-red-800">{domain.domain}</span>
+                                            {domain.reason && <span className="ml-2 text-xs text-red-600">({domain.reason})</span>}
+                                        </div>
+                                        <button
+                                            onClick={() => unblockEmailDomain(domain.id)}
+                                            className="text-red-600 hover:text-red-800"
+                                            aria-label={`Unblock email domain ${domain.domain}`}
                                         >
                                             <Trash2 className="h-4 w-4" />
                                         </button>

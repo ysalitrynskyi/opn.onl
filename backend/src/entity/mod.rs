@@ -1,6 +1,7 @@
 pub mod api_keys;
 pub mod audit_log;
 pub mod blocked_domains;
+pub mod blocked_email_domains;
 pub mod blocked_links;
 pub mod click_events;
 pub mod folders;

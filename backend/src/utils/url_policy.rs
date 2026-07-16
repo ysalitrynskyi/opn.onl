@@ -63,13 +63,67 @@ pub fn host_is_raw_ip(url: &str) -> bool {
     )
 }
 
+pub fn normalize_hostname(host: &str) -> Option<String> {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if h.is_empty() {
+        None
+    } else {
+        Some(h)
+    }
+}
+
+pub fn normalize_domain_input(input: &str) -> Option<String> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let candidate = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("http://{raw}")
+    };
+
+    url::Url::parse(&candidate)
+        .ok()
+        .and_then(|url| url.host_str().map(normalize_hostname))
+        .flatten()
+}
+
+pub fn domain_matches(blocked_domain: &str, host: &str) -> bool {
+    let Some(blocked) = normalize_hostname(blocked_domain) else {
+        return false;
+    };
+    let Some(host) = normalize_hostname(host) else {
+        return false;
+    };
+
+    host == blocked || host.ends_with(&format!(".{blocked}"))
+}
+
+pub fn is_reserved_hostname(host: &str) -> bool {
+    let Some(h) = normalize_hostname(host) else {
+        return true;
+    };
+
+    domain_matches("example.com", &h)
+        || domain_matches("example.net", &h)
+        || domain_matches("example.org", &h)
+        || h.ends_with(".example")
+        || h.ends_with(".test")
+        || h.ends_with(".invalid")
+}
+
 /// Hostnames that must never be accepted as user-supplied http(s) destinations
 /// (profile website / avatar, and optionally short-link targets). Blocking by
 /// name covers the cases raw-IP checks miss (`localhost`, `.local`, cloud
 /// metadata DNS aliases).
 pub fn is_disallowed_hostname(host: &str) -> bool {
-    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    h.is_empty()
+    let Some(h) = normalize_hostname(host) else {
+        return true;
+    };
+
+    is_reserved_hostname(&h)
         || h == "localhost"
         || h == "metadata.google.internal"
         || h == "metadata"
@@ -109,6 +163,13 @@ pub fn suspicion_reason(url: &str) -> Option<String> {
     if host_is_raw_ip(url) {
         reasons.push("raw IP host".to_string());
     }
+    if url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(is_reserved_hostname))
+        .unwrap_or(false)
+    {
+        reasons.push("reserved/test host".to_string());
+    }
     if reasons.is_empty() {
         None
     } else {
@@ -145,8 +206,8 @@ mod tests {
 
     #[test]
     fn benign_extension_is_allowed() {
-        assert_eq!(dangerous_extension("https://example.com/report.pdf"), None);
-        assert_eq!(dangerous_extension("https://example.com/photo.jpg"), None);
+        assert_eq!(dangerous_extension("https://iana.org/report.pdf"), None);
+        assert_eq!(dangerous_extension("https://iana.org/photo.jpg"), None);
     }
 
     #[test]
@@ -176,7 +237,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_reserved_hosts() {
+        assert!(validate_http_https_url("https://example.com/").is_err());
+        assert!(validate_http_https_url("https://foo.example/").is_err());
+        assert!(validate_http_https_url("https://foo.test/").is_err());
+        assert!(validate_http_https_url("https://foo.invalid/").is_err());
+    }
+
+    #[test]
     fn accepts_normal_https() {
-        assert!(validate_http_https_url("https://example.com/me").is_ok());
+        assert!(validate_http_https_url("https://iana.org/me").is_ok());
     }
 }
