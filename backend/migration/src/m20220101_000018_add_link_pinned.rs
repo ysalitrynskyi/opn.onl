@@ -15,7 +15,7 @@ impl MigrationTrait for Migration {
                         ColumnDef::new(Links::IsPinned)
                             .boolean()
                             .not_null()
-                            .default(false)
+                            .default(false),
                     )
                     .to_owned(),
             )
@@ -39,5 +39,3 @@ enum Links {
     Table,
     IsPinned,
 }
-
-

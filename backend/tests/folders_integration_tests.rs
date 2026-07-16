@@ -42,7 +42,7 @@ mod creation_tests {
     #[test]
     fn test_create_folder_basic() {
         let folder = MockFolder::new(1, "My Links");
-        
+
         assert_eq!(folder.id, 1);
         assert_eq!(folder.name, "My Links");
         assert!(folder.color.is_none());
@@ -53,14 +53,14 @@ mod creation_tests {
     #[test]
     fn test_create_folder_with_color() {
         let folder = MockFolder::new(1, "Important").with_color("#FF5733");
-        
+
         assert_eq!(folder.color, Some("#FF5733".to_string()));
     }
 
     #[test]
     fn test_create_org_folder() {
         let folder = MockFolder::new(1, "Team Links").with_org(5);
-        
+
         assert_eq!(folder.org_id, Some(5));
         assert!(folder.user_id.is_none());
     }
@@ -101,7 +101,9 @@ mod color_tests {
             return color[1..].chars().all(|c| c.is_ascii_hexdigit());
         }
         // Check named colors
-        let named_colors = ["red", "blue", "green", "yellow", "purple", "orange", "pink", "gray"];
+        let named_colors = [
+            "red", "blue", "green", "yellow", "purple", "orange", "pink", "gray",
+        ];
         named_colors.contains(&color.to_lowercase().as_str())
     }
 
@@ -184,10 +186,10 @@ mod operations_tests {
         // Simulate moving a link to a folder
         let folder_id = 1;
         let link_folder_id: Option<i32> = None;
-        
+
         // Move link to folder
         let new_folder_id = Some(folder_id);
-        
+
         assert!(new_folder_id.is_some());
         assert_eq!(new_folder_id, Some(1));
     }
@@ -196,10 +198,10 @@ mod operations_tests {
     fn test_remove_link_from_folder() {
         // Simulate removing a link from a folder
         let link_folder_id: Option<i32> = Some(1);
-        
+
         // Remove from folder
         let new_folder_id: Option<i32> = None;
-        
+
         assert!(new_folder_id.is_none());
     }
 
@@ -208,13 +210,13 @@ mod operations_tests {
         // Simulate bulk moving links to a folder
         let link_ids = vec![1, 2, 3, 4, 5];
         let target_folder_id = 10;
-        
+
         let mut moved_count = 0;
         for _id in &link_ids {
             // In real code, this would update the database
             moved_count += 1;
         }
-        
+
         assert_eq!(moved_count, 5);
     }
 }
@@ -235,7 +237,7 @@ mod hierarchy_tests {
             (4, None),
             (5, Some(1)),
         ];
-        
+
         assert_eq!(count_links_in_folder(1, &links), 3);
         assert_eq!(count_links_in_folder(2, &links), 1);
         assert_eq!(count_links_in_folder(3, &links), 0);
@@ -243,16 +245,8 @@ mod hierarchy_tests {
 
     #[test]
     fn test_empty_folder() {
-        let links: Vec<(i32, Option<i32>)> = vec![
-            (1, Some(1)),
-            (2, Some(2)),
-        ];
-        
+        let links: Vec<(i32, Option<i32>)> = vec![(1, Some(1)), (2, Some(2))];
+
         assert_eq!(count_links_in_folder(3, &links), 0);
     }
 }
-
-
-
-
-

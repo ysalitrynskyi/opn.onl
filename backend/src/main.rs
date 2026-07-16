@@ -32,13 +32,17 @@ async fn main() {
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info,tower_http=debug".into()),
         ))
         .with(tracing_subscriber::fmt::layer().with_ansi(true))
-        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
+        )
         .init();
 
     // Database connection. Required — fail fast rather than silently falling back
     // to an insecure hardcoded dev credential in production.
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set (no default is used)");
+    let database_url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set (no default is used)");
 
     let db = Database::connect(&database_url)
         .await
@@ -48,7 +52,9 @@ async fn main() {
 
     // Run migrations
     use migration::{Migrator, MigratorTrait};
-    Migrator::up(&db, None).await.expect("Failed to run migrations");
+    Migrator::up(&db, None)
+        .await
+        .expect("Failed to run migrations");
     tracing::info!("Migrations completed");
 
     // Ensure at least one admin exists - promote first user if no admins
@@ -101,7 +107,9 @@ async fn main() {
         email_service,
         click_buffer,
         backup,
-        rate_limiters: std::sync::Arc::new(opn_onl_backend::utils::rate_limiter::RateLimiters::new()),
+        rate_limiters: std::sync::Arc::new(
+            opn_onl_backend::utils::rate_limiter::RateLimiters::new(),
+        ),
     };
 
     // Handles for the graceful-shutdown flush (so buffered clicks aren't lost on
@@ -120,7 +128,10 @@ async fn main() {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting server on {}", addr);
-    tracing::info!("Swagger UI available at http://localhost:{}/swagger-ui/", port);
+    tracing::info!(
+        "Swagger UI available at http://localhost:{}/swagger-ui/",
+        port
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     // Serve with ConnectInfo so the rate limiter can use the real socket peer IP.

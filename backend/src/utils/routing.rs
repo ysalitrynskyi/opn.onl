@@ -150,15 +150,30 @@ mod tests {
         let mut r = rule(1, 0, "https://m.example");
         r.match_device = Some("Mobile".to_string());
         assert!(rule_matches(&r, &ua("Mobile", "iOS"), &geo(None), None));
-        assert!(!rule_matches(&r, &ua("Desktop", "Windows 10"), &geo(None), None));
+        assert!(!rule_matches(
+            &r,
+            &ua("Desktop", "Windows 10"),
+            &geo(None),
+            None
+        ));
     }
 
     #[test]
     fn os_prefix_match() {
         let mut r = rule(1, 0, "https://win.example");
         r.match_os = Some("Windows".to_string());
-        assert!(rule_matches(&r, &ua("Desktop", "Windows 10"), &geo(None), None));
-        assert!(rule_matches(&r, &ua("Desktop", "Windows 11"), &geo(None), None));
+        assert!(rule_matches(
+            &r,
+            &ua("Desktop", "Windows 10"),
+            &geo(None),
+            None
+        ));
+        assert!(rule_matches(
+            &r,
+            &ua("Desktop", "Windows 11"),
+            &geo(None),
+            None
+        ));
         assert!(!rule_matches(&r, &ua("Desktop", "macOS"), &geo(None), None));
     }
 
@@ -167,11 +182,26 @@ mod tests {
         let mut r = rule(1, 0, "https://de.example");
         r.match_country = Some("DE".to_string());
         r.match_lang = Some("de".to_string());
-        assert!(rule_matches(&r, &ua("Desktop", "Linux"), &geo(Some("de")), Some("de")));
+        assert!(rule_matches(
+            &r,
+            &ua("Desktop", "Linux"),
+            &geo(Some("de")),
+            Some("de")
+        ));
         // Wrong country.
-        assert!(!rule_matches(&r, &ua("Desktop", "Linux"), &geo(Some("FR")), Some("de")));
+        assert!(!rule_matches(
+            &r,
+            &ua("Desktop", "Linux"),
+            &geo(Some("FR")),
+            Some("de")
+        ));
         // Wrong language.
-        assert!(!rule_matches(&r, &ua("Desktop", "Linux"), &geo(Some("DE")), Some("en")));
+        assert!(!rule_matches(
+            &r,
+            &ua("Desktop", "Linux"),
+            &geo(Some("DE")),
+            Some("en")
+        ));
     }
 
     #[test]
@@ -213,11 +243,23 @@ mod tests {
         mobile.match_device = Some("Mobile".to_string());
         let rules = vec![default, mobile];
         assert_eq!(
-            resolve_destination(&rules, &ua("Mobile", "Android"), &geo(None), None, "https://fb"),
+            resolve_destination(
+                &rules,
+                &ua("Mobile", "Android"),
+                &geo(None),
+                None,
+                "https://fb"
+            ),
             "https://app.example"
         );
         assert_eq!(
-            resolve_destination(&rules, &ua("Desktop", "Linux"), &geo(None), None, "https://fb"),
+            resolve_destination(
+                &rules,
+                &ua("Desktop", "Linux"),
+                &geo(None),
+                None,
+                "https://fb"
+            ),
             "https://web.example"
         );
     }
@@ -228,7 +270,13 @@ mod tests {
         a.weight = 1;
         let mut b = rule(2, 0, "https://b.example");
         b.weight = 1;
-        let dest = resolve_destination(&[a, b], &ua("Desktop", "Linux"), &geo(None), None, "https://fb");
+        let dest = resolve_destination(
+            &[a, b],
+            &ua("Desktop", "Linux"),
+            &geo(None),
+            None,
+            "https://fb",
+        );
         assert!(dest == "https://a.example" || dest == "https://b.example");
     }
 }

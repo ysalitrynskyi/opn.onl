@@ -1,17 +1,17 @@
 use axum::{
-    extract::{State, Path, Query},
-    http::{StatusCode, HeaderMap},
-    Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
+    Json,
 };
-use serde::{Deserialize, Serialize};
 use sea_orm::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
-use crate::AppState;
-use crate::entity::{links, click_events};
+use crate::entity::{click_events, links};
 use crate::handlers::links::get_user_id_from_header;
+use crate::AppState;
 
 /// Aggregated geo bucket value: (latitude, longitude, city, country, hit count).
 type GeoAggregate = (f64, f64, Option<String>, Option<String>, i64);
@@ -159,15 +159,28 @@ pub async fn get_link_stats(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response()
+        }
     };
 
     let link = match links::Entity::find_by_id(id)
         .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db).await 
+        .one(&state.db)
+        .await
     {
         Ok(Some(link)) => link,
-        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Link not found"}))).into_response(),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Link not found"})),
+            )
+                .into_response()
+        }
     };
 
     // Check ownership - must own the link directly, or be member of the org that owns it
@@ -187,9 +200,13 @@ pub async fn get_link_stats(
     } else {
         false
     };
-    
+
     if !has_access {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Access denied"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Access denied"})),
+        )
+            .into_response();
     }
 
     // Get time range
@@ -210,9 +227,8 @@ pub async fn get_link_stats(
     let total_for_percentage = total_clicks.max(1) as f64;
 
     // Unique visitors (by IP)
-    let unique_ips: std::collections::HashSet<_> = events.iter()
-        .filter_map(|e| e.ip_address.clone())
-        .collect();
+    let unique_ips: std::collections::HashSet<_> =
+        events.iter().filter_map(|e| e.ip_address.clone()).collect();
     let unique_visitors = unique_ips.len() as i32;
 
     // Clicks by day
@@ -221,7 +237,8 @@ pub async fn get_link_stats(
         let date = event.created_at.format("%Y-%m-%d").to_string();
         *clicks_by_day_map.entry(date).or_insert(0) += 1;
     }
-    let mut clicks_by_day: Vec<DayStats> = clicks_by_day_map.into_iter()
+    let mut clicks_by_day: Vec<DayStats> = clicks_by_day_map
+        .into_iter()
         .map(|(date, count)| DayStats { date, count })
         .collect();
     clicks_by_day.sort_by(|a, b| a.date.cmp(&b.date));
@@ -229,10 +246,14 @@ pub async fn get_link_stats(
     // Clicks by country
     let mut country_map: HashMap<String, i64> = HashMap::new();
     for event in &events {
-        let country = event.country.clone().unwrap_or_else(|| "Unknown".to_string());
+        let country = event
+            .country
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
         *country_map.entry(country).or_insert(0) += 1;
     }
-    let clicks_by_country: Vec<CountryStats> = country_map.into_iter()
+    let clicks_by_country: Vec<CountryStats> = country_map
+        .into_iter()
         .map(|(country, count)| CountryStats {
             country,
             count,
@@ -247,7 +268,8 @@ pub async fn get_link_stats(
         let entry = city_map.entry(city).or_insert((0, event.country.clone()));
         entry.0 += 1;
     }
-    let clicks_by_city: Vec<CityStats> = city_map.into_iter()
+    let clicks_by_city: Vec<CityStats> = city_map
+        .into_iter()
         .map(|(city, (count, country))| CityStats {
             city,
             country,
@@ -259,10 +281,14 @@ pub async fn get_link_stats(
     // Clicks by device
     let mut device_map: HashMap<String, i64> = HashMap::new();
     for event in &events {
-        let device = event.device.clone().unwrap_or_else(|| "Unknown".to_string());
+        let device = event
+            .device
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
         *device_map.entry(device).or_insert(0) += 1;
     }
-    let clicks_by_device: Vec<DeviceStats> = device_map.into_iter()
+    let clicks_by_device: Vec<DeviceStats> = device_map
+        .into_iter()
         .map(|(device, count)| DeviceStats {
             device,
             count,
@@ -273,10 +299,14 @@ pub async fn get_link_stats(
     // Clicks by browser
     let mut browser_map: HashMap<String, i64> = HashMap::new();
     for event in &events {
-        let browser = event.browser.clone().unwrap_or_else(|| "Unknown".to_string());
+        let browser = event
+            .browser
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
         *browser_map.entry(browser).or_insert(0) += 1;
     }
-    let clicks_by_browser: Vec<BrowserStats> = browser_map.into_iter()
+    let clicks_by_browser: Vec<BrowserStats> = browser_map
+        .into_iter()
         .map(|(browser, count)| BrowserStats {
             browser,
             count,
@@ -290,7 +320,8 @@ pub async fn get_link_stats(
         let os = event.os.clone().unwrap_or_else(|| "Unknown".to_string());
         *os_map.entry(os).or_insert(0) += 1;
     }
-    let clicks_by_os: Vec<OsStats> = os_map.into_iter()
+    let clicks_by_os: Vec<OsStats> = os_map
+        .into_iter()
         .map(|(os, count)| OsStats {
             os,
             count,
@@ -301,12 +332,15 @@ pub async fn get_link_stats(
     // Clicks by referer
     let mut referer_map: HashMap<String, i64> = HashMap::new();
     for event in &events {
-        let referer = event.referer.clone()
+        let referer = event
+            .referer
+            .clone()
             .map(|r| extract_domain(&r).unwrap_or_else(|| r.clone()))
             .unwrap_or_else(|| "Direct".to_string());
         *referer_map.entry(referer).or_insert(0) += 1;
     }
-    let clicks_by_referer: Vec<RefererStats> = referer_map.into_iter()
+    let clicks_by_referer: Vec<RefererStats> = referer_map
+        .into_iter()
         .map(|(referer, count)| RefererStats {
             referer,
             count,
@@ -315,16 +349,20 @@ pub async fn get_link_stats(
         .collect();
 
     // Recent clicks (last 100)
-    let recent_clicks: Vec<RecentClick> = events.iter().take(100).map(|e| RecentClick {
-        id: e.id,
-        timestamp: e.created_at.to_string(),
-        country: e.country.clone(),
-        city: e.city.clone(),
-        device: e.device.clone(),
-        browser: e.browser.clone(),
-        os: e.os.clone(),
-        referer: e.referer.clone(),
-    }).collect();
+    let recent_clicks: Vec<RecentClick> = events
+        .iter()
+        .take(100)
+        .map(|e| RecentClick {
+            id: e.id,
+            timestamp: e.created_at.to_string(),
+            country: e.country.clone(),
+            city: e.city.clone(),
+            device: e.device.clone(),
+            browser: e.browser.clone(),
+            os: e.os.clone(),
+            referer: e.referer.clone(),
+        })
+        .collect();
 
     // Geo data for map
     let mut geo_map: HashMap<(i64, i64), GeoAggregate> = HashMap::new();
@@ -332,11 +370,18 @@ pub async fn get_link_stats(
         if let (Some(lat), Some(lon)) = (event.latitude, event.longitude) {
             // Round to 2 decimal places for clustering
             let key = ((lat * 100.0) as i64, (lon * 100.0) as i64);
-            let entry = geo_map.entry(key).or_insert((lat, lon, event.city.clone(), event.country.clone(), 0));
+            let entry = geo_map.entry(key).or_insert((
+                lat,
+                lon,
+                event.city.clone(),
+                event.country.clone(),
+                0,
+            ));
             entry.4 += 1;
         }
     }
-    let geo_data: Vec<GeoPoint> = geo_map.into_values()
+    let geo_data: Vec<GeoPoint> = geo_map
+        .into_values()
         .map(|(lat, lon, city, country, count)| GeoPoint {
             latitude: lat,
             longitude: lon,
@@ -382,7 +427,13 @@ pub async fn get_dashboard_stats(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response()
+        }
     };
 
     // Get user's links (exclude deleted)
@@ -414,12 +465,16 @@ pub async fn get_dashboard_stats(
         .unwrap_or_default();
 
     // Calculate time-based stats
-    let clicks_today = events.iter().filter(|e| e.created_at >= today_start).count() as i64;
+    let clicks_today = events
+        .iter()
+        .filter(|e| e.created_at >= today_start)
+        .count() as i64;
     let clicks_this_week = events.iter().filter(|e| e.created_at >= week_start).count() as i64;
     let clicks_this_month = events.len() as i64;
 
     // Top links
-    let mut top_links: Vec<TopLink> = user_links.iter()
+    let mut top_links: Vec<TopLink> = user_links
+        .iter()
         .map(|l| TopLink {
             id: l.id,
             code: l.code.clone(),
@@ -436,7 +491,8 @@ pub async fn get_dashboard_stats(
         let date = event.created_at.format("%Y-%m-%d").to_string();
         *clicks_by_day_map.entry(date).or_insert(0) += 1;
     }
-    let mut clicks_by_day: Vec<DayStats> = clicks_by_day_map.into_iter()
+    let mut clicks_by_day: Vec<DayStats> = clicks_by_day_map
+        .into_iter()
         .map(|(date, count)| DayStats { date, count })
         .collect();
     clicks_by_day.sort_by(|a, b| a.date.cmp(&b.date));
@@ -444,11 +500,15 @@ pub async fn get_dashboard_stats(
     // Top countries
     let mut country_map: HashMap<String, i64> = HashMap::new();
     for event in &events {
-        let country = event.country.clone().unwrap_or_else(|| "Unknown".to_string());
+        let country = event
+            .country
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
         *country_map.entry(country).or_insert(0) += 1;
     }
     let total_for_percentage = events.len().max(1) as f64;
-    let mut top_countries: Vec<CountryStats> = country_map.into_iter()
+    let mut top_countries: Vec<CountryStats> = country_map
+        .into_iter()
         .map(|(country, count)| CountryStats {
             country,
             count,
@@ -461,10 +521,14 @@ pub async fn get_dashboard_stats(
     // Top browsers
     let mut browser_map: HashMap<String, i64> = HashMap::new();
     for event in &events {
-        let browser = event.browser.clone().unwrap_or_else(|| "Unknown".to_string());
+        let browser = event
+            .browser
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
         *browser_map.entry(browser).or_insert(0) += 1;
     }
-    let mut top_browsers: Vec<BrowserStats> = browser_map.into_iter()
+    let mut top_browsers: Vec<BrowserStats> = browser_map
+        .into_iter()
         .map(|(browser, count)| BrowserStats {
             browser,
             count,
@@ -510,7 +574,13 @@ pub async fn get_realtime_clicks(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response()
+        }
     };
 
     let link = match links::Entity::find_by_id(id)
@@ -519,7 +589,13 @@ pub async fn get_realtime_clicks(
         .await
     {
         Ok(Some(link)) => link,
-        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Link not found"}))).into_response(),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Link not found"})),
+            )
+                .into_response()
+        }
     };
 
     // Ownership: must own the link, or be a member of the org that owns it.
@@ -540,17 +616,27 @@ pub async fn get_realtime_clicks(
     };
 
     if !has_access {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Access denied"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Access denied"})),
+        )
+            .into_response();
     }
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "link_id": link.id,
-        "click_count": link.click_count,
-        "timestamp": chrono::Utc::now().to_rfc3339()
-    }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "link_id": link.id,
+            "click_count": link.click_count,
+            "timestamp": chrono::Utc::now().to_rfc3339()
+        })),
+    )
+        .into_response()
 }
 
 // Helper function to extract domain from URL
 fn extract_domain(url: &str) -> Option<String> {
-    url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string()))
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
 }

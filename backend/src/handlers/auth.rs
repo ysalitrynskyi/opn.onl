@@ -1,20 +1,15 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-    response::IntoResponse,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::{Duration, Utc};
-use serde::{Deserialize, Serialize};
 use sea_orm::*;
-use validator::Validate;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::Validate;
 
-use crate::AppState;
 use crate::entity::{api_keys, passkeys, users};
-use crate::utils::jwt::{hash_password, verify_password, create_jwt};
-use axum::http::HeaderMap;
 use crate::utils::email::generate_token;
+use crate::utils::jwt::{create_jwt, hash_password, verify_password};
+use crate::AppState;
+use axum::http::HeaderMap;
 
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
@@ -88,12 +83,26 @@ pub async fn register(
     Json(payload): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = payload.validate() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let hashed_password = match hash_password(&payload.password) {
         Ok(h) => h,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Password hashing failed".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     // Generate verification token
@@ -101,10 +110,7 @@ pub async fn register(
     let verification_expires = Utc::now() + Duration::hours(24);
 
     // Check if this is the first user - make them admin
-    let user_count = users::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let user_count = users::Entity::find().count(&state.db).await.unwrap_or(0);
     let is_first_user = user_count == 0;
 
     let new_user = users::ActiveModel {
@@ -124,7 +130,10 @@ pub async fn register(
             // Send verification email if email service is configured
             if let Some(email_service) = &state.email_service {
                 if email_service.is_configured() {
-                    if let Err(e) = email_service.send_verification_email(&payload.email, &verification_token).await {
+                    if let Err(e) = email_service
+                        .send_verification_email(&payload.email, &verification_token)
+                        .await
+                    {
                         tracing::error!("Failed to send verification email: {}", e);
                     }
                 }
@@ -134,27 +143,53 @@ pub async fn register(
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to create JWT: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to create session".to_string() })).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to create session".to_string(),
+                        }),
+                    )
+                        .into_response();
                 }
             };
-            (StatusCode::CREATED, Json(AuthResponse { 
-                token,
-                user_id: user_res.last_insert_id,
-                email: payload.email,
-                email_verified: false,
-                is_admin: is_first_user,
-            })).into_response()
+            (
+                StatusCode::CREATED,
+                Json(AuthResponse {
+                    token,
+                    user_id: user_res.last_insert_id,
+                    email: payload.email,
+                    email_verified: false,
+                    is_admin: is_first_user,
+                }),
+            )
+                .into_response()
         }
         Err(DbErr::Query(err)) => {
-             if err.to_string().contains("duplicate key value") {
-                 (StatusCode::CONFLICT, Json(ErrorResponse { error: "Email already exists".to_string() })).into_response()
-             } else {
-                 (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response()
-             }
+            if err.to_string().contains("duplicate key value") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Email already exists".to_string(),
+                    }),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Database error".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
         }
-        Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response()
-        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Database error".to_string(),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -186,16 +221,26 @@ pub async fn login(
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to create JWT: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to create session".to_string() })).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to create session".to_string(),
+                        }),
+                    )
+                        .into_response();
                 }
             };
-            return (StatusCode::OK, Json(AuthResponse { 
-                token,
-                user_id: user.id,
-                email: user.email,
-                email_verified: user.email_verified,
-                is_admin: user.is_admin,
-            })).into_response();
+            return (
+                StatusCode::OK,
+                Json(AuthResponse {
+                    token,
+                    user_id: user.id,
+                    email: user.email,
+                    email_verified: user.email_verified,
+                    is_admin: user.is_admin,
+                }),
+            )
+                .into_response();
         }
     } else {
         // No such (active) account: run a dummy verify so the response time does
@@ -203,7 +248,13 @@ pub async fn login(
         let _ = verify_password(&payload.password, dummy_password_hash());
     }
 
-    (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid credentials".to_string() })).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorResponse {
+            error: "Invalid credentials".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// A lazily-computed bcrypt hash used to equalize login timing when the account
@@ -241,7 +292,13 @@ pub async fn verify_email(
         // Check if token is expired
         if let Some(expires) = user.verification_token_expires {
             if Utc::now().naive_utc() > expires {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Token expired".to_string() })).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Token expired".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         }
 
@@ -252,7 +309,13 @@ pub async fn verify_email(
         active_user.verification_token_expires = Set(None);
 
         if active_user.update(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to verify email".to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to verify email".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Send welcome email
@@ -264,10 +327,22 @@ pub async fn verify_email(
             }
         }
 
-        return (StatusCode::OK, Json(MessageResponse { message: "Email verified successfully".to_string() })).into_response();
+        return (
+            StatusCode::OK,
+            Json(MessageResponse {
+                message: "Email verified successfully".to_string(),
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid token".to_string() })).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "Invalid token".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// Resend verification email
@@ -294,7 +369,13 @@ pub async fn resend_verification(
 
     if let Some(user) = user {
         if user.email_verified {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Email already verified".to_string() })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Email already verified".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Generate new token
@@ -306,23 +387,44 @@ pub async fn resend_verification(
         active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
         if active_user.update(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to generate token".to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to generate token".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Send verification email
         if let Some(email_service) = &state.email_service {
             if email_service.is_configured() {
-                if let Err(e) = email_service.send_verification_email(&user.email, &verification_token).await {
+                if let Err(e) = email_service
+                    .send_verification_email(&user.email, &verification_token)
+                    .await
+                {
                     tracing::error!("Failed to send verification email: {}", e);
                 }
             }
         }
 
-        return (StatusCode::OK, Json(MessageResponse { message: "Verification email sent".to_string() })).into_response();
+        return (
+            StatusCode::OK,
+            Json(MessageResponse {
+                message: "Verification email sent".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Don't reveal if email exists
-    (StatusCode::OK, Json(MessageResponse { message: "If account exists, verification email sent".to_string() })).into_response()
+    (
+        StatusCode::OK,
+        Json(MessageResponse {
+            message: "If account exists, verification email sent".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// Request password reset
@@ -355,13 +457,22 @@ pub async fn forgot_password(
         active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
         if active_user.update(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to generate token".to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to generate token".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Send password reset email
         if let Some(email_service) = &state.email_service {
             if email_service.is_configured() {
-                if let Err(e) = email_service.send_password_reset_email(&user.email, &reset_token).await {
+                if let Err(e) = email_service
+                    .send_password_reset_email(&user.email, &reset_token)
+                    .await
+                {
                     tracing::error!("Failed to send password reset email: {}", e);
                 }
             }
@@ -369,7 +480,13 @@ pub async fn forgot_password(
     }
 
     // Always return success to prevent email enumeration
-    (StatusCode::OK, Json(MessageResponse { message: "If account exists, password reset email sent".to_string() })).into_response()
+    (
+        StatusCode::OK,
+        Json(MessageResponse {
+            message: "If account exists, password reset email sent".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// Reset password with token
@@ -388,15 +505,24 @@ pub async fn reset_password(
     Json(payload): Json<ResetPasswordRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = payload.validate() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to reset password".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to reset password".to_string(),
+                }),
+            )
                 .into_response()
         }
     };
@@ -413,7 +539,13 @@ pub async fn reset_password(
         if let Some(expires) = user.password_reset_expires {
             if Utc::now().naive_utc() > expires {
                 let _ = txn.rollback().await;
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Token expired".to_string() })).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Token expired".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         }
 
@@ -421,16 +553,25 @@ pub async fn reset_password(
             Ok(h) => h,
             Err(_) => {
                 let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Password hashing failed".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         };
 
         // Bump token_version to revoke any JWTs issued before this reset.
         let Some(next_token_version) = user.token_version.checked_add(1) else {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to reset password".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to reset password".to_string(),
+                }),
+            )
                 .into_response();
         };
         let mut active_user: users::ActiveModel = user.into();
@@ -441,20 +582,41 @@ pub async fn reset_password(
 
         if active_user.update(&txn).await.is_err() {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to reset password".to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to reset password".to_string(),
+                }),
+            )
+                .into_response();
         }
         if txn.commit().await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to reset password".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to reset password".to_string(),
+                }),
+            )
                 .into_response();
         }
 
-        return (StatusCode::OK, Json(MessageResponse { message: "Password reset successfully".to_string() })).into_response();
+        return (
+            StatusCode::OK,
+            Json(MessageResponse {
+                message: "Password reset successfully".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let _ = txn.rollback().await;
-    (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid token".to_string() })).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "Invalid token".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize, Validate, ToSchema)]
@@ -485,20 +647,37 @@ pub async fn change_password(
     Json(payload): Json<ChangePasswordRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = payload.validate() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to change password".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to change password".to_string(),
+                }),
+            )
                 .into_response()
         }
     };
@@ -513,18 +692,36 @@ pub async fn change_password(
         // Verify current password
         if user.password_hash.is_empty() {
             let _ = txn.rollback().await;
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "No password set for this account".to_string() })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "No password set for this account".to_string(),
+                }),
+            )
+                .into_response();
         }
-        
+
         match verify_password(&payload.current_password, &user.password_hash) {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => {
                 let _ = txn.rollback().await;
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Current password is incorrect".to_string() })).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Current password is incorrect".to_string(),
+                    }),
+                )
+                    .into_response();
             }
             Err(_) => {
                 let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password verification failed".to_string() })).into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Password verification failed".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         }
 
@@ -533,16 +730,25 @@ pub async fn change_password(
             Ok(h) => h,
             Err(_) => {
                 let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password hashing failed".to_string() })).into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Password hashing failed".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         };
 
         // Update password, consume any outstanding reset token, and revoke prior JWTs.
         let Some(next_token_version) = user.token_version.checked_add(1) else {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to change password".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to change password".to_string(),
+                }),
+            )
                 .into_response();
         };
         let token_user_id = user.id;
@@ -555,12 +761,21 @@ pub async fn change_password(
 
         if active_user.update(&txn).await.is_err() {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to change password".to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to change password".to_string(),
+                }),
+            )
+                .into_response();
         }
         if txn.commit().await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to change password".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to change password".to_string(),
+                }),
+            )
                 .into_response();
         }
 
@@ -568,16 +783,32 @@ pub async fn change_password(
         // stays valid; the bump just revoked the client's existing token, and
         // without a replacement its next request would 401 and log the user out.
         return match create_jwt(token_user_id, &token_email, next_token_version) {
-            Ok(token) => (StatusCode::OK, Json(serde_json::json!({
-                "message": "Password changed successfully",
-                "token": token,
-            }))).into_response(),
-            Err(_) => (StatusCode::OK, Json(MessageResponse { message: "Password changed successfully".to_string() })).into_response(),
+            Ok(token) => (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "message": "Password changed successfully",
+                    "token": token,
+                })),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: "Password changed successfully".to_string(),
+                }),
+            )
+                .into_response(),
         };
     }
 
     let _ = txn.rollback().await;
-    (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorResponse {
+            error: "Unauthorized".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -614,14 +845,22 @@ pub async fn delete_account(
         .unwrap_or(false);
 
     if !deletion_enabled {
-        return (StatusCode::FORBIDDEN, Json(ErrorResponse { 
-            error: "Account deletion is disabled. Contact support if you need to delete your account.".to_string() 
+        return (StatusCode::FORBIDDEN, Json(ErrorResponse {
+            error: "Account deletion is disabled. Contact support if you need to delete your account.".to_string()
         })).into_response();
     }
 
     let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
     let user_id = auth.user_id;
 
@@ -634,25 +873,46 @@ pub async fn delete_account(
     if let Some(user) = user {
         // Verify password
         if user.password_hash.is_empty() {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "No password set for this account".to_string() })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "No password set for this account".to_string(),
+                }),
+            )
+                .into_response();
         }
-        
+
         match verify_password(&payload.password, &user.password_hash) {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Password is incorrect".to_string() })).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Password is incorrect".to_string(),
+                    }),
+                )
+                    .into_response();
             }
             Err(_) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Password verification failed".to_string() })).into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Password verification failed".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         }
 
         let txn = match state.db.begin().await {
             Ok(txn) => txn,
             Err(_) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                    error: "Failed to delete account".to_string(),
-                }))
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Failed to delete account".to_string(),
+                    }),
+                )
                     .into_response();
             }
         };
@@ -669,17 +929,23 @@ pub async fn delete_account(
             Ok(Some(user)) if user.token_version == auth.token_version => user,
             _ => {
                 let _ = txn.rollback().await;
-                return (StatusCode::UNAUTHORIZED, Json(ErrorResponse {
-                    error: "Unauthorized".to_string(),
-                }))
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(ErrorResponse {
+                        error: "Unauthorized".to_string(),
+                    }),
+                )
                     .into_response();
             }
         };
         if !verify_password(&payload.password, &user.password_hash).unwrap_or(false) {
             let _ = txn.rollback().await;
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
-                error: "Password is incorrect".to_string(),
-            }))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Password is incorrect".to_string(),
+                }),
+            )
                 .into_response();
         }
 
@@ -690,9 +956,12 @@ pub async fn delete_account(
             Ok(split) => split,
             Err(_) => {
                 let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                    error: "Failed to delete account".to_string(),
-                }))
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Failed to delete account".to_string(),
+                    }),
+                )
                     .into_response();
             }
         };
@@ -720,9 +989,12 @@ pub async fn delete_account(
             Ok(links) => links.into_iter().map(|link| link.code).collect::<Vec<_>>(),
             Err(_) => {
                 let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                    error: "Failed to delete account".to_string(),
-                }))
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Failed to delete account".to_string(),
+                    }),
+                )
                     .into_response();
             }
         };
@@ -732,9 +1004,12 @@ pub async fn delete_account(
             Some(version) => version,
             None => {
                 let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                    error: "Failed to delete account".to_string(),
-                }))
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Failed to delete account".to_string(),
+                    }),
+                )
                     .into_response();
             }
         };
@@ -774,28 +1049,43 @@ pub async fn delete_account(
 
         if result.is_err() {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to delete account".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }),
+            )
                 .into_response();
         }
 
         if txn.commit().await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Failed to delete account".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }),
+            )
                 .into_response();
         }
 
         crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
 
-        return (StatusCode::OK, Json(MessageResponse {
-            message: "Account deleted successfully".to_string(),
-        }))
+        return (
+            StatusCode::OK,
+            Json(MessageResponse {
+                message: "Account deleted successfully".to_string(),
+            }),
+        )
             .into_response();
     }
 
-    (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: "User not found".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -829,26 +1119,26 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .unwrap_or_else(|_| "false".to_string())
         .parse::<bool>()
         .unwrap_or(false);
-    
+
     let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
         .unwrap_or_else(|_| "true".to_string())
         .parse::<bool>()
         .unwrap_or(true);
-    
+
     let max_links_per_user = std::env::var("MAX_LINKS_PER_USER")
         .ok()
         .and_then(|v| v.parse().ok());
-    
+
     let min_alias_length = std::env::var("MIN_ALIAS_LENGTH")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
-    
+
     let max_alias_length = std::env::var("MAX_ALIAS_LENGTH")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(50);
-    
+
     let url_sanitization_enabled = std::env::var("ENABLE_URL_SANITIZATION")
         .unwrap_or_else(|_| "true".to_string())
         .parse::<bool>()
@@ -889,21 +1179,24 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .map(|v| v != "false")
         .unwrap_or(true);
 
-    (StatusCode::OK, Json(AppSettingsResponse {
-        account_deletion_enabled,
-        custom_aliases_enabled,
-        max_links_per_user,
-        passkeys_enabled,
-        min_alias_length,
-        max_alias_length,
-        url_sanitization_enabled,
-        qr_branding_enabled,
-        burn_after_reading_enabled,
-        safe_link_interstitial_enabled,
-        conditional_routing_enabled,
-        link_in_bio_enabled,
-        api_keys_enabled,
-    }))
+    (
+        StatusCode::OK,
+        Json(AppSettingsResponse {
+            account_deletion_enabled,
+            custom_aliases_enabled,
+            max_links_per_user,
+            passkeys_enabled,
+            min_alias_length,
+            max_alias_length,
+            url_sanitization_enabled,
+            qr_branding_enabled,
+            burn_after_reading_enabled,
+            safe_link_interstitial_enabled,
+            conditional_routing_enabled,
+            link_in_bio_enabled,
+            api_keys_enabled,
+        }),
+    )
 }
 
 #[derive(Serialize, ToSchema)]
@@ -953,7 +1246,15 @@ pub async fn get_current_user(
 ) -> impl IntoResponse {
     let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let user = users::Entity::find_by_id(user_id)
@@ -963,15 +1264,15 @@ pub async fn get_current_user(
         .unwrap_or(None);
 
     if let Some(user) = user {
-        use crate::entity::{links, click_events};
-        
+        use crate::entity::{click_events, links};
+
         let link_count = links::Entity::find()
             .filter(links::Column::UserId.eq(user_id))
             .filter(links::Column::DeletedAt.is_null())
             .count(&state.db)
             .await
             .unwrap_or(0) as i64;
-        
+
         let total_clicks = click_events::Entity::find()
             .inner_join(links::Entity)
             .filter(links::Column::UserId.eq(user_id))
@@ -979,26 +1280,36 @@ pub async fn get_current_user(
             .await
             .unwrap_or(0) as i64;
 
-        return (StatusCode::OK, Json(UserProfileResponse {
-            id: user.id,
-            email: user.email,
-            email_verified: user.email_verified,
-            is_admin: user.is_admin,
-            created_at: user.created_at.to_string(),
-            link_count,
-            total_clicks,
-            display_name: user.display_name,
-            bio: user.bio,
-            website: user.website,
-            avatar_url: user.avatar_url,
-            location: user.location,
-            bio_username: user.bio_username,
-            bio_enabled: user.bio_enabled,
-            bio_theme: user.bio_theme,
-        })).into_response();
+        return (
+            StatusCode::OK,
+            Json(UserProfileResponse {
+                id: user.id,
+                email: user.email,
+                email_verified: user.email_verified,
+                is_admin: user.is_admin,
+                created_at: user.created_at.to_string(),
+                link_count,
+                total_clicks,
+                display_name: user.display_name,
+                bio: user.bio,
+                website: user.website,
+                avatar_url: user.avatar_url,
+                location: user.location,
+                bio_username: user.bio_username,
+                bio_enabled: user.bio_enabled,
+                bio_theme: user.bio_theme,
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: "User not found".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// Update user profile
@@ -1020,7 +1331,15 @@ pub async fn update_profile(
 ) -> impl IntoResponse {
     let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let user = users::Entity::find_by_id(user_id)
@@ -1031,14 +1350,20 @@ pub async fn update_profile(
 
     if let Some(user) = user {
         let mut active_user: users::ActiveModel = user.clone().into();
-        
+
         if let Some(name) = payload.display_name {
             active_user.display_name = Set(Some(name));
         }
         if let Some(bio) = payload.bio {
             // Validate bio length (max 500 chars)
             if bio.len() > 500 {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Bio must be 500 characters or less".to_string() })).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Bio must be 500 characters or less".to_string(),
+                    }),
+                )
+                    .into_response();
             }
             active_user.bio = Set(Some(bio));
         }
@@ -1046,63 +1371,93 @@ pub async fn update_profile(
             // http(s) only — Url::parse alone accepts javascript:/data: (stored XSS).
             if !website.is_empty() {
                 if let Err(e) = crate::utils::url_policy::validate_http_https_url(&website) {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
+                        .into_response();
                 }
             }
-            active_user.website = Set(if website.is_empty() { None } else { Some(website) });
+            active_user.website = Set(if website.is_empty() {
+                None
+            } else {
+                Some(website)
+            });
         }
         if let Some(avatar) = payload.avatar_url {
             // Same policy as website: only fetchable http(s) public URLs.
             if !avatar.is_empty() {
                 if let Err(e) = crate::utils::url_policy::validate_http_https_url(&avatar) {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
+                        .into_response();
                 }
             }
-            active_user.avatar_url = Set(if avatar.is_empty() { None } else { Some(avatar) });
+            active_user.avatar_url = Set(if avatar.is_empty() {
+                None
+            } else {
+                Some(avatar)
+            });
         }
         if let Some(location) = payload.location {
-            active_user.location = Set(if location.is_empty() { None } else { Some(location) });
+            active_user.location = Set(if location.is_empty() {
+                None
+            } else {
+                Some(location)
+            });
         }
-        
+
         match active_user.update(&state.db).await {
             Ok(updated) => {
-                use crate::entity::{links, click_events};
-                
+                use crate::entity::{click_events, links};
+
                 let link_count = links::Entity::find()
                     .filter(links::Column::UserId.eq(user_id))
                     .filter(links::Column::DeletedAt.is_null())
                     .count(&state.db)
                     .await
                     .unwrap_or(0) as i64;
-                
+
                 let total_clicks = click_events::Entity::find()
                     .inner_join(links::Entity)
                     .filter(links::Column::UserId.eq(user_id))
                     .count(&state.db)
                     .await
                     .unwrap_or(0) as i64;
-                
-                (StatusCode::OK, Json(UserProfileResponse {
-                    id: updated.id,
-                    email: updated.email,
-                    email_verified: updated.email_verified,
-                    is_admin: updated.is_admin,
-                    created_at: updated.created_at.to_string(),
-                    link_count,
-                    total_clicks,
-                    display_name: updated.display_name,
-                    bio: updated.bio,
-                    website: updated.website,
-                    avatar_url: updated.avatar_url,
-                    location: updated.location,
-                    bio_username: updated.bio_username,
-                    bio_enabled: updated.bio_enabled,
-                    bio_theme: updated.bio_theme,
-                })).into_response()
+
+                (
+                    StatusCode::OK,
+                    Json(UserProfileResponse {
+                        id: updated.id,
+                        email: updated.email,
+                        email_verified: updated.email_verified,
+                        is_admin: updated.is_admin,
+                        created_at: updated.created_at.to_string(),
+                        link_count,
+                        total_clicks,
+                        display_name: updated.display_name,
+                        bio: updated.bio,
+                        website: updated.website,
+                        avatar_url: updated.avatar_url,
+                        location: updated.location,
+                        bio_username: updated.bio_username,
+                        bio_enabled: updated.bio_enabled,
+                        bio_theme: updated.bio_theme,
+                    }),
+                )
+                    .into_response()
             }
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update profile".to_string() })).into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to update profile".to_string(),
+                }),
+            )
+                .into_response(),
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() })).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "User not found".to_string(),
+            }),
+        )
+            .into_response()
     }
 }

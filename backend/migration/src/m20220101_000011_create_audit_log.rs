@@ -26,7 +26,11 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(AuditLog::ResourceId).integer().null())
                     .col(ColumnDef::new(AuditLog::Details).json().null())
                     .col(ColumnDef::new(AuditLog::IpAddress).string().null())
-                    .col(ColumnDef::new(AuditLog::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(AuditLog::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk-audit-org_id")
@@ -101,8 +105,3 @@ enum Users {
     Table,
     Id,
 }
-
-
-
-
-

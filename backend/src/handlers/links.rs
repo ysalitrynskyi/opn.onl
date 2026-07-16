@@ -143,7 +143,7 @@ pub(crate) async fn validate_link_resource_scope<C: ConnectionTrait>(
             .lock_shared()
             .one(db)
             .await?;
-        if member.is_none() {
+        if !member.as_ref().is_some_and(|member| member.can_edit()) {
             return Ok(false);
         }
     }
@@ -252,9 +252,7 @@ fn check_url_content_policy(url: &str) -> Result<(), String> {
             ));
         }
     }
-    if env_flag_default_on("BLOCK_RAW_IP_URLS")
-        && crate::utils::url_policy::host_is_raw_ip(url)
-    {
+    if env_flag_default_on("BLOCK_RAW_IP_URLS") && crate::utils::url_policy::host_is_raw_ip(url) {
         return Err("Links to raw IP addresses are not allowed".to_string());
     }
     Ok(())
@@ -266,12 +264,12 @@ fn check_url_content_policy(url: &str) -> Result<(), String> {
 fn validate_url(url: &str) -> Result<String, String> {
     // Must be a valid URL
     let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
-    
+
     // Must be http or https
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("URL must use http or https protocol".to_string());
     }
-    
+
     // Must have a host
     let Some(host) = parsed.host_str() else {
         return Err("URL must have a valid host".to_string());
@@ -283,30 +281,40 @@ fn validate_url(url: &str) -> Result<String, String> {
     // Sanitization checks (if enabled)
     if is_url_sanitization_enabled() {
         let url_lower = url.to_lowercase();
-        
+
         // Block javascript: URLs (XSS)
         if url_lower.contains("javascript:") {
             return Err("URL contains potentially malicious content".to_string());
         }
-        
+
         // Block data: URLs (can contain malicious payloads)
         if url_lower.contains("data:") {
             return Err("Data URLs are not allowed".to_string());
         }
-        
+
         // Block common XSS patterns in URL
         let xss_patterns = [
-            "<script", "</script>", "onerror=", "onload=", "onclick=",
-            "onmouseover=", "onfocus=", "onblur=", "eval(", "alert(",
-            "document.cookie", "document.location", "window.location",
+            "<script",
+            "</script>",
+            "onerror=",
+            "onload=",
+            "onclick=",
+            "onmouseover=",
+            "onfocus=",
+            "onblur=",
+            "eval(",
+            "alert(",
+            "document.cookie",
+            "document.location",
+            "window.location",
         ];
-        
+
         for pattern in xss_patterns {
             if url_lower.contains(pattern) {
                 return Err("URL contains potentially malicious content".to_string());
             }
         }
-        
+
         // Block URLs with encoded malicious content
         if let Ok(decoded) = urlencoding::decode(url) {
             let decoded_lower = decoded.to_lowercase();
@@ -316,7 +324,7 @@ fn validate_url(url: &str) -> Result<String, String> {
                 }
             }
         }
-        
+
         // Block extremely long URLs (potential DoS)
         if url.len() > 2048 {
             return Err("URL is too long (max 2048 characters)".to_string());
@@ -346,7 +354,7 @@ fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.is_unspecified()
                 || v4.octets()[0] == 0                                        // 0.0.0.0/8
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)   // 100.64.0.0/10 CGNAT
-                || v4.octets()[0] >= 240                                      // 240.0.0.0/4 reserved
+                || v4.octets()[0] >= 240 // 240.0.0.0/4 reserved
         }
         std::net::IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
@@ -355,7 +363,7 @@ fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
             v6.is_loopback()
                 || v6.is_unspecified()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00   // fc00::/7 unique local
-                || (v6.segments()[0] & 0xffc0) == 0xfe80   // fe80::/10 link-local
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
         }
     }
 }
@@ -385,7 +393,9 @@ async fn resolve_and_validate(url: &str) -> Result<ValidatedTarget, String> {
         "http" | "https" => {}
         _ => return Err("Only http/https URLs are allowed".to_string()),
     }
-    let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
     let port = parsed.port_or_known_default().unwrap_or(80);
 
     let (addrs, is_literal_ip): (Vec<std::net::SocketAddr>, bool) =
@@ -483,22 +493,31 @@ async fn ssrf_guarded_fetch(
 fn validate_alias(alias: &str) -> Result<(), String> {
     let min_len = get_min_alias_length();
     let max_len = get_max_alias_length();
-    
+
     if alias.len() < min_len {
         return Err(format!("Alias must be at least {} characters", min_len));
     }
-    
+
     if alias.len() > max_len {
         return Err(format!("Alias must be at most {} characters", max_len));
     }
-    
+
     // Only allow alphanumeric, hyphens, and underscores
-    if !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err("Alias can only contain letters, numbers, hyphens, and underscores".to_string());
+    if !alias
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(
+            "Alias can only contain letters, numbers, hyphens, and underscores".to_string(),
+        );
     }
-    
+
     // Cannot start or end with hyphen/underscore
-    if alias.starts_with('-') || alias.starts_with('_') || alias.ends_with('-') || alias.ends_with('_') {
+    if alias.starts_with('-')
+        || alias.starts_with('_')
+        || alias.ends_with('-')
+        || alias.ends_with('_')
+    {
         return Err("Alias cannot start or end with hyphen or underscore".to_string());
     }
 
@@ -510,14 +529,49 @@ fn validate_alias(alias: &str) -> Result<(), String> {
     // allowlist and frontend/src/App.tsx.
     const RESERVED: &[&str] = &[
         // backend API routes
-        "health", "links", "link", "auth", "admin", "orgs", "org", "organizations",
-        "folders", "tags", "analytics", "contact", "ws", "sse", "api", "api-docs",
-        "swagger-ui", "password", "verify", "preview", "me", "profile",
-        "robots.txt", "favicon.ico", "sitemap.xml", "404",
+        "health",
+        "links",
+        "link",
+        "auth",
+        "admin",
+        "orgs",
+        "org",
+        "organizations",
+        "folders",
+        "tags",
+        "analytics",
+        "contact",
+        "ws",
+        "sse",
+        "api",
+        "api-docs",
+        "swagger-ui",
+        "password",
+        "verify",
+        "preview",
+        "me",
+        "profile",
+        "robots.txt",
+        "favicon.ico",
+        "sitemap.xml",
+        "404",
         // frontend SPA routes (opn.onl/<route>)
-        "features", "pricing", "about", "privacy", "terms", "faq", "docs",
-        "developers", "login", "register", "dashboard", "settings",
-        "forgot-password", "reset-password", "verify-email", "r",
+        "features",
+        "pricing",
+        "about",
+        "privacy",
+        "terms",
+        "faq",
+        "docs",
+        "developers",
+        "login",
+        "register",
+        "dashboard",
+        "settings",
+        "forgot-password",
+        "reset-password",
+        "verify-email",
+        "r",
     ];
     if RESERVED.contains(&alias.to_lowercase().as_str()) {
         return Err("This alias is reserved and cannot be used".to_string());
@@ -809,8 +863,8 @@ pub async fn active_link_codes_for_user(state: &AppState, user_id: i32) -> Vec<S
 /// high-entropy random strings, so a fast hash (not bcrypt) is appropriate and
 /// keeps per-request authentication O(1) via the unique index.
 pub fn hash_api_key(key: &str) -> String {
-    use sha2::{Digest, Sha256};
     use base64::Engine as _;
+    use sha2::{Digest, Sha256};
     let digest = Sha256::digest(key.as_bytes());
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
@@ -820,7 +874,10 @@ pub fn hash_api_key(key: &str) -> String {
 async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<i32> {
     use crate::entity::api_keys;
     // Instance kill-switch: when ENABLE_API_KEYS=false, keys stop authenticating.
-    if std::env::var("ENABLE_API_KEYS").map(|v| v == "false").unwrap_or(false) {
+    if std::env::var("ENABLE_API_KEYS")
+        .map(|v| v == "false")
+        .unwrap_or(false)
+    {
         return None;
     }
     let hash = hash_api_key(key);
@@ -908,11 +965,14 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
         .await
         .unwrap_or_default();
 
-    tags_list.into_iter().map(|t| TagInfo {
-        id: t.id,
-        name: t.name,
-        color: t.color,
-    }).collect()
+    tags_list
+        .into_iter()
+        .map(|t| TagInfo {
+            id: t.id,
+            name: t.name,
+            color: t.color,
+        })
+        .collect()
 }
 
 // ============= Handlers =============
@@ -937,7 +997,9 @@ pub async fn create_link(
     // Validate URL first
     let validated_url = match validate_url(&payload.original_url) {
         Ok(url) => url,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
     };
 
     let user_id = get_user_id_from_header(&state.db, &headers).await;
@@ -949,12 +1011,16 @@ pub async fn create_link(
             .await
             .ok()
             .flatten();
-        
+
         if let Some(u) = user {
             if !u.email_verified {
-                return (StatusCode::FORBIDDEN, Json(ErrorResponse {
-                    error: "Please verify your email address before creating links".to_string()
-                })).into_response();
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Please verify your email address before creating links".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         }
     }
@@ -972,9 +1038,16 @@ pub async fn create_link(
                 .await
                 .unwrap_or(0);
             if existing >= cap {
-                return (StatusCode::FORBIDDEN, Json(ErrorResponse {
-                    error: format!("You have reached the maximum of {} links for this account", cap),
-                })).into_response();
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "You have reached the maximum of {} links for this account",
+                            cap
+                        ),
+                    }),
+                )
+                    .into_response();
             }
         }
     }
@@ -989,11 +1062,16 @@ pub async fn create_link(
             .count(&state.db)
             .await
             .unwrap_or(0);
-        
+
         if recent_same_url_count >= 10 {
-            return (StatusCode::TOO_MANY_REQUESTS, Json(ErrorResponse { 
-                error: "You have shortened this URL too many times. Please wait a few minutes.".to_string() 
-            })).into_response();
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: "You have shortened this URL too many times. Please wait a few minutes."
+                        .to_string(),
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -1007,18 +1085,24 @@ pub async fn create_link(
         .unwrap_or_else(|_| "true".to_string())
         .parse::<bool>()
         .unwrap_or(true);
-    
+
     let code = if let Some(alias) = payload.custom_alias {
         // Check if custom aliases are enabled
         if !custom_aliases_enabled {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Custom aliases are disabled".to_string() })).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Custom aliases are disabled".to_string(),
+                }),
+            )
+                .into_response();
         }
-        
+
         // Validate alias format and length
         if let Err(e) = validate_alias(&alias) {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
-        
+
         // Check if alias exists (active links)
         let exists_active = links::Entity::find()
             .filter(links::Column::Code.eq(&alias))
@@ -1026,11 +1110,17 @@ pub async fn create_link(
             .one(&state.db)
             .await
             .unwrap_or(None);
-        
+
         if exists_active.is_some() {
-            return (StatusCode::CONFLICT, Json(ErrorResponse { error: "Alias already taken".to_string() })).into_response();
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "Alias already taken".to_string(),
+                }),
+            )
+                .into_response();
         }
-        
+
         // An alias previously used by a now-deleted link cannot be reused: the
         // global UNIQUE on links.code still holds that code, so an insert would
         // fail. Reject explicitly with a clear message rather than 500 later.
@@ -1041,13 +1131,25 @@ pub async fn create_link(
             .await
             .unwrap_or(None);
         if exists_deleted.is_some() {
-            return (StatusCode::CONFLICT, Json(ErrorResponse { error: "This alias was previously used and cannot be reused".to_string() })).into_response();
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "This alias was previously used and cannot be reused".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         alias
     } else {
         let mut code = generate_short_code();
-        while links::Entity::find().filter(links::Column::Code.eq(&code)).one(&state.db).await.unwrap_or(None).is_some() {
+        while links::Entity::find()
+            .filter(links::Column::Code.eq(&code))
+            .one(&state.db)
+            .await
+            .unwrap_or(None)
+            .is_some()
+        {
             code = generate_short_code();
         }
         code
@@ -1056,7 +1158,10 @@ pub async fn create_link(
     let password_hash = if let Some(password) = &payload.password {
         match hash(password, DEFAULT_COST) {
             Ok(h) => Some(h),
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash password").into_response(),
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash password")
+                    .into_response()
+            }
         }
     } else {
         None
@@ -1065,7 +1170,13 @@ pub async fn create_link(
     // Validate scheduling / limit inputs.
     if let Some(max) = payload.max_clicks {
         if max <= 0 {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "max_clicks must be greater than 0".to_string() })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "max_clicks must be greater than 0".to_string(),
+                }),
+            )
+                .into_response();
         }
     }
     if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at) {
@@ -1178,7 +1289,13 @@ pub async fn create_link(
         Ok(link_res) => link_res.last_insert_id,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -1201,36 +1318,46 @@ pub async fn create_link(
     }
 
     if txn.commit().await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Database error".to_string() })).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Database error".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let tags = get_link_tags(&state.db, link_id).await;
     let base_url = get_base_url();
     let api_url = get_api_url();
-    (StatusCode::CREATED, Json(LinkResponse {
-        id: link_id,
-        code: code.clone(),
-        short_url: format!("{}/{}", base_url, code),
-        api_url: format!("{}/{}", api_url, code),
-        original_url: payload.original_url,
-        title: payload.title,
-        click_count: 0,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
-        has_password: password_hash.is_some(),
-        notes: payload.notes,
-        folder_id: payload.folder_id,
-        org_id: payload.org_id,
-        starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
-        max_clicks: effective_max_clicks,
-        burn_after_reading,
-        burned_at: None,
-        safe_link_interstitial,
-        bio_visible: false,
-        is_active: true,
-        is_pinned: false,
-        tags,
-    })).into_response()
+    (
+        StatusCode::CREATED,
+        Json(LinkResponse {
+            id: link_id,
+            code: code.clone(),
+            short_url: format!("{}/{}", base_url, code),
+            api_url: format!("{}/{}", api_url, code),
+            original_url: payload.original_url,
+            title: payload.title,
+            click_count: 0,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
+            has_password: password_hash.is_some(),
+            notes: payload.notes,
+            folder_id: payload.folder_id,
+            org_id: payload.org_id,
+            starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
+            max_clicks: effective_max_clicks,
+            burn_after_reading,
+            burned_at: None,
+            safe_link_interstitial,
+            bio_visible: false,
+            is_active: true,
+            is_pinned: false,
+            tags,
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1284,7 +1411,7 @@ pub async fn preview_link(
 ) -> impl IntoResponse {
     // Remove trailing + if present (for URL compatibility)
     let clean_code = code.trim_end_matches('+');
-    
+
     let link = links::Entity::find()
         .filter(links::Column::Code.eq(clean_code))
         .filter(links::Column::DeletedAt.is_null())
@@ -1344,26 +1471,34 @@ pub async fn preview_link(
                 (link.original_url.clone(), domain)
             };
 
-            (StatusCode::OK, Json(LinkPreviewResponse {
-                code: link.code.clone(),
-                short_url: format!("{}/{}", base_url, link.code),
-                original_url: shown_url,
-                domain: shown_domain,
-                has_password: link.password_hash.is_some(),
-                is_expired,
-                created_at: link.created_at.to_string(),
-                click_count: link.click_count,
-                reputation: ReputationInfo {
-                    verdict: verdict.to_string(),
-                    source: "internal_blocklist".to_string(),
-                },
-                interstitial_enabled,
-                safe_link_interstitial: link.safe_link_interstitial,
-            })).into_response()
+            (
+                StatusCode::OK,
+                Json(LinkPreviewResponse {
+                    code: link.code.clone(),
+                    short_url: format!("{}/{}", base_url, link.code),
+                    original_url: shown_url,
+                    domain: shown_domain,
+                    has_password: link.password_hash.is_some(),
+                    is_expired,
+                    created_at: link.created_at.to_string(),
+                    click_count: link.click_count,
+                    reputation: ReputationInfo {
+                        verdict: verdict.to_string(),
+                        source: "internal_blocklist".to_string(),
+                    },
+                    interstitial_enabled,
+                    safe_link_interstitial: link.safe_link_interstitial,
+                }),
+            )
+                .into_response()
         }
-        None => {
-            (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
-        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Link not found".to_string(),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -1505,7 +1640,7 @@ pub async fn redirect_link(
             }
         }
     }
-    
+
     // Fallback to database lookup
     let link = links::Entity::find()
         .filter(links::Column::Code.eq(&code))
@@ -1693,7 +1828,9 @@ pub async fn redirect_link(
         // retry then sees the link's new state).
         let accounting = if link.max_clicks.is_some() {
             match consume_capped_click(&state.db, link.id).await {
-                Ok(Some(new_count)) => ClickAccounting::Consumed { new_click_count: new_count },
+                Ok(Some(new_count)) => ClickAccounting::Consumed {
+                    new_click_count: new_count,
+                },
                 Ok(None) => {
                     let msg = if link.burn_after_reading {
                         "This one-time link has already been opened"
@@ -1709,7 +1846,9 @@ pub async fn redirect_link(
                 }
             }
         } else {
-            ClickAccounting::Buffered { db_click_count: link.click_count }
+            ClickAccounting::Buffered {
+                db_click_count: link.click_count,
+            }
         };
 
         if let Some(destination) = routed_destination {
@@ -1789,10 +1928,7 @@ enum ClickAccounting {
 /// `burned_at` is stamped in the same statement when this click exhausts a
 /// burn-after-reading link. Returns `Ok(Some(new_click_count))` when a slot
 /// was consumed, `Ok(None)` when the cap is already exhausted.
-async fn consume_capped_click(
-    db: &DatabaseConnection,
-    link_id: i32,
-) -> Result<Option<i32>, DbErr> {
+async fn consume_capped_click(db: &DatabaseConnection, link_id: i32) -> Result<Option<i32>, DbErr> {
     let stmt = Statement::from_sql_and_values(
         DbBackend::Postgres,
         r#"UPDATE links
@@ -1829,21 +1965,26 @@ fn record_click_buffered(
     // first-XFF token in analytics/geo either).
     let ip = crate::utils::rate_limiter::client_ip_from_headers(headers);
 
-    let user_agent = headers.get("user-agent")
+    let user_agent = headers
+        .get("user-agent")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
     // Store only the referring host, never the full URL — its path/query can
     // carry visitor PII we neither need nor want to retain.
-    let referer = headers.get("referer")
+    let referer = headers
+        .get("referer")
         .and_then(|h| h.to_str().ok())
         .and_then(crate::utils::privacy::anonymize_referer);
 
     // GeoIP lookup
     let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
-    
+
     // Parse user agent
-    let ua_info = user_agent.as_ref().map(|ua| parse_user_agent(ua)).unwrap_or_default();
+    let ua_info = user_agent
+        .as_ref()
+        .map(|ua| parse_user_agent(ua))
+        .unwrap_or_default();
 
     // Add to click buffer instead of writing directly. Only the truncated IP
     // is stored (IPv4 /24, IPv6 /48) — the full address is used above for the
@@ -2074,9 +2215,13 @@ pub async fn get_qr_code(
         } else {
             false
         };
-        
+
         if !has_access {
-            return (StatusCode::FORBIDDEN, "You don't have permission to access this link").into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                "You don't have permission to access this link",
+            )
+                .into_response();
         }
 
         let url = format!("{}/{}", get_base_url(), link.code);
@@ -2087,15 +2232,24 @@ pub async fn get_qr_code(
         let branding_enabled = std::env::var("ENABLE_QR_BRANDING")
             .map(|v| v != "false")
             .unwrap_or(true);
-        let effective = if branding_enabled { opts } else { QrOptions::default() };
+        let effective = if branding_enabled {
+            opts
+        } else {
+            QrOptions::default()
+        };
 
         match build_qr_image(&url, &effective) {
             Some((bytes, content_type)) => (
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, content_type)],
                 bytes,
-            ).into_response(),
-            None => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate QR code").into_response(),
+            )
+                .into_response(),
+            None => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate QR code",
+            )
+                .into_response(),
         }
     } else {
         (StatusCode::NOT_FOUND, "Link not found").into_response()
@@ -2152,7 +2306,11 @@ fn tinted_logo_rgba(fg: [u8; 3]) -> Option<image::RgbaImage> {
     let mut out = image::RgbaImage::new(rgba.width(), rgba.height());
     for (x, y, pixel) in rgba.enumerate_pixels() {
         let [r, g, b, a] = pixel.0;
-        let alpha = if a < 24 || (r > 232 && g > 232 && b > 232) { 0 } else { a };
+        let alpha = if a < 24 || (r > 232 && g > 232 && b > 232) {
+            0
+        } else {
+            a
+        };
         out.put_pixel(x, y, image::Rgba([fg[0], fg[1], fg[2], alpha]));
     }
     Some(out)
@@ -2160,7 +2318,9 @@ fn tinted_logo_rgba(fg: [u8; 3]) -> Option<image::RgbaImage> {
 
 /// Linear blend of `over` onto `base` by `alpha` in [0,1].
 fn blend_channel(base: u8, over: u8, alpha: f32) -> u8 {
-    (over as f32 * alpha + base as f32 * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8
+    (over as f32 * alpha + base as f32 * (1.0 - alpha))
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 /// Composite the brand mark into the center of an RGBA QR raster, on a
@@ -2196,20 +2356,20 @@ fn overlay_logo(img: &mut image::RgbaImage, bg: [u8; 3], fg: [u8; 3]) {
                 continue;
             }
             let cur = img.get_pixel(xx, yy).0;
-            img.put_pixel(xx, yy, image::Rgba([
-                blend_channel(cur[0], bg[0], coverage),
-                blend_channel(cur[1], bg[1], coverage),
-                blend_channel(cur[2], bg[2], coverage),
-                255,
-            ]));
+            img.put_pixel(
+                xx,
+                yy,
+                image::Rgba([
+                    blend_channel(cur[0], bg[0], coverage),
+                    blend_channel(cur[1], bg[1], coverage),
+                    blend_channel(cur[2], bg[2], coverage),
+                    255,
+                ]),
+            );
         }
     }
-    let resized = image::imageops::resize(
-        &logo,
-        target,
-        target,
-        image::imageops::FilterType::Lanczos3,
-    );
+    let resized =
+        image::imageops::resize(&logo, target, target, image::imageops::FilterType::Lanczos3);
     let lx = ((w - target) / 2) as i64;
     let ly = ((h - target) / 2) as i64;
     image::imageops::overlay(img, &resized, lx, ly);
@@ -2227,7 +2387,11 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
     let want_logo = opts.logo.unwrap_or(false);
     let fmt = opts.format.as_deref().unwrap_or("png").to_lowercase();
     let fg = opts.color.as_deref().and_then(parse_hex);
-    let bg = opts.bg.as_deref().and_then(parse_hex).unwrap_or([255, 255, 255]);
+    let bg = opts
+        .bg
+        .as_deref()
+        .and_then(parse_hex)
+        .unwrap_or([255, 255, 255]);
     let dark = fg.unwrap_or([0, 0, 0]);
 
     // A center logo occludes modules, so request high error-correction for it.
@@ -2252,7 +2416,9 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
             .min_dimensions(256, 256)
             .build();
         if want_logo {
-            if let (Some(uri), Some(dim)) = (qr_logo_data_uri_tinted(dark), parse_svg_width(&svg_xml)) {
+            if let (Some(uri), Some(dim)) =
+                (qr_logo_data_uri_tinted(dark), parse_svg_width(&svg_xml))
+            {
                 let logo_sz = ((dim as f32) * 0.22) as u32;
                 let pos = (dim - logo_sz) / 2;
                 let center = dim as f32 / 2.0;
@@ -2261,7 +2427,9 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
                 let plate_r = (logo_sz as f32 * 1.22) / 2.0;
                 let backplate = format!(
                     "<circle cx=\"{c}\" cy=\"{c}\" r=\"{r:.2}\" fill=\"{bg}\"/>",
-                    c = center, r = plate_r, bg = bg_hex
+                    c = center,
+                    r = plate_r,
+                    bg = bg_hex
                 );
                 let img_tag = format!(
                     "<image x=\"{x}\" y=\"{y}\" width=\"{s}\" height=\"{s}\" href=\"{href}\" preserveAspectRatio=\"xMidYMid meet\"/>",
@@ -2325,11 +2493,7 @@ mod qr_render_tests {
 
     const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G'];
 
-    fn opts(
-        color: Option<&str>,
-        logo: Option<bool>,
-        format: Option<&str>,
-    ) -> QrOptions {
+    fn opts(color: Option<&str>, logo: Option<bool>, format: Option<&str>) -> QrOptions {
         QrOptions {
             color: color.map(|s| s.to_string()),
             bg: None,
@@ -2383,34 +2547,55 @@ mod qr_render_tests {
 
     #[test]
     fn logo_overlay_does_not_panic() {
-        let (bytes, ct) =
-            build_qr_image("https://opn.onl/abc123", &opts(Some("2f37d8"), Some(true), None)).unwrap();
+        let (bytes, ct) = build_qr_image(
+            "https://opn.onl/abc123",
+            &opts(Some("2f37d8"), Some(true), None),
+        )
+        .unwrap();
         assert_eq!(ct, "image/png");
         assert!(image::load_from_memory(&bytes).is_ok());
     }
 
     #[test]
     fn logo_color_follows_foreground() {
-        let (blue, _) =
-            build_qr_image("https://opn.onl/abc123", &opts(Some("2f37d8"), Some(true), None)).unwrap();
-        let (rose, _) =
-            build_qr_image("https://opn.onl/abc123", &opts(Some("e11d48"), Some(true), None)).unwrap();
-        assert_ne!(blue, rose, "tinted logo should change with foreground color");
+        let (blue, _) = build_qr_image(
+            "https://opn.onl/abc123",
+            &opts(Some("2f37d8"), Some(true), None),
+        )
+        .unwrap();
+        let (rose, _) = build_qr_image(
+            "https://opn.onl/abc123",
+            &opts(Some("e11d48"), Some(true), None),
+        )
+        .unwrap();
+        assert_ne!(
+            blue, rose,
+            "tinted logo should change with foreground color"
+        );
     }
 
     #[test]
     fn svg_with_logo_has_backplate() {
-        let (bytes, _) =
-            build_qr_image("https://opn.onl/abc123", &opts(None, Some(true), Some("svg"))).unwrap();
+        let (bytes, _) = build_qr_image(
+            "https://opn.onl/abc123",
+            &opts(None, Some(true), Some("svg")),
+        )
+        .unwrap();
         let s = String::from_utf8(bytes).unwrap();
         // The logo must sit on a circular backplate, not bare on the modules.
-        assert!(s.contains("<circle"), "branded SVG should draw a backplate circle");
+        assert!(
+            s.contains("<circle"),
+            "branded SVG should draw a backplate circle"
+        );
     }
 
     #[test]
     fn svg_with_logo_embeds_image() {
-        let (bytes, _) =
-            build_qr_image("https://opn.onl/abc123", &opts(None, Some(true), Some("svg"))).unwrap();
+        let (bytes, _) = build_qr_image(
+            "https://opn.onl/abc123",
+            &opts(None, Some(true), Some("svg")),
+        )
+        .unwrap();
         let s = String::from_utf8(bytes).unwrap();
         // Logo asset is embedded, so the branded SVG should carry a data URI.
         assert!(s.contains("<image") && s.contains("data:image/png;base64,"));
@@ -2433,9 +2618,16 @@ mod api_key_tests {
     fn hash_is_deterministic_distinct_and_opaque() {
         let a = hash_api_key("opn_abc123");
         assert_eq!(a, hash_api_key("opn_abc123"), "same key → same hash");
-        assert_ne!(a, hash_api_key("opn_different"), "different keys → different hashes");
+        assert_ne!(
+            a,
+            hash_api_key("opn_different"),
+            "different keys → different hashes"
+        );
         assert_eq!(a.len(), 44, "sha256 base64 is 44 chars");
-        assert!(!a.contains("opn_abc123"), "hash must not contain the raw key");
+        assert!(
+            !a.contains("opn_abc123"),
+            "hash must not contain the raw key"
+        );
     }
 }
 
@@ -2500,13 +2692,15 @@ mod ssrf_tests {
             "http://169.254.169.254/latest/meta-data/", // cloud metadata
             "http://10.0.0.5/",
             "http://192.168.1.1/",
-            "http://100.64.0.1/",  // CGNAT
-            "http://[::1]/",       // IPv6 loopback
-            "http://[fd00::1]/",   // IPv6 ULA
+            "http://100.64.0.1/", // CGNAT
+            "http://[::1]/",      // IPv6 loopback
+            "http://[fd00::1]/",  // IPv6 ULA
             "http://0.0.0.0/",
             "http://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
         ] {
-            let err = resolve_and_validate(url).await.expect_err(&format!("{url} must be refused"));
+            let err = resolve_and_validate(url)
+                .await
+                .expect_err(&format!("{url} must be refused"));
             assert!(
                 err.contains("disallowed") || err.contains("resolve"),
                 "unexpected error for {url}: {err}"
@@ -2538,7 +2732,10 @@ mod ssrf_tests {
             .await
             .expect("public literal IP should pass");
         assert!(target.is_literal_ip);
-        assert_eq!(target.addrs, vec!["93.184.216.34:80".parse::<SocketAddr>().unwrap()]);
+        assert_eq!(
+            target.addrs,
+            vec!["93.184.216.34:80".parse::<SocketAddr>().unwrap()]
+        );
     }
 
     /// Positive path against a real external HTTPS host: pinning must not break
@@ -2594,7 +2791,11 @@ mod ssrf_tests {
             "image/",
             "img/png",
         ] {
-            assert_eq!(classify(bad), None, "{bad:?} must not be served as an avatar");
+            assert_eq!(
+                classify(bad),
+                None,
+                "{bad:?} must not be served as an avatar"
+            );
         }
     }
 }
@@ -2636,11 +2837,7 @@ pub struct RoutingRulesSavedResponse {
 const MAX_ROUTING_RULES: usize = 20;
 
 /// Return the link if `user_id` owns it directly or via its organization.
-async fn link_for_owner(
-    db: &DatabaseConnection,
-    id: i32,
-    user_id: i32,
-) -> Option<links::Model> {
+async fn link_for_owner(db: &DatabaseConnection, id: i32, user_id: i32) -> Option<links::Model> {
     let link = links::Entity::find_by_id(id)
         .filter(links::Column::DeletedAt.is_null())
         .one(db)
@@ -2678,7 +2875,11 @@ pub async fn get_routing_rules(
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
     if link_for_owner(&state.db, id, user_id).await.is_none() {
-        return (StatusCode::FORBIDDEN, "You don't have permission to access this link").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "You don't have permission to access this link",
+        )
+            .into_response();
     }
     let rules = crate::entity::routing_rules::Entity::find()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
@@ -2716,7 +2917,11 @@ pub async fn replace_routing_rules(
     let link = match link_for_owner(&state.db, id, user_id).await {
         Some(l) => l,
         None => {
-            return (StatusCode::FORBIDDEN, "You don't have permission to modify this link").into_response()
+            return (
+                StatusCode::FORBIDDEN,
+                "You don't have permission to modify this link",
+            )
+                .into_response()
         }
     };
 
@@ -2728,14 +2933,21 @@ pub async fn replace_routing_rules(
         if link.user_id != Some(user_id)
             && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
         {
-            return (StatusCode::FORBIDDEN, "You don't have permission to modify this link").into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                "You don't have permission to modify this link",
+            )
+                .into_response();
         }
     }
 
     if payload.rules.len() > MAX_ROUTING_RULES {
         return (
             StatusCode::BAD_REQUEST,
-            format!("A link can have at most {} routing rules", MAX_ROUTING_RULES),
+            format!(
+                "A link can have at most {} routing rules",
+                MAX_ROUTING_RULES
+            ),
         )
             .into_response();
     }
@@ -2748,7 +2960,11 @@ pub async fn replace_routing_rules(
             Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
         };
         if check_blocked(&state.db, &url).await.is_err() {
-            return (StatusCode::BAD_REQUEST, "A destination URL is blocked".to_string()).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                "A destination URL is blocked".to_string(),
+            )
+                .into_response();
         }
         validated.push((url, rule));
     }
@@ -2826,7 +3042,15 @@ pub async fn get_user_links(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let mut link_query = links::Entity::find()
@@ -2849,7 +3073,7 @@ pub async fn get_user_links(
             Condition::any()
                 .add(links::Column::OriginalUrl.contains(&search))
                 .add(links::Column::Code.contains(&search))
-                .add(links::Column::Notes.contains(&search))
+                .add(links::Column::Notes.contains(&search)),
         );
     }
 
@@ -2940,21 +3164,42 @@ pub async fn delete_link(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let link = links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
 
     if let Some(link) = link {
         if link.user_id != Some(user_id) {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "You don't have permission to delete this link".to_string() })).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "You don't have permission to delete this link".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         if link.deleted_at.is_some() {
-            return (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Link not found".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Soft delete - set deleted_at timestamp instead of actually deleting
@@ -3026,17 +3271,32 @@ pub async fn update_link(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let link = links::Entity::find_by_id(id)
+        .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
         .unwrap_or(None);
 
     if let Some(link) = link {
         if link.user_id != Some(user_id) {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "You don't have permission to update this link".to_string() })).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "You don't have permission to update this link".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         let mut active_link: links::ActiveModel = link.clone().into();
@@ -3047,23 +3307,39 @@ pub async fn update_link(
         if payload.remove_max_clicks != Some(true) {
             if let Some(mc) = payload.max_clicks {
                 if mc <= 0 {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "max_clicks must be greater than 0".to_string() })).into_response();
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "max_clicks must be greater than 0".to_string(),
+                        }),
+                    )
+                        .into_response();
                 }
             }
         }
         let eff_starts: Option<DateTime<Utc>> = if payload.remove_starts_at == Some(true) {
             None
         } else {
-            payload.starts_at.or_else(|| link.starts_at.map(|d| d.and_utc()))
+            payload
+                .starts_at
+                .or_else(|| link.starts_at.map(|d| d.and_utc()))
         };
         let eff_expires: Option<DateTime<Utc>> = if payload.remove_expiration == Some(true) {
             None
         } else {
-            payload.expires_at.or_else(|| link.expires_at.map(|d| d.and_utc()))
+            payload
+                .expires_at
+                .or_else(|| link.expires_at.map(|d| d.and_utc()))
         };
         if let (Some(s), Some(e)) = (eff_starts, eff_expires) {
             if s >= e {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "starts_at must be before expires_at".to_string() })).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "starts_at must be before expires_at".to_string(),
+                    }),
+                )
+                    .into_response();
             }
         }
 
@@ -3071,7 +3347,10 @@ pub async fn update_link(
             // Validate URL format and sanitize
             let validated_url = match validate_url(url) {
                 Ok(u) => u,
-                Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+                Err(e) => {
+                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
+                        .into_response()
+                }
             };
             // Check if new URL is blocked
             if let Err(e) = check_blocked(&state.db, &validated_url).await {
@@ -3091,7 +3370,15 @@ pub async fn update_link(
         } else if let Some(password) = payload.password {
             match hash(password, DEFAULT_COST) {
                 Ok(h) => active_link.password_hash = Set(Some(h)),
-                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to hash password".to_string() })).into_response(),
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to hash password".to_string(),
+                        }),
+                    )
+                        .into_response()
+                }
             }
         }
 
@@ -3302,18 +3589,26 @@ pub async fn bulk_create_links(
     // but a 500-URLs-per-request batch reachable without an account is a
     // rate-limit amplification vector (one create token buys hundreds of links).
     if user_id.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(BulkCreateLinkResponse {
-            links: vec![],
-            errors: vec!["Authentication required for bulk link creation".to_string()],
-        })).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(BulkCreateLinkResponse {
+                links: vec![],
+                errors: vec!["Authentication required for bulk link creation".to_string()],
+            }),
+        )
+            .into_response();
     }
 
     // Cap batch size to avoid unbounded per-item work / DoS.
     if payload.urls.len() > 500 {
-        return (StatusCode::BAD_REQUEST, Json(BulkCreateLinkResponse {
-            links: vec![],
-            errors: vec!["Too many URLs in one request (max 500)".to_string()],
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(BulkCreateLinkResponse {
+                links: vec![],
+                errors: vec!["Too many URLs in one request (max 500)".to_string()],
+            }),
+        )
+            .into_response();
     }
 
     // Check email verification for authenticated users
@@ -3326,10 +3621,16 @@ pub async fn bulk_create_links(
 
         if let Some(u) = user {
             if !u.email_verified {
-                return (StatusCode::FORBIDDEN, Json(BulkCreateLinkResponse {
-                    links: vec![], 
-                    errors: vec!["Please verify your email address before creating links".to_string()] 
-                })).into_response();
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(BulkCreateLinkResponse {
+                        links: vec![],
+                        errors: vec![
+                            "Please verify your email address before creating links".to_string()
+                        ],
+                    }),
+                )
+                    .into_response();
             }
         }
     }
@@ -3360,10 +3661,17 @@ pub async fn bulk_create_links(
         // Charge the per-IP create budget per link. A bulk request is not a
         // discount: once the hourly create budget is spent, the remaining URLs
         // are reported as rate-limited instead of silently amplifying past it.
-        if let crate::utils::rate_limiter::RateLimitResult::Limited { retry_after_secs, .. } =
-            state.rate_limiters.link_creation.check(&format!("create:{}", ip))
+        if let crate::utils::rate_limiter::RateLimitResult::Limited {
+            retry_after_secs, ..
+        } = state
+            .rate_limiters
+            .link_creation
+            .check(&format!("create:{}", ip))
         {
-            errors.push(format!("{}: rate limit reached, try again in {}s", url, retry_after_secs));
+            errors.push(format!(
+                "{}: rate limit reached, try again in {}s",
+                url, retry_after_secs
+            ));
             continue;
         }
 
@@ -3432,17 +3740,20 @@ pub async fn bulk_create_links(
             ..Default::default()
         };
 
-        match links::Entity::insert(link).exec(&state.db).await {
-            Ok(link_res) => {
-                result_links.push(CreateLinkResponse {
-                    id: link_res.last_insert_id,
-                    code: code.clone(),
-                    short_url: format!("{}/{}", base_url, code),
-                });
-                if let Some(b) = remaining_budget.as_mut() {
-                    *b = b.saturating_sub(1);
+        match links::Entity::insert(link).exec(&txn).await {
+            Ok(link_res) => match txn.commit().await {
+                Ok(()) => {
+                    result_links.push(CreateLinkResponse {
+                        id: link_res.last_insert_id,
+                        code: code.clone(),
+                        short_url: format!("{}/{}", base_url, code),
+                    });
+                    if let Some(b) = remaining_budget.as_mut() {
+                        *b = b.saturating_sub(1);
+                    }
                 }
-            }
+                Err(e) => errors.push(format!("Failed to shorten {}: {}", url, e)),
+            },
             Err(e) => {
                 let _ = txn.rollback().await;
                 errors.push(format!("Failed to shorten {}: {}", url, e));
@@ -3450,7 +3761,14 @@ pub async fn bulk_create_links(
         }
     }
 
-    (StatusCode::OK, Json(BulkCreateLinkResponse { links: result_links, errors })).into_response()
+    (
+        StatusCode::OK,
+        Json(BulkCreateLinkResponse {
+            links: result_links,
+            errors,
+        }),
+    )
+        .into_response()
 }
 
 /// Bulk delete links
@@ -3471,11 +3789,25 @@ pub async fn bulk_delete_links(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     if payload.ids.len() > 500 {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Too many items in one request (max 500)".to_string() })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Too many items in one request (max 500)".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let mut deleted = 0u64;
@@ -3539,11 +3871,25 @@ pub async fn bulk_update_links(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     if payload.ids.len() > 500 {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Too many items in one request (max 500)".to_string() })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Too many items in one request (max 500)".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let mut updated = 0u64;
@@ -3669,12 +4015,22 @@ pub async fn export_links_csv(
             csv_field(&format!("{}/{}", base_url, link.code)),
             link.click_count,
             csv_field(&link.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
-            csv_field(&link.expires_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()),
+            csv_field(
+                &link
+                    .expires_at
+                    .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default()
+            ),
             link.password_hash.is_some(),
             csv_field(&link.notes.clone().unwrap_or_default()),
             link.folder_id.map(|f| f.to_string()).unwrap_or_default(),
             link.max_clicks.map(|m| m.to_string()).unwrap_or_default(),
-            csv_field(&link.starts_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()),
+            csv_field(
+                &link
+                    .starts_at
+                    .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default()
+            ),
         ));
     }
 
@@ -3682,10 +4038,14 @@ pub async fn export_links_csv(
         StatusCode::OK,
         [
             (axum::http::header::CONTENT_TYPE, "text/csv"),
-            (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"links.csv\""),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"links.csv\"",
+            ),
         ],
         csv_content,
-   ).into_response()
+    )
+        .into_response()
 }
 
 // ============= New Feature: Clone Link =============
@@ -3721,7 +4081,15 @@ pub async fn clone_link(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let link = links::Entity::find_by_id(id)
@@ -3733,12 +4101,24 @@ pub async fn clone_link(
     if let Some(link) = link {
         // Verify ownership
         if link.user_id != Some(user_id) {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "You don't have permission to clone this link".to_string() })).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "You don't have permission to clone this link".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Generate new short code
         let mut code = generate_short_code();
-        while links::Entity::find().filter(links::Column::Code.eq(&code)).one(&state.db).await.unwrap_or(None).is_some() {
+        while links::Entity::find()
+            .filter(links::Column::Code.eq(&code))
+            .one(&state.db)
+            .await
+            .unwrap_or(None)
+            .is_some()
+        {
             code = generate_short_code();
         }
 
@@ -3778,18 +4158,34 @@ pub async fn clone_link(
                 }
 
                 let base_url = get_base_url();
-                (StatusCode::CREATED, Json(CloneLinkResponse {
-                    id: res.last_insert_id,
-                    code: code.clone(),
-                    short_url: format!("{}/{}", base_url, code),
-                    original_url: link.original_url,
-                    message: "Link cloned successfully".to_string(),
-                })).into_response()
+                (
+                    StatusCode::CREATED,
+                    Json(CloneLinkResponse {
+                        id: res.last_insert_id,
+                        code: code.clone(),
+                        short_url: format!("{}/{}", base_url, code),
+                        original_url: link.original_url,
+                        message: "Link cloned successfully".to_string(),
+                    }),
+                )
+                    .into_response()
             }
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to clone link".to_string() })).into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to clone link".to_string(),
+                }),
+            )
+                .into_response(),
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Link not found".to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -3823,7 +4219,15 @@ pub async fn toggle_pin(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Unauthorized".to_string() })).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let link = links::Entity::find_by_id(id)
@@ -3834,7 +4238,13 @@ pub async fn toggle_pin(
 
     if let Some(link) = link {
         if link.user_id != Some(user_id) {
-            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: "You don't have permission to pin this link".to_string() })).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "You don't have permission to pin this link".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         let new_pin_status = !link.is_pinned;
@@ -3842,14 +4252,34 @@ pub async fn toggle_pin(
         active_link.is_pinned = Set(new_pin_status);
 
         match active_link.update(&state.db).await {
-            Ok(_) => (StatusCode::OK, Json(PinResponse {
-                is_pinned: new_pin_status,
-                message: if new_pin_status { "Link pinned".to_string() } else { "Link unpinned".to_string() },
-            })).into_response(),
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update pin status".to_string() })).into_response(),
+            Ok(_) => (
+                StatusCode::OK,
+                Json(PinResponse {
+                    is_pinned: new_pin_status,
+                    message: if new_pin_status {
+                        "Link pinned".to_string()
+                    } else {
+                        "Link unpinned".to_string()
+                    },
+                }),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to update pin status".to_string(),
+                }),
+            )
+                .into_response(),
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Link not found".to_string() })).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Link not found".to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -3882,14 +4312,18 @@ pub async fn check_code_availability(
     Query(query): Query<CheckCodeQuery>,
 ) -> impl IntoResponse {
     let code = query.code.trim();
-    
+
     // Validate alias format
     if let Err(e) = validate_alias(code) {
-        return (StatusCode::OK, Json(CheckCodeResponse {
-            available: false,
-            code: code.to_string(),
-            message: e,
-        })).into_response();
+        return (
+            StatusCode::OK,
+            Json(CheckCodeResponse {
+                available: false,
+                code: code.to_string(),
+                message: e,
+            }),
+        )
+            .into_response();
     }
 
     // Consider deleted links too: their code is still held by the global UNIQUE
@@ -3902,17 +4336,25 @@ pub async fn check_code_availability(
         .is_some();
 
     if exists {
-        (StatusCode::OK, Json(CheckCodeResponse {
-            available: false,
-            code: code.to_string(),
-            message: "This alias is already taken".to_string(),
-        })).into_response()
+        (
+            StatusCode::OK,
+            Json(CheckCodeResponse {
+                available: false,
+                code: code.to_string(),
+                message: "This alias is already taken".to_string(),
+            }),
+        )
+            .into_response()
     } else {
-        (StatusCode::OK, Json(CheckCodeResponse {
-            available: true,
-            code: code.to_string(),
-            message: "This alias is available".to_string(),
-        })).into_response()
+        (
+            StatusCode::OK,
+            Json(CheckCodeResponse {
+                available: true,
+                code: code.to_string(),
+                message: "This alias is available".to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -3950,24 +4392,32 @@ pub async fn check_url_health(
 ) -> impl IntoResponse {
     // Require authentication: this performs a server-side fetch of a user-supplied URL.
     if get_user_id_from_header(&state.db, &headers).await.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(UrlHealthResponse {
-            url: payload.url,
-            reachable: false,
-            status_code: None,
-            response_time_ms: None,
-            error: Some("Unauthorized".to_string()),
-        })).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(UrlHealthResponse {
+                url: payload.url,
+                reachable: false,
+                status_code: None,
+                response_time_ms: None,
+                error: Some("Unauthorized".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     // Validate URL first
     if validate_url(&payload.url).is_err() {
-        return (StatusCode::BAD_REQUEST, Json(UrlHealthResponse {
-            url: payload.url,
-            reachable: false,
-            status_code: None,
-            response_time_ms: None,
-            error: Some("Invalid URL format".to_string()),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(UrlHealthResponse {
+                url: payload.url,
+                reachable: false,
+                status_code: None,
+                response_time_ms: None,
+                error: Some("Invalid URL format".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     let start = std::time::Instant::now();
@@ -3978,28 +4428,38 @@ pub async fn check_url_health(
         Ok(response) => {
             let elapsed = start.elapsed().as_millis() as u64;
             let status = response.status().as_u16();
-            
-            (StatusCode::OK, Json(UrlHealthResponse {
-                url: payload.url,
-                reachable: response.status().is_success() || response.status().is_redirection(),
-                status_code: Some(status),
-                response_time_ms: Some(elapsed),
-                error: if response.status().is_client_error() || response.status().is_server_error() {
-                    Some(format!("HTTP {}", status))
-                } else {
-                    None
-                },
-            })).into_response()
+
+            (
+                StatusCode::OK,
+                Json(UrlHealthResponse {
+                    url: payload.url,
+                    reachable: response.status().is_success() || response.status().is_redirection(),
+                    status_code: Some(status),
+                    response_time_ms: Some(elapsed),
+                    error: if response.status().is_client_error()
+                        || response.status().is_server_error()
+                    {
+                        Some(format!("HTTP {}", status))
+                    } else {
+                        None
+                    },
+                }),
+            )
+                .into_response()
         }
         Err(e) => {
             let elapsed = start.elapsed().as_millis() as u64;
-            (StatusCode::OK, Json(UrlHealthResponse {
-                url: payload.url,
-                reachable: false,
-                status_code: None,
-                response_time_ms: Some(elapsed),
-                error: Some(e.to_string()),
-            })).into_response()
+            (
+                StatusCode::OK,
+                Json(UrlHealthResponse {
+                    url: payload.url,
+                    reachable: false,
+                    status_code: None,
+                    response_time_ms: Some(elapsed),
+                    error: Some(e.to_string()),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -4034,14 +4494,18 @@ pub struct BuildUtmResponse {
     ),
     tag = "Links"
 )]
-pub async fn build_utm_url(
-    Json(payload): Json<BuildUtmRequest>,
-) -> impl IntoResponse {
+pub async fn build_utm_url(Json(payload): Json<BuildUtmRequest>) -> impl IntoResponse {
     // Parse the original URL
     let mut parsed = match url::Url::parse(&payload.url) {
         Ok(u) => u,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid URL format".to_string() })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Invalid URL format".to_string(),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -4050,7 +4514,7 @@ pub async fn build_utm_url(
     // Add UTM parameters
     {
         let mut query_pairs = parsed.query_pairs_mut();
-        
+
         if let Some(ref source) = payload.utm_source {
             if !source.is_empty() {
                 query_pairs.append_pair("utm_source", source);
@@ -4083,11 +4547,15 @@ pub async fn build_utm_url(
         }
     }
 
-    (StatusCode::OK, Json(BuildUtmResponse {
-        original_url: payload.url,
-        url_with_utm: parsed.to_string(),
-        utm_params,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(BuildUtmResponse {
+            original_url: payload.url,
+            url_with_utm: parsed.to_string(),
+            utm_params,
+        }),
+    )
+        .into_response()
 }
 
 // ============= New Feature: Sparkline Data =============
@@ -4095,8 +4563,8 @@ pub async fn build_utm_url(
 #[derive(Serialize, ToSchema)]
 pub struct SparklineData {
     pub link_id: i32,
-    pub data: Vec<i64>,  // Click counts for each day
-    pub labels: Vec<String>,  // Date labels
+    pub data: Vec<i64>,      // Click counts for each day
+    pub labels: Vec<String>, // Date labels
     pub total: i64,
 }
 
@@ -4125,7 +4593,13 @@ pub async fn get_sparklines(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response()
+        }
     };
 
     // Parse link IDs
@@ -4136,7 +4610,11 @@ pub async fn get_sparklines(
         .collect();
 
     if link_ids.is_empty() {
-        return (StatusCode::OK, Json(SparklineResponse { sparklines: vec![] })).into_response();
+        return (
+            StatusCode::OK,
+            Json(SparklineResponse { sparklines: vec![] }),
+        )
+            .into_response();
     }
 
     // Verify user owns these links
@@ -4171,11 +4649,11 @@ pub async fn get_sparklines(
 
     // Group clicks by link and day
     let mut sparklines: Vec<SparklineData> = Vec::new();
-    
+
     for link_id in owned_ids {
         let mut daily_counts: Vec<i64> = vec![0; 7];
         let mut total: i64 = 0;
-        
+
         for event in &events {
             if event.link_id == link_id {
                 let duration = now.signed_duration_since(event.created_at);
@@ -4187,7 +4665,7 @@ pub async fn get_sparklines(
                 }
             }
         }
-        
+
         sparklines.push(SparklineData {
             link_id,
             data: daily_counts,
@@ -4237,7 +4715,12 @@ pub struct AvatarProxyQuery {
 /// CSP so even a mislabeled body cannot execute.
 fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
     // Strip any `; charset=…` parameter and normalize case/whitespace.
-    let base = raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let base = raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     match base.as_str() {
         "image/png" => Some("image/png"),
         "image/jpeg" | "image/jpg" => Some("image/jpeg"),
@@ -4278,7 +4761,11 @@ pub async fn proxy_bio_avatar(
     // Only inert raster images pass, and we serve a fixed canonical type — never
     // the upstream header, and never SVG (which can execute script).
     let Some(safe_content_type) = canonical_avatar_content_type(raw_content_type) else {
-        return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Avatar is not a supported image type").into_response();
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Avatar is not a supported image type",
+        )
+            .into_response();
     };
 
     use futures_util::StreamExt;
@@ -4304,7 +4791,10 @@ pub async fn proxy_bio_avatar(
             // Defense in depth: never sniff the body past the declared type, and
             // forbid any active content from executing even if one slips through.
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox".to_string()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox".to_string(),
+            ),
             (header::CONTENT_DISPOSITION, "inline".to_string()),
         ],
         buf,
@@ -4330,17 +4820,31 @@ pub async fn get_link_preview_metadata(
 ) -> impl IntoResponse {
     // Require authentication: this performs a server-side fetch of a user-supplied URL.
     if get_user_id_from_header(&state.db, &headers).await.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        )
+            .into_response();
     }
 
     // Validate URL
     let parsed = match url::Url::parse(&payload.url) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid URL"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid URL"})),
+            )
+                .into_response()
+        }
     };
 
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Only HTTP/HTTPS URLs supported"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Only HTTP/HTTPS URLs supported"})),
+        )
+            .into_response();
     }
 
     // SSRF-guarded GET: the host and every redirect hop are validated against
@@ -4349,27 +4853,39 @@ pub async fn get_link_preview_metadata(
         reqwest::Method::GET,
         &payload.url,
         Some("Mozilla/5.0 (compatible; OPN.ONL LinkPreview/1.0)"),
-    ).await {
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(_) => return (StatusCode::OK, Json(LinkPreviewData {
-            url: payload.url.clone(),
-            title: None,
-            description: None,
-            image: None,
-            site_name: None,
-            favicon: None,
-        })).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json(LinkPreviewData {
+                    url: payload.url.clone(),
+                    title: None,
+                    description: None,
+                    image: None,
+                    site_name: None,
+                    favicon: None,
+                }),
+            )
+                .into_response()
+        }
     };
 
     if !response.status().is_success() {
-        return (StatusCode::OK, Json(LinkPreviewData {
-            url: payload.url.clone(),
-            title: None,
-            description: None,
-            image: None,
-            site_name: None,
-            favicon: None,
-        })).into_response();
+        return (
+            StatusCode::OK,
+            Json(LinkPreviewData {
+                url: payload.url.clone(),
+                title: None,
+                description: None,
+                image: None,
+                site_name: None,
+                favicon: None,
+            }),
+        )
+            .into_response();
     }
 
     // Read at most 512 KiB of the body to bound memory (avoids preview-fetch DoS).
@@ -4391,75 +4907,98 @@ pub async fn get_link_preview_metadata(
     }
     let html = String::from_utf8_lossy(&buf).to_string();
 
-            // Parse OG tags and meta tags
-            let title = extract_meta_content(&html, "og:title")
-                .or_else(|| extract_meta_content(&html, "twitter:title"))
-                .or_else(|| extract_title_tag(&html));
-            
-            let description = extract_meta_content(&html, "og:description")
-                .or_else(|| extract_meta_content(&html, "twitter:description"))
-                .or_else(|| extract_meta_content(&html, "description"));
-            
-            let image = extract_meta_content(&html, "og:image")
-                .or_else(|| extract_meta_content(&html, "twitter:image"))
-                .map(|img| resolve_url(&payload.url, &img));
-            
-            let site_name = extract_meta_content(&html, "og:site_name");
-            
-            let favicon = extract_favicon(&html)
-                .map(|fav| resolve_url(&payload.url, &fav))
-                .or_else(|| Some(format!("{}://{}/favicon.ico", parsed.scheme(), parsed.host_str().unwrap_or(""))));
+    // Parse OG tags and meta tags
+    let title = extract_meta_content(&html, "og:title")
+        .or_else(|| extract_meta_content(&html, "twitter:title"))
+        .or_else(|| extract_title_tag(&html));
 
-    (StatusCode::OK, Json(LinkPreviewData {
-        url: payload.url,
-        title,
-        description,
-        image,
-        site_name,
-        favicon,
-    })).into_response()
+    let description = extract_meta_content(&html, "og:description")
+        .or_else(|| extract_meta_content(&html, "twitter:description"))
+        .or_else(|| extract_meta_content(&html, "description"));
+
+    let image = extract_meta_content(&html, "og:image")
+        .or_else(|| extract_meta_content(&html, "twitter:image"))
+        .map(|img| resolve_url(&payload.url, &img));
+
+    let site_name = extract_meta_content(&html, "og:site_name");
+
+    let favicon = extract_favicon(&html)
+        .map(|fav| resolve_url(&payload.url, &fav))
+        .or_else(|| {
+            Some(format!(
+                "{}://{}/favicon.ico",
+                parsed.scheme(),
+                parsed.host_str().unwrap_or("")
+            ))
+        });
+
+    (
+        StatusCode::OK,
+        Json(LinkPreviewData {
+            url: payload.url,
+            title,
+            description,
+            image,
+            site_name,
+            favicon,
+        }),
+    )
+        .into_response()
 }
 
 // Helper functions for HTML parsing
 fn extract_meta_content(html: &str, property: &str) -> Option<String> {
     // Try property attribute (og: tags)
-    let property_pattern = format!(r#"<meta[^>]*property=["']{}["'][^>]*content=["']([^"']+)["']"#, regex::escape(property));
+    let property_pattern = format!(
+        r#"<meta[^>]*property=["']{}["'][^>]*content=["']([^"']+)["']"#,
+        regex::escape(property)
+    );
     if let Ok(re) = regex::Regex::new(&property_pattern) {
         if let Some(caps) = re.captures(html) {
             return caps.get(1).map(|m| html_decode(m.as_str()));
         }
     }
-    
+
     // Try content before property
-    let property_pattern2 = format!(r#"<meta[^>]*content=["']([^"']+)["'][^>]*property=["']{}["']"#, regex::escape(property));
+    let property_pattern2 = format!(
+        r#"<meta[^>]*content=["']([^"']+)["'][^>]*property=["']{}["']"#,
+        regex::escape(property)
+    );
     if let Ok(re) = regex::Regex::new(&property_pattern2) {
         if let Some(caps) = re.captures(html) {
             return caps.get(1).map(|m| html_decode(m.as_str()));
         }
     }
-    
+
     // Try name attribute (description, etc.)
-    let name_pattern = format!(r#"<meta[^>]*name=["']{}["'][^>]*content=["']([^"']+)["']"#, regex::escape(property));
+    let name_pattern = format!(
+        r#"<meta[^>]*name=["']{}["'][^>]*content=["']([^"']+)["']"#,
+        regex::escape(property)
+    );
     if let Ok(re) = regex::Regex::new(&name_pattern) {
         if let Some(caps) = re.captures(html) {
             return caps.get(1).map(|m| html_decode(m.as_str()));
         }
     }
-    
+
     // Try content before name
-    let name_pattern2 = format!(r#"<meta[^>]*content=["']([^"']+)["'][^>]*name=["']{}["']"#, regex::escape(property));
+    let name_pattern2 = format!(
+        r#"<meta[^>]*content=["']([^"']+)["'][^>]*name=["']{}["']"#,
+        regex::escape(property)
+    );
     if let Ok(re) = regex::Regex::new(&name_pattern2) {
         if let Some(caps) = re.captures(html) {
             return caps.get(1).map(|m| html_decode(m.as_str()));
         }
     }
-    
+
     None
 }
 
 fn extract_title_tag(html: &str) -> Option<String> {
     let re = regex::Regex::new(r"<title[^>]*>([^<]+)</title>").ok()?;
-    re.captures(html).and_then(|caps| caps.get(1).map(|m| html_decode(m.as_str().trim())))
+    re.captures(html)
+        .and_then(|caps| caps.get(1).map(|m| html_decode(m.as_str().trim())))
 }
 
 fn extract_favicon(html: &str) -> Option<String> {
@@ -4469,7 +5008,7 @@ fn extract_favicon(html: &str) -> Option<String> {
         r#"<link[^>]*href=["']([^"']+)["'][^>]*rel=["'](?:shortcut )?icon["']"#,
         r#"<link[^>]*rel=["']apple-touch-icon["'][^>]*href=["']([^"']+)["']"#,
     ];
-    
+
     for pattern in patterns {
         if let Ok(re) = regex::Regex::new(pattern) {
             if let Some(caps) = re.captures(html) {
@@ -4484,13 +5023,13 @@ fn resolve_url(base: &str, relative: &str) -> String {
     if relative.starts_with("http://") || relative.starts_with("https://") {
         return relative.to_string();
     }
-    
+
     if let Ok(base_url) = url::Url::parse(base) {
         if let Ok(resolved) = base_url.join(relative) {
             return resolved.to_string();
         }
     }
-    
+
     relative.to_string()
 }
 

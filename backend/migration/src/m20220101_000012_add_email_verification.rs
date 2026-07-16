@@ -11,12 +11,30 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(Users::Table)
-                    .add_column(ColumnDef::new(Users::EmailVerified).boolean().not_null().default(false))
+                    .add_column(
+                        ColumnDef::new(Users::EmailVerified)
+                            .boolean()
+                            .not_null()
+                            .default(false),
+                    )
                     .add_column(ColumnDef::new(Users::VerificationToken).string().null())
-                    .add_column(ColumnDef::new(Users::VerificationTokenExpires).timestamp().null())
+                    .add_column(
+                        ColumnDef::new(Users::VerificationTokenExpires)
+                            .timestamp()
+                            .null(),
+                    )
                     .add_column(ColumnDef::new(Users::PasswordResetToken).string().null())
-                    .add_column(ColumnDef::new(Users::PasswordResetExpires).timestamp().null())
-                    .add_column(ColumnDef::new(Users::IsAdmin).boolean().not_null().default(false))
+                    .add_column(
+                        ColumnDef::new(Users::PasswordResetExpires)
+                            .timestamp()
+                            .null(),
+                    )
+                    .add_column(
+                        ColumnDef::new(Users::IsAdmin)
+                            .boolean()
+                            .not_null()
+                            .default(false),
+                    )
                     .add_column(ColumnDef::new(Users::DeletedAt).timestamp().null())
                     .to_owned(),
             )
@@ -81,8 +99,3 @@ enum Links {
     Table,
     DeletedAt,
 }
-
-
-
-
-

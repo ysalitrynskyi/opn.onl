@@ -25,7 +25,11 @@ async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) 
 
 async fn make_admin(db: &DatabaseConnection, user_id: i32) {
     use opn_onl_backend::entity::users;
-    let user = users::Entity::find_by_id(user_id).one(db).await.unwrap().unwrap();
+    let user = users::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap();
     let mut a: users::ActiveModel = user.into();
     a.is_admin = Set(true);
     a.update(db).await.unwrap();
@@ -61,10 +65,36 @@ async fn blocked_domain_matches_host_and_subdomains_only() {
     assert_eq!(res.status_code(), 201, "block domain: {}", res.text());
 
     // Exact host and any subdomain are blocked (403 on create).
-    assert_eq!(create_status(&server, &user_token, &format!("https://{blocked}/x")).await, 403, "exact host must be blocked");
-    assert_eq!(create_status(&server, &user_token, &format!("https://deep.sub.{blocked}/y")).await, 403, "subdomain must be blocked");
+    assert_eq!(
+        create_status(&server, &user_token, &format!("https://{blocked}/x")).await,
+        403,
+        "exact host must be blocked"
+    );
+    assert_eq!(
+        create_status(
+            &server,
+            &user_token,
+            &format!("https://deep.sub.{blocked}/y")
+        )
+        .await,
+        403,
+        "subdomain must be blocked"
+    );
 
     // Lookalikes that are NOT the host or a parent domain are allowed (201).
-    assert_eq!(create_status(&server, &user_token, &format!("https://not{blocked}/z")).await, 201, "lookalike host must be allowed");
-    assert_eq!(create_status(&server, &user_token, &format!("https://evil-{suffix}.org/w")).await, 201, "different TLD must be allowed");
+    assert_eq!(
+        create_status(&server, &user_token, &format!("https://not{blocked}/z")).await,
+        201,
+        "lookalike host must be allowed"
+    );
+    assert_eq!(
+        create_status(
+            &server,
+            &user_token,
+            &format!("https://evil-{suffix}.org/w")
+        )
+        .await,
+        201,
+        "different TLD must be allowed"
+    );
 }

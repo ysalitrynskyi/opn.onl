@@ -7,7 +7,7 @@ pub struct Migration;
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // Add new columns to Links table for enhanced features
-        
+
         // Add notes column
         manager
             .alter_table(
@@ -173,8 +173,3 @@ enum Organizations {
     Table,
     Id,
 }
-
-
-
-
-

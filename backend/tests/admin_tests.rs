@@ -23,7 +23,10 @@ async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) 
     );
     let body: Value = res.json();
     (
-        body["token"].as_str().expect("token in response").to_string(),
+        body["token"]
+            .as_str()
+            .expect("token in response")
+            .to_string(),
         body["user_id"].as_i64().expect("user_id in response") as i32,
     )
 }
@@ -43,10 +46,7 @@ async fn make_admin(db: &DatabaseConnection, user_id: i32) {
 }
 
 /// Register a fresh admin: a normal registration plus a direct DB promotion.
-async fn register_admin(
-    server: &axum_test::TestServer,
-    db: &DatabaseConnection,
-) -> (String, i32) {
+async fn register_admin(server: &axum_test::TestServer, db: &DatabaseConnection) -> (String, i32) {
     let (token, user_id) = register(server, &unique_email()).await;
     make_admin(db, user_id).await;
     (token, user_id)
@@ -128,7 +128,10 @@ async fn admin_sees_other_users_links_with_owner_data() {
     assert_eq!(link["code"].as_str(), Some(code.as_str()));
     assert_eq!(link["user_id"].as_i64(), Some(user_id as i64));
     assert_eq!(link["user_email"].as_str(), Some(user_email.as_str()));
-    assert_eq!(link["original_url"].as_str(), Some("https://example.com/owned"));
+    assert_eq!(
+        link["original_url"].as_str(),
+        Some("https://example.com/owned")
+    );
     assert_eq!(link["is_active"].as_bool(), Some(true));
     assert_eq!(link["has_password"].as_bool(), Some(false));
     assert!(link["deleted_at"].is_null());
@@ -141,7 +144,12 @@ async fn admin_links_support_pagination_and_user_filter() {
     let (user_token, user_id, _) = register_verified(&server, &db).await;
 
     for i in 0..3 {
-        create_link(&server, &user_token, &format!("https://example.com/page-{i}")).await;
+        create_link(
+            &server,
+            &user_token,
+            &format!("https://example.com/page-{i}"),
+        )
+        .await;
     }
 
     let res = server
@@ -297,7 +305,11 @@ async fn admin_can_force_verify_email() {
         .authorization_bearer(&user_token)
         .json(&json!({ "original_url": "https://example.com/blocked" }))
         .await;
-    assert_ne!(res.status_code(), 201, "unverified user should not create links");
+    assert_ne!(
+        res.status_code(),
+        201,
+        "unverified user should not create links"
+    );
 
     let res = server
         .post(&format!("/admin/users/{user_id}/verify-email"))

@@ -40,7 +40,9 @@ static GEOIP_READER: Lazy<Option<Reader<Vec<u8>>>> = Lazy::new(|| {
     }
 
     tracing::warn!("GeoIP database not found. GeoIP lookups will be disabled.");
-    tracing::info!("To enable GeoIP, download GeoLite2-City.mmdb from MaxMind and place it in ./data/");
+    tracing::info!(
+        "To enable GeoIP, download GeoLite2-City.mmdb from MaxMind and place it in ./data/"
+    );
     None
 });
 
@@ -64,20 +66,31 @@ pub fn lookup_ip(ip_str: &str) -> GeoLocation {
     match reader.lookup::<geoip2::City>(ip) {
         Ok(city) => {
             let country = city.country.as_ref().and_then(|c| {
-                c.names.as_ref().and_then(|n| n.get("en").map(|s| s.to_string()))
+                c.names
+                    .as_ref()
+                    .and_then(|n| n.get("en").map(|s| s.to_string()))
             });
-            let country_code = city.country.as_ref().and_then(|c| c.iso_code.map(|s| s.to_string()));
+            let country_code = city
+                .country
+                .as_ref()
+                .and_then(|c| c.iso_code.map(|s| s.to_string()));
             let city_name = city.city.as_ref().and_then(|c| {
-                c.names.as_ref().and_then(|n| n.get("en").map(|s| s.to_string()))
+                c.names
+                    .as_ref()
+                    .and_then(|n| n.get("en").map(|s| s.to_string()))
             });
             let region = city.subdivisions.as_ref().and_then(|subs| {
                 subs.first().and_then(|s| {
-                    s.names.as_ref().and_then(|n| n.get("en").map(|s| s.to_string()))
+                    s.names
+                        .as_ref()
+                        .and_then(|n| n.get("en").map(|s| s.to_string()))
                 })
             });
-            let (latitude, longitude) = city.location.as_ref().map(|l| {
-                (l.latitude, l.longitude)
-            }).unwrap_or((None, None));
+            let (latitude, longitude) = city
+                .location
+                .as_ref()
+                .map(|l| (l.latitude, l.longitude))
+                .unwrap_or((None, None));
 
             GeoLocation {
                 country,
@@ -95,12 +108,8 @@ pub fn lookup_ip(ip_str: &str) -> GeoLocation {
 /// Check if an IP address is private/local
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ipv4) => {
-            ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
-        }
-        IpAddr::V6(ipv6) => {
-            ipv6.is_loopback()
-        }
+        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
+        IpAddr::V6(ipv6) => ipv6.is_loopback(),
     }
 }
 
@@ -124,7 +133,7 @@ pub struct UserAgentInfo {
 /// Detect browser from user agent
 fn detect_browser(ua: &str) -> Option<String> {
     let ua_lower = ua.to_lowercase();
-    
+
     if ua_lower.contains("edg/") || ua_lower.contains("edge/") {
         Some("Edge".to_string())
     } else if ua_lower.contains("opr/") || ua_lower.contains("opera") {
@@ -145,7 +154,7 @@ fn detect_browser(ua: &str) -> Option<String> {
 /// Detect OS from user agent
 fn detect_os(ua: &str) -> Option<String> {
     let ua_lower = ua.to_lowercase();
-    
+
     // Check iOS before macOS since iOS UAs contain "Mac OS X"
     if ua_lower.contains("iphone") || ua_lower.contains("ipad") || ua_lower.contains("ios") {
         Some("iOS".to_string())
@@ -171,13 +180,18 @@ fn detect_os(ua: &str) -> Option<String> {
 /// Detect device type from user agent
 fn detect_device(ua: &str) -> String {
     let ua_lower = ua.to_lowercase();
-    
-    if ua_lower.contains("mobile") || ua_lower.contains("iphone") || 
-       (ua_lower.contains("android") && !ua_lower.contains("tablet")) {
+
+    if ua_lower.contains("mobile")
+        || ua_lower.contains("iphone")
+        || (ua_lower.contains("android") && !ua_lower.contains("tablet"))
+    {
         "Mobile".to_string()
     } else if ua_lower.contains("tablet") || ua_lower.contains("ipad") {
         "Tablet".to_string()
-    } else if ua_lower.contains("bot") || ua_lower.contains("crawler") || ua_lower.contains("spider") {
+    } else if ua_lower.contains("bot")
+        || ua_lower.contains("crawler")
+        || ua_lower.contains("spider")
+    {
         "Bot".to_string()
     } else {
         "Desktop".to_string()
@@ -192,14 +206,28 @@ mod tests {
     fn test_browser_detection() {
         assert_eq!(detect_browser("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"), Some("Chrome".to_string()));
         assert_eq!(detect_browser("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"), Some("Edge".to_string()));
-        assert_eq!(detect_browser("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0"), Some("Firefox".to_string()));
+        assert_eq!(
+            detect_browser(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0"
+            ),
+            Some("Firefox".to_string())
+        );
     }
 
     #[test]
     fn test_device_detection() {
-        assert_eq!(detect_device("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"), "Mobile");
-        assert_eq!(detect_device("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)"), "Tablet");
-        assert_eq!(detect_device("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), "Desktop");
+        assert_eq!(
+            detect_device("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"),
+            "Mobile"
+        );
+        assert_eq!(
+            detect_device("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)"),
+            "Tablet"
+        );
+        assert_eq!(
+            detect_device("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+            "Desktop"
+        );
     }
 
     #[test]

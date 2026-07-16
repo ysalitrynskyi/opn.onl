@@ -65,7 +65,10 @@ async fn clone_creates_new_code_and_resets_state() {
 
     // New, distinct short code; same destination.
     assert_ne!(clone_body["code"].as_str().unwrap(), original_code);
-    assert_eq!(clone_body["original_url"].as_str().unwrap(), "https://example.com/page");
+    assert_eq!(
+        clone_body["original_url"].as_str().unwrap(),
+        "https://example.com/page"
+    );
 
     // Inspect the cloned link in the listing: "(copy)" title, unpinned, 0 clicks.
     let list: Value = server
@@ -80,15 +83,28 @@ async fn clone_creates_new_code_and_resets_state() {
         .find(|l| l["id"].as_i64() == Some(clone_id))
         .expect("cloned link in listing");
     assert_eq!(cloned["title"].as_str(), Some("My Link (copy)"));
-    assert_eq!(cloned["is_pinned"].as_bool(), Some(false), "clone must not inherit pin");
-    assert_eq!(cloned["click_count"].as_i64(), Some(0), "clone must start at 0 clicks");
+    assert_eq!(
+        cloned["is_pinned"].as_bool(),
+        Some(false),
+        "clone must not inherit pin"
+    );
+    assert_eq!(
+        cloned["click_count"].as_i64(),
+        Some(0),
+        "clone must start at 0 clicks"
+    );
 }
 
 #[tokio::test]
 async fn toggle_pin_flips_state() {
     let (server, db) = spawn_real_app().await;
     let token = register_verified(&server, &db).await;
-    let link = create_link(&server, &token, json!({ "original_url": "https://example.com/p" })).await;
+    let link = create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://example.com/p" }),
+    )
+    .await;
     let id = link["id"].as_i64().unwrap();
 
     let first: Value = server
@@ -96,14 +112,22 @@ async fn toggle_pin_flips_state() {
         .authorization_bearer(&token)
         .await
         .json();
-    assert_eq!(first["is_pinned"].as_bool(), Some(true), "first toggle pins");
+    assert_eq!(
+        first["is_pinned"].as_bool(),
+        Some(true),
+        "first toggle pins"
+    );
 
     let second: Value = server
         .post(&format!("/links/{id}/pin"))
         .authorization_bearer(&token)
         .await
         .json();
-    assert_eq!(second["is_pinned"].as_bool(), Some(false), "second toggle unpins");
+    assert_eq!(
+        second["is_pinned"].as_bool(),
+        Some(false),
+        "second toggle unpins"
+    );
 }
 
 #[tokio::test]
@@ -117,7 +141,11 @@ async fn check_code_availability_reflects_taken_codes() {
         .get(&format!("/links/check-code?code={alias}"))
         .await
         .json();
-    assert_eq!(before["available"].as_bool(), Some(true), "unused alias should be available");
+    assert_eq!(
+        before["available"].as_bool(),
+        Some(true),
+        "unused alias should be available"
+    );
 
     // Take it, then it must report unavailable.
     create_link(
@@ -131,7 +159,11 @@ async fn check_code_availability_reflects_taken_codes() {
         .get(&format!("/links/check-code?code={alias}"))
         .await
         .json();
-    assert_eq!(after["available"].as_bool(), Some(false), "taken alias should be unavailable");
+    assert_eq!(
+        after["available"].as_bool(),
+        Some(false),
+        "taken alias should be unavailable"
+    );
 }
 
 #[tokio::test]
@@ -139,8 +171,15 @@ async fn check_code_rejects_invalid_alias() {
     let (server, _db) = spawn_real_app().await;
     // A slash is not a valid alias character; the handler must run validate_alias
     // and report it unavailable rather than accepting it.
-    let res: Value = server.get("/links/check-code?code=bad%2Fslash").await.json();
-    assert_eq!(res["available"].as_bool(), Some(false), "invalid alias must be unavailable");
+    let res: Value = server
+        .get("/links/check-code?code=bad%2Fslash")
+        .await
+        .json();
+    assert_eq!(
+        res["available"].as_bool(),
+        Some(false),
+        "invalid alias must be unavailable"
+    );
 }
 
 #[tokio::test]
@@ -156,10 +195,22 @@ async fn build_utm_url_appends_parameters() {
         }))
         .await;
     assert_eq!(res.status_code(), 200, "build-utm: {}", res.text());
-    let built = res.json::<Value>()["url_with_utm"].as_str().unwrap().to_string();
-    assert!(built.contains("utm_source=newsletter"), "missing utm_source in {built}");
-    assert!(built.contains("utm_medium=email"), "missing utm_medium in {built}");
-    assert!(built.contains("utm_campaign=spring_sale"), "missing utm_campaign in {built}");
+    let built = res.json::<Value>()["url_with_utm"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        built.contains("utm_source=newsletter"),
+        "missing utm_source in {built}"
+    );
+    assert!(
+        built.contains("utm_medium=email"),
+        "missing utm_medium in {built}"
+    );
+    assert!(
+        built.contains("utm_campaign=spring_sale"),
+        "missing utm_campaign in {built}"
+    );
 }
 
 #[tokio::test]

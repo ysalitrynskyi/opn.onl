@@ -9,7 +9,7 @@ impl MigrationTrait for Migration {
         // ========================================
         // LINKS TABLE INDEXES
         // ========================================
-        
+
         // Index for user's links lookup (dashboard queries)
         manager
             .create_index(
@@ -402,4 +402,3 @@ enum AuditLog {
     Table,
     CreatedAt,
 }
-

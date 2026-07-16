@@ -2,7 +2,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
-    admin, api_keys, auth, bio, links, analytics, organizations, folders, passkeys, tags, contact,
+    admin, analytics, api_keys, auth, bio, contact, folders, links, organizations, passkeys, tags,
 };
 
 #[derive(OpenApi)]
@@ -93,7 +93,7 @@ use crate::handlers::{
         analytics::get_link_stats,
         analytics::get_dashboard_stats,
         analytics::get_realtime_clicks,
-        
+
         // Organizations
         organizations::create_organization,
         organizations::get_user_organizations,
@@ -106,7 +106,7 @@ use crate::handlers::{
         organizations::remove_member,
         organizations::transfer_ownership,
         organizations::get_audit_log,
-        
+
         // Folders
         folders::create_folder,
         folders::get_folders,
@@ -115,7 +115,7 @@ use crate::handlers::{
         folders::delete_folder,
         folders::move_links_to_folder,
         folders::get_folder_links,
-        
+
         // Tags
         tags::create_tag,
         tags::get_tags,
@@ -196,7 +196,7 @@ use crate::handlers::{
             links::SuccessResponse,
             links::VerifyPasswordRequest,
             links::TagInfo,
-            
+
             // Analytics schemas
             analytics::AnalyticsQuery,
             analytics::LinkStatsResponse,
@@ -211,7 +211,7 @@ use crate::handlers::{
             analytics::RecentClick,
             analytics::GeoPoint,
             analytics::TopLink,
-            
+
             // Organization schemas
             organizations::CreateOrgRequest,
             organizations::UpdateOrgRequest,
@@ -221,14 +221,14 @@ use crate::handlers::{
             organizations::OrgResponse,
             organizations::OrgMemberResponse,
             organizations::AuditLogResponse,
-            
+
             // Folder schemas
             folders::CreateFolderRequest,
             folders::UpdateFolderRequest,
             folders::FolderQuery,
             folders::FolderResponse,
             folders::MoveLinkToFolderRequest,
-            
+
             // Tag schemas
             tags::CreateTagRequest,
             tags::UpdateTagRequest,
@@ -272,9 +272,9 @@ impl utoipa::Modify for SecurityAddon {
                 "bearer_auth",
                 utoipa::openapi::security::SecurityScheme::Http(
                     utoipa::openapi::security::Http::new(
-                        utoipa::openapi::security::HttpAuthScheme::Bearer
-                    )
-                )
+                        utoipa::openapi::security::HttpAuthScheme::Bearer,
+                    ),
+                ),
             );
         }
     }
@@ -284,4 +284,3 @@ impl utoipa::Modify for SecurityAddon {
 pub fn swagger_routes() -> SwaggerUi {
     SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi())
 }
-

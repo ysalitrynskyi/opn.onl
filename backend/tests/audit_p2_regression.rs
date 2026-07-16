@@ -13,7 +13,10 @@ use opn_onl_backend::entity::org_members;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
 use serde_json::{json, Value};
 
-async fn register_verified(server: &axum_test::TestServer, db: &DatabaseConnection) -> (String, i32) {
+async fn register_verified(
+    server: &axum_test::TestServer,
+    db: &DatabaseConnection,
+) -> (String, i32) {
     let res = server
         .post("/auth/register")
         .json(&json!({ "email": unique_email(), "password": "password123" }))
@@ -44,6 +47,16 @@ async fn put_rules(server: &axum_test::TestServer, token: &str, link_id: i64) ->
         .put(&format!("/links/{link_id}/rules"))
         .authorization_bearer(token)
         .json(&json!({ "rules": [{ "destination_url": "https://example.com/routed" }] }))
+        .await
+        .status_code()
+        .as_u16()
+}
+
+async fn post_org_link(server: &axum_test::TestServer, token: &str, org_id: i32) -> u16 {
+    server
+        .post("/links")
+        .authorization_bearer(token)
+        .json(&json!({ "original_url": "https://example.com/new", "org_id": org_id }))
         .await
         .status_code()
         .as_u16()
@@ -95,5 +108,72 @@ async fn viewer_cannot_rewrite_org_link_routing() {
         put_rules(&server, &owner_token, link_id).await,
         200,
         "owner should be allowed to edit routing"
+    );
+}
+
+#[tokio::test]
+async fn viewer_cannot_create_org_links() {
+    let (server, db) = spawn_real_app().await;
+
+    let (owner_token, _owner_id) = register_verified(&server, &db).await;
+    let slug = format!("org-{}", unique_email().replace(['@', '.'], "-"));
+    let org = server
+        .post("/orgs")
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "name": "Test Org", "slug": slug }))
+        .await;
+    assert_eq!(org.status_code(), 201, "create org: {}", org.text());
+    let org_id = org.json::<Value>()["id"].as_i64().unwrap() as i32;
+
+    let (viewer_token, viewer_id) = register_verified(&server, &db).await;
+    let (editor_token, editor_id) = register_verified(&server, &db).await;
+    add_member(&db, org_id, viewer_id, "viewer").await;
+    add_member(&db, org_id, editor_id, "editor").await;
+
+    assert_eq!(
+        post_org_link(&server, &viewer_token, org_id).await,
+        403,
+        "viewer must not be able to create org links"
+    );
+    assert_eq!(
+        post_org_link(&server, &editor_token, org_id).await,
+        201,
+        "editor should be able to create org links"
+    );
+}
+
+#[tokio::test]
+async fn viewer_cannot_bulk_create_org_links() {
+    let (server, db) = spawn_real_app().await;
+
+    let (owner_token, _owner_id) = register_verified(&server, &db).await;
+    let slug = format!("org-{}", unique_email().replace(['@', '.'], "-"));
+    let org = server
+        .post("/orgs")
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "name": "Test Org", "slug": slug }))
+        .await;
+    assert_eq!(org.status_code(), 201, "create org: {}", org.text());
+    let org_id = org.json::<Value>()["id"].as_i64().unwrap() as i32;
+
+    let (viewer_token, viewer_id) = register_verified(&server, &db).await;
+    add_member(&db, org_id, viewer_id, "viewer").await;
+
+    let res = server
+        .post("/links/bulk")
+        .authorization_bearer(&viewer_token)
+        .json(&json!({ "urls": ["https://example.com/bulk"], "org_id": org_id }))
+        .await;
+    assert_eq!(res.status_code(), 200, "bulk create: {}", res.text());
+    let body = res.json::<Value>();
+    assert_eq!(
+        body["links"].as_array().unwrap().len(),
+        0,
+        "viewer bulk create must not create links"
+    );
+    assert_eq!(
+        body["errors"].as_array().unwrap().len(),
+        1,
+        "viewer bulk create should report an authorization error"
     );
 }

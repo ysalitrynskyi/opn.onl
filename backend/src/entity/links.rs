@@ -124,28 +124,28 @@ impl Model {
         }
 
         let now = chrono::Utc::now().naive_utc();
-        
+
         // Check if link hasn't started yet
         if let Some(starts_at) = self.starts_at {
             if now < starts_at {
                 return false;
             }
         }
-        
+
         // Check if link has expired
         if let Some(expires_at) = self.expires_at {
             if now > expires_at {
                 return false;
             }
         }
-        
+
         // Check if max clicks reached
         if let Some(max_clicks) = self.max_clicks {
             if self.click_count >= max_clicks {
                 return false;
             }
         }
-        
+
         true
     }
 
@@ -157,7 +157,10 @@ impl Model {
         // dedicated message rather than the generic max-clicks one.
         if self.burned_at.is_some()
             || (self.burn_after_reading
-                && self.max_clicks.map(|m| self.click_count >= m).unwrap_or(false))
+                && self
+                    .max_clicks
+                    .map(|m| self.click_count >= m)
+                    .unwrap_or(false))
         {
             return Some("This one-time link has already been opened");
         }
@@ -167,19 +170,19 @@ impl Model {
                 return Some("Link is scheduled to activate later");
             }
         }
-        
+
         if let Some(expires_at) = self.expires_at {
             if now > expires_at {
                 return Some("Link has expired");
             }
         }
-        
+
         if let Some(max_clicks) = self.max_clicks {
             if self.click_count >= max_clicks {
                 return Some("Link has reached maximum clicks");
             }
         }
-        
+
         None
     }
 }

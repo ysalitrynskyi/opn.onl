@@ -131,7 +131,10 @@ mod tests {
 
     #[test]
     fn ipv4_truncates_last_octet() {
-        assert_eq!(anonymize_ip("203.0.113.195").as_deref(), Some("203.0.113.0"));
+        assert_eq!(
+            anonymize_ip("203.0.113.195").as_deref(),
+            Some("203.0.113.0")
+        );
         assert_eq!(anonymize_ip("10.1.2.3").as_deref(), Some("10.1.2.0"));
     }
 

@@ -23,7 +23,11 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Folders::Color).string().null())
                     .col(ColumnDef::new(Folders::UserId).integer().null())
                     .col(ColumnDef::new(Folders::OrgId).integer().null())
-                    .col(ColumnDef::new(Folders::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(Folders::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk-folder-user_id")
@@ -74,8 +78,3 @@ enum Organizations {
     Table,
     Id,
 }
-
-
-
-
-

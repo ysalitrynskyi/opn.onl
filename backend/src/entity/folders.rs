@@ -54,8 +54,3 @@ impl Related<super::links::Entity> for Entity {
 }
 
 impl ActiveModelBehavior for ActiveModel {}
-
-
-
-
-

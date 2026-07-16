@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import LinkPreviewCard from './LinkPreviewCard';
+import { API_ENDPOINTS } from '../config/api';
 
 // Mock fetch
 const mockFetch = vi.fn();
@@ -9,6 +10,7 @@ global.fetch = mockFetch;
 describe('LinkPreviewCard', () => {
     beforeEach(() => {
         mockFetch.mockClear();
+        localStorage.clear();
     });
 
     describe('loading state', () => {
@@ -21,6 +23,7 @@ describe('LinkPreviewCard', () => {
 
     describe('successful fetch', () => {
         it('displays title from preview data', async () => {
+            localStorage.setItem('token', 'preview-token');
             mockFetch.mockResolvedValueOnce({
                 ok: true,
                 json: () => Promise.resolve({
@@ -38,6 +41,14 @@ describe('LinkPreviewCard', () => {
             await waitFor(() => {
                 expect(screen.getByText('Example Website')).toBeInTheDocument();
             });
+            expect(mockFetch).toHaveBeenCalledWith(
+                API_ENDPOINTS.previewMetadata,
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        Authorization: 'Bearer preview-token',
+                    }),
+                })
+            );
         });
 
         it('displays description from preview data', async () => {
@@ -78,6 +89,27 @@ describe('LinkPreviewCard', () => {
             await waitFor(() => {
                 expect(screen.getByText('My Website')).toBeInTheDocument();
             });
+        });
+
+        it('does not render remote preview assets directly', async () => {
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    url: 'https://example.com',
+                    title: 'Private Preview',
+                    description: null,
+                    image: 'https://example.com/og.png',
+                    site_name: 'Example',
+                    favicon: 'https://example.com/favicon.ico',
+                }),
+            });
+
+            const { container } = render(<LinkPreviewCard url="https://example.com" />);
+
+            await waitFor(() => {
+                expect(screen.getByText('Private Preview')).toBeInTheDocument();
+            });
+            expect(container.querySelector('img')).not.toBeInTheDocument();
         });
     });
 

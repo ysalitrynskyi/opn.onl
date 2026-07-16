@@ -21,7 +21,10 @@ impl MigrationTrait for Migration {
                 Table::alter()
                     .table(Users::Table)
                     .add_column_if_not_exists(
-                        ColumnDef::new(Users::BioEnabled).boolean().not_null().default(false),
+                        ColumnDef::new(Users::BioEnabled)
+                            .boolean()
+                            .not_null()
+                            .default(false),
                     )
                     .to_owned(),
             )
@@ -52,7 +55,10 @@ impl MigrationTrait for Migration {
                 Table::alter()
                     .table(Links::Table)
                     .add_column_if_not_exists(
-                        ColumnDef::new(Links::BioVisible).boolean().not_null().default(false),
+                        ColumnDef::new(Links::BioVisible)
+                            .boolean()
+                            .not_null()
+                            .default(false),
                     )
                     .to_owned(),
             )
@@ -77,16 +83,31 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_index(Index::drop().name("idx-users-bio_username").table(Users::Table).to_owned())
+            .drop_index(
+                Index::drop()
+                    .name("idx-users-bio_username")
+                    .table(Users::Table)
+                    .to_owned(),
+            )
             .await?;
         for col in [Users::BioUsername, Users::BioEnabled, Users::BioTheme] {
             manager
-                .alter_table(Table::alter().table(Users::Table).drop_column(col).to_owned())
+                .alter_table(
+                    Table::alter()
+                        .table(Users::Table)
+                        .drop_column(col)
+                        .to_owned(),
+                )
                 .await?;
         }
         for col in [Links::BioVisible, Links::BioPosition, Links::BioLabel] {
             manager
-                .alter_table(Table::alter().table(Links::Table).drop_column(col).to_owned())
+                .alter_table(
+                    Table::alter()
+                        .table(Links::Table)
+                        .drop_column(col)
+                        .to_owned(),
+                )
                 .await?;
         }
         Ok(())

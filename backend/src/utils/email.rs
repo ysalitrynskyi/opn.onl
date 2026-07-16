@@ -1,7 +1,6 @@
 use lettre::{
-    message::header::ContentType,
-    transport::smtp::authentication::Credentials,
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::header::ContentType, transport::smtp::authentication::Credentials, AsyncSmtpTransport,
+    AsyncTransport, Message, Tokio1Executor,
 };
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,28 +24,29 @@ impl GlobalEmailRateLimiter {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(500); // Default: 500 emails per hour
-        
+
         info!("Email rate limit configured: {} emails/hour", limit);
-        
+
         Self {
             count: AtomicU64::new(0),
             window_start: Mutex::new(Self::current_hour()),
             limit,
         }
     }
-    
+
     fn current_hour() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() / 3600
+            .as_secs()
+            / 3600
     }
-    
+
     /// Try to acquire a permit to send an email
     /// Returns Ok(()) if allowed, Err with message if rate limited
     fn try_acquire(&self) -> Result<(), String> {
         let current_hour = Self::current_hour();
-        
+
         // Check if we need to reset the window
         {
             let mut window = self.window_start.lock();
@@ -57,10 +57,10 @@ impl GlobalEmailRateLimiter {
                 info!("Email rate limit window reset");
             }
         }
-        
+
         // Try to increment counter
         let current = self.count.fetch_add(1, Ordering::SeqCst);
-        
+
         if current >= self.limit {
             // We're over the limit, decrement back
             self.count.fetch_sub(1, Ordering::SeqCst);
@@ -76,7 +76,7 @@ impl GlobalEmailRateLimiter {
             Ok(())
         }
     }
-    
+
     /// Get current usage stats
     fn stats(&self) -> (u64, u64) {
         (self.count.load(Ordering::SeqCst), self.limit)
@@ -109,31 +109,34 @@ impl EmailService {
             .unwrap_or(587);
         let smtp_user = std::env::var("SMTP_USER").ok();
         let smtp_pass = std::env::var("SMTP_PASS").ok();
-        let from_email = std::env::var("SMTP_FROM_EMAIL")
-            .unwrap_or_else(|_| "noreply@opn.onl".to_string());
-        let from_name = std::env::var("SMTP_FROM_NAME")
-            .unwrap_or_else(|_| "opn.onl".to_string());
-        let frontend_url = std::env::var("FRONTEND_URL")
-            .unwrap_or_else(|_| "http://localhost:5173".to_string());
+        let from_email =
+            std::env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "noreply@opn.onl".to_string());
+        let from_name = std::env::var("SMTP_FROM_NAME").unwrap_or_else(|_| "opn.onl".to_string());
+        let frontend_url =
+            std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
 
-        let mailer = if let (Some(host), Some(user), Some(pass)) = (smtp_host, smtp_user, smtp_pass) {
+        let mailer = if let (Some(host), Some(user), Some(pass)) = (smtp_host, smtp_user, smtp_pass)
+        {
             let creds = Credentials::new(user, pass);
             let smtp_tls = std::env::var("SMTP_TLS").unwrap_or_else(|_| "starttls".to_string());
-            
-            info!("Configuring SMTP: host={}, port={}, tls={}", host, smtp_port, smtp_tls);
-            
+
+            info!(
+                "Configuring SMTP: host={}, port={}, tls={}",
+                host, smtp_port, smtp_tls
+            );
+
             let transport_result = match smtp_tls.to_lowercase().as_str() {
                 // Port 465 style: TLS from the start (implicit TLS / SMTPS)
                 "tls" | "ssl" | "implicit" => {
                     info!("Using implicit TLS/SSL (port 465 style)");
                     match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
-                        Ok(tls_params) => {
-                            Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                        Ok(tls_params) => Ok(
+                            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
                                 .port(smtp_port)
                                 .tls(lettre::transport::smtp::client::Tls::Wrapper(tls_params))
                                 .credentials(creds)
-                                .build())
-                        }
+                                .build(),
+                        ),
                         Err(e) => {
                             error!("Failed to create TLS parameters: {}", e);
                             Err(format!("TLS error: {}", e))
@@ -144,13 +147,13 @@ impl EmailService {
                 "starttls" | "required" => {
                     info!("Using STARTTLS (port 587 style)");
                     match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
-                        Ok(tls_params) => {
-                            Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                        Ok(tls_params) => Ok(
+                            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
                                 .port(smtp_port)
                                 .tls(lettre::transport::smtp::client::Tls::Required(tls_params))
                                 .credentials(creds)
-                                .build())
-                        }
+                                .build(),
+                        ),
                         Err(e) => {
                             error!("Failed to create STARTTLS parameters: {}", e);
                             Err(format!("STARTTLS error: {}", e))
@@ -160,42 +163,44 @@ impl EmailService {
                 // No encryption (not recommended, but useful for local testing)
                 "none" | "false" | "off" => {
                     info!("Using no TLS (insecure)");
-                    Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
-                        .port(smtp_port)
-                        .tls(lettre::transport::smtp::client::Tls::None)
-                        .credentials(creds)
-                        .build())
+                    Ok(
+                        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                            .port(smtp_port)
+                            .tls(lettre::transport::smtp::client::Tls::None)
+                            .credentials(creds)
+                            .build(),
+                    )
                 }
                 // Auto-detect based on port
                 _ => {
                     if smtp_port == 465 {
                         info!("Auto-detected implicit TLS for port 465");
                         match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
-                            Ok(tls_params) => {
-                                Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                            Ok(tls_params) => Ok(
+                                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
                                     .port(smtp_port)
                                     .tls(lettre::transport::smtp::client::Tls::Wrapper(tls_params))
                                     .credentials(creds)
-                                    .build())
-                            }
-                            Err(e) => Err(format!("TLS error: {}", e))
+                                    .build(),
+                            ),
+                            Err(e) => Err(format!("TLS error: {}", e)),
                         }
                     } else {
                         info!("Auto-detected STARTTLS for port {}", smtp_port);
                         match lettre::transport::smtp::client::TlsParameters::new(host.clone()) {
-                            Ok(tls_params) => {
-                                Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+                            Ok(tls_params) => Ok(
+                                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
                                     .port(smtp_port)
                                     .tls(lettre::transport::smtp::client::Tls::Required(tls_params))
                                     .credentials(creds)
-                                    .build())
-                            }
-                            Err(e) => Err(format!("STARTTLS error: {}", e))
+                                    .build(),
+                            ),
+                            Err(e) => Err(format!("STARTTLS error: {}", e)),
                         }
                     }
                 }
             };
-            
+
             match transport_result {
                 Ok(transport) => {
                     info!("SMTP email service initialized successfully");
@@ -227,26 +232,49 @@ impl EmailService {
         self.send_email_internal(to, subject, html_body, None).await
     }
 
-    pub async fn send_email_with_reply_to(&self, to: &str, subject: &str, html_body: &str, reply_to: &str) -> Result<(), String> {
-        self.send_email_internal(to, subject, html_body, Some(reply_to)).await
+    pub async fn send_email_with_reply_to(
+        &self,
+        to: &str,
+        subject: &str,
+        html_body: &str,
+        reply_to: &str,
+    ) -> Result<(), String> {
+        self.send_email_internal(to, subject, html_body, Some(reply_to))
+            .await
     }
 
-    async fn send_email_internal(&self, to: &str, subject: &str, html_body: &str, reply_to: Option<&str>) -> Result<(), String> {
+    async fn send_email_internal(
+        &self,
+        to: &str,
+        subject: &str,
+        html_body: &str,
+        reply_to: Option<&str>,
+    ) -> Result<(), String> {
         let mailer = self.mailer.as_ref().ok_or("Email service not configured")?;
-        
+
         // Check global rate limit before sending
         EMAIL_RATE_LIMITER.try_acquire()?;
-        
+
         let (used, limit) = EMAIL_RATE_LIMITER.stats();
         info!("Sending email to {} ({}/{} this hour)", to, used, limit);
 
         let mut builder = Message::builder()
-            .from(format!("{} <{}>", self.from_name, self.from_email).parse().map_err(|e| format!("Invalid from address: {}", e))?)
-            .to(to.parse().map_err(|e| format!("Invalid to address: {}", e))?)
+            .from(
+                format!("{} <{}>", self.from_name, self.from_email)
+                    .parse()
+                    .map_err(|e| format!("Invalid from address: {}", e))?,
+            )
+            .to(to
+                .parse()
+                .map_err(|e| format!("Invalid to address: {}", e))?)
             .subject(subject);
 
         if let Some(reply) = reply_to {
-            builder = builder.reply_to(reply.parse().map_err(|e| format!("Invalid reply-to address: {}", e))?);
+            builder = builder.reply_to(
+                reply
+                    .parse()
+                    .map_err(|e| format!("Invalid reply-to address: {}", e))?,
+            );
         }
 
         let email = builder
@@ -254,14 +282,18 @@ impl EmailService {
             .body(html_body.to_string())
             .map_err(|e| format!("Failed to build email: {}", e))?;
 
-        mailer.send(email).await.map_err(|e| format!("Failed to send email: {}", e))?;
+        mailer
+            .send(email)
+            .await
+            .map_err(|e| format!("Failed to send email: {}", e))?;
         Ok(())
     }
 
     pub async fn send_verification_email(&self, to: &str, token: &str) -> Result<(), String> {
         let verification_url = format!("{}/verify-email?token={}", self.frontend_url, token);
-        
-        let html = format!(r#"
+
+        let html = format!(
+            r#"
 <!DOCTYPE html>
 <html>
 <head>
@@ -286,15 +318,19 @@ impl EmailService {
     </div>
 </body>
 </html>
-"#, verification_url, verification_url, verification_url);
+"#,
+            verification_url, verification_url, verification_url
+        );
 
-        self.send_email(to, "Verify your email - opn.onl", &html).await
+        self.send_email(to, "Verify your email - opn.onl", &html)
+            .await
     }
 
     pub async fn send_password_reset_email(&self, to: &str, token: &str) -> Result<(), String> {
         let reset_url = format!("{}/reset-password?token={}", self.frontend_url, token);
-        
-        let html = format!(r#"
+
+        let html = format!(
+            r#"
 <!DOCTYPE html>
 <html>
 <head>
@@ -319,13 +355,17 @@ impl EmailService {
     </div>
 </body>
 </html>
-"#, reset_url, reset_url, reset_url);
+"#,
+            reset_url, reset_url, reset_url
+        );
 
-        self.send_email(to, "Reset your password - opn.onl", &html).await
+        self.send_email(to, "Reset your password - opn.onl", &html)
+            .await
     }
 
     pub async fn send_welcome_email(&self, to: &str) -> Result<(), String> {
-        let html = format!(r#"
+        let html = format!(
+            r#"
 <!DOCTYPE html>
 <html>
 <head>
@@ -344,7 +384,9 @@ impl EmailService {
     </div>
 </body>
 </html>
-"#, self.frontend_url);
+"#,
+            self.frontend_url
+        );
 
         self.send_email(to, "Welcome to opn.onl!", &html).await
     }
@@ -367,4 +409,3 @@ pub fn generate_token() -> String {
         })
         .collect()
 }
-

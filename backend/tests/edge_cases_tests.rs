@@ -206,9 +206,9 @@ mod password_hashing {
 
 #[cfg(test)]
 mod jwt_edge_cases {
-    use jsonwebtoken::{encode, decode, Header, EncodingKey, DecodingKey, Validation, Algorithm};
-    use serde::{Serialize, Deserialize};
-    use chrono::{Utc, Duration};
+    use chrono::{Duration, Utc};
+    use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct Claims {
@@ -228,7 +228,12 @@ mod jwt_edge_cases {
             exp: (now + expires_in).timestamp() as usize,
             iat: now.timestamp() as usize,
         };
-        encode(&Header::default(), &claims, &EncodingKey::from_secret(SECRET)).unwrap()
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(SECRET),
+        )
+        .unwrap()
     }
 
     fn validate_token(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
@@ -289,9 +294,9 @@ mod jwt_edge_cases {
 
 #[cfg(test)]
 mod rate_limiting_edge_cases {
-    use std::time::{Duration, Instant};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     struct SimpleRateLimiter {
         requests: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
@@ -312,10 +317,10 @@ mod rate_limiting_edge_cases {
             let now = Instant::now();
             let mut requests = self.requests.lock().unwrap();
             let entry = requests.entry(key.to_string()).or_insert_with(Vec::new);
-            
+
             // Remove old requests
             entry.retain(|t| now.duration_since(*t) < self.window);
-            
+
             if entry.len() < self.max_requests {
                 entry.push(now);
                 true
@@ -328,7 +333,10 @@ mod rate_limiting_edge_cases {
             let now = Instant::now();
             let requests = self.requests.lock().unwrap();
             if let Some(entry) = requests.get(key) {
-                let recent = entry.iter().filter(|t| now.duration_since(**t) < self.window).count();
+                let recent = entry
+                    .iter()
+                    .filter(|t| now.duration_since(**t) < self.window)
+                    .count();
                 self.max_requests.saturating_sub(recent)
             } else {
                 self.max_requests
@@ -359,7 +367,7 @@ mod rate_limiting_edge_cases {
         assert!(limiter.is_allowed("user1"));
         assert!(limiter.is_allowed("user1"));
         assert!(!limiter.is_allowed("user1"));
-        
+
         // Different user should have fresh limit
         assert!(limiter.is_allowed("user2"));
         assert!(limiter.is_allowed("user2"));
@@ -395,7 +403,7 @@ mod rate_limiting_edge_cases {
 
 #[cfg(test)]
 mod link_scheduling_edge_cases {
-    use chrono::{Utc, Duration, DateTime};
+    use chrono::{DateTime, Duration, Utc};
 
     struct ScheduledLink {
         starts_at: Option<DateTime<Utc>>,
@@ -407,28 +415,28 @@ mod link_scheduling_edge_cases {
     impl ScheduledLink {
         fn is_active(&self) -> bool {
             let now = Utc::now();
-            
+
             // Check if not started yet
             if let Some(starts) = self.starts_at {
                 if now < starts {
                     return false;
                 }
             }
-            
+
             // Check if expired
             if let Some(expires) = self.expires_at {
                 if now > expires {
                     return false;
                 }
             }
-            
+
             // Check max clicks
             if let Some(max) = self.max_clicks {
                 if self.current_clicks >= max {
                     return false;
                 }
             }
-            
+
             true
         }
     }
@@ -568,7 +576,7 @@ mod organization_permissions {
 
     fn has_permission(role: Role, permission: Permission) -> bool {
         match permission {
-            Permission::ViewLinks => true, // All roles can view
+            Permission::ViewLinks => true,   // All roles can view
             Permission::CreateLinks => true, // All roles can create
             Permission::EditLinks => matches!(role, Role::Owner | Role::Admin | Role::Member),
             Permission::DeleteLinks => matches!(role, Role::Owner | Role::Admin),
@@ -618,9 +626,11 @@ mod organization_permissions {
 mod tag_name_validation {
     fn is_valid_tag_name(name: &str) -> bool {
         let trimmed = name.trim();
-        !trimmed.is_empty() 
-            && trimmed.len() <= 50 
-            && trimmed.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ' ')
+        !trimmed.is_empty()
+            && trimmed.len() <= 50
+            && trimmed
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ' ')
     }
 
     #[test]
@@ -703,13 +713,14 @@ mod folder_hierarchy {
         if folder_id == new_parent_id {
             return true;
         }
-        
+
         let mut current_id = Some(new_parent_id);
         while let Some(id) = current_id {
             if id == folder_id {
                 return true;
             }
-            current_id = folders.iter()
+            current_id = folders
+                .iter()
                 .find(|f| f.id == id)
                 .and_then(|f| f.parent_id);
         }
@@ -718,18 +729,32 @@ mod folder_hierarchy {
 
     #[test]
     fn test_root_folder_depth() {
-        let folders = vec![
-            Folder { id: 1, name: "Root".to_string(), parent_id: None },
-        ];
+        let folders = vec![Folder {
+            id: 1,
+            name: "Root".to_string(),
+            parent_id: None,
+        }];
         assert_eq!(get_depth(&folders, 1), 0);
     }
 
     #[test]
     fn test_nested_folder_depth() {
         let folders = vec![
-            Folder { id: 1, name: "Root".to_string(), parent_id: None },
-            Folder { id: 2, name: "Level1".to_string(), parent_id: Some(1) },
-            Folder { id: 3, name: "Level2".to_string(), parent_id: Some(2) },
+            Folder {
+                id: 1,
+                name: "Root".to_string(),
+                parent_id: None,
+            },
+            Folder {
+                id: 2,
+                name: "Level1".to_string(),
+                parent_id: Some(1),
+            },
+            Folder {
+                id: 3,
+                name: "Level2".to_string(),
+                parent_id: Some(2),
+            },
         ];
         assert_eq!(get_depth(&folders, 1), 0);
         assert_eq!(get_depth(&folders, 2), 1);
@@ -738,17 +763,27 @@ mod folder_hierarchy {
 
     #[test]
     fn test_self_reference_cycle() {
-        let folders = vec![
-            Folder { id: 1, name: "Test".to_string(), parent_id: None },
-        ];
+        let folders = vec![Folder {
+            id: 1,
+            name: "Test".to_string(),
+            parent_id: None,
+        }];
         assert!(would_create_cycle(&folders, 1, 1));
     }
 
     #[test]
     fn test_child_to_parent_cycle() {
         let folders = vec![
-            Folder { id: 1, name: "Parent".to_string(), parent_id: None },
-            Folder { id: 2, name: "Child".to_string(), parent_id: Some(1) },
+            Folder {
+                id: 1,
+                name: "Parent".to_string(),
+                parent_id: None,
+            },
+            Folder {
+                id: 2,
+                name: "Child".to_string(),
+                parent_id: Some(1),
+            },
         ];
         // Moving parent under child would create cycle
         assert!(would_create_cycle(&folders, 1, 2));
@@ -757,9 +792,21 @@ mod folder_hierarchy {
     #[test]
     fn test_no_cycle() {
         let folders = vec![
-            Folder { id: 1, name: "A".to_string(), parent_id: None },
-            Folder { id: 2, name: "B".to_string(), parent_id: None },
-            Folder { id: 3, name: "C".to_string(), parent_id: Some(1) },
+            Folder {
+                id: 1,
+                name: "A".to_string(),
+                parent_id: None,
+            },
+            Folder {
+                id: 2,
+                name: "B".to_string(),
+                parent_id: None,
+            },
+            Folder {
+                id: 3,
+                name: "C".to_string(),
+                parent_id: Some(1),
+            },
         ];
         // Moving B under C is fine
         assert!(!would_create_cycle(&folders, 2, 3));
@@ -779,7 +826,7 @@ mod bulk_operations {
         if ids.len() > MAX_BULK_SIZE {
             return Err("Too many IDs");
         }
-        
+
         // Check for duplicates
         let mut seen = std::collections::HashSet::new();
         for id in ids {
@@ -846,13 +893,14 @@ mod analytics_aggregation {
 
     fn aggregate_by_key<T: std::hash::Hash + Eq + Clone>(items: &[(T, u64)]) -> Vec<(T, u64, f64)> {
         let total: u64 = items.iter().map(|(_, c)| c).sum();
-        
+
         let mut counts: HashMap<T, u64> = HashMap::new();
         for (key, count) in items {
             *counts.entry(key.clone()).or_insert(0) += count;
         }
-        
-        counts.into_iter()
+
+        counts
+            .into_iter()
             .map(|(key, count)| (key, count, calculate_percentage(count, total)))
             .collect()
     }
@@ -872,14 +920,10 @@ mod analytics_aggregation {
 
     #[test]
     fn test_aggregation_basic() {
-        let items = vec![
-            ("US", 50u64),
-            ("UK", 30),
-            ("DE", 20),
-        ];
+        let items = vec![("US", 50u64), ("UK", 30), ("DE", 20)];
         let result = aggregate_by_key(&items);
         assert_eq!(result.len(), 3);
-        
+
         let us = result.iter().find(|(k, _, _)| *k == "US").unwrap();
         assert_eq!(us.1, 50);
         assert_eq!(us.2, 50.0);
@@ -893,7 +937,7 @@ mod analytics_aggregation {
             ("US", 20), // Duplicate country
         ];
         let result = aggregate_by_key(&items);
-        
+
         let us = result.iter().find(|(k, _, _)| *k == "US").unwrap();
         assert_eq!(us.1, 50); // 30 + 20
     }
@@ -905,8 +949,3 @@ mod analytics_aggregation {
         assert!(result.is_empty());
     }
 }
-
-
-
-
-

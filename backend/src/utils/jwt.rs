@@ -1,6 +1,6 @@
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration, Utc};
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use std::env;
 
@@ -58,11 +58,9 @@ fn validate_jwt_secret_value(secret: &str) -> Result<(), String> {
         .iter()
         .any(|placeholder| candidate.eq_ignore_ascii_case(placeholder))
     {
-        return Err(
-            "JWT_SECRET is a publicly known placeholder. \
+        return Err("JWT_SECRET is a publicly known placeholder. \
              Generate a unique secret with `openssl rand -base64 64`."
-                .to_string(),
-        );
+            .to_string());
     }
 
     Ok(())
@@ -74,7 +72,11 @@ pub fn validate_jwt_secret() {
     let _ = jwt_secret();
 }
 
-pub fn create_jwt(user_id: i32, email: &str, token_version: i32) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_jwt(
+    user_id: i32,
+    email: &str,
+    token_version: i32,
+) -> Result<String, jsonwebtoken::errors::Error> {
     let secret = jwt_secret();
 
     let expiration = Utc::now()
@@ -89,7 +91,11 @@ pub fn create_jwt(user_id: i32, email: &str, token_version: i32) -> Result<Strin
         token_version,
     };
 
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
 }
 
 pub fn decode_jwt(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
@@ -114,7 +120,10 @@ mod tests {
         // A too-short / weak secret must be rejected rather than silently accepted.
         std::env::set_var("JWT_SECRET", "short");
         let weak = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
-        assert!(weak.is_err(), "create_jwt must panic on a <32 byte JWT_SECRET");
+        assert!(
+            weak.is_err(),
+            "create_jwt must panic on a <32 byte JWT_SECRET"
+        );
 
         // Length alone is insufficient: sample values are public signing keys.
         for placeholder in KNOWN_INSECURE_JWT_SECRETS {

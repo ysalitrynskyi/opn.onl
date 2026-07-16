@@ -52,7 +52,7 @@ mod click_event_tests {
     #[test]
     fn test_create_click_event() {
         let event = ClickEvent::new(1, "abc123");
-        
+
         assert_eq!(event.link_id, 1);
         assert_eq!(event.link_code, "abc123");
         assert_eq!(event.click_count, 1);
@@ -61,18 +61,16 @@ mod click_event_tests {
 
     #[test]
     fn test_click_event_with_geo() {
-        let event = ClickEvent::new(1, "abc123")
-            .with_geo("United States", "New York");
-        
+        let event = ClickEvent::new(1, "abc123").with_geo("United States", "New York");
+
         assert_eq!(event.country, Some("United States".to_string()));
         assert_eq!(event.city, Some("New York".to_string()));
     }
 
     #[test]
     fn test_click_event_with_device() {
-        let event = ClickEvent::new(1, "abc123")
-            .with_device("Mobile", "Chrome");
-        
+        let event = ClickEvent::new(1, "abc123").with_device("Mobile", "Chrome");
+
         assert_eq!(event.device, Some("Mobile".to_string()));
         assert_eq!(event.browser, Some("Chrome".to_string()));
     }
@@ -82,7 +80,7 @@ mod click_event_tests {
         let event = ClickEvent::new(1, "abc123")
             .with_geo("US", "NYC")
             .with_device("Desktop", "Firefox");
-        
+
         // Simulate JSON serialization
         let json = format!(
             r#"{{"link_id":{},"link_code":"{}","country":"{}","city":"{}","device":"{}","browser":"{}"}}"#,
@@ -93,7 +91,7 @@ mod click_event_tests {
             event.device.as_ref().unwrap(),
             event.browser.as_ref().unwrap()
         );
-        
+
         assert!(json.contains("\"link_id\":1"));
         assert!(json.contains("\"link_code\":\"abc123\""));
     }
@@ -140,20 +138,26 @@ mod subscription_tests {
         }
 
         fn get_link_subscribers(&self, link_id: i32) -> Vec<usize> {
-            self.link_subscribers.get(&link_id).cloned().unwrap_or_default()
+            self.link_subscribers
+                .get(&link_id)
+                .cloned()
+                .unwrap_or_default()
         }
 
         fn get_user_subscribers(&self, user_id: i32) -> Vec<usize> {
-            self.user_subscribers.get(&user_id).cloned().unwrap_or_default()
+            self.user_subscribers
+                .get(&user_id)
+                .cloned()
+                .unwrap_or_default()
         }
     }
 
     #[test]
     fn test_subscribe_to_link() {
         let mut manager = SubscriptionManager::new();
-        
+
         let sub_id = manager.subscribe_link(1);
-        
+
         assert_eq!(sub_id, 1);
         assert_eq!(manager.get_link_subscribers(1), vec![1]);
     }
@@ -161,11 +165,11 @@ mod subscription_tests {
     #[test]
     fn test_multiple_subscribers_same_link() {
         let mut manager = SubscriptionManager::new();
-        
+
         let sub1 = manager.subscribe_link(1);
         let sub2 = manager.subscribe_link(1);
         let sub3 = manager.subscribe_link(1);
-        
+
         let subs = manager.get_link_subscribers(1);
         assert_eq!(subs.len(), 3);
         assert!(subs.contains(&sub1));
@@ -176,12 +180,12 @@ mod subscription_tests {
     #[test]
     fn test_unsubscribe_from_link() {
         let mut manager = SubscriptionManager::new();
-        
+
         let sub1 = manager.subscribe_link(1);
         let sub2 = manager.subscribe_link(1);
-        
+
         manager.unsubscribe_link(1, sub1);
-        
+
         let subs = manager.get_link_subscribers(1);
         assert_eq!(subs.len(), 1);
         assert!(!subs.contains(&sub1));
@@ -191,20 +195,20 @@ mod subscription_tests {
     #[test]
     fn test_subscribe_to_user() {
         let mut manager = SubscriptionManager::new();
-        
+
         let sub_id = manager.subscribe_user(42);
-        
+
         assert_eq!(manager.get_user_subscribers(42), vec![sub_id]);
     }
 
     #[test]
     fn test_independent_link_subscriptions() {
         let mut manager = SubscriptionManager::new();
-        
+
         manager.subscribe_link(1);
         manager.subscribe_link(1);
         manager.subscribe_link(2);
-        
+
         assert_eq!(manager.get_link_subscribers(1).len(), 2);
         assert_eq!(manager.get_link_subscribers(2).len(), 1);
         assert_eq!(manager.get_link_subscribers(3).len(), 0);
@@ -229,17 +233,17 @@ mod routing_tests {
         // Subscriber should receive if:
         // 1. They're subscribed to this link
         // 2. OR they're subscribed to this user's events
-        
+
         if subscribed_links.contains(&message.link_id) {
             return true;
         }
-        
+
         if let Some(user_id) = message.user_id {
             if subscribed_users.contains(&user_id) {
                 return true;
             }
         }
-        
+
         false
     }
 
@@ -250,7 +254,7 @@ mod routing_tests {
             user_id: Some(42),
             data: "click".to_string(),
         };
-        
+
         assert!(should_receive_message(&message, &[1], &[]));
     }
 
@@ -261,7 +265,7 @@ mod routing_tests {
             user_id: Some(42),
             data: "click".to_string(),
         };
-        
+
         assert!(should_receive_message(&message, &[], &[42]));
     }
 
@@ -272,7 +276,7 @@ mod routing_tests {
             user_id: Some(42),
             data: "click".to_string(),
         };
-        
+
         assert!(!should_receive_message(&message, &[2, 3], &[100, 200]));
     }
 
@@ -283,7 +287,7 @@ mod routing_tests {
             user_id: None, // Anonymous link
             data: "click".to_string(),
         };
-        
+
         // User subscription shouldn't matter for anonymous links
         assert!(should_receive_message(&message, &[1], &[]));
         assert!(!should_receive_message(&message, &[], &[42]));
@@ -350,7 +354,7 @@ mod connection_tests {
     fn test_successful_connection() {
         let mut conn = Connection::new();
         conn.on_open();
-        
+
         assert_eq!(conn.state, ConnectionState::Connected);
         assert_eq!(conn.reconnect_attempts, 0);
     }
@@ -360,7 +364,7 @@ mod connection_tests {
         let mut conn = Connection::new();
         conn.on_open();
         conn.on_close();
-        
+
         assert_eq!(conn.state, ConnectionState::Reconnecting);
         assert_eq!(conn.reconnect_attempts, 1);
         assert!(conn.should_reconnect());
@@ -370,11 +374,11 @@ mod connection_tests {
     fn test_max_reconnection_attempts() {
         let mut conn = Connection::new();
         conn.on_open();
-        
+
         for _ in 0..5 {
             conn.on_close();
         }
-        
+
         // After max attempts, should stop reconnecting
         conn.on_close();
         assert_eq!(conn.state, ConnectionState::Failed);
@@ -387,12 +391,12 @@ mod connection_tests {
         conn.on_open();
         conn.on_close();
         conn.on_close();
-        
+
         assert_eq!(conn.reconnect_attempts, 2);
-        
+
         // Successful reconnection
         conn.on_open();
-        
+
         assert_eq!(conn.reconnect_attempts, 0);
     }
 }
@@ -402,12 +406,19 @@ mod connection_tests {
 mod message_parsing_tests {
     #[derive(Debug, PartialEq)]
     enum MessageType {
-        Subscribe { link_id: Option<i32>, user_id: Option<i32> },
-        Unsubscribe { link_id: Option<i32> },
+        Subscribe {
+            link_id: Option<i32>,
+            user_id: Option<i32>,
+        },
+        Unsubscribe {
+            link_id: Option<i32>,
+        },
         Click,
         Ping,
         Pong,
-        Error { message: String },
+        Error {
+            message: String,
+        },
         Unknown,
     }
 
@@ -426,7 +437,9 @@ mod message_parsing_tests {
         } else if json.contains("\"type\":\"pong\"") {
             MessageType::Pong
         } else if json.contains("\"type\":\"error\"") {
-            MessageType::Error { message: "Error".to_string() }
+            MessageType::Error {
+                message: "Error".to_string(),
+            }
         } else {
             MessageType::Unknown
         }
@@ -437,7 +450,9 @@ mod message_parsing_tests {
         json.find(&pattern).and_then(|start| {
             let value_start = start + pattern.len();
             let remaining = &json[value_start..];
-            let end = remaining.find(|c: char| !c.is_numeric()).unwrap_or(remaining.len());
+            let end = remaining
+                .find(|c: char| !c.is_numeric())
+                .unwrap_or(remaining.len());
             remaining[..end].trim().parse().ok()
         })
     }
@@ -446,23 +461,32 @@ mod message_parsing_tests {
     fn test_parse_subscribe_message() {
         let json = r#"{"type":"subscribe","link_id":123}"#;
         let msg = parse_message_type(json);
-        
-        assert!(matches!(msg, MessageType::Subscribe { link_id: Some(123), .. }));
+
+        assert!(matches!(
+            msg,
+            MessageType::Subscribe {
+                link_id: Some(123),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn test_parse_unsubscribe_message() {
         let json = r#"{"type":"unsubscribe","link_id":456}"#;
         let msg = parse_message_type(json);
-        
-        assert!(matches!(msg, MessageType::Unsubscribe { link_id: Some(456) }));
+
+        assert!(matches!(
+            msg,
+            MessageType::Unsubscribe { link_id: Some(456) }
+        ));
     }
 
     #[test]
     fn test_parse_click_message() {
         let json = r#"{"type":"click","link_id":1,"click_count":42}"#;
         let msg = parse_message_type(json);
-        
+
         assert_eq!(msg, MessageType::Click);
     }
 
@@ -470,7 +494,7 @@ mod message_parsing_tests {
     fn test_parse_ping_message() {
         let json = r#"{"type":"ping"}"#;
         let msg = parse_message_type(json);
-        
+
         assert_eq!(msg, MessageType::Ping);
     }
 
@@ -478,7 +502,7 @@ mod message_parsing_tests {
     fn test_parse_unknown_message() {
         let json = r#"{"type":"unknown_type"}"#;
         let msg = parse_message_type(json);
-        
+
         assert_eq!(msg, MessageType::Unknown);
     }
 
@@ -486,8 +510,7 @@ mod message_parsing_tests {
     fn test_parse_invalid_json() {
         let json = "not json at all";
         let msg = parse_message_type(json);
-        
+
         assert_eq!(msg, MessageType::Unknown);
     }
 }
-

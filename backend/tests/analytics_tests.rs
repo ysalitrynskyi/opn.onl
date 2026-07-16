@@ -28,7 +28,7 @@ mod unit_tests {
     #[test]
     fn test_user_agent_parsing_desktop_chrome() {
         let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
-        
+
         let is_mobile = ua.to_lowercase().contains("mobile");
         let is_chrome = ua.to_lowercase().contains("chrome") && !ua.to_lowercase().contains("edge");
 
@@ -39,8 +39,9 @@ mod unit_tests {
     #[test]
     fn test_user_agent_parsing_mobile() {
         let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Mobile/15E148 Safari/604.1";
-        
-        let is_mobile = ua.to_lowercase().contains("mobile") || ua.to_lowercase().contains("iphone");
+
+        let is_mobile =
+            ua.to_lowercase().contains("mobile") || ua.to_lowercase().contains("iphone");
 
         assert!(is_mobile);
     }
@@ -48,7 +49,7 @@ mod unit_tests {
     #[test]
     fn test_user_agent_parsing_firefox() {
         let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0";
-        
+
         let is_firefox = ua.to_lowercase().contains("firefox");
 
         assert!(is_firefox);
@@ -57,8 +58,9 @@ mod unit_tests {
     #[test]
     fn test_user_agent_parsing_safari() {
         let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15";
-        
-        let is_safari = ua.to_lowercase().contains("safari") && !ua.to_lowercase().contains("chrome");
+
+        let is_safari =
+            ua.to_lowercase().contains("safari") && !ua.to_lowercase().contains("chrome");
 
         assert!(is_safari);
     }
@@ -66,7 +68,7 @@ mod unit_tests {
     #[test]
     fn test_referer_parsing() {
         let referer = "https://twitter.com/user/status/123456";
-        
+
         let url = url::Url::parse(referer).unwrap();
         let hostname = url.host_str().unwrap();
 
@@ -76,7 +78,7 @@ mod unit_tests {
     #[test]
     fn test_referer_parsing_with_subdomain() {
         let referer = "https://www.google.com/search?q=test";
-        
+
         let url = url::Url::parse(referer).unwrap();
         let hostname = url.host_str().unwrap();
 
@@ -86,10 +88,10 @@ mod unit_tests {
     #[test]
     fn test_click_aggregation_by_date() {
         let mut clicks_by_date: HashMap<String, i32> = HashMap::new();
-        
+
         // Simulate click data
         let dates = vec!["2024-01-01", "2024-01-01", "2024-01-02", "2024-01-01"];
-        
+
         for date in dates {
             *clicks_by_date.entry(date.to_string()).or_insert(0) += 1;
         }
@@ -102,7 +104,9 @@ mod unit_tests {
     fn test_device_categorization() {
         fn categorize_device(ua: &str) -> &str {
             let ua_lower = ua.to_lowercase();
-            if ua_lower.contains("mobile") || ua_lower.contains("android") && !ua_lower.contains("tablet") {
+            if ua_lower.contains("mobile")
+                || ua_lower.contains("android") && !ua_lower.contains("tablet")
+            {
                 "Mobile"
             } else if ua_lower.contains("tablet") || ua_lower.contains("ipad") {
                 "Tablet"
@@ -111,9 +115,18 @@ mod unit_tests {
             }
         }
 
-        assert_eq!(categorize_device("Mozilla/5.0 (iPhone; CPU iPhone OS) Mobile"), "Mobile");
-        assert_eq!(categorize_device("Mozilla/5.0 (iPad; CPU OS) Safari"), "Tablet");
-        assert_eq!(categorize_device("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), "Desktop");
+        assert_eq!(
+            categorize_device("Mozilla/5.0 (iPhone; CPU iPhone OS) Mobile"),
+            "Mobile"
+        );
+        assert_eq!(
+            categorize_device("Mozilla/5.0 (iPad; CPU OS) Safari"),
+            "Tablet"
+        );
+        assert_eq!(
+            categorize_device("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+            "Desktop"
+        );
     }
 
     #[test]
@@ -155,7 +168,7 @@ mod stats_tests {
     fn test_percentage_calculation() {
         let total = 100;
         let mobile_clicks = 35;
-        
+
         let percentage = (mobile_clicks as f64 / total as f64) * 100.0;
 
         assert_eq!(percentage, 35.0);
@@ -165,7 +178,7 @@ mod stats_tests {
     fn test_percentage_with_zero_total() {
         let total = 0;
         let mobile_clicks = 0;
-        
+
         let percentage = if total > 0 {
             (mobile_clicks as f64 / total as f64) * 100.0
         } else {

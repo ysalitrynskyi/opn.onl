@@ -9,18 +9,20 @@ mod url_validation_tests {
         if url.is_empty() {
             return false;
         }
-        
+
         // Must start with http:// or https://
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return false;
         }
-        
+
         // Must have a host
-        let without_protocol = url.trim_start_matches("http://").trim_start_matches("https://");
+        let without_protocol = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
         if without_protocol.is_empty() || without_protocol.starts_with('/') {
             return false;
         }
-        
+
         // Basic URL parsing check
         url::Url::parse(url).is_ok()
     }
@@ -52,8 +54,8 @@ mod url_validation_tests {
 // ============= Short Code Generation Tests =============
 
 mod short_code_tests {
-    use rand::{thread_rng, Rng};
     use rand::distributions::Alphanumeric;
+    use rand::{thread_rng, Rng};
 
     fn generate_short_code(length: usize) -> String {
         thread_rng()
@@ -64,8 +66,8 @@ mod short_code_tests {
     }
 
     fn is_valid_code(code: &str) -> bool {
-        !code.is_empty() 
-            && code.len() >= 3 
+        !code.is_empty()
+            && code.len() >= 3
             && code.len() <= 20
             && code.chars().all(|c| c.is_ascii_alphanumeric())
     }
@@ -74,7 +76,7 @@ mod short_code_tests {
     fn test_generate_code_length() {
         let code = generate_short_code(6);
         assert_eq!(code.len(), 6);
-        
+
         let code = generate_short_code(8);
         assert_eq!(code.len(), 8);
     }
@@ -131,7 +133,7 @@ mod password_tests {
 
     fn is_strong_password(password: &str) -> (bool, Vec<&'static str>) {
         let mut errors = Vec::new();
-        
+
         if password.len() < 8 {
             errors.push("Password must be at least 8 characters");
         }
@@ -144,7 +146,7 @@ mod password_tests {
         if !password.chars().any(|c| c.is_numeric()) {
             errors.push("Password must contain a number");
         }
-        
+
         (errors.is_empty(), errors)
     }
 
@@ -152,7 +154,7 @@ mod password_tests {
     fn test_hash_and_verify() {
         let password = "MySecurePassword123";
         let hash = hash_password(password);
-        
+
         assert!(verify_password(password, &hash));
         assert!(!verify_password("WrongPassword", &hash));
     }
@@ -230,7 +232,7 @@ mod expiration_tests {
     fn test_time_until_expiry() {
         let future = Utc::now().naive_utc() + Duration::hours(2);
         let time_left = time_until_expiry(Some(future)).unwrap();
-        
+
         // Should be approximately 2 hours (with some tolerance)
         assert!(time_left.num_minutes() >= 119);
         assert!(time_left.num_minutes() <= 120);
@@ -240,7 +242,7 @@ mod expiration_tests {
     fn test_time_until_expiry_already_expired() {
         let past = Utc::now().naive_utc() - Duration::hours(1);
         let time_left = time_until_expiry(Some(past)).unwrap();
-        
+
         assert_eq!(time_left.num_seconds(), 0);
     }
 }
@@ -334,7 +336,7 @@ mod scheduled_tests {
     fn test_time_until_active() {
         let future = Utc::now().naive_utc() + Duration::hours(2);
         let time_left = time_until_active(Some(future)).unwrap();
-        
+
         assert!(time_left.num_minutes() >= 119);
         assert!(time_left.num_minutes() <= 120);
     }
@@ -343,7 +345,7 @@ mod scheduled_tests {
     fn test_time_until_active_already_active() {
         let past = Utc::now().naive_utc() - Duration::hours(1);
         let time_left = time_until_active(Some(past)).unwrap();
-        
+
         assert_eq!(time_left.num_seconds(), 0);
     }
 }
@@ -369,28 +371,28 @@ mod link_status_tests {
         click_count: i32,
     ) -> LinkStatus {
         let now = Utc::now().naive_utc();
-        
+
         // Check scheduled activation
         if let Some(start) = starts_at {
             if now < start {
                 return LinkStatus::Scheduled;
             }
         }
-        
+
         // Check expiration
         if let Some(exp) = expires_at {
             if now > exp {
                 return LinkStatus::Expired;
             }
         }
-        
+
         // Check click limit
         if let Some(max) = max_clicks {
             if click_count >= max {
                 return LinkStatus::ClickLimitReached;
             }
         }
-        
+
         LinkStatus::Active
     }
 
@@ -424,7 +426,7 @@ mod link_status_tests {
     fn test_scheduled_takes_priority() {
         let future = Utc::now().naive_utc() + Duration::hours(1);
         let past = Utc::now().naive_utc() - Duration::hours(1);
-        
+
         // Even with past expiration, scheduled should take priority
         let status = get_link_status(Some(future), Some(past), Some(10), 10);
         assert_eq!(status, LinkStatus::Scheduled);
@@ -437,7 +439,7 @@ mod bulk_operations_tests {
     fn validate_bulk_urls(urls: &[&str]) -> (Vec<String>, Vec<String>) {
         let mut valid = Vec::new();
         let mut invalid = Vec::new();
-        
+
         for url in urls {
             if url.starts_with("http://") || url.starts_with("https://") {
                 valid.push(url.to_string());
@@ -445,7 +447,7 @@ mod bulk_operations_tests {
                 invalid.push(url.to_string());
             }
         }
-        
+
         (valid, invalid)
     }
 
@@ -456,23 +458,19 @@ mod bulk_operations_tests {
             "http://test.com",
             "https://another.org",
         ];
-        
+
         let (valid, invalid) = validate_bulk_urls(&urls);
-        
+
         assert_eq!(valid.len(), 3);
         assert!(invalid.is_empty());
     }
 
     #[test]
     fn test_all_invalid() {
-        let urls = vec![
-            "example.com",
-            "ftp://test.com",
-            "not a url",
-        ];
-        
+        let urls = vec!["example.com", "ftp://test.com", "not a url"];
+
         let (valid, invalid) = validate_bulk_urls(&urls);
-        
+
         assert!(valid.is_empty());
         assert_eq!(invalid.len(), 3);
     }
@@ -485,9 +483,9 @@ mod bulk_operations_tests {
             "http://also-valid.com",
             "nope",
         ];
-        
+
         let (valid, invalid) = validate_bulk_urls(&urls);
-        
+
         assert_eq!(valid.len(), 2);
         assert_eq!(invalid.len(), 2);
     }
@@ -496,7 +494,7 @@ mod bulk_operations_tests {
     fn test_empty() {
         let urls: Vec<&str> = vec![];
         let (valid, invalid) = validate_bulk_urls(&urls);
-        
+
         assert!(valid.is_empty());
         assert!(invalid.is_empty());
     }
@@ -553,8 +551,3 @@ mod csv_export_tests {
         assert!(row.contains("\"https://example.com/path?a=1,2\""));
     }
 }
-
-
-
-
-
