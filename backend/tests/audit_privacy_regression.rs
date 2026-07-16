@@ -53,7 +53,10 @@ async fn purge_click_pii_erases_identifiers_keeps_aggregates() {
     let purged = opn_onl_backend::utils::privacy::purge_click_pii_for_user(&db, user_id)
         .await
         .expect("purge");
-    assert!(purged >= 1, "expected to purge >= 1 click event, got {purged}");
+    assert!(
+        purged >= 1,
+        "expected to purge >= 1 click event, got {purged}"
+    );
 
     let after = click_events::Entity::find_by_id(click.id)
         .one(&db)

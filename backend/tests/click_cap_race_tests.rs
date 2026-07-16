@@ -259,5 +259,8 @@ async fn verify_endpoint_consumes_burn_link_exactly_once() {
         .expect("follow-up")
         .status()
         .as_u16();
-    assert_eq!(status, 410, "burned link must be 410 after verify consumed it");
+    assert_eq!(
+        status, 410,
+        "burned link must be 410 after verify consumed it"
+    );
 }

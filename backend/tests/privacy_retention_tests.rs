@@ -22,13 +22,20 @@ async fn retention_sweep_anonymizes_only_expired_click_identifiers() {
     let user_id = res.json::<serde_json::Value>()["user_id"].as_i64().unwrap() as i32;
     common::mark_email_verified(&db, user_id).await;
 
-    let token = res.json::<serde_json::Value>()["token"].as_str().unwrap().to_string();
+    let token = res.json::<serde_json::Value>()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let res = server
         .post("/links")
         .authorization_bearer(&token)
         .json(&json!({ "original_url": "https://example.com/retention" }))
         .await;
-    assert!(res.status_code().is_success(), "create link failed: {}", res.text());
+    assert!(
+        res.status_code().is_success(),
+        "create link failed: {}",
+        res.text()
+    );
     let link_id = res.json::<serde_json::Value>()["id"].as_i64().unwrap();
 
     // One click event past the retention window, one fresh.
@@ -42,8 +49,13 @@ async fn retention_sweep_anonymizes_only_expired_click_identifiers() {
     .await
     .expect("failed to insert click fixtures");
 
-    let affected = scrub_expired_click_pii(&db, 396).await.expect("sweep failed");
-    assert_eq!(affected, 1, "exactly the expired event should be anonymized");
+    let affected = scrub_expired_click_pii(&db, 396)
+        .await
+        .expect("sweep failed");
+    assert_eq!(
+        affected, 1,
+        "exactly the expired event should be anonymized"
+    );
 
     let rows = db
         .query_all(Statement::from_sql_and_values(
@@ -73,6 +85,8 @@ async fn retention_sweep_anonymizes_only_expired_click_identifiers() {
     assert_eq!(new_ua.as_deref(), Some("new-agent"));
 
     // Idempotent: nothing new to anonymize on a second run.
-    let affected = scrub_expired_click_pii(&db, 396).await.expect("second sweep failed");
+    let affected = scrub_expired_click_pii(&db, 396)
+        .await
+        .expect("second sweep failed");
     assert_eq!(affected, 0);
 }

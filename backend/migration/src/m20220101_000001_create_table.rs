@@ -19,9 +19,18 @@ impl MigrationTrait for Migration {
                             .auto_increment()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(Users::Email).string().not_null().unique_key())
+                    .col(
+                        ColumnDef::new(Users::Email)
+                            .string()
+                            .not_null()
+                            .unique_key(),
+                    )
                     .col(ColumnDef::new(Users::PasswordHash).string().not_null())
-                    .col(ColumnDef::new(Users::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(Users::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .to_owned(),
             )
             .await?;
@@ -42,7 +51,11 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Links::Code).string().not_null().unique_key())
                     .col(ColumnDef::new(Links::OriginalUrl).string().not_null())
                     .col(ColumnDef::new(Links::UserId).integer().null())
-                    .col(ColumnDef::new(Links::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(Links::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .col(ColumnDef::new(Links::ClickCount).integer().default(0))
                     .foreign_key(
                         ForeignKey::create()

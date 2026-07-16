@@ -37,7 +37,10 @@ async fn create_link(server: &axum_test::TestServer, token: &str, url: &str) -> 
         .json(&json!({ "original_url": url }))
         .await;
     assert_eq!(res.status_code(), 201, "create link failed: {}", res.text());
-    res.json::<Value>()["code"].as_str().expect("code").to_string()
+    res.json::<Value>()["code"]
+        .as_str()
+        .expect("code")
+        .to_string()
 }
 
 /// Theme A: the helper handlers use to know which cached redirects to drop must
@@ -59,10 +62,7 @@ async fn active_link_codes_track_soft_delete() {
     );
 
     // Soft-delete one link through the API; the helper must stop listing it.
-    let res = server
-        .get("/links")
-        .authorization_bearer(&token)
-        .await;
+    let res = server.get("/links").authorization_bearer(&token).await;
     let id_a = res
         .json::<Value>()
         .as_array()

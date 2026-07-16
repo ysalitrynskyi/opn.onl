@@ -11,11 +11,7 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(Passkeys::Table)
-                    .add_column_if_not_exists(
-                        ColumnDef::new(Passkeys::Name)
-                            .string()
-                            .null()
-                    )
+                    .add_column_if_not_exists(ColumnDef::new(Passkeys::Name).string().null())
                     .to_owned(),
             )
             .await
@@ -38,8 +34,3 @@ enum Passkeys {
     Table,
     Name,
 }
-
-
-
-
-

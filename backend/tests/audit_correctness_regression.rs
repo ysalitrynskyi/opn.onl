@@ -65,8 +65,16 @@ async fn tag_link_count_excludes_soft_deleted_links() {
         assert_eq!(res.status_code(), 200, "tag link {id}: {}", res.text());
     }
 
-    let tags: Value = server.get("/tags").authorization_bearer(&token).await.json();
-    assert_eq!(tag_link_count(&tags, tag_id), 2, "both tagged links should count");
+    let tags: Value = server
+        .get("/tags")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert_eq!(
+        tag_link_count(&tags, tag_id),
+        2,
+        "both tagged links should count"
+    );
 
     // Soft-delete one link; the tag count must drop to 1.
     let del = server
@@ -76,7 +84,11 @@ async fn tag_link_count_excludes_soft_deleted_links() {
         .await;
     assert_eq!(del.status_code(), 200, "bulk delete: {}", del.text());
 
-    let tags: Value = server.get("/tags").authorization_bearer(&token).await.json();
+    let tags: Value = server
+        .get("/tags")
+        .authorization_bearer(&token)
+        .await
+        .json();
     assert_eq!(
         tag_link_count(&tags, tag_id),
         1,
@@ -113,7 +125,11 @@ async fn deleted_alias_cannot_be_reused() {
         .get(&format!("/links/check-code?code={alias}"))
         .await
         .json();
-    assert_eq!(cc["available"].as_bool(), Some(false), "deleted alias must not be available");
+    assert_eq!(
+        cc["available"].as_bool(),
+        Some(false),
+        "deleted alias must not be available"
+    );
 
     // Reuse must be a clean 409, never a 500 from the UNIQUE violation.
     let reuse = server
@@ -149,7 +165,12 @@ async fn change_password_rotates_token_without_logging_out() {
         .authorization_bearer(&old_token)
         .json(&json!({ "current_password": "password123", "new_password": "newpassword456" }))
         .await;
-    assert_eq!(changed.status_code(), 200, "change password: {}", changed.text());
+    assert_eq!(
+        changed.status_code(),
+        200,
+        "change password: {}",
+        changed.text()
+    );
     let new_token = changed.json::<Value>()["token"]
         .as_str()
         .expect("a fresh token in the change-password response")
@@ -157,9 +178,24 @@ async fn change_password_rotates_token_without_logging_out() {
     assert_ne!(new_token, old_token, "a new token must be issued");
 
     // Old token is revoked; new token works.
-    let with_old = server.get("/auth/me").authorization_bearer(&old_token).await;
-    assert_eq!(with_old.status_code(), 401, "old token must be revoked after password change");
+    let with_old = server
+        .get("/auth/me")
+        .authorization_bearer(&old_token)
+        .await;
+    assert_eq!(
+        with_old.status_code(),
+        401,
+        "old token must be revoked after password change"
+    );
 
-    let with_new = server.get("/auth/me").authorization_bearer(&new_token).await;
-    assert_eq!(with_new.status_code(), 200, "fresh token must keep the session: {}", with_new.text());
+    let with_new = server
+        .get("/auth/me")
+        .authorization_bearer(&new_token)
+        .await;
+    assert_eq!(
+        with_new.status_code(),
+        200,
+        "fresh token must keep the session: {}",
+        with_new.text()
+    );
 }

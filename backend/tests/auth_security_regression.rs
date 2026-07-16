@@ -121,7 +121,9 @@ async fn credential_creation_requires_a_verified_jwt() {
         .json(&json!({ "name": "verified key" }))
         .await;
     assert_eq!(res.status_code(), 201, "create API key: {}", res.text());
-    let api_key = res.json::<Value>()["key"]
+    let created_key = res.json::<Value>();
+    let api_key_id = created_key["id"].as_i64().expect("API key id");
+    let api_key = created_key["key"]
         .as_str()
         .expect("raw API key")
         .to_string();
@@ -134,6 +136,26 @@ async fn credential_creation_requires_a_verified_jwt() {
             .await
             .status_code(),
         200
+    );
+
+    assert_eq!(
+        server
+            .get("/auth/api-keys")
+            .authorization_bearer(&api_key)
+            .await
+            .status_code(),
+        401,
+        "API key listed API keys"
+    );
+
+    assert_eq!(
+        server
+            .delete(&format!("/auth/api-keys/{api_key_id}"))
+            .authorization_bearer(&api_key)
+            .await
+            .status_code(),
+        401,
+        "API key revoked API keys"
     );
 
     let res = server

@@ -11,31 +11,11 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(Users::Table)
-                    .add_column_if_not_exists(
-                        ColumnDef::new(Users::DisplayName)
-                            .string()
-                            .null()
-                    )
-                    .add_column_if_not_exists(
-                        ColumnDef::new(Users::Bio)
-                            .text()
-                            .null()
-                    )
-                    .add_column_if_not_exists(
-                        ColumnDef::new(Users::Website)
-                            .string()
-                            .null()
-                    )
-                    .add_column_if_not_exists(
-                        ColumnDef::new(Users::AvatarUrl)
-                            .string()
-                            .null()
-                    )
-                    .add_column_if_not_exists(
-                        ColumnDef::new(Users::Location)
-                            .string()
-                            .null()
-                    )
+                    .add_column_if_not_exists(ColumnDef::new(Users::DisplayName).string().null())
+                    .add_column_if_not_exists(ColumnDef::new(Users::Bio).text().null())
+                    .add_column_if_not_exists(ColumnDef::new(Users::Website).string().null())
+                    .add_column_if_not_exists(ColumnDef::new(Users::AvatarUrl).string().null())
+                    .add_column_if_not_exists(ColumnDef::new(Users::Location).string().null())
                     .to_owned(),
             )
             .await
@@ -66,6 +46,3 @@ enum Users {
     AvatarUrl,
     Location,
 }
-
-
-

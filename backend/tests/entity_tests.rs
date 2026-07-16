@@ -69,7 +69,10 @@ fn not_yet_started_link_is_inactive_with_reason() {
         ..base_link()
     };
     assert!(!link.is_active());
-    assert_eq!(link.inactive_reason(), Some("Link is scheduled to activate later"));
+    assert_eq!(
+        link.inactive_reason(),
+        Some("Link is scheduled to activate later")
+    );
 }
 
 #[test]
@@ -84,11 +87,22 @@ fn link_within_its_schedule_is_active() {
 
 #[test]
 fn max_clicks_boundary() {
-    let reached = links::Model { max_clicks: Some(5), click_count: 5, ..base_link() };
+    let reached = links::Model {
+        max_clicks: Some(5),
+        click_count: 5,
+        ..base_link()
+    };
     assert!(!reached.is_active(), "at the cap the link is inactive");
 
-    let under = links::Model { max_clicks: Some(5), click_count: 4, ..base_link() };
-    assert!(under.is_active(), "one click below the cap the link is still active");
+    let under = links::Model {
+        max_clicks: Some(5),
+        click_count: 4,
+        ..base_link()
+    };
+    assert!(
+        under.is_active(),
+        "one click below the cap the link is still active"
+    );
 }
 
 #[test]
@@ -99,7 +113,10 @@ fn burned_one_time_link_is_inactive_with_reason() {
         ..base_link()
     };
     assert!(!link.is_active());
-    assert_eq!(link.inactive_reason(), Some("This one-time link has already been opened"));
+    assert_eq!(
+        link.inactive_reason(),
+        Some("This one-time link has already been opened")
+    );
 }
 
 #[test]
@@ -111,5 +128,8 @@ fn one_time_link_at_cap_reports_burn_reason_over_max_clicks() {
         click_count: 1,
         ..base_link()
     };
-    assert_eq!(link.inactive_reason(), Some("This one-time link has already been opened"));
+    assert_eq!(
+        link.inactive_reason(),
+        Some("This one-time link has already been opened")
+    );
 }

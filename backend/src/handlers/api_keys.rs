@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::entity::{api_keys, users};
-use crate::handlers::links::{
-    get_jwt_auth_from_header, get_user_id_from_header, hash_api_key,
-};
+use crate::handlers::links::{get_jwt_auth_from_header, hash_api_key};
 use crate::AppState;
 
 const MAX_API_KEYS: u64 = 20;
@@ -68,7 +66,11 @@ pub async fn create_api_key(
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> impl IntoResponse {
     if !api_keys_enabled() {
-        return (StatusCode::FORBIDDEN, "API keys are disabled on this instance").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "API keys are disabled on this instance",
+        )
+            .into_response();
     }
     let auth = match get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
@@ -78,7 +80,10 @@ pub async fn create_api_key(
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key")
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create API key",
+            )
                 .into_response()
         }
     };
@@ -143,12 +148,19 @@ pub async fn create_api_key(
         Ok(rec) => rec,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key")
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create API key",
+            )
                 .into_response();
         }
     };
     if txn.commit().await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create API key",
+        )
+            .into_response();
     }
     (
         StatusCode::CREATED,
@@ -175,12 +187,12 @@ pub async fn create_api_key(
     security(("bearer_auth" = []))
 )]
 pub async fn list_api_keys(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
     let keys = api_keys::Entity::find()
-        .filter(api_keys::Column::UserId.eq(user_id))
+        .filter(api_keys::Column::UserId.eq(auth.user_id))
         .order_by_desc(api_keys::Column::CreatedAt)
         .all(&state.db)
         .await
@@ -216,18 +228,22 @@ pub async fn delete_api_key(
     Path(id): Path<i32>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match get_user_id_from_header(&state.db, &headers).await {
-        Some(id) => id,
+    let auth = match get_jwt_auth_from_header(&state.db, &headers).await {
+        Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     };
     let res = api_keys::Entity::delete_many()
         .filter(api_keys::Column::Id.eq(id))
-        .filter(api_keys::Column::UserId.eq(user_id))
+        .filter(api_keys::Column::UserId.eq(auth.user_id))
         .exec(&state.db)
         .await;
     match res {
         Ok(r) if r.rows_affected > 0 => (StatusCode::OK, "API key revoked").into_response(),
         Ok(_) => (StatusCode::NOT_FOUND, "API key not found").into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to revoke API key").into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to revoke API key",
+        )
+            .into_response(),
     }
 }

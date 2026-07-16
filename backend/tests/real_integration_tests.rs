@@ -27,7 +27,10 @@ async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) 
     );
     let body: Value = res.json();
     (
-        body["token"].as_str().expect("token in response").to_string(),
+        body["token"]
+            .as_str()
+            .expect("token in response")
+            .to_string(),
         body["user_id"].as_i64().expect("user_id in response") as i32,
     )
 }
@@ -76,12 +79,7 @@ async fn register_login_create_link_redirect() {
     common::mark_email_verified(&db, user_id).await;
 
     let destination = "https://example.com/integration-test-target";
-    let (_, code) = create_link(
-        &server,
-        &token,
-        json!({ "original_url": destination }),
-    )
-    .await;
+    let (_, code) = create_link(&server, &token, json!({ "original_url": destination })).await;
 
     // The public redirect must send visitors to the destination.
     let res = server.get(&format!("/{code}")).await;
@@ -105,7 +103,8 @@ async fn user_cannot_modify_another_users_link() {
     let (token_a, user_a) = register(&server, &common::unique_email()).await;
     common::mark_email_verified(&db, user_a).await;
     let destination = "https://example.com/owned-by-a";
-    let (link_id, code) = create_link(&server, &token_a, json!({ "original_url": destination })).await;
+    let (link_id, code) =
+        create_link(&server, &token_a, json!({ "original_url": destination })).await;
 
     let (token_b, _) = register(&server, &common::unique_email()).await;
 
@@ -115,14 +114,24 @@ async fn user_cannot_modify_another_users_link() {
         .authorization_bearer(&token_b)
         .json(&json!({ "original_url": "https://evil.example.com" }))
         .await;
-    assert_eq!(res.status_code(), 403, "update as non-owner: {}", res.text());
+    assert_eq!(
+        res.status_code(),
+        403,
+        "update as non-owner: {}",
+        res.text()
+    );
 
     // B tries to delete A's link.
     let res = server
         .delete(&format!("/links/{link_id}"))
         .authorization_bearer(&token_b)
         .await;
-    assert_eq!(res.status_code(), 403, "delete as non-owner: {}", res.text());
+    assert_eq!(
+        res.status_code(),
+        403,
+        "delete as non-owner: {}",
+        res.text()
+    );
 
     // A's link is untouched and still redirects to the original destination.
     let res = server.get(&format!("/{code}")).await;
@@ -130,6 +139,38 @@ async fn user_cannot_modify_another_users_link() {
     assert_eq!(
         res.headers().get("location").unwrap().to_str().unwrap(),
         destination
+    );
+}
+
+#[tokio::test]
+async fn deleted_link_cannot_be_updated() {
+    let (server, db) = common::spawn_real_app().await;
+
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+    let (link_id, _code) = create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://example.com/deleted" }),
+    )
+    .await;
+
+    let res = server
+        .delete(&format!("/links/{link_id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(res.status_code(), 200, "delete link: {}", res.text());
+
+    let res = server
+        .put(&format!("/links/{link_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://example.com/revived" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        404,
+        "soft-deleted link must not be updateable: {}",
+        res.text()
     );
 }
 

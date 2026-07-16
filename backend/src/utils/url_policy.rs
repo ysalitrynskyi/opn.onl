@@ -16,11 +16,9 @@
 /// trust via `mshta.exe`.
 const DANGEROUS_EXTENSIONS: &[&str] = &[
     // Windows executables & script hosts
-    "hta", "exe", "scr", "bat", "cmd", "com", "pif", "cpl", "dll", "msc",
-    "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "sct", "gadget",
-    // Installers / packages
-    "msi", "msp", "msix", "appx", "jar", "jnlp", "reg", "inf", "lnk", "apk",
-    "deb", "rpm", "run",
+    "hta", "exe", "scr", "bat", "cmd", "com", "pif", "cpl", "dll", "msc", "ps1", "psm1", "vbs",
+    "vbe", "js", "jse", "wsf", "wsh", "sct", "gadget", // Installers / packages
+    "msi", "msp", "msix", "appx", "jar", "jnlp", "reg", "inf", "lnk", "apk", "deb", "rpm", "run",
     // Disk images that commonly wrap a payload
     "dmg", "iso",
 ];
@@ -40,11 +38,7 @@ pub fn dangerous_extension(url: &str) -> Option<&'static str> {
         Ok(u) => u.path().to_string(),
         // Fall back to the raw string so a not-quite-parseable URL is still
         // screened; strip any query/fragment ourselves.
-        Err(_) => url
-            .split(['?', '#'])
-            .next()
-            .unwrap_or(url)
-            .to_string(),
+        Err(_) => url.split(['?', '#']).next().unwrap_or(url).to_string(),
     };
 
     // Percent-decode so `%2ehta` / `foo%2Ehta` can't smuggle the extension past.
@@ -62,7 +56,9 @@ pub fn dangerous_extension(url: &str) -> Option<&'static str> {
 /// strong abuse signal (reputation-free, TLS-less payload hosting).
 pub fn host_is_raw_ip(url: &str) -> bool {
     matches!(
-        url::Url::parse(url).ok().and_then(|u| u.host().map(|h| h.to_owned())),
+        url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host().map(|h| h.to_owned())),
         Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_))
     )
 }

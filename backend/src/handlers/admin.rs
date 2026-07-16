@@ -5,9 +5,9 @@ use axum::{
     Json,
 };
 use chrono::{Duration, Utc};
-use sea_orm::*;
 use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::sea_query::Expr;
+use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::{IntoParams, ToSchema};
@@ -84,24 +84,33 @@ pub struct BackupListResponse {
 }
 
 /// Check if user is admin
-async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i32, (StatusCode, Json<AdminResponse>)> {
+async fn require_admin(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<i32, (StatusCode, Json<AdminResponse>)> {
     let auth_header = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
 
     let token = auth_header.ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, Json(AdminResponse {
-            success: false,
-            message: "Unauthorized".to_string(),
-        }))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(AdminResponse {
+                success: false,
+                message: "Unauthorized".to_string(),
+            }),
+        )
     })?;
 
     let claims = decode_jwt(token).map_err(|_| {
-        (StatusCode::UNAUTHORIZED, Json(AdminResponse {
-            success: false,
-            message: "Invalid token".to_string(),
-        }))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(AdminResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+            }),
+        )
     })?;
 
     // Check if user is admin. Exclude soft-deleted users so a deleted admin's
@@ -111,16 +120,22 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i32, (St
         .one(&state.db)
         .await
         .map_err(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Database error".to_string(),
-            }))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Database error".to_string(),
+                }),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, Json(AdminResponse {
-                success: false,
-                message: "User not found".to_string(),
-            }))
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(AdminResponse {
+                    success: false,
+                    message: "User not found".to_string(),
+                }),
+            )
         })?;
 
     // Honor JWT revocation on the admin surface too. A password change/reset
@@ -129,17 +144,23 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i32, (St
     // pre-reset admin token would keep authorizing /admin/* actions for the full
     // token lifetime even after the admin reset their password to lock it out.
     if user.token_version != claims.token_version {
-        return Err((StatusCode::UNAUTHORIZED, Json(AdminResponse {
-            success: false,
-            message: "Token has been revoked".to_string(),
-        })));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(AdminResponse {
+                success: false,
+                message: "Token has been revoked".to_string(),
+            }),
+        ));
     }
 
     if !user.is_admin {
-        return Err((StatusCode::FORBIDDEN, Json(AdminResponse {
-            success: false,
-            message: "Admin access required".to_string(),
-        })));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(AdminResponse {
+                success: false,
+                message: "Admin access required".to_string(),
+            }),
+        ));
     }
 
     Ok(claims.user_id)
@@ -215,10 +236,14 @@ pub async fn delete_user(
 
     // SECURITY: Prevent admin from deleting themselves
     if admin_id == user_id {
-        return (StatusCode::FORBIDDEN, Json(AdminResponse {
-            success: false,
-            message: "Cannot delete your own account".to_string(),
-        })).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(AdminResponse {
+                success: false,
+                message: "Cannot delete your own account".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let user = match users::Entity::find_by_id(user_id).one(&state.db).await {
@@ -464,19 +489,27 @@ pub async fn hard_delete_user(
 
     // SECURITY: Prevent admin from hard deleting themselves
     if admin_id == user_id {
-        return (StatusCode::FORBIDDEN, Json(AdminResponse {
-            success: false,
-            message: "Cannot permanently delete your own account".to_string(),
-        })).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(AdminResponse {
+                success: false,
+                message: "Cannot permanently delete your own account".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to delete user".to_string(),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -489,10 +522,14 @@ pub async fn hard_delete_user(
         Ok(split) => split,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to delete user".to_string(),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -528,22 +565,37 @@ pub async fn hard_delete_user(
     match result {
         Ok(res) if res.rows_affected > 0 => {
             if txn.commit().await.is_err() {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                    success: false,
-                    message: "Failed to delete user".to_string(),
-                })).into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(AdminResponse {
+                        success: false,
+                        message: "Failed to delete user".to_string(),
+                    }),
+                )
+                    .into_response();
             }
-            (StatusCode::OK, Json(AdminResponse {
-                success: true,
-                message: format!("User {} permanently deleted with all associated data", user_id),
-            })).into_response()
+            (
+                StatusCode::OK,
+                Json(AdminResponse {
+                    success: true,
+                    message: format!(
+                        "User {} permanently deleted with all associated data",
+                        user_id
+                    ),
+                }),
+            )
+                .into_response()
         }
         Ok(_) => {
             let _ = txn.rollback().await;
-            (StatusCode::NOT_FOUND, Json(AdminResponse {
-                success: false,
-                message: "User not found".to_string(),
-            })).into_response()
+            (
+                StatusCode::NOT_FOUND,
+                Json(AdminResponse {
+                    success: false,
+                    message: "User not found".to_string(),
+                }),
+            )
+                .into_response()
         }
         Err(_) => {
             let _ = txn.rollback().await;
@@ -758,37 +810,42 @@ pub async fn restore_user(
     tag = "Admin",
     security(("bearer_auth" = []))
 )]
-pub async fn create_backup(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn create_backup(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     if let Err(e) = require_admin(&state, &headers).await {
         return e.into_response();
     }
 
     if !state.backup.is_configured() {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(BackupResponse {
-            success: false,
-            filename: None,
-            message: "Backup service not configured".to_string(),
-        })).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(BackupResponse {
+                success: false,
+                filename: None,
+                message: "Backup service not configured".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     match state.backup.create_backup().await {
-        Ok(filename) => {
-            (StatusCode::OK, Json(BackupResponse {
+        Ok(filename) => (
+            StatusCode::OK,
+            Json(BackupResponse {
                 success: true,
                 filename: Some(filename),
                 message: "Backup created successfully".to_string(),
-            })).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(BackupResponse {
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BackupResponse {
                 success: false,
                 filename: None,
                 message: format!("Backup failed: {}", e),
-            })).into_response()
-        }
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -803,31 +860,32 @@ pub async fn create_backup(
     tag = "Admin",
     security(("bearer_auth" = []))
 )]
-pub async fn list_backups(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     if let Err(e) = require_admin(&state, &headers).await {
         return e.into_response();
     }
 
     if !state.backup.is_configured() {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(AdminResponse {
-            success: false,
-            message: "Backup service not configured".to_string(),
-        })).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(AdminResponse {
+                success: false,
+                message: "Backup service not configured".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     match state.backup.list_backups().await {
-        Ok(backups) => {
-            (StatusCode::OK, Json(BackupListResponse { backups })).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+        Ok(backups) => (StatusCode::OK, Json(BackupListResponse { backups })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
                 success: false,
                 message: format!("Failed to list backups: {}", e),
-            })).into_response()
-        }
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -855,25 +913,33 @@ pub async fn cleanup_backups(
     }
 
     if !state.backup.is_configured() {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(AdminResponse {
-            success: false,
-            message: "Backup service not configured".to_string(),
-        })).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(AdminResponse {
+                success: false,
+                message: "Backup service not configured".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     match state.backup.cleanup_old_backups(keep_count).await {
-        Ok(deleted) => {
-            (StatusCode::OK, Json(AdminResponse {
+        Ok(deleted) => (
+            StatusCode::OK,
+            Json(AdminResponse {
                 success: true,
                 message: format!("Cleaned up {} old backups", deleted),
-            })).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
                 success: false,
                 message: format!("Cleanup failed: {}", e),
-            })).into_response()
-        }
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -904,10 +970,13 @@ pub async fn make_admin(
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to update user".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to update user".to_string(),
+                }),
+            )
                 .into_response()
         }
     };
@@ -923,43 +992,61 @@ pub async fn make_admin(
             Some(version) => version,
             None => {
                 let _ = txn.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                    success: false,
-                    message: "Failed to update user".to_string(),
-                }))
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(AdminResponse {
+                        success: false,
+                        message: "Failed to update user".to_string(),
+                    }),
+                )
                     .into_response();
             }
         };
         let mut active_user: users::ActiveModel = user.into();
         active_user.is_admin = Set(true);
         active_user.token_version = Set(next_token_version);
-        
+
         if active_user.update(&txn).await.is_err() {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to update user".to_string(),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to update user".to_string(),
+                }),
+            )
+                .into_response();
         }
         if txn.commit().await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to update user".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to update user".to_string(),
+                }),
+            )
                 .into_response();
         }
 
-        return (StatusCode::OK, Json(AdminResponse {
-            success: true,
-            message: format!("User {} is now an admin", user_id),
-        })).into_response();
+        return (
+            StatusCode::OK,
+            Json(AdminResponse {
+                success: true,
+                message: format!("User {} is now an admin", user_id),
+            }),
+        )
+            .into_response();
     }
 
     let _ = txn.rollback().await;
-    (StatusCode::NOT_FOUND, Json(AdminResponse {
-        success: false,
-        message: "User not found".to_string(),
-    })).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(AdminResponse {
+            success: false,
+            message: "User not found".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// Remove admin status from a user (admin only)
@@ -989,10 +1076,14 @@ pub async fn remove_admin(
 
     // SECURITY: Prevent admin from demoting themselves
     if admin_id == user_id {
-        return (StatusCode::FORBIDDEN, Json(AdminResponse {
-            success: false,
-            message: "Cannot remove your own admin status".to_string(),
-        })).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(AdminResponse {
+                success: false,
+                message: "Cannot remove your own admin status".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let user = users::Entity::find_by_id(user_id)
@@ -1003,32 +1094,48 @@ pub async fn remove_admin(
 
     if let Some(user) = user {
         if !user.is_admin {
-            return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-                success: false,
-                message: "User is not an admin".to_string(),
-            })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(AdminResponse {
+                    success: false,
+                    message: "User is not an admin".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         let mut active_user: users::ActiveModel = user.into();
         active_user.is_admin = Set(false);
-        
+
         if active_user.update(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to update user".to_string(),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to update user".to_string(),
+                }),
+            )
+                .into_response();
         }
 
-        return (StatusCode::OK, Json(AdminResponse {
-            success: true,
-            message: format!("Admin status removed from user {}", user_id),
-        })).into_response();
+        return (
+            StatusCode::OK,
+            Json(AdminResponse {
+                success: true,
+                message: format!("Admin status removed from user {}", user_id),
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::NOT_FOUND, Json(AdminResponse {
-        success: false,
-        message: "User not found".to_string(),
-    })).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(AdminResponse {
+            success: false,
+            message: "User not found".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 // ==================== BLOCKED LINKS/DOMAINS ====================
@@ -1146,26 +1253,38 @@ pub async fn get_admin_stats(
     let total_users = users::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let active_users = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
     let verified_users = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::EmailVerified.eq(true))
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
     let admin_users = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::IsAdmin.eq(true))
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
     let users_today = users::Entity::find()
         .filter(users::Column::CreatedAt.gte(day_ago))
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
 
     let total_links = links::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
     let active_links = links::Entity::find()
         .filter(links::Column::DeletedAt.is_null())
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
     let links_today = links::Entity::find()
         .filter(links::Column::CreatedAt.gte(day_ago))
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
 
     // Aggregate in SQL — loading every link row to sum click counts does not
     // survive a table with millions of rows.
@@ -1182,33 +1301,50 @@ pub async fn get_admin_stats(
 
     let clicks_today = click_events::Entity::find()
         .filter(click_events::Column::CreatedAt.gte(day_ago))
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
 
-    let total_orgs = organizations::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
-    let blocked_links_count = blocked_links::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
-    let blocked_domains_count = blocked_domains::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
+    let total_orgs = organizations::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
+    let blocked_links_count = blocked_links::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
+    let blocked_domains_count = blocked_domains::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
 
     let suspicious_links_count = links::Entity::find()
         .filter(links::Column::DeletedAt.is_null())
         .filter(suspicious_sql_condition())
-        .count(&state.db).await.unwrap_or(0) as i64;
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
 
-    (StatusCode::OK, Json(AdminStatsResponse {
-        total_users,
-        active_users,
-        verified_users,
-        admin_users,
-        total_links,
-        active_links,
-        total_clicks,
-        total_orgs,
-        users_today,
-        links_today,
-        clicks_today,
-        blocked_links_count,
-        blocked_domains_count,
-        suspicious_links_count,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(AdminStatsResponse {
+            total_users,
+            active_users,
+            verified_users,
+            admin_users,
+            total_links,
+            active_links,
+            total_clicks,
+            total_orgs,
+            users_today,
+            links_today,
+            clicks_today,
+            blocked_links_count,
+            blocked_domains_count,
+            suspicious_links_count,
+        }),
+    )
+        .into_response()
 }
 
 /// Block a URL (admin only)
@@ -1240,12 +1376,16 @@ pub async fn block_link(
         .await
         .ok()
         .flatten();
-    
+
     if existing.is_some() {
-        return (StatusCode::CONFLICT, Json(AdminResponse {
-            success: false,
-            message: "URL is already blocked".to_string(),
-        })).into_response();
+        return (
+            StatusCode::CONFLICT,
+            Json(AdminResponse {
+                success: false,
+                message: "URL is already blocked".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let blocked = blocked_links::ActiveModel {
@@ -1259,20 +1399,26 @@ pub async fn block_link(
         Ok(result) => {
             // Make the block retroactive for any already-cached redirects.
             invalidate_cache_for_url(&state, &payload.url).await;
-            (StatusCode::CREATED, Json(BlockedLinkResponse {
-                id: result.id,
-                url: result.url,
-                reason: result.reason,
-                blocked_by: result.blocked_by,
-                created_at: result.created_at.to_string(),
-            })).into_response()
+            (
+                StatusCode::CREATED,
+                Json(BlockedLinkResponse {
+                    id: result.id,
+                    url: result.url,
+                    reason: result.reason,
+                    blocked_by: result.blocked_by,
+                    created_at: result.created_at.to_string(),
+                }),
+            )
+                .into_response()
         }
-        Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
                 success: false,
                 message: "Failed to block URL".to_string(),
-            })).into_response()
-        }
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -1301,13 +1447,16 @@ pub async fn get_blocked_links(
         .await
         .unwrap_or_default();
 
-    let responses: Vec<BlockedLinkResponse> = blocked.into_iter().map(|b| BlockedLinkResponse {
-        id: b.id,
-        url: b.url,
-        reason: b.reason,
-        blocked_by: b.blocked_by,
-        created_at: b.created_at.to_string(),
-    }).collect();
+    let responses: Vec<BlockedLinkResponse> = blocked
+        .into_iter()
+        .map(|b| BlockedLinkResponse {
+            id: b.id,
+            url: b.url,
+            reason: b.reason,
+            blocked_by: b.blocked_by,
+            created_at: b.created_at.to_string(),
+        })
+        .collect();
 
     (StatusCode::OK, Json(responses)).into_response()
 }
@@ -1341,18 +1490,22 @@ pub async fn unblock_link(
         .await;
 
     match result {
-        Ok(res) if res.rows_affected > 0 => {
-            (StatusCode::OK, Json(AdminResponse {
+        Ok(res) if res.rows_affected > 0 => (
+            StatusCode::OK,
+            Json(AdminResponse {
                 success: true,
                 message: "URL unblocked".to_string(),
-            })).into_response()
-        }
-        _ => {
-            (StatusCode::NOT_FOUND, Json(AdminResponse {
+            }),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(AdminResponse {
                 success: false,
                 message: "Blocked URL not found".to_string(),
-            })).into_response()
-        }
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -1380,7 +1533,8 @@ pub async fn block_domain(
     };
 
     // Lowercase first so an uppercase scheme (HTTPS://) is still stripped.
-    let domain = payload.domain
+    let domain = payload
+        .domain
         .to_lowercase()
         .replace("https://", "")
         .replace("http://", "")
@@ -1394,12 +1548,16 @@ pub async fn block_domain(
         .await
         .ok()
         .flatten();
-    
+
     if existing.is_some() {
-        return (StatusCode::CONFLICT, Json(AdminResponse {
-            success: false,
-            message: "Domain is already blocked".to_string(),
-        })).into_response();
+        return (
+            StatusCode::CONFLICT,
+            Json(AdminResponse {
+                success: false,
+                message: "Domain is already blocked".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let blocked = blocked_domains::ActiveModel {
@@ -1413,20 +1571,26 @@ pub async fn block_domain(
         Ok(result) => {
             // Make the block retroactive for any already-cached redirects.
             invalidate_cache_for_domain(&state, &domain).await;
-            (StatusCode::CREATED, Json(BlockedDomainResponse {
-                id: result.id,
-                domain: result.domain,
-                reason: result.reason,
-                blocked_by: result.blocked_by,
-                created_at: result.created_at.to_string(),
-            })).into_response()
+            (
+                StatusCode::CREATED,
+                Json(BlockedDomainResponse {
+                    id: result.id,
+                    domain: result.domain,
+                    reason: result.reason,
+                    blocked_by: result.blocked_by,
+                    created_at: result.created_at.to_string(),
+                }),
+            )
+                .into_response()
         }
-        Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
                 success: false,
                 message: "Failed to block domain".to_string(),
-            })).into_response()
-        }
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -1455,13 +1619,16 @@ pub async fn get_blocked_domains(
         .await
         .unwrap_or_default();
 
-    let responses: Vec<BlockedDomainResponse> = blocked.into_iter().map(|b| BlockedDomainResponse {
-        id: b.id,
-        domain: b.domain,
-        reason: b.reason,
-        blocked_by: b.blocked_by,
-        created_at: b.created_at.to_string(),
-    }).collect();
+    let responses: Vec<BlockedDomainResponse> = blocked
+        .into_iter()
+        .map(|b| BlockedDomainResponse {
+            id: b.id,
+            domain: b.domain,
+            reason: b.reason,
+            blocked_by: b.blocked_by,
+            created_at: b.created_at.to_string(),
+        })
+        .collect();
 
     (StatusCode::OK, Json(responses)).into_response()
 }
@@ -1495,18 +1662,22 @@ pub async fn unblock_domain(
         .await;
 
     match result {
-        Ok(res) if res.rows_affected > 0 => {
-            (StatusCode::OK, Json(AdminResponse {
+        Ok(res) if res.rows_affected > 0 => (
+            StatusCode::OK,
+            Json(AdminResponse {
                 success: true,
                 message: "Domain unblocked".to_string(),
-            })).into_response()
-        }
-        _ => {
-            (StatusCode::NOT_FOUND, Json(AdminResponse {
+            }),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(AdminResponse {
                 success: false,
                 message: "Blocked domain not found".to_string(),
-            })).into_response()
-        }
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -1551,7 +1722,12 @@ pub async fn get_all_users(
         _ => {}
     }
 
-    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(search) = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let pattern = ilike_pattern(search);
         finder = finder.filter(
             Condition::any()
@@ -1635,32 +1811,39 @@ pub async fn get_all_users(
         orgs_owned_counts.extend(rows);
     }
 
-    let responses: Vec<AdminUserResponse> = users_page.into_iter().map(|u| {
-        let (links_count, total_clicks) = link_stats.get(&u.id).copied().unwrap_or((0, 0));
-        AdminUserResponse {
-            id: u.id,
-            email: u.email,
-            display_name: u.display_name,
-            is_admin: u.is_admin,
-            email_verified: u.email_verified,
-            created_at: u.created_at.to_string(),
-            deleted_at: u.deleted_at.map(|d| d.to_string()),
-            bio_username: u.bio_username,
-            bio_enabled: u.bio_enabled,
-            links_count,
-            total_clicks,
-            api_keys_count: api_key_counts.get(&u.id).copied().unwrap_or(0),
-            passkeys_count: passkey_counts.get(&u.id).copied().unwrap_or(0),
-            orgs_owned: orgs_owned_counts.get(&u.id).copied().unwrap_or(0),
-        }
-    }).collect();
+    let responses: Vec<AdminUserResponse> = users_page
+        .into_iter()
+        .map(|u| {
+            let (links_count, total_clicks) = link_stats.get(&u.id).copied().unwrap_or((0, 0));
+            AdminUserResponse {
+                id: u.id,
+                email: u.email,
+                display_name: u.display_name,
+                is_admin: u.is_admin,
+                email_verified: u.email_verified,
+                created_at: u.created_at.to_string(),
+                deleted_at: u.deleted_at.map(|d| d.to_string()),
+                bio_username: u.bio_username,
+                bio_enabled: u.bio_enabled,
+                links_count,
+                total_clicks,
+                api_keys_count: api_key_counts.get(&u.id).copied().unwrap_or(0),
+                passkeys_count: passkey_counts.get(&u.id).copied().unwrap_or(0),
+                orgs_owned: orgs_owned_counts.get(&u.id).copied().unwrap_or(0),
+            }
+        })
+        .collect();
 
-    (StatusCode::OK, Json(AdminUsersListResponse {
-        users: responses,
-        total,
-        page,
-        per_page,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(AdminUsersListResponse {
+            users: responses,
+            total,
+            page,
+            per_page,
+        }),
+    )
+        .into_response()
 }
 
 // ==================== ADMIN: ALL LINKS ====================
@@ -1767,7 +1950,12 @@ pub async fn get_all_links(
         finder = finder.filter(suspicious_sql_condition());
     }
 
-    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(search) = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let pattern = ilike_pattern(search);
         finder = finder.filter(
             Condition::any()
@@ -1790,44 +1978,51 @@ pub async fn get_all_links(
     let total = paginator.num_items().await.unwrap_or(0);
     let rows = paginator.fetch_page(page - 1).await.unwrap_or_default();
 
-    let responses: Vec<AdminLinkResponse> = rows.into_iter().map(|(link, owner)| {
-        let is_active = link.is_active();
-        let inactive_reason = link.inactive_reason().map(str::to_string);
-        let suspicion_reason = crate::utils::url_policy::suspicion_reason(&link.original_url);
-        AdminLinkResponse {
-            id: link.id,
-            code: link.code,
-            original_url: link.original_url,
-            title: link.title,
-            user_id: link.user_id,
-            user_email: owner.map(|u| u.email),
-            org_id: link.org_id,
-            folder_id: link.folder_id,
-            click_count: link.click_count,
-            max_clicks: link.max_clicks,
-            created_at: link.created_at.to_string(),
-            starts_at: link.starts_at.map(|d| d.to_string()),
-            expires_at: link.expires_at.map(|d| d.to_string()),
-            deleted_at: link.deleted_at.map(|d| d.to_string()),
-            burned_at: link.burned_at.map(|d| d.to_string()),
-            is_pinned: link.is_pinned,
-            burn_after_reading: link.burn_after_reading,
-            safe_link_interstitial: link.safe_link_interstitial,
-            bio_visible: link.bio_visible,
-            has_password: link.password_hash.is_some(),
-            is_active,
-            inactive_reason,
-            suspicious: suspicion_reason.is_some(),
-            suspicion_reason,
-        }
-    }).collect();
+    let responses: Vec<AdminLinkResponse> = rows
+        .into_iter()
+        .map(|(link, owner)| {
+            let is_active = link.is_active();
+            let inactive_reason = link.inactive_reason().map(str::to_string);
+            let suspicion_reason = crate::utils::url_policy::suspicion_reason(&link.original_url);
+            AdminLinkResponse {
+                id: link.id,
+                code: link.code,
+                original_url: link.original_url,
+                title: link.title,
+                user_id: link.user_id,
+                user_email: owner.map(|u| u.email),
+                org_id: link.org_id,
+                folder_id: link.folder_id,
+                click_count: link.click_count,
+                max_clicks: link.max_clicks,
+                created_at: link.created_at.to_string(),
+                starts_at: link.starts_at.map(|d| d.to_string()),
+                expires_at: link.expires_at.map(|d| d.to_string()),
+                deleted_at: link.deleted_at.map(|d| d.to_string()),
+                burned_at: link.burned_at.map(|d| d.to_string()),
+                is_pinned: link.is_pinned,
+                burn_after_reading: link.burn_after_reading,
+                safe_link_interstitial: link.safe_link_interstitial,
+                bio_visible: link.bio_visible,
+                has_password: link.password_hash.is_some(),
+                is_active,
+                inactive_reason,
+                suspicious: suspicion_reason.is_some(),
+                suspicion_reason,
+            }
+        })
+        .collect();
 
-    (StatusCode::OK, Json(AdminLinksListResponse {
-        links: responses,
-        total,
-        page,
-        per_page,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(AdminLinksListResponse {
+            links: responses,
+            total,
+            page,
+            per_page,
+        }),
+    )
+        .into_response()
 }
 
 /// Soft delete any user's link (admin only)
@@ -1861,17 +2056,25 @@ pub async fn admin_delete_link(
         .unwrap_or(None);
 
     let Some(link) = link else {
-        return (StatusCode::NOT_FOUND, Json(AdminResponse {
-            success: false,
-            message: "Link not found".to_string(),
-        })).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(AdminResponse {
+                success: false,
+                message: "Link not found".to_string(),
+            }),
+        )
+            .into_response();
     };
 
     if link.deleted_at.is_some() {
-        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-            success: false,
-            message: "Link already deleted".to_string(),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Link already deleted".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let code = link.code.clone();
@@ -1879,10 +2082,14 @@ pub async fn admin_delete_link(
     active.deleted_at = Set(Some(Utc::now().naive_utc()));
 
     if active.update(&state.db).await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-            success: false,
-            message: "Failed to delete link".to_string(),
-        })).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to delete link".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Drop any cached redirect so the takedown is immediate, not after TTL.
@@ -1890,10 +2097,14 @@ pub async fn admin_delete_link(
         let _ = cache.invalidate_link(&code).await;
     }
 
-    (StatusCode::OK, Json(AdminResponse {
-        success: true,
-        message: format!("Link {} deleted", code),
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(AdminResponse {
+            success: true,
+            message: format!("Link {} deleted", code),
+        }),
+    )
+        .into_response()
 }
 
 /// Restore a soft-deleted link (admin only)
@@ -1927,17 +2138,25 @@ pub async fn admin_restore_link(
         .unwrap_or(None);
 
     let Some(link) = link else {
-        return (StatusCode::NOT_FOUND, Json(AdminResponse {
-            success: false,
-            message: "Link not found".to_string(),
-        })).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(AdminResponse {
+                success: false,
+                message: "Link not found".to_string(),
+            }),
+        )
+            .into_response();
     };
 
     if link.deleted_at.is_none() {
-        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-            success: false,
-            message: "Link is not deleted".to_string(),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Link is not deleted".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let code = link.code.clone();
@@ -1945,16 +2164,24 @@ pub async fn admin_restore_link(
     active.deleted_at = Set(None);
 
     if active.update(&state.db).await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-            success: false,
-            message: "Failed to restore link".to_string(),
-        })).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to restore link".to_string(),
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::OK, Json(AdminResponse {
-        success: true,
-        message: format!("Link {} restored", code),
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(AdminResponse {
+            success: true,
+            message: format!("Link {} restored", code),
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1993,10 +2220,14 @@ pub async fn admin_bulk_delete_links(
         return e.into_response();
     }
     if payload.ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-            success: false,
-            message: "No link IDs provided".to_string(),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "No link IDs provided".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Collect the codes first so we can purge them from the redirect cache after
@@ -2010,7 +2241,10 @@ pub async fn admin_bulk_delete_links(
     let codes: Vec<String> = affected_links.iter().map(|l| l.code.clone()).collect();
 
     let res = links::Entity::update_many()
-        .col_expr(links::Column::DeletedAt, Expr::value(Utc::now().naive_utc()))
+        .col_expr(
+            links::Column::DeletedAt,
+            Expr::value(Utc::now().naive_utc()),
+        )
         .filter(links::Column::Id.is_in(payload.ids.clone()))
         .filter(links::Column::DeletedAt.is_null())
         .exec(&state.db)
@@ -2023,16 +2257,24 @@ pub async fn admin_bulk_delete_links(
                     let _ = cache.invalidate_link(code).await;
                 }
             }
-            (StatusCode::OK, Json(BulkLinkActionResponse {
-                success: true,
-                affected: r.rows_affected,
-                message: format!("Deleted {} link(s)", r.rows_affected),
-            })).into_response()
+            (
+                StatusCode::OK,
+                Json(BulkLinkActionResponse {
+                    success: true,
+                    affected: r.rows_affected,
+                    message: format!("Deleted {} link(s)", r.rows_affected),
+                }),
+            )
+                .into_response()
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-            success: false,
-            message: "Failed to delete links".to_string(),
-        })).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to delete links".to_string(),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -2058,29 +2300,44 @@ pub async fn admin_bulk_restore_links(
         return e.into_response();
     }
     if payload.ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-            success: false,
-            message: "No link IDs provided".to_string(),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "No link IDs provided".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let res = links::Entity::update_many()
-        .col_expr(links::Column::DeletedAt, Expr::value(Option::<chrono::NaiveDateTime>::None))
+        .col_expr(
+            links::Column::DeletedAt,
+            Expr::value(Option::<chrono::NaiveDateTime>::None),
+        )
         .filter(links::Column::Id.is_in(payload.ids.clone()))
         .filter(links::Column::DeletedAt.is_not_null())
         .exec(&state.db)
         .await;
 
     match res {
-        Ok(r) => (StatusCode::OK, Json(BulkLinkActionResponse {
-            success: true,
-            affected: r.rows_affected,
-            message: format!("Restored {} link(s)", r.rows_affected),
-        })).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-            success: false,
-            message: "Failed to restore links".to_string(),
-        })).into_response(),
+        Ok(r) => (
+            StatusCode::OK,
+            Json(BulkLinkActionResponse {
+                success: true,
+                affected: r.rows_affected,
+                message: format!("Restored {} link(s)", r.rows_affected),
+            }),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to restore links".to_string(),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -2125,10 +2382,14 @@ pub async fn admin_block_domain_from_link(
         .unwrap_or(None);
 
     let Some(link) = link else {
-        return (StatusCode::NOT_FOUND, Json(AdminResponse {
-            success: false,
-            message: "Link not found".to_string(),
-        })).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(AdminResponse {
+                success: false,
+                message: "Link not found".to_string(),
+            }),
+        )
+            .into_response();
     };
 
     let host = url::Url::parse(&link.original_url)
@@ -2136,10 +2397,14 @@ pub async fn admin_block_domain_from_link(
         .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_lowercase()));
 
     let Some(domain) = host.filter(|h| !h.is_empty()) else {
-        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-            success: false,
-            message: "Link destination has no host to block".to_string(),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Link destination has no host to block".to_string(),
+            }),
+        )
+            .into_response();
     };
 
     // Block the domain if not already blocked (idempotent).
@@ -2157,10 +2422,14 @@ pub async fn admin_block_domain_from_link(
             ..Default::default()
         };
         if blocked.insert(&state.db).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-                success: false,
-                message: "Failed to block domain".to_string(),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block domain".to_string(),
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -2175,11 +2444,15 @@ pub async fn admin_block_domain_from_link(
         let _ = cache.invalidate_link(&code).await;
     }
 
-    (StatusCode::OK, Json(BlockFromLinkResponse {
-        success: true,
-        domain: domain.clone(),
-        message: format!("Blocked {} and deleted link {}", domain, code),
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(BlockFromLinkResponse {
+            success: true,
+            domain: domain.clone(),
+            message: format!("Blocked {} and deleted link {}", domain, code),
+        }),
+    )
+        .into_response()
 }
 
 /// Force-verify a user's email (admin only)
@@ -2214,17 +2487,25 @@ pub async fn admin_verify_email(
         .unwrap_or(None);
 
     let Some(user) = user else {
-        return (StatusCode::NOT_FOUND, Json(AdminResponse {
-            success: false,
-            message: "User not found".to_string(),
-        })).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(AdminResponse {
+                success: false,
+                message: "User not found".to_string(),
+            }),
+        )
+            .into_response();
     };
 
     if user.email_verified {
-        return (StatusCode::BAD_REQUEST, Json(AdminResponse {
-            success: false,
-            message: "Email is already verified".to_string(),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Email is already verified".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let mut active: users::ActiveModel = user.into();
@@ -2233,16 +2514,24 @@ pub async fn admin_verify_email(
     active.verification_token_expires = Set(None);
 
     if active.update(&state.db).await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(AdminResponse {
-            success: false,
-            message: "Failed to verify email".to_string(),
-        })).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AdminResponse {
+                success: false,
+                message: "Failed to verify email".to_string(),
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::OK, Json(AdminResponse {
-        success: true,
-        message: format!("Email verified for user {}", user_id),
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(AdminResponse {
+            success: true,
+            message: format!("Email verified for user {}", user_id),
+        }),
+    )
+        .into_response()
 }
 
 // ==================== ADMIN: ORGANIZATIONS ====================
@@ -2302,12 +2591,22 @@ pub async fn get_all_orgs(
 
     let mut finder = organizations::Entity::find();
 
-    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(search) = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let pattern = ilike_pattern(search);
         finder = finder.filter(
             Condition::any()
-                .add(Expr::col((organizations::Entity, organizations::Column::Name)).ilike(pattern.clone()))
-                .add(Expr::col((organizations::Entity, organizations::Column::Slug)).ilike(pattern)),
+                .add(
+                    Expr::col((organizations::Entity, organizations::Column::Name))
+                        .ilike(pattern.clone()),
+                )
+                .add(
+                    Expr::col((organizations::Entity, organizations::Column::Slug)).ilike(pattern),
+                ),
         );
     }
 
@@ -2364,23 +2663,30 @@ pub async fn get_all_orgs(
         }
     }
 
-    let responses: Vec<AdminOrgResponse> = orgs_page.into_iter().map(|o| AdminOrgResponse {
-        id: o.id,
-        name: o.name,
-        slug: o.slug,
-        owner_id: o.owner_id,
-        owner_email: owner_emails.get(&o.owner_id).cloned(),
-        member_count: member_counts.get(&o.id).copied().unwrap_or(0),
-        links_count: link_counts.get(&o.id).copied().unwrap_or(0),
-        created_at: o.created_at.to_string(),
-    }).collect();
+    let responses: Vec<AdminOrgResponse> = orgs_page
+        .into_iter()
+        .map(|o| AdminOrgResponse {
+            id: o.id,
+            name: o.name,
+            slug: o.slug,
+            owner_id: o.owner_id,
+            owner_email: owner_emails.get(&o.owner_id).cloned(),
+            member_count: member_counts.get(&o.id).copied().unwrap_or(0),
+            links_count: link_counts.get(&o.id).copied().unwrap_or(0),
+            created_at: o.created_at.to_string(),
+        })
+        .collect();
 
-    (StatusCode::OK, Json(AdminOrgsListResponse {
-        orgs: responses,
-        total,
-        page,
-        per_page,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(AdminOrgsListResponse {
+            orgs: responses,
+            total,
+            page,
+            per_page,
+        }),
+    )
+        .into_response()
 }
 
 // ==================== ADMIN: ACTIVITY TIMESERIES ====================
@@ -2427,7 +2733,10 @@ async fn day_counts(
 
     let mut map = HashMap::new();
     for row in rows {
-        if let (Ok(day), Ok(cnt)) = (row.try_get::<String>("", "day"), row.try_get::<i64>("", "cnt")) {
+        if let (Ok(day), Ok(cnt)) = (
+            row.try_get::<String>("", "day"),
+            row.try_get::<i64>("", "cnt"),
+        ) {
             map.insert(day, cnt);
         }
     }
@@ -2458,7 +2767,9 @@ pub async fn get_admin_activity(
     let days = query.days.unwrap_or(30).clamp(1, 365) as i64;
     let today = Utc::now().date_naive();
     let start = today - Duration::days(days - 1);
-    let cutoff = start.and_hms_opt(0, 0, 0).unwrap_or_else(|| Utc::now().naive_utc());
+    let cutoff = start
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or_else(|| Utc::now().naive_utc());
 
     let users_by_day = day_counts(&state.db, "users", cutoff).await;
     let links_by_day = day_counts(&state.db, "links", cutoff).await;

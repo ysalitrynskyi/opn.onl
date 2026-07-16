@@ -1,6 +1,6 @@
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::config::{Credentials, Region};
+use aws_sdk_s3::Client as S3Client;
 use chrono::Utc;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -19,24 +19,18 @@ impl BackupService {
     pub async fn new() -> Self {
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/opn_onl".to_string());
-        
+
         let bucket = std::env::var("BACKUP_S3_BUCKET").unwrap_or_default();
         let endpoint = std::env::var("BACKUP_S3_ENDPOINT").ok();
         let access_key = std::env::var("BACKUP_S3_ACCESS_KEY").ok();
         let secret_key = std::env::var("BACKUP_S3_SECRET_KEY").ok();
         let region = std::env::var("BACKUP_S3_REGION").unwrap_or_else(|_| "auto".to_string());
 
-        let s3_client = if let (Some(endpoint), Some(access_key), Some(secret_key)) = 
-            (endpoint, access_key, secret_key) 
+        let s3_client = if let (Some(endpoint), Some(access_key), Some(secret_key)) =
+            (endpoint, access_key, secret_key)
         {
             if !bucket.is_empty() {
-                let creds = Credentials::new(
-                    access_key,
-                    secret_key,
-                    None,
-                    None,
-                    "static",
-                );
+                let creds = Credentials::new(access_key, secret_key, None, None, "static");
 
                 let config = aws_sdk_s3::Config::builder()
                     .behavior_version(BehaviorVersion::latest())
@@ -69,7 +63,10 @@ impl BackupService {
 
     /// Create a backup and upload to S3
     pub async fn create_backup(&self) -> Result<String, String> {
-        let client = self.s3_client.as_ref().ok_or("Backup service not configured")?;
+        let client = self
+            .s3_client
+            .as_ref()
+            .ok_or("Backup service not configured")?;
 
         // Generate backup filename
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
@@ -122,7 +119,10 @@ impl BackupService {
 
     /// List available backups
     pub async fn list_backups(&self) -> Result<Vec<String>, String> {
-        let client = self.s3_client.as_ref().ok_or("Backup service not configured")?;
+        let client = self
+            .s3_client
+            .as_ref()
+            .ok_or("Backup service not configured")?;
 
         let response = client
             .list_objects_v2()
@@ -143,7 +143,10 @@ impl BackupService {
 
     /// Delete old backups (keep last N)
     pub async fn cleanup_old_backups(&self, keep_count: usize) -> Result<usize, String> {
-        let client = self.s3_client.as_ref().ok_or("Backup service not configured")?;
+        let client = self
+            .s3_client
+            .as_ref()
+            .ok_or("Backup service not configured")?;
 
         let mut backups = self.list_backups().await?;
         backups.sort();
@@ -170,7 +173,10 @@ impl BackupService {
 
     /// Download a backup
     pub async fn download_backup(&self, filename: &str) -> Result<Vec<u8>, String> {
-        let client = self.s3_client.as_ref().ok_or("Backup service not configured")?;
+        let client = self
+            .s3_client
+            .as_ref()
+            .ok_or("Backup service not configured")?;
 
         let response = client
             .get_object()
@@ -200,8 +206,3 @@ impl Clone for BackupService {
         }
     }
 }
-
-
-
-
-

@@ -19,7 +19,11 @@ impl MigrationTrait for Migration {
                             .primary_key(),
                     )
                     .col(ColumnDef::new(ClickEvents::LinkId).integer().not_null())
-                    .col(ColumnDef::new(ClickEvents::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(ClickEvents::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .col(ColumnDef::new(ClickEvents::IpAddress).string().null())
                     .col(ColumnDef::new(ClickEvents::UserAgent).string().null())
                     .col(ColumnDef::new(ClickEvents::Referer).string().null())

@@ -23,7 +23,11 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Tags::Color).string().null())
                     .col(ColumnDef::new(Tags::UserId).integer().null())
                     .col(ColumnDef::new(Tags::OrgId).integer().null())
-                    .col(ColumnDef::new(Tags::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(Tags::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk-tag-user_id")
@@ -139,8 +143,3 @@ enum Organizations {
     Table,
     Id,
 }
-
-
-
-
-

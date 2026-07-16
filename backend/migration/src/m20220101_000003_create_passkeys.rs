@@ -21,8 +21,17 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Passkeys::UserId).integer().not_null())
                     .col(ColumnDef::new(Passkeys::CredId).string().not_null()) // Base64 encoded
                     .col(ColumnDef::new(Passkeys::CredPublicKey).string().not_null()) // Base64 encoded
-                    .col(ColumnDef::new(Passkeys::Counter).integer().not_null().default(0))
-                    .col(ColumnDef::new(Passkeys::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(Passkeys::Counter)
+                            .integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(Passkeys::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .col(ColumnDef::new(Passkeys::LastUsed).timestamp().null())
                     .foreign_key(
                         ForeignKey::create()

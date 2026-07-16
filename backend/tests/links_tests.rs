@@ -25,8 +25,8 @@ mod tests {
 // Unit tests for link-related functionality
 #[cfg(test)]
 mod unit_tests {
-    use validator::Validate;
     use serde::Deserialize;
+    use validator::Validate;
 
     #[derive(Deserialize, Validate)]
     struct TestCreateLinkRequest {
@@ -88,12 +88,12 @@ mod unit_tests {
 
     #[test]
     fn test_short_code_uniqueness() {
-        use rand::{thread_rng, Rng};
         use rand::distributions::Alphanumeric;
+        use rand::{thread_rng, Rng};
         use std::collections::HashSet;
 
         let mut codes = HashSet::new();
-        
+
         // Generate 1000 codes and verify they're mostly unique
         // (collision is possible but extremely unlikely)
         for _ in 0..1000 {
@@ -155,7 +155,7 @@ mod password_tests {
 // Tests for expiration handling
 #[cfg(test)]
 mod expiration_tests {
-    use chrono::{Utc, Duration};
+    use chrono::{Duration, Utc};
 
     #[test]
     fn test_link_not_expired() {
@@ -181,8 +181,3 @@ mod expiration_tests {
         assert!(is_expired);
     }
 }
-
-
-
-
-

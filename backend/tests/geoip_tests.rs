@@ -3,7 +3,7 @@
 #[path = "../src/utils/geoip.rs"]
 mod geoip;
 
-use geoip::{parse_user_agent, lookup_ip, GeoLocation, UserAgentInfo};
+use geoip::{lookup_ip, parse_user_agent, GeoLocation, UserAgentInfo};
 
 mod browser_detection {
     use super::*;
@@ -145,4 +145,3 @@ mod ip_lookup {
         let _ = result;
     }
 }
-

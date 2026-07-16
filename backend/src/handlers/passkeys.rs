@@ -1,26 +1,26 @@
 use axum::{
-    extract::{State, Json},
+    extract::{Json, State},
     http::StatusCode,
     response::IntoResponse,
 };
+use chrono::Utc;
+use sea_orm::*;
 use serde::{Deserialize, Serialize};
+use url::Url;
 use utoipa::ToSchema;
+use uuid::Uuid;
 use webauthn_rs::prelude::*;
 use webauthn_rs::Webauthn;
-use sea_orm::*;
-use url::Url;
-use uuid::Uuid;
-use chrono::Utc;
 
-use crate::AppState;
-use crate::entity::{users, passkeys};
+use crate::entity::{passkeys, users};
 use crate::utils::jwt::create_jwt;
+use crate::AppState;
 
 // In-memory store for registration/auth state
 // In production, use Redis or database with expiration
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
 
 /// How long a pending registration/authentication challenge is kept before it expires.
 const PASSKEY_STATE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
@@ -35,7 +35,9 @@ struct ExpiringMap<V> {
 
 impl<V> ExpiringMap<V> {
     fn new() -> Self {
-        Self { inner: Mutex::new(HashMap::new()) }
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
     }
 
     fn insert(&self, key: String, value: V) {
@@ -48,7 +50,9 @@ impl<V> ExpiringMap<V> {
     fn remove(&self, key: &str) -> Option<V> {
         let mut map = self.inner.lock().unwrap();
         match map.remove(key) {
-            Some((t, v)) if std::time::Instant::now().duration_since(t) < PASSKEY_STATE_TTL => Some(v),
+            Some((t, v)) if std::time::Instant::now().duration_since(t) < PASSKEY_STATE_TTL => {
+                Some(v)
+            }
             _ => None,
         }
     }
@@ -62,34 +66,35 @@ struct PendingPasskeyAuthentication {
     state: PasskeyAuthentication,
 }
 
-static AUTH_STATE: Lazy<ExpiringMap<PendingPasskeyAuthentication>> =
-    Lazy::new(ExpiringMap::new);
+static AUTH_STATE: Lazy<ExpiringMap<PendingPasskeyAuthentication>> = Lazy::new(ExpiringMap::new);
 
 // Helper to get Webauthn instance
 fn get_webauthn() -> Webauthn {
-    let rp_id = std::env::var("WEBAUTHN_RP_ID")
-        .unwrap_or_else(|_| {
-            std::env::var("FRONTEND_URL")
-                .unwrap_or_else(|_| "localhost".to_string())
-                .replace("https://", "")
-                .replace("http://", "")
-                .split('/')
-                .next()
-                .unwrap_or("localhost")
-                .to_string()
-        });
-    
-    let rp_origin = std::env::var("FRONTEND_URL")
-        .unwrap_or_else(|_| "http://localhost:5173".to_string());
-    
+    let rp_id = std::env::var("WEBAUTHN_RP_ID").unwrap_or_else(|_| {
+        std::env::var("FRONTEND_URL")
+            .unwrap_or_else(|_| "localhost".to_string())
+            .replace("https://", "")
+            .replace("http://", "")
+            .split('/')
+            .next()
+            .unwrap_or("localhost")
+            .to_string()
+    });
+
+    let rp_origin =
+        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+
     let origin_url = Url::parse(&rp_origin).unwrap_or_else(|e| {
-        tracing::error!("Invalid FRONTEND_URL for WebAuthn: {} - using localhost fallback", e);
+        tracing::error!(
+            "Invalid FRONTEND_URL for WebAuthn: {} - using localhost fallback",
+            e
+        );
         Url::parse("http://localhost:5173").expect("Hardcoded URL should always parse")
     });
-    
+
     // Extract just the host for rp_id (e.g., "opn.onl" from "https://opn.onl")
     let effective_rp_id = origin_url.host_str().unwrap_or(&rp_id);
-    
+
     WebauthnBuilder::new(effective_rp_id, &origin_url)
         .map_err(|e| {
             tracing::error!("Failed to create WebAuthn builder: {:?}", e);
@@ -103,7 +108,9 @@ fn get_webauthn() -> Webauthn {
         })
         .unwrap_or_else(|_| {
             // Last resort fallback for development only
-            tracing::warn!("WebAuthn falling back to localhost - passkeys may not work in production!");
+            tracing::warn!(
+                "WebAuthn falling back to localhost - passkeys may not work in production!"
+            );
             let fallback_url = Url::parse("http://localhost:5173").expect("Hardcoded URL");
             WebauthnBuilder::new("localhost", &fallback_url)
                 .expect("Localhost WebAuthn builder")
@@ -189,7 +196,11 @@ pub async fn register_start(
     Json(_payload): Json<RegisterStartRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Passkeys are disabled on this instance",
+        )
+            .into_response();
     }
     // Passkey enrollment MUST be authenticated: a passkey may only be added to
     // the caller's own account. We derive the target account from the caller's
@@ -218,7 +229,8 @@ pub async fn register_start(
     }
 
     // Deterministic UUID from ID for demo purposes
-    let user_unique_id = Uuid::from_bytes(user.id.to_le_bytes().repeat(4)[0..16].try_into().unwrap());
+    let user_unique_id =
+        Uuid::from_bytes(user.id.to_le_bytes().repeat(4)[0..16].try_into().unwrap());
 
     // In a real app, you might want to exclude already registered credentials here
     let exclude_credentials: Option<Vec<CredentialID>> = None;
@@ -231,7 +243,13 @@ pub async fn register_start(
         exclude_credentials,
     ) {
         Ok(res) => res,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to start registration").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to start registration",
+            )
+                .into_response()
+        }
     };
 
     // Key the pending-challenge store by the authenticated user id so the finish
@@ -263,7 +281,11 @@ pub async fn register_finish(
     Json(payload): Json<RegisterFinishRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Passkeys are disabled on this instance",
+        )
+            .into_response();
     }
     // Same authenticated-identity rule as register_start: the credential is bound
     // to the CALLER's account, never to a client-supplied username. The pending
@@ -281,7 +303,9 @@ pub async fn register_finish(
     let webauthn = get_webauthn();
     let passkey = match webauthn.finish_passkey_registration(&payload.credential, &reg_state) {
         Ok(p) => p,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response(),
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response()
+        }
     };
 
     let txn = match state.db.begin().await {
@@ -301,11 +325,7 @@ pub async fn register_finish(
         .one(&txn)
         .await
     {
-        Ok(Some(user))
-            if user.token_version == auth.token_version && user.email_verified =>
-        {
-            user
-        }
+        Ok(Some(user)) if user.token_version == auth.token_version && user.email_verified => user,
         Ok(Some(_)) => {
             let _ = txn.rollback().await;
             return (
@@ -355,11 +375,17 @@ pub async fn register_finish(
         .is_err()
     {
         let _ = txn.rollback().await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to register passkey")
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to register passkey",
+        )
             .into_response();
     }
     if txn.commit().await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to register passkey")
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to register passkey",
+        )
             .into_response();
     }
     (StatusCode::OK, "Passkey registered").into_response()
@@ -382,7 +408,11 @@ pub async fn login_start(
     Json(payload): Json<LoginStartRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Passkeys are disabled on this instance",
+        )
+            .into_response();
     }
     let user = users::Entity::find()
         .filter(users::Column::Email.eq(&payload.username))
@@ -404,13 +434,18 @@ pub async fn login_start(
         .unwrap_or(vec![]);
 
     if db_passkeys.is_empty() {
-        return (StatusCode::BAD_REQUEST, "No passkeys registered for this user").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "No passkeys registered for this user",
+        )
+            .into_response();
     }
 
     // Convert DB models to webauthn-rs Passkey structs by deserializing
-    let allow_credentials: Vec<Passkey> = db_passkeys.iter().filter_map(|pk| {
-        serde_json::from_str(&pk.cred_public_key).ok()
-    }).collect();
+    let allow_credentials: Vec<Passkey> = db_passkeys
+        .iter()
+        .filter_map(|pk| serde_json::from_str(&pk.cred_public_key).ok())
+        .collect();
 
     if allow_credentials.is_empty() {
         return (StatusCode::BAD_REQUEST, "Failed to parse stored passkeys").into_response();
@@ -419,7 +454,13 @@ pub async fn login_start(
     let webauthn = get_webauthn();
     let (rcr, auth_state) = match webauthn.start_passkey_authentication(&allow_credentials) {
         Ok(res) => res,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to start authentication").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to start authentication",
+            )
+                .into_response()
+        }
     };
 
     AUTH_STATE.insert(
@@ -452,7 +493,11 @@ pub async fn login_finish(
     Json(payload): Json<LoginFinishRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (StatusCode::FORBIDDEN, "Passkeys are disabled on this instance").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Passkeys are disabled on this instance",
+        )
+            .into_response();
     }
     let pending = match AUTH_STATE.remove(&payload.username) {
         Some(s) => s,
@@ -462,9 +507,9 @@ pub async fn login_finish(
     let webauthn = get_webauthn();
     let auth_result =
         match webauthn.finish_passkey_authentication(&payload.credential, &pending.state) {
-        Ok(res) => res,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response(),
-    };
+            Ok(res) => res,
+            Err(_) => return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response(),
+        };
 
     let cred_id_str = format!("{:?}", auth_result.cred_id());
 
@@ -476,8 +521,7 @@ pub async fn login_finish(
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate")
-                .into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response()
         }
     };
 
@@ -490,8 +534,7 @@ pub async fn login_finish(
         Ok(Some(user)) if user.token_version == pending.token_version => user,
         _ => {
             let _ = txn.rollback().await;
-            return (StatusCode::UNAUTHORIZED, "Authentication state was revoked")
-                .into_response();
+            return (StatusCode::UNAUTHORIZED, "Authentication state was revoked").into_response();
         }
     };
 
@@ -505,7 +548,10 @@ pub async fn login_finish(
         Ok(Some(passkey)) => passkey,
         _ => {
             let _ = txn.rollback().await;
-            return (StatusCode::UNAUTHORIZED, "Authentication factor was revoked")
+            return (
+                StatusCode::UNAUTHORIZED,
+                "Authentication factor was revoked",
+            )
                 .into_response();
         }
     };
@@ -516,8 +562,7 @@ pub async fn login_finish(
         Ok(passkey) => passkey,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate")
-                .into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
         }
     };
     stored_passkey.update_credential(&auth_result);
@@ -525,8 +570,7 @@ pub async fn login_finish(
         Ok(blob) => blob,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate")
-                .into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
         }
     };
 
@@ -551,11 +595,15 @@ pub async fn login_finish(
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
     }
 
-    (StatusCode::OK, Json(PasskeyAuthResponse {
-        token,
-        email_verified: user.email_verified,
-        is_admin: user.is_admin,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(PasskeyAuthResponse {
+            token,
+            email_verified: user.email_verified,
+            is_admin: user.is_admin,
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -586,9 +634,16 @@ pub async fn list_passkeys(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+    let user_id = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await
+    {
         Some(auth) => auth.user_id,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response()
+        }
     };
 
     let user_passkeys = passkeys::Entity::find()
@@ -597,14 +652,23 @@ pub async fn list_passkeys(
         .await
         .unwrap_or_default();
 
-    let passkey_list: Vec<PasskeyInfo> = user_passkeys.into_iter().map(|pk| PasskeyInfo {
-        id: pk.id,
-        name: pk.name.unwrap_or_else(|| format!("Passkey {}", pk.id)),
-        created_at: pk.created_at.to_string(),
-        last_used: pk.last_used.map(|lu| lu.to_string()),
-    }).collect();
+    let passkey_list: Vec<PasskeyInfo> = user_passkeys
+        .into_iter()
+        .map(|pk| PasskeyInfo {
+            id: pk.id,
+            name: pk.name.unwrap_or_else(|| format!("Passkey {}", pk.id)),
+            created_at: pk.created_at.to_string(),
+            last_used: pk.last_used.map(|lu| lu.to_string()),
+        })
+        .collect();
 
-    (StatusCode::OK, Json(PasskeyListResponse { passkeys: passkey_list })).into_response()
+    (
+        StatusCode::OK,
+        Json(PasskeyListResponse {
+            passkeys: passkey_list,
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -632,7 +696,13 @@ pub async fn delete_passkey(
 ) -> impl IntoResponse {
     let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response()
+        }
     };
 
     let txn = match state.db.begin().await {
@@ -689,9 +759,12 @@ pub async fn delete_passkey(
             .unwrap_or(0);
         if passkey_count <= 1 {
             let _ = txn.rollback().await;
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-                "error": "Cannot delete the last passkey when no password is set"
-            })))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Cannot delete the last passkey when no password is set"
+                })),
+            )
                 .into_response();
         }
     }
@@ -729,9 +802,12 @@ pub async fn delete_passkey(
             .into_response();
     }
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "message": "Passkey deleted successfully"
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "message": "Passkey deleted successfully"
+        })),
+    )
         .into_response()
 }
 
@@ -758,9 +834,16 @@ pub async fn rename_passkey(
     headers: axum::http::HeaderMap,
     Json(payload): Json<RenamePasskeyRequest>,
 ) -> impl IntoResponse {
-    let user_id = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
+    let user_id = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await
+    {
         Some(auth) => auth.user_id,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+                .into_response()
+        }
     };
 
     // Verify the passkey belongs to the user
@@ -773,12 +856,24 @@ pub async fn rename_passkey(
     if let Some(pk) = passkey {
         let mut active_pk: passkeys::ActiveModel = pk.into();
         active_pk.name = Set(Some(payload.name.clone()));
-        
+
         match active_pk.update(&state.db).await {
-            Ok(_) => (StatusCode::OK, Json(serde_json::json!({"message": "Passkey renamed successfully"}))).into_response(),
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to rename passkey"}))).into_response(),
+            Ok(_) => (
+                StatusCode::OK,
+                Json(serde_json::json!({"message": "Passkey renamed successfully"})),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to rename passkey"})),
+            )
+                .into_response(),
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Passkey not found"}))).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Passkey not found"})),
+        )
+            .into_response()
     }
 }

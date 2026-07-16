@@ -56,10 +56,10 @@ mod tests {
 // Unit tests for JWT utilities
 #[cfg(test)]
 mod jwt_tests {
-    use std::env;
     use bcrypt::{hash, verify, DEFAULT_COST};
-    use rand::{thread_rng, Rng};
     use rand::distributions::Alphanumeric;
+    use rand::{thread_rng, Rng};
+    use std::env;
 
     #[test]
     fn test_password_hashing_success() {
@@ -83,7 +83,7 @@ mod jwt_tests {
     fn test_password_hashing_empty_password() {
         let password = "";
         let hashed = hash(password, DEFAULT_COST).expect("Failed to hash empty password");
-        
+
         assert!(verify(password, &hashed).expect("Failed to verify empty password"));
         assert!(!verify("not_empty", &hashed).expect("Failed to verify"));
     }
@@ -92,7 +92,7 @@ mod jwt_tests {
     fn test_password_hashing_unicode() {
         let password = "пароль123🔐";
         let hashed = hash(password, DEFAULT_COST).expect("Failed to hash unicode password");
-        
+
         assert!(verify(password, &hashed).expect("Failed to verify unicode password"));
     }
 
@@ -100,7 +100,7 @@ mod jwt_tests {
     fn test_password_hashing_long_password() {
         let password = "a".repeat(100);
         let hashed = hash(&password, DEFAULT_COST).expect("Failed to hash long password");
-        
+
         assert!(verify(&password, &hashed).expect("Failed to verify long password"));
     }
 
@@ -129,7 +129,7 @@ mod jwt_tests {
     #[test]
     fn test_short_code_uniqueness() {
         let mut codes: Vec<String> = Vec::new();
-        
+
         for _ in 0..100 {
             let code: String = thread_rng()
                 .sample_iter(&Alphanumeric)
@@ -138,7 +138,7 @@ mod jwt_tests {
                 .collect();
             codes.push(code);
         }
-        
+
         // Check for uniqueness (collision is highly unlikely)
         let unique_codes: std::collections::HashSet<_> = codes.iter().collect();
         assert!(unique_codes.len() >= 99); // Allow for 1 collision max
@@ -148,8 +148,8 @@ mod jwt_tests {
 // Email validation tests
 #[cfg(test)]
 mod email_validation_tests {
-    use validator::Validate;
     use serde::Deserialize;
+    use validator::Validate;
 
     #[derive(Deserialize, Validate)]
     struct EmailTest {
@@ -233,7 +233,7 @@ mod password_tests {
 #[cfg(test)]
 mod token_tests {
     use rand::{thread_rng, Rng};
-    
+
     fn generate_token() -> String {
         thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
@@ -266,7 +266,7 @@ mod token_tests {
 #[cfg(test)]
 mod claims_tests {
     use chrono::{Duration, Utc};
-    use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
+    use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -295,13 +295,15 @@ mod claims_tests {
             &Header::default(),
             &claims,
             &EncodingKey::from_secret(TEST_SECRET.as_bytes()),
-        ).expect("Failed to encode JWT");
+        )
+        .expect("Failed to encode JWT");
 
         let decoded = decode::<Claims>(
             &token,
             &DecodingKey::from_secret(TEST_SECRET.as_bytes()),
             &Validation::default(),
-        ).expect("Failed to decode JWT");
+        )
+        .expect("Failed to decode JWT");
 
         assert_eq!(decoded.claims.sub, "test@example.com");
         assert_eq!(decoded.claims.user_id, 42);
@@ -324,7 +326,8 @@ mod claims_tests {
             &Header::default(),
             &claims,
             &EncodingKey::from_secret(TEST_SECRET.as_bytes()),
-        ).expect("Failed to encode JWT");
+        )
+        .expect("Failed to encode JWT");
 
         let result = decode::<Claims>(
             &token,
@@ -352,7 +355,8 @@ mod claims_tests {
             &Header::default(),
             &claims,
             &EncodingKey::from_secret(TEST_SECRET.as_bytes()),
-        ).expect("Failed to encode JWT");
+        )
+        .expect("Failed to encode JWT");
 
         let result = decode::<Claims>(
             &token,

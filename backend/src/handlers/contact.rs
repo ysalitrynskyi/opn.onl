@@ -1,9 +1,4 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-    response::IntoResponse,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -52,7 +47,8 @@ pub async fn send_contact_message(
                 success: false,
                 message: format!("Validation error: {}", e),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Check if email service is available
@@ -67,13 +63,15 @@ pub async fn send_contact_message(
                     success: true,
                     message: "Message received. We'll get back to you soon.".to_string(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
     // Get admin email from environment
-    let admin_email = std::env::var("ADMIN_EMAIL")
-        .unwrap_or_else(|_| std::env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "admin@opn.onl".to_string()));
+    let admin_email = std::env::var("ADMIN_EMAIL").unwrap_or_else(|_| {
+        std::env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "admin@opn.onl".to_string())
+    });
 
     // Build email content
     let subject = format!("[opn.onl Contact] {}: {}", payload.subject, payload.name);
@@ -98,7 +96,10 @@ pub async fn send_contact_message(
     );
 
     // Send email to admin
-    match email_service.send_email_with_reply_to(&admin_email, &subject, &html_body, &payload.email).await {
+    match email_service
+        .send_email_with_reply_to(&admin_email, &subject, &html_body, &payload.email)
+        .await
+    {
         Ok(_) => {
             // Don't log the sender's name/email — that is PII sitting in log
             // aggregation. The message was delivered to the admin inbox already.
@@ -109,7 +110,8 @@ pub async fn send_contact_message(
                     success: true,
                     message: "Message sent successfully. We'll get back to you soon.".to_string(),
                 }),
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!("Failed to send contact form email: {}", e);
@@ -117,9 +119,11 @@ pub async fn send_contact_message(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ContactResponse {
                     success: false,
-                    message: "Failed to send message. Please try again later or email us directly.".to_string(),
+                    message: "Failed to send message. Please try again later or email us directly."
+                        .to_string(),
                 }),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
@@ -132,4 +136,3 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&#x27;")
 }
-

@@ -65,6 +65,3 @@ impl Model {
         true // All members can view
     }
 }
-
-
-

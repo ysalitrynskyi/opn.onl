@@ -11,11 +11,7 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(Links::Table)
-                    .add_column_if_not_exists(
-                        ColumnDef::new(Links::Title)
-                            .string()
-                            .null()
-                    )
+                    .add_column_if_not_exists(ColumnDef::new(Links::Title).string().null())
                     .to_owned(),
             )
             .await
@@ -38,6 +34,3 @@ enum Links {
     Table,
     Title,
 }
-
-
-

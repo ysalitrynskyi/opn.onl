@@ -10,8 +10,10 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::entity::{
+    audit_log, click_events, folders, link_tags, links, org_members, organizations, tags, users,
+};
 use crate::AppState;
-use crate::entity::{organizations, org_members, audit_log, users, folders, tags, links, link_tags, click_events};
 
 // ============= DTOs =============
 
@@ -79,7 +81,10 @@ pub struct AuditLogResponse {
 
 // ============= Helper Functions =============
 
-async fn get_user_id_from_header(db: &sea_orm::DatabaseConnection, headers: &HeaderMap) -> Option<i32> {
+async fn get_user_id_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Option<i32> {
     // Delegate to the shared resolver (handles both JWT and `opn_` API keys).
     crate::handlers::links::get_user_id_from_header(db, headers).await
 }

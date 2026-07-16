@@ -39,7 +39,11 @@ async fn profile_rejects_data_and_file_schemes() {
     let (server, _db) = spawn_real_app().await;
     let token = register(&server, &unique_email()).await;
 
-    for bad in ["data:text/html,hi", "file:///etc/passwd", "ftp://evil.example/x"] {
+    for bad in [
+        "data:text/html,hi",
+        "file:///etc/passwd",
+        "ftp://evil.example/x",
+    ] {
         let res = server
             .put("/auth/profile")
             .authorization_bearer(&token)

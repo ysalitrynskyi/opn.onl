@@ -8,7 +8,7 @@ pub struct Model {
     pub id: i32,
     pub org_id: Option<i32>,
     pub user_id: Option<i32>,
-    pub action: String, // "create", "update", "delete", "view"
+    pub action: String,        // "create", "update", "delete", "view"
     pub resource_type: String, // "link", "folder", "tag", "member"
     pub resource_id: Option<i32>,
     #[sea_orm(column_type = "Json")]
@@ -50,8 +50,3 @@ impl Related<super::users::Entity> for Entity {
 }
 
 impl ActiveModelBehavior for ActiveModel {}
-
-
-
-
-

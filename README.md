@@ -128,8 +128,9 @@ nano .env
 # Database
 POSTGRES_PASSWORD=your-secure-password-here
 
-# Security (generate with: openssl rand -base64 64)
-JWT_SECRET=your-very-long-random-jwt-secret-min-32-chars
+# Security — generate a unique value (placeholders are rejected at boot):
+#   openssl rand -base64 64
+JWT_SECRET=
 
 # URLs
 BASE_URL=https://api.opn.onl
@@ -163,7 +164,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 2. Choose the appropriate file for your architecture:
    - `docker-compose.portainer.amd64.yml` - Intel/AMD servers
    - `docker-compose.portainer.arm64.yml` - ARM servers (Raspberry Pi, Apple Silicon, etc.)
-3. Add environment variables:
+3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.2.1`):
    ```
    BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
    FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
@@ -171,7 +172,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 4. Deploy!
 
 **Images:** `ghcr.io/ysalitrynskyi/opn-backend:latest`, `ghcr.io/ysalitrynskyi/opn-frontend:latest`  
-**Platforms:** `linux/amd64`, `linux/arm64`
+**Platforms:** multi-arch `linux/amd64` + `linux/arm64` (built from `release` / version tags)
 
 ## Environment Variables
 
@@ -180,7 +181,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | Variable | Description |
 |----------|-------------|
 | `POSTGRES_PASSWORD` | Database password |
-| `JWT_SECRET` | Secret for JWT tokens (min 32 chars) |
+| `JWT_SECRET` | Unique signing secret (≥32 bytes; known placeholders rejected). Generate with `openssl rand -base64 64` |
 | `BASE_URL` | Public API URL (e.g., https://api.opn.onl) |
 | `FRONTEND_URL` | Public frontend URL (e.g., https://opn.onl) |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Cloudflare tunnel token |

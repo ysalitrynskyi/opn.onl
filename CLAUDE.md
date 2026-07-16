@@ -54,7 +54,7 @@ npm run test:e2e   # Playwright E2E
 - **`src/entity/`** — SeaORM models. **Soft delete is the norm**: `users` and `links` have `deleted_at`; most list queries must filter `DeletedAt.is_null()`. Soft delete is an UPDATE, so FK `ON DELETE CASCADE` does not fire — related cleanup (e.g. passkeys on user delete) must be done explicitly.
 - **`migration/`** — SeaORM migration crate; migrations run automatically on startup and on first test-suite connect.
 - **`utils/`** — `ClickBuffer` (batches click events before DB flush), `RedisCache` (optional redirect cache — handlers that change link state must invalidate it or blocks/edits take up to the TTL to apply; use `links::invalidate_cached_codes` / `active_link_codes_for_user`), `EmailService` (optional; unset SMTP = emails silently skipped), `BackupService` (S3; optional), rate limiters, JWT, GeoIP, privacy sweep (IP truncation at collection, retention anonymization; referer stored host-only; `purge_click_pii_for_user` on account delete). `RateLimiters` lives on `AppState` (shared by the rate-limit middleware and handlers, e.g. the redirect password path enforces the `password_verify` limiter in-handler). Middleware classifies redirect vs API by route prefix, not path length.
-- **Auth/roles**: single `is_admin` flag on users (no role table). First registered user becomes admin (`ensure_admin_exists`). `token_version` on users invalidates old JWTs on credential change.
+- **Auth/roles**: single `is_admin` flag on users (no role table). First registered user becomes admin (`ensure_admin_exists`). `token_version` on users invalidates old JWTs on credential change. `JWT_SECRET` is validated at boot (rejects short / known-placeholder values).
 - **Route order matters**: `/:code` redirect routes are registered last so they don't shadow API routes.
 - API docs generated via utoipa; new handlers should carry `#[utoipa::path]` annotations and be registered in `src/openapi.rs`.
 
@@ -68,7 +68,7 @@ npm run test:e2e   # Playwright E2E
 ### Deployment
 
 - Production: docker-compose + Cloudflare Tunnel; frontend nginx proxies `/{code}` redirects and `/{code}/verify|preview` to the backend, serves prerendered HTML for static routes, and falls back to the SPA shell.
-- Images are built by GitHub Actions on push to the `release` branch (`ghcr.io/ysalitrynskyi/opn-{backend,frontend}`); Portainer compose files consume them.
+- Images are built by GitHub Actions on push to the `release` branch (`ghcr.io/ysalitrynskyi/opn-{backend,frontend}` multi-arch amd64+arm64); Portainer compose files consume `:latest` or a pinned version tag.
 
 ## Testing conventions
 

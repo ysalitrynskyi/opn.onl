@@ -20,15 +20,29 @@ impl MigrationTrait for Migration {
                     )
                     .col(ColumnDef::new(RoutingRules::LinkId).integer().not_null())
                     // Lower priority is evaluated first.
-                    .col(ColumnDef::new(RoutingRules::Priority).integer().not_null().default(0))
+                    .col(
+                        ColumnDef::new(RoutingRules::Priority)
+                            .integer()
+                            .not_null()
+                            .default(0),
+                    )
                     // Match conditions (NULL = "matches anything").
                     .col(ColumnDef::new(RoutingRules::MatchDevice).string().null())
                     .col(ColumnDef::new(RoutingRules::MatchOs).string().null())
                     .col(ColumnDef::new(RoutingRules::MatchCountry).string().null())
                     .col(ColumnDef::new(RoutingRules::MatchLang).string().null())
-                    .col(ColumnDef::new(RoutingRules::DestinationUrl).text().not_null())
+                    .col(
+                        ColumnDef::new(RoutingRules::DestinationUrl)
+                            .text()
+                            .not_null(),
+                    )
                     // Relative weight for A/B splits among equally-matching rules.
-                    .col(ColumnDef::new(RoutingRules::Weight).integer().not_null().default(1))
+                    .col(
+                        ColumnDef::new(RoutingRules::Weight)
+                            .integer()
+                            .not_null()
+                            .default(1),
+                    )
                     .col(
                         ColumnDef::new(RoutingRules::CreatedAt)
                             .timestamp()

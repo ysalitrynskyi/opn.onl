@@ -25,7 +25,11 @@ async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) 
 
 async fn make_admin(db: &DatabaseConnection, user_id: i32) {
     use opn_onl_backend::entity::users;
-    let user = users::Entity::find_by_id(user_id).one(db).await.unwrap().unwrap();
+    let user = users::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap();
     let mut active: users::ActiveModel = user.into();
     active.is_admin = Set(true);
     active.update(db).await.unwrap();
@@ -37,7 +41,10 @@ async fn register_admin(server: &axum_test::TestServer, db: &DatabaseConnection)
     token
 }
 
-async fn register_verified(server: &axum_test::TestServer, db: &DatabaseConnection) -> (String, i32) {
+async fn register_verified(
+    server: &axum_test::TestServer,
+    db: &DatabaseConnection,
+) -> (String, i32) {
     let (token, user_id) = register(server, &unique_email()).await;
     mark_email_verified(db, user_id).await;
     (token, user_id)
@@ -74,7 +81,11 @@ async fn create_rejects_dangerous_file_extension() {
     assert_eq!(res.status_code(), 400, "{}", res.text());
     let body: Value = res.json();
     assert!(
-        body["error"].as_str().unwrap().to_lowercase().contains("hta"),
+        body["error"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("hta"),
         "error should name the extension: {body}"
     );
 }
@@ -108,7 +119,11 @@ async fn create_rejects_raw_ip_host() {
     assert_eq!(res.status_code(), 400, "{}", res.text());
     let body: Value = res.json();
     assert!(
-        body["error"].as_str().unwrap().to_lowercase().contains("ip"),
+        body["error"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("ip"),
         "error should mention IP: {body}"
     );
 }
@@ -142,7 +157,11 @@ async fn bulk_create_rejects_only_the_bad_urls_with_reasons() {
         .await;
     assert_eq!(res.status_code(), 200, "{}", res.text());
     let body: Value = res.json();
-    assert_eq!(body["links"].as_array().unwrap().len(), 2, "two benign links created");
+    assert_eq!(
+        body["links"].as_array().unwrap().len(),
+        2,
+        "two benign links created"
+    );
     let errors = body["errors"].as_array().unwrap();
     assert_eq!(errors.len(), 1, "one rejection");
     // The malicious URL trips the extension guard first; either the extension or
@@ -159,8 +178,7 @@ async fn admin_suspicious_filter_finds_preexisting_malicious_links() {
     // Two malicious links inserted directly (as if pre-guard), one benign.
     let (hta_id, _) = insert_raw_link(&db, user_id, "http://185.99.1.7/x/payload.hta").await;
     let (ip_id, _) = insert_raw_link(&db, user_id, "http://69.12.83.125/30/file").await;
-    let (benign_id, _) =
-        insert_raw_link(&db, user_id, "https://good.example.com/article").await;
+    let (benign_id, _) = insert_raw_link(&db, user_id, "https://good.example.com/article").await;
 
     let res = server
         .get("/admin/links")
@@ -178,8 +196,14 @@ async fn admin_suspicious_filter_finds_preexisting_malicious_links() {
         .map(|l| l["id"].as_i64().unwrap())
         .collect();
     assert!(ids.contains(&(hta_id as i64)), "hta link should be flagged");
-    assert!(ids.contains(&(ip_id as i64)), "raw-IP link should be flagged");
-    assert!(!ids.contains(&(benign_id as i64)), "benign link must not be flagged");
+    assert!(
+        ids.contains(&(ip_id as i64)),
+        "raw-IP link should be flagged"
+    );
+    assert!(
+        !ids.contains(&(benign_id as i64)),
+        "benign link must not be flagged"
+    );
 
     // Every returned row carries a suspicion reason.
     for l in body["links"].as_array().unwrap() {
@@ -198,7 +222,11 @@ async fn admin_bulk_delete_and_restore_links() {
     let (id2, code2) = insert_raw_link(&db, user_id, "http://5.6.7.8/b.hta").await;
 
     // Both redirect before takedown.
-    assert!(server.get(&format!("/{code1}")).await.status_code().is_redirection());
+    assert!(server
+        .get(&format!("/{code1}"))
+        .await
+        .status_code()
+        .is_redirection());
 
     let res = server
         .post("/admin/links/bulk/delete")
@@ -218,7 +246,11 @@ async fn admin_bulk_delete_and_restore_links() {
         .await;
     assert_eq!(res.status_code(), 200, "{}", res.text());
     assert_eq!(res.json::<Value>()["affected"].as_u64(), Some(2));
-    assert!(server.get(&format!("/{code1}")).await.status_code().is_redirection());
+    assert!(server
+        .get(&format!("/{code1}"))
+        .await
+        .status_code()
+        .is_redirection());
 }
 
 #[tokio::test]
@@ -249,7 +281,11 @@ async fn admin_block_domain_from_link_blocks_host_and_deletes_link() {
     let domain = format!("evil-{}.test", unique_code().to_lowercase());
     let url = format!("https://{domain}/malware/page");
     let (link_id, code) = insert_raw_link(&db, user_id, &url).await;
-    assert!(server.get(&format!("/{code}")).await.status_code().is_redirection());
+    assert!(server
+        .get(&format!("/{code}"))
+        .await
+        .status_code()
+        .is_redirection());
 
     let res = server
         .post(&format!("/admin/links/{link_id}/block-domain"))
@@ -276,7 +312,12 @@ async fn admin_block_domain_from_link_blocks_host_and_deletes_link() {
         .authorization_bearer(&user_token)
         .json(&json!({ "original_url": format!("https://{domain}/another/page") }))
         .await;
-    assert_eq!(res.status_code(), 403, "blocked domain must reject new links: {}", res.text());
+    assert_eq!(
+        res.status_code(),
+        403,
+        "blocked domain must reject new links: {}",
+        res.text()
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ExternalLink, Globe, Image as ImageIcon } from 'lucide-react';
-import { API_ENDPOINTS } from '../config/api';
+import { API_ENDPOINTS, authFetch } from '../config/api';
 
 interface LinkPreviewData {
     url: string;
@@ -21,16 +21,14 @@ export const LinkPreviewCard = ({ url, className = '', compact = false }: LinkPr
     const [preview, setPreview] = useState<LinkPreviewData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
-    const [imageError, setImageError] = useState(false);
 
     useEffect(() => {
         const fetchPreview = async () => {
             try {
                 setLoading(true);
                 setError(false);
-                const response = await fetch(API_ENDPOINTS.previewMetadata, {
+                const response = await authFetch(API_ENDPOINTS.previewMetadata, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url }),
                 });
 
@@ -83,16 +81,7 @@ export const LinkPreviewCard = ({ url, className = '', compact = false }: LinkPr
         return (
             <div className={`bg-white border border-slate-200 rounded-lg p-2 hover:border-slate-300 transition-colors ${className}`}>
                 <div className="flex items-center gap-2">
-                    {preview.favicon && !imageError ? (
-                        <img
-                            src={preview.favicon}
-                            alt=""
-                            className="w-4 h-4 rounded"
-                            onError={() => setImageError(true)}
-                        />
-                    ) : (
-                        <Globe className="w-4 h-4 text-slate-400" />
-                    )}
+                    <Globe className="w-4 h-4 text-slate-400" />
                     <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-slate-700 truncate">
                             {preview.title || getDomain(url)}
@@ -110,36 +99,17 @@ export const LinkPreviewCard = ({ url, className = '', compact = false }: LinkPr
 
     return (
         <div className={`bg-white border border-slate-200 rounded-lg overflow-hidden hover:shadow-md transition-shadow ${className}`}>
-            {/* Image */}
-            {preview.image && !imageError ? (
-                <div className="relative h-32 bg-slate-100">
-                    <img
-                        src={preview.image}
-                        alt={preview.title || ''}
-                        className="w-full h-full object-cover"
-                        onError={() => setImageError(true)}
-                    />
-                </div>
-            ) : (
-                <div className="h-20 bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
-                    <ImageIcon className="h-8 w-8 text-slate-300" />
-                </div>
-            )}
+            {/* Do not render remote preview images/favicons directly: doing so
+                leaks the viewer's IP address to the destination host. */}
+            <div className="h-20 bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
+                <ImageIcon className="h-8 w-8 text-slate-300" />
+            </div>
 
             {/* Content */}
             <div className="p-3">
                 {/* Site info */}
                 <div className="flex items-center gap-2 mb-2">
-                    {preview.favicon && !imageError ? (
-                        <img
-                            src={preview.favicon}
-                            alt=""
-                            className="w-4 h-4 rounded"
-                            onError={() => {}}
-                        />
-                    ) : (
-                        <Globe className="w-4 h-4 text-slate-400" />
-                    )}
+                    <Globe className="w-4 h-4 text-slate-400" />
                     <span className="text-xs text-slate-500 truncate">
                         {preview.site_name || getDomain(url)}
                     </span>

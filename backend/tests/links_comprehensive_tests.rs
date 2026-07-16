@@ -106,22 +106,38 @@ mod xss_prevention_tests {
     fn contains_xss_pattern(url: &str) -> bool {
         let url_lower = url.to_lowercase();
         let xss_patterns = [
-            "<script", "</script>", "onerror=", "onload=", "onclick=",
-            "onmouseover=", "onfocus=", "onblur=", "eval(", "alert(",
-            "document.cookie", "document.location", "window.location",
+            "<script",
+            "</script>",
+            "onerror=",
+            "onload=",
+            "onclick=",
+            "onmouseover=",
+            "onfocus=",
+            "onblur=",
+            "eval(",
+            "alert(",
+            "document.cookie",
+            "document.location",
+            "window.location",
         ];
-        
-        xss_patterns.iter().any(|pattern| url_lower.contains(pattern))
+
+        xss_patterns
+            .iter()
+            .any(|pattern| url_lower.contains(pattern))
     }
 
     #[test]
     fn test_detect_script_tag() {
-        assert!(contains_xss_pattern("https://example.com/<script>alert(1)</script>"));
+        assert!(contains_xss_pattern(
+            "https://example.com/<script>alert(1)</script>"
+        ));
     }
 
     #[test]
     fn test_detect_onerror() {
-        assert!(contains_xss_pattern("https://example.com/img?onerror=alert(1)"));
+        assert!(contains_xss_pattern(
+            "https://example.com/img?onerror=alert(1)"
+        ));
     }
 
     #[test]
@@ -151,19 +167,28 @@ mod alias_validation_tests {
         if alias.len() < min_len {
             return Err(format!("Alias must be at least {} characters", min_len));
         }
-        
+
         if alias.len() > max_len {
             return Err(format!("Alias must be at most {} characters", max_len));
         }
-        
-        if !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err("Alias can only contain letters, numbers, hyphens, and underscores".to_string());
+
+        if !alias
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(
+                "Alias can only contain letters, numbers, hyphens, and underscores".to_string(),
+            );
         }
-        
-        if alias.starts_with('-') || alias.starts_with('_') || alias.ends_with('-') || alias.ends_with('_') {
+
+        if alias.starts_with('-')
+            || alias.starts_with('_')
+            || alias.ends_with('-')
+            || alias.ends_with('_')
+        {
             return Err("Alias cannot start or end with hyphen or underscore".to_string());
         }
-        
+
         Ok(())
     }
 
@@ -229,8 +254,8 @@ mod alias_validation_tests {
 
 #[cfg(test)]
 mod short_code_tests {
-    use rand::{thread_rng, Rng};
     use rand::distributions::Alphanumeric;
+    use rand::{thread_rng, Rng};
     use std::collections::HashSet;
 
     fn generate_short_code(length: usize) -> String {
@@ -272,14 +297,12 @@ mod short_code_tests {
 
     #[test]
     fn test_code_distribution() {
-        let codes: Vec<String> = (0..1000)
-            .map(|_| generate_short_code(6))
-            .collect();
-        
+        let codes: Vec<String> = (0..1000).map(|_| generate_short_code(6)).collect();
+
         // Check that codes contain both letters and numbers
         let has_letters = codes.iter().any(|c| c.chars().any(|ch| ch.is_alphabetic()));
         let has_digits = codes.iter().any(|c| c.chars().any(|ch| ch.is_numeric()));
-        
+
         assert!(has_letters);
         assert!(has_digits);
     }
@@ -289,7 +312,7 @@ mod short_code_tests {
 
 #[cfg(test)]
 mod link_status_tests {
-    use chrono::{Utc, Duration, NaiveDateTime};
+    use chrono::{Duration, NaiveDateTime, Utc};
 
     struct Link {
         starts_at: Option<NaiveDateTime>,
@@ -306,25 +329,25 @@ mod link_status_tests {
             }
 
             let now = Utc::now().naive_utc();
-            
+
             if let Some(starts_at) = self.starts_at {
                 if now < starts_at {
                     return false;
                 }
             }
-            
+
             if let Some(expires_at) = self.expires_at {
                 if now > expires_at {
                     return false;
                 }
             }
-            
+
             if let Some(max_clicks) = self.max_clicks {
                 if self.click_count >= max_clicks {
                     return false;
                 }
             }
-            
+
             true
         }
     }
@@ -529,11 +552,9 @@ mod bulk_operations_tests {
             "invalid-url",
             "https://example.com/3",
         ];
-        
-        let valid_count = urls.iter()
-            .filter(|u| url::Url::parse(u).is_ok())
-            .count();
-        
+
+        let valid_count = urls.iter().filter(|u| url::Url::parse(u).is_ok()).count();
+
         assert_eq!(valid_count, 3);
     }
 
@@ -557,10 +578,8 @@ mod bulk_operations_tests {
             "https://example.com/page",
             "https://example.com/other",
         ];
-        
+
         let unique: std::collections::HashSet<_> = urls.iter().collect();
         assert_eq!(unique.len(), 2);
     }
 }
-
-

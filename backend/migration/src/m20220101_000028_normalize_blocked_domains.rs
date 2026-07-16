@@ -7,7 +7,8 @@ pub struct Migration;
 // Normalized form used by admin::block_domain and links::check_blocked:
 // lowercase, then strip a leading scheme, then trailing '/' and '.'. Lowercasing
 // first ensures an uppercase scheme (HTTPS://) is also stripped.
-const NORM: &str = "rtrim(rtrim(replace(replace(lower(domain), 'https://', ''), 'http://', ''), '/'), '.')";
+const NORM: &str =
+    "rtrim(rtrim(replace(replace(lower(domain), 'https://', ''), 'http://', ''), '/'), '.')";
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {

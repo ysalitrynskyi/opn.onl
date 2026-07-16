@@ -7,7 +7,7 @@ pub struct Migration;
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // Add GeoIP columns to click_events
-        
+
         // Add city column
         manager
             .alter_table(
@@ -156,8 +156,3 @@ enum ClickEvents {
     Browser,
     Os,
 }
-
-
-
-
-

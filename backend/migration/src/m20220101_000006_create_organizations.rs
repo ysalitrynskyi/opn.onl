@@ -20,9 +20,18 @@ impl MigrationTrait for Migration {
                             .primary_key(),
                     )
                     .col(ColumnDef::new(Organizations::Name).string().not_null())
-                    .col(ColumnDef::new(Organizations::Slug).string().not_null().unique_key())
+                    .col(
+                        ColumnDef::new(Organizations::Slug)
+                            .string()
+                            .not_null()
+                            .unique_key(),
+                    )
                     .col(ColumnDef::new(Organizations::OwnerId).integer().not_null())
-                    .col(ColumnDef::new(Organizations::CreatedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(Organizations::CreatedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk-org-owner_id")
@@ -50,8 +59,17 @@ impl MigrationTrait for Migration {
                     )
                     .col(ColumnDef::new(OrgMembers::OrgId).integer().not_null())
                     .col(ColumnDef::new(OrgMembers::UserId).integer().not_null())
-                    .col(ColumnDef::new(OrgMembers::Role).string().not_null().default("member"))
-                    .col(ColumnDef::new(OrgMembers::JoinedAt).timestamp().default(Expr::current_timestamp()))
+                    .col(
+                        ColumnDef::new(OrgMembers::Role)
+                            .string()
+                            .not_null()
+                            .default("member"),
+                    )
+                    .col(
+                        ColumnDef::new(OrgMembers::JoinedAt)
+                            .timestamp()
+                            .default(Expr::current_timestamp()),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk-orgmember-org_id")
@@ -121,8 +139,3 @@ enum Users {
     Table,
     Id,
 }
-
-
-
-
-

@@ -26,8 +26,10 @@ mod role_permissions {
 
     #[test]
     fn test_owner_has_all_permissions() {
-        let member = MockMember { role: "owner".to_string() };
-        
+        let member = MockMember {
+            role: "owner".to_string(),
+        };
+
         assert!(member.is_owner());
         assert!(member.is_admin());
         assert!(member.can_edit());
@@ -36,8 +38,10 @@ mod role_permissions {
 
     #[test]
     fn test_admin_permissions() {
-        let member = MockMember { role: "admin".to_string() };
-        
+        let member = MockMember {
+            role: "admin".to_string(),
+        };
+
         assert!(!member.is_owner());
         assert!(member.is_admin());
         assert!(member.can_edit());
@@ -46,8 +50,10 @@ mod role_permissions {
 
     #[test]
     fn test_editor_permissions() {
-        let member = MockMember { role: "editor".to_string() };
-        
+        let member = MockMember {
+            role: "editor".to_string(),
+        };
+
         assert!(!member.is_owner());
         assert!(!member.is_admin());
         assert!(member.can_edit());
@@ -56,8 +62,10 @@ mod role_permissions {
 
     #[test]
     fn test_viewer_permissions() {
-        let member = MockMember { role: "viewer".to_string() };
-        
+        let member = MockMember {
+            role: "viewer".to_string(),
+        };
+
         assert!(!member.is_owner());
         assert!(!member.is_admin());
         assert!(!member.can_edit());
@@ -66,8 +74,10 @@ mod role_permissions {
 
     #[test]
     fn test_member_default_permissions() {
-        let member = MockMember { role: "member".to_string() };
-        
+        let member = MockMember {
+            role: "member".to_string(),
+        };
+
         assert!(!member.is_owner());
         assert!(!member.is_admin());
         assert!(!member.can_edit());
@@ -81,8 +91,9 @@ mod slug_validation {
         if slug.is_empty() || slug.len() > 50 {
             return false;
         }
-        
-        slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+
+        slug.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
             && !slug.starts_with('-')
             && !slug.ends_with('-')
             && !slug.contains("--")
@@ -110,7 +121,16 @@ mod slug_validation {
 
 /// Test audit log action types
 mod audit_actions {
-    const VALID_ACTIONS: &[&str] = &["create", "update", "delete", "view", "invite", "remove", "update_role", "transfer_ownership"];
+    const VALID_ACTIONS: &[&str] = &[
+        "create",
+        "update",
+        "delete",
+        "view",
+        "invite",
+        "remove",
+        "update_role",
+        "transfer_ownership",
+    ];
     const VALID_RESOURCE_TYPES: &[&str] = &["link", "folder", "tag", "member", "organization"];
 
     fn is_valid_action(action: &str) -> bool {
@@ -150,8 +170,3 @@ mod audit_actions {
         assert!(!is_valid_resource_type(""));
     }
 }
-
-
-
-
-

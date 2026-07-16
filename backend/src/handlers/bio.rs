@@ -13,10 +13,40 @@ use crate::AppState;
 
 /// Usernames that would collide with app routes or API paths.
 const RESERVED_USERNAMES: &[&str] = &[
-    "dashboard", "settings", "analytics", "password", "login", "register", "admin", "docs",
-    "api", "faq", "pricing", "about", "privacy", "terms", "contact", "features", "verify-email",
-    "reset-password", "forgot-password", "health", "links", "auth", "orgs", "folders", "tags",
-    "ws", "sse", "sitemap", "robots", "swagger-ui", "api-docs", "404", "bio", "avatar",
+    "dashboard",
+    "settings",
+    "analytics",
+    "password",
+    "login",
+    "register",
+    "admin",
+    "docs",
+    "api",
+    "faq",
+    "pricing",
+    "about",
+    "privacy",
+    "terms",
+    "contact",
+    "features",
+    "verify-email",
+    "reset-password",
+    "forgot-password",
+    "health",
+    "links",
+    "auth",
+    "orgs",
+    "folders",
+    "tags",
+    "ws",
+    "sse",
+    "sitemap",
+    "robots",
+    "swagger-ui",
+    "api-docs",
+    "404",
+    "bio",
+    "avatar",
 ];
 
 fn link_in_bio_enabled() -> bool {
@@ -68,7 +98,9 @@ fn validate_username(name: &str) -> Result<String, String> {
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
     {
-        return Err("Username may only contain lowercase letters, numbers, hyphens and underscores".into());
+        return Err(
+            "Username may only contain lowercase letters, numbers, hyphens and underscores".into(),
+        );
     }
     if n.starts_with('-') || n.starts_with('_') || n.ends_with('-') || n.ends_with('_') {
         return Err("Username cannot start or end with a hyphen or underscore".into());
@@ -101,7 +133,11 @@ pub async fn update_bio_settings(
     Json(payload): Json<BioSettingsRequest>,
 ) -> impl IntoResponse {
     if !link_in_bio_enabled() {
-        return (StatusCode::FORBIDDEN, "Link-in-bio is not enabled on this instance").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Link-in-bio is not enabled on this instance",
+        )
+            .into_response();
     }
     let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
@@ -151,12 +187,20 @@ pub async fn update_bio_settings(
         eff_enabled = enabled;
     }
     if let Some(theme) = &payload.bio_theme {
-        active.bio_theme = Set(if theme.is_empty() { None } else { Some(theme.clone()) });
+        active.bio_theme = Set(if theme.is_empty() {
+            None
+        } else {
+            Some(theme.clone())
+        });
     }
 
     // The page can't go live without a username.
     if eff_enabled && eff_username.is_none() {
-        return (StatusCode::BAD_REQUEST, "Choose a username before enabling your bio page").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "Choose a username before enabling your bio page",
+        )
+            .into_response();
     }
 
     match active.update(&state.db).await {
