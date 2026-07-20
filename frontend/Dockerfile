@@ -73,6 +73,14 @@ RUN chmod +x /docker-entrypoint.sh
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+# Defense-in-depth guard (the build itself already runs scripts/verify-prerender.mjs).
+# If dist/ ever ships without a real index.html, nginx silently serves the base
+# image's stock "Welcome to nginx!" page at "/" — a green build with a broken
+# home page, exactly what took production down once. Fail the image build loudly
+# instead: the SPA mount point must be present in the served index.html.
+RUN grep -q 'id="root"' /usr/share/nginx/html/index.html \
+    || { echo "ERROR: /usr/share/nginx/html/index.html is not the SPA shell (prerender dropped the root route)"; exit 1; }
+
 # Create non-root user for nginx
 RUN chown -R nginx:nginx /usr/share/nginx/html && \
     chown -R nginx:nginx /var/cache/nginx && \
