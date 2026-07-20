@@ -44,6 +44,8 @@ test-results/
 
 # Scripts (not needed in production)
 scripts/
+# ...except the post-build prerender gate, which `npm run build` runs.
+!scripts/verify-prerender.mjs
 
 # TypeScript build info
 *.tsbuildinfo
