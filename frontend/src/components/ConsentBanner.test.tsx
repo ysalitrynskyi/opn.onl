@@ -88,11 +88,16 @@ describe('ConsentBanner', () => {
             expect(loadAnalytics).not.toHaveBeenCalled();
         });
 
-        it('shows a banner that says analytics is already on', () => {
+        // The wording is deliberately neutral, but it must never suggest that
+        // consent gates collection — analytics is already running by the time this
+        // renders, so the opt-in sentence here would be a false statement.
+        it('offers the decline without claiming collection is consent-gated', () => {
             setup({ mode: 'opt-out' });
             render(<ConsentBanner />);
             expect(banner()).toBeInTheDocument();
-            expect(screen.getByText(/on by default — decline to turn it off/i)).toBeInTheDocument();
+            expect(screen.getByText(/you can decline at any time/i)).toBeInTheDocument();
+            expect(screen.queryByText(/nothing is collected until you agree/i)).not.toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Decline' })).toBeInTheDocument();
         });
 
         it('shuts analytics down on decline and remembers the choice', () => {
