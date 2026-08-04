@@ -87,8 +87,8 @@ Deliberately **not** a place to edit: the OpenAPI `info.version` (reads `CARGO_P
 
 Release flow, in order:
 
-1. Feature branch → PR → all CI checks green → merge to `main`.
-2. `git checkout release && git merge main -m "chore(release): sync main for vX.Y.Z"`. **Expect one recurring conflict** in `docker-compose.portainer.arm64.yml`: `release` publishes postgres on host port **5433** because 5432 is taken on the deploy host, `main` has 5432. Keep the `release` side. Afterwards `git diff main release --stat` must list that file and nothing else.
+1. Feature branch → PR → all CI checks green → merge to `main`. **Branch from `main`** — cutting a branch while still checked out on `release` drags release-only history into the next PR (that is how the deploy host's postgres port leaked into `main` before 1.3.1).
+2. `git checkout release && git merge main -m "chore(release): sync main for vX.Y.Z"`. `release` carries no deliberate deviation from `main` any more — host-specific settings are env vars (e.g. `POSTGRES_HOST_PORT`), so `git diff main release` should come back empty. A conflict here means someone re-introduced a branch-local difference; fix that rather than resolving it every release.
 3. Push `release` — this builds and publishes multi-arch `:latest`.
 4. Tag `vX.Y.Z` on the release merge commit, push the tag, then `gh release create` (notes follow the shape of the previous releases: Summary / themed sections / Images / Upgrade).
 5. Both the tag push and the release publication trigger `docker-build.yml`, which serializes on a single concurrency group, so **the earlier queued run reports `cancelled`** — expected, not a failure. The surviving run publishes the `X.Y.Z` tags.

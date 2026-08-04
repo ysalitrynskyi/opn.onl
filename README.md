@@ -181,6 +181,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | Variable | Description |
 |----------|-------------|
 | `POSTGRES_PASSWORD` | Database password |
+| `POSTGRES_HOST_PORT` | Optional. Host port for the loopback-published postgres in the arm64 Portainer compose (default `5433`; 5432 is often already taken). Bound to 127.0.0.1 only |
 | `JWT_SECRET` | Unique signing secret (≥32 bytes; known placeholders rejected). Generate with `openssl rand -base64 64` |
 | `BASE_URL` | Public API URL (e.g., https://api.opn.onl) |
 | `FRONTEND_URL` | Public frontend URL (e.g., https://opn.onl) |
