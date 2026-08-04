@@ -69,6 +69,7 @@ npm run test:e2e   # Playwright E2E
 ### Deployment
 
 - Production: docker-compose + Cloudflare Tunnel; frontend nginx proxies `/{code}` redirects and `/{code}/verify|preview` to the backend, serves prerendered HTML for static routes, and falls back to the SPA shell.
+- **HTML is served `Cache-Control: no-cache`; only content-hashed assets are cached (1 year, immutable).** HTML carries both the hashed asset names and the entrypoint-injected runtime config, so a cached shell pins a returning visitor to the previous deploy — that is why the old consent banner survived the 1.3.0 rollout. The header comes from a `map` on content type, deliberately not from per-location `add_header` (which would drop every inherited security header). The CI header smoke test asserts it.
 - Images are built by GitHub Actions on push to the `release` branch (`ghcr.io/ysalitrynskyi/opn-{backend,frontend}` multi-arch amd64+arm64); Portainer compose files consume `:latest` or a pinned version tag.
 
 ## Releasing
