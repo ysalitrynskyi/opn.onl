@@ -222,6 +222,14 @@ Click analytics never store the full visitor IP: addresses are truncated at
 collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
 lookup — no IP ever leaves the server.
 
+Google Analytics is separate and off unless you set `GA_ID`. When it is set, the
+consent banner gates it in the direction `GA_CONSENT_MODE` selects: `opt-in`
+(default) loads GA only after the visitor accepts, `opt-out` loads it on the
+first page view and stops on Decline. Global Privacy Control blocks GA in both
+directions; Do-Not-Track is honored in `opt-in` only. Advertising signals are
+denied in both. Pick the direction your jurisdiction allows, and keep the
+privacy policy in sync — the bundled one describes whichever mode is active.
+
 ### Performance Tuning
 
 | Variable | Default | Description |
