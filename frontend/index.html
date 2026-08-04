@@ -4,36 +4,92 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     
-    <!-- Runtime config - GA_ID is injected by docker-entrypoint.sh -->
-    <script>window.GA_ID = "%%GA_ID%%";</script>
-    
-    <!-- Google Analytics (loaded only with consent). loadAnalytics injects gtag;
-         it runs on load when the visitor has already consented, or is called by
-         the ConsentBanner when they accept. GA never loads under Do-Not-Track /
-         Global Privacy Control or before an explicit Accept. -->
+    <!-- Runtime config - injected by docker-entrypoint.sh -->
+    <script>
+      window.GA_ID = "%%GA_ID%%";
+      window.GA_CONSENT_MODE = "%%GA_CONSENT_MODE%%";
+    </script>
+
+    <!-- Google Analytics consent gate. GA never loads without a GA_ID; how the
+         consent banner gates it is chosen by the GA_CONSENT_MODE env var:
+
+           opt-in (default) - GA loads only after an explicit Accept. Do-Not-Track
+                              and Global Privacy Control keep it off entirely.
+           opt-out          - GA loads on first paint and keeps running until an
+                              explicit Decline. Global Privacy Control still keeps
+                              it off up front (it is a legally recognized opt-out
+                              signal); Do-Not-Track does not, since it is
+                              deprecated and no longer an intentional choice.
+
+         loadAnalytics is called from here on load and by the ConsentBanner on
+         Accept; disableAnalytics is what the banner's Decline calls in opt-out
+         mode to stop a tag that is already running. -->
     <script>
       window.loadAnalytics = function() {
         var gaId = window.GA_ID || '';
         if (!gaId.startsWith('G-') || window.__gaLoaded) return;
         window.__gaLoaded = true;
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        window.gtag = gtag;
+        // Consent Mode v2 defaults. This deployment only ever measures traffic,
+        // so the ad_* signals stay denied no matter what the visitor chooses.
+        gtag('consent', 'default', {
+          ad_storage: 'denied',
+          ad_user_data: 'denied',
+          ad_personalization: 'denied',
+          analytics_storage: 'granted',
+          functionality_storage: 'granted',
+          security_storage: 'granted'
+        });
+        gtag('js', new Date());
+        gtag('config', gaId, { page_path: window.location.pathname, anonymize_ip: true });
         var script = document.createElement('script');
         script.async = true;
         script.src = 'https://www.googletagmanager.com/gtag/js?id=' + gaId;
         document.head.appendChild(script);
-        window.dataLayer = window.dataLayer || [];
-        function gtag(){dataLayer.push(arguments);}
-        gtag('js', new Date());
-        gtag('config', gaId, { page_path: window.location.pathname, anonymize_ip: true });
-        window.gtag = gtag;
+      };
+      window.disableAnalytics = function() {
+        var gaId = window.GA_ID || '';
+        if (!gaId.startsWith('G-')) return;
+        // gtag checks this flag before every hit, so it also stops the tag that
+        // opt-out mode already loaded.
+        window['ga-disable-' + gaId] = true;
+        if (typeof window.gtag === 'function') {
+          window.gtag('consent', 'update', {
+            ad_storage: 'denied',
+            ad_user_data: 'denied',
+            ad_personalization: 'denied',
+            analytics_storage: 'denied'
+          });
+        }
+        // Drop the cookies GA already wrote, on the exact host and on the
+        // registrable domain it may have scoped them to.
+        try {
+          var host = window.location.hostname;
+          var domains = ['', host, '.' + host.split('.').slice(-2).join('.')];
+          document.cookie.split(';').forEach(function(pair) {
+            var name = pair.split('=')[0].trim();
+            if (name !== '_ga' && name !== '_gid' && name.indexOf('_ga_') !== 0) return;
+            domains.forEach(function(domain) {
+              document.cookie = name + '=; path=/; max-age=0' + (domain ? '; domain=' + domain : '');
+            });
+          });
+        } catch (e) { /* cookie access blocked: the disable flag still holds */ }
       };
       (function() {
-        var optedOut = navigator.doNotTrack === '1' || window.doNotTrack === '1'
-          || navigator.msDoNotTrack === '1' || navigator.globalPrivacyControl === true;
+        var gpc = navigator.globalPrivacyControl === true;
+        var dnt = navigator.doNotTrack === '1' || window.doNotTrack === '1'
+          || navigator.msDoNotTrack === '1';
+        var stored = null;
         try {
-          if (!optedOut && localStorage.getItem('analytics_consent') === 'granted') {
-            window.loadAnalytics();
-          }
-        } catch (e) { /* localStorage unavailable: stay off */ }
+          stored = localStorage.getItem('analytics_consent');
+        } catch (e) { /* localStorage unavailable: fall through with no choice */ }
+        if (window.GA_CONSENT_MODE === 'opt-out') {
+          if (!gpc && stored !== 'denied') window.loadAnalytics();
+        } else if (!gpc && !dnt && stored === 'granted') {
+          window.loadAnalytics();
+        }
       })();
     </script>
     

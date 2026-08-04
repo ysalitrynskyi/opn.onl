@@ -1,4 +1,4 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vite'
 import type { ResolvedConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import Prerenderer from '@prerenderer/rollup-plugin'
@@ -24,7 +24,6 @@ const PRERENDER_ROUTES = [
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), '')
   const isProduction = mode === 'production'
 
   // @prerenderer/rollup-plugin treats the root route "/" specially: it deletes
@@ -46,13 +45,10 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       react(),
-      // Replace GA ID placeholder in HTML
-      {
-        name: 'html-transform',
-        transformIndexHtml(html: string) {
-          return html.replace(/%VITE_GA_ID%/g, env.VITE_GA_ID || '')
-        },
-      },
+      // Analytics config is injected at container start (%%GA_ID%% /
+      // %%GA_CONSENT_MODE%%, see docker-entrypoint.sh), never at build time —
+      // one image has to serve every deployment. A build-time %VITE_GA_ID%
+      // transform used to live here and matched nothing.
       // Prerender static pages in production build
       isProduction && Prerenderer({
         routes: PRERENDER_ROUTES,
