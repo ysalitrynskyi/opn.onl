@@ -56,7 +56,7 @@ npm run test:e2e   # Playwright E2E
 - **`utils/`** — `ClickBuffer` (batches click events before DB flush), `RedisCache` (optional redirect cache — handlers that change link state must invalidate it or blocks/edits take up to the TTL to apply; use `links::invalidate_cached_codes` / `active_link_codes_for_user`), `EmailService` (optional; unset SMTP = emails silently skipped), `BackupService` (S3; optional), rate limiters, JWT, GeoIP, privacy sweep (IP truncation at collection, retention anonymization; referer stored host-only; `purge_click_pii_for_user` on account delete). `RateLimiters` lives on `AppState` (shared by the rate-limit middleware and handlers, e.g. the redirect password path enforces the `password_verify` limiter in-handler). Middleware classifies redirect vs API by route prefix, not path length.
 - **Auth/roles**: single `is_admin` flag on users (no role table). First registered user becomes admin (`ensure_admin_exists`). `token_version` on users invalidates old JWTs on credential change. `JWT_SECRET` is validated at boot (rejects short / known-placeholder values).
 - **Route order matters**: `/:code` redirect routes are registered last so they don't shadow API routes.
-- API docs generated via utoipa; new handlers should carry `#[utoipa::path]` annotations and be registered in `src/openapi.rs`.
+- API docs generated via utoipa; new handlers should carry `#[utoipa::path]` annotations and be registered in `src/openapi.rs`. The served document is built by `openapi::api_doc()`, which stamps `CARGO_PKG_VERSION` — **do not put a `version` literal back into `#[openapi(info(...))]`** (utoipa only accepts a literal there, which is exactly how the published spec ended up advertising 1.2.1 after 1.3.0 shipped).
 
 ### Frontend
 
@@ -64,11 +64,36 @@ npm run test:e2e   # Playwright E2E
 - **Adding a page route requires touching up to three places**: `src/App.tsx` (route), `vite.config.ts` `PRERENDER_ROUTES` (only if it should be prerendered), and `frontend/nginx.conf` SPA-route allowlist regex (production only — anything not on that allowlist matching `/[a-zA-Z0-9]{4,50}` is proxied to the backend as a short-link code and will 404 as a page).
 - API access goes through `src/config/api.ts` (`API_ENDPOINTS`, `authFetch` — reads JWT from localStorage). No state-management library; pages fetch directly.
 - Prerender in Docker must use Playwright/Puppeteer's bundled Chromium — Debian's apt chromium SIGTRAPs in the builder container (see vite.config.ts sandbox flags).
+- **Runtime config is injected at container start, never at build time** (one image serves every deployment): `docker-entrypoint.sh` substitutes `%%GA_ID%%` / `%%GA_CONSENT_MODE%%` in **every `*.html` under the web root**, not just `index.html` — each prerendered route ships its own copy of the placeholders, so substituting only the SPA shell leaves the config dead on 11 of 12 pages. `scripts/test-entrypoint.sh` pins this and runs in CI. Anything that reads these values (`ConsentBanner`, the analytics disclosure on `Privacy.tsx`) must treat an unsubstituted `%%…%%` placeholder as "unknown", because that is what the prerenderer and `npm run dev` see.
 
 ### Deployment
 
 - Production: docker-compose + Cloudflare Tunnel; frontend nginx proxies `/{code}` redirects and `/{code}/verify|preview` to the backend, serves prerendered HTML for static routes, and falls back to the SPA shell.
 - Images are built by GitHub Actions on push to the `release` branch (`ghcr.io/ysalitrynskyi/opn-{backend,frontend}` multi-arch amd64+arm64); Portainer compose files consume `:latest` or a pinned version tag.
+
+## Releasing
+
+Backend and frontend share one version number. Bumping it means editing exactly these places — everything else derives:
+
+| Place | Note |
+|-------|------|
+| `backend/Cargo.toml` (`version`) | Source of truth for the backend. |
+| `backend/Cargo.lock` | Run `cargo update -p opn_onl_backend --offline` (or any cargo command) so the lock records the new version. |
+| `frontend/package.json` (`version`) | Metadata only — nothing reads it at runtime. Keep it in lockstep so an image tag means one thing. |
+| `README.md` | The "pin a release tag such as `:X.Y.Z`" example, so copy-pasters don't pin a stale tag. |
+
+Deliberately **not** a place to edit: the OpenAPI `info.version` (reads `CARGO_PKG_VERSION`, see the Backend notes), image tags and release-notes versions (CI derives both from the git tag).
+
+Release flow, in order:
+
+1. Feature branch → PR → all CI checks green → merge to `main`.
+2. `git checkout release && git merge main -m "chore(release): sync main for vX.Y.Z"`. **Expect one recurring conflict** in `docker-compose.portainer.arm64.yml`: `release` publishes postgres on host port **5433** because 5432 is taken on the deploy host, `main` has 5432. Keep the `release` side. Afterwards `git diff main release --stat` must list that file and nothing else.
+3. Push `release` — this builds and publishes multi-arch `:latest`.
+4. Tag `vX.Y.Z` on the release merge commit, push the tag, then `gh release create` (notes follow the shape of the previous releases: Summary / themed sections / Images / Upgrade).
+5. Both the tag push and the release publication trigger `docker-build.yml`, which serializes on a single concurrency group, so **the earlier queued run reports `cancelled`** — expected, not a failure. The surviving run publishes the `X.Y.Z` tags.
+6. Verify before declaring done: `docker manifest inspect ghcr.io/ysalitrynskyi/opn-backend:X.Y.Z` (and `opn-frontend`) must list both `linux/amd64` and `linux/arm64`, and the same for `:latest`.
+
+Deployment to production is a manual Portainer redeploy by the operator; a green release workflow only means the images exist.
 
 ## Testing conventions
 
