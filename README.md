@@ -164,7 +164,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 2. Choose the appropriate file for your architecture:
    - `docker-compose.portainer.amd64.yml` - Intel/AMD servers
    - `docker-compose.portainer.arm64.yml` - ARM servers (Raspberry Pi, Apple Silicon, etc.)
-3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.2.1`):
+3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.3.0`):
    ```
    BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
    FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
@@ -222,6 +222,14 @@ Click analytics never store the full visitor IP: addresses are truncated at
 collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
 lookup — no IP ever leaves the server.
 
+Google Analytics is separate and off unless you set `GA_ID`. When it is set, the
+consent banner gates it in the direction `GA_CONSENT_MODE` selects: `opt-in`
+(default) loads GA only after the visitor accepts, `opt-out` loads it on the
+first page view and stops on Decline. Global Privacy Control blocks GA in both
+directions; Do-Not-Track is honored in `opt-in` only. Advertising signals are
+denied in both. Pick the direction your jurisdiction allows, and keep the
+privacy policy in sync — the bundled one describes whichever mode is active.
+
 ### Performance Tuning
 
 | Variable | Default | Description |
@@ -246,6 +254,7 @@ lookup — no IP ever leaves the server.
 | Variable | Description |
 |----------|-------------|
 | `GA_ID` | Google Analytics Measurement ID (e.g., G-XXXXXXXXXX) - Runtime ENV |
+| `GA_CONSENT_MODE` | Consent banner direction: `opt-in` (default - GA loads only after Accept) or `opt-out` (GA loads immediately, stops on Decline). Global Privacy Control is honored in both; Do-Not-Track only in `opt-in`. Runtime ENV |
 | `MAXMIND_ACCOUNT_ID` | MaxMind account ID for GeoIP |
 | `MAXMIND_LICENSE_KEY` | MaxMind license key for GeoIP |
 

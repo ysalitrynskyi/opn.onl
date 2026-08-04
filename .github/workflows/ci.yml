@@ -90,6 +90,13 @@ jobs:
         working-directory: frontend
         run: npx tsc -b
 
+      # Runtime env injection (GA_ID / GA_CONSENT_MODE) happens in the container
+      # entrypoint, so nothing above would notice it breaking. Substituting the
+      # SPA shell only once left analytics dead on every prerendered page.
+      - name: Entrypoint runtime injection
+        working-directory: frontend
+        run: sh scripts/test-entrypoint.sh
+
   frontend-production-smoke:
     name: Frontend production headers
     runs-on: ubuntu-latest
