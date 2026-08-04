@@ -9,7 +9,7 @@ use crate::handlers::{
 #[openapi(
     info(
         title = "opn.onl URL Shortener API",
-        version = "1.2.1",
+        // No `version` here on purpose — see `api_doc()`.
         description = "A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.",
         license(
             name = "AGPL-3.0-only",
@@ -286,7 +286,20 @@ impl utoipa::Modify for SecurityAddon {
     }
 }
 
+/// The OpenAPI document served at `/api-docs/openapi.json`.
+///
+/// The version is stamped here rather than in the `#[openapi(info(...))]`
+/// attribute because utoipa only accepts a string literal there, and the literal
+/// that used to live in it went stale: after the 1.3.0 release the published spec
+/// still advertised 1.2.1. Reading `CARGO_PKG_VERSION` keeps the served document
+/// in step with Cargo.toml on its own.
+pub fn api_doc() -> utoipa::openapi::OpenApi {
+    let mut doc = ApiDoc::openapi();
+    doc.info.version = env!("CARGO_PKG_VERSION").to_string();
+    doc
+}
+
 /// Create Swagger UI routes
 pub fn swagger_routes() -> SwaggerUi {
-    SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi())
+    SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api_doc())
 }
