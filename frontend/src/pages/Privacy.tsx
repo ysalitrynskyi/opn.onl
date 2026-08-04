@@ -190,8 +190,14 @@ export default function Privacy() {
                                     This site also uses <strong>Google Analytics</strong> to measure page traffic. IP
                                     anonymization is on and the advertising features of Google Analytics
                                     (ad personalization, ad storage, ad user data) are switched off.{' '}
+                                    {/*
+                                      * The policy is where the timing has to be stated plainly — the
+                                      * banner keeps a neutral register, so if this page also went vague
+                                      * the disclosure would exist nowhere. Softening the wording is fine;
+                                      * dropping the fact that it runs unless declined is not.
+                                      */}
                                     {analytics.optOut
-                                        ? 'It starts when the page loads and stops as soon as you choose Decline on the cookie banner; your choice is remembered on this browser.'
+                                        ? 'It runs unless you decline on the cookie banner, and stops as soon as you do; your choice is remembered on this browser.'
                                         : 'It does not load at all until you choose Accept on the cookie banner; your choice is remembered on this browser.'}{' '}
                                     We honor the Global Privacy Control browser signal
                                     {!analytics.optOut && ', as well as Do-Not-Track,'} and never load analytics

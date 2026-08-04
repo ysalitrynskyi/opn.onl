@@ -117,9 +117,17 @@ export default function ConsentBanner() {
         >
             <div className="mx-auto max-w-3xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
                 <p className="text-sm text-slate-600 flex-1">
+                    {/*
+                      * Opt-out wording stays neutral but must not imply that consent
+                      * gates collection — analytics is already running at this point,
+                      * and a notice that suggests otherwise is deceptive and costs the
+                      * deployment the "notice + opt-out" footing the mode relies on.
+                      * The present tense plus a visible decline is the whole notice;
+                      * the timing detail lives in the privacy policy.
+                      */}
                     We use privacy-friendly analytics to understand how the site is used.{' '}
                     {optOut
-                        ? 'It is on by default — decline to turn it off.'
+                        ? 'You can decline at any time.'
                         : 'Nothing is collected until you agree.'}{' '}
                     See our <a href="/privacy" className="text-primary-600 underline">privacy policy</a>.
                 </p>
