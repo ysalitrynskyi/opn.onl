@@ -136,6 +136,9 @@ services:
     environment:
       # Google Analytics (optional) - set to your GA4 tracking ID
       GA_ID: ${GA_ID:-}
+      # Consent banner direction: opt-in (default, GA waits for Accept) or
+      # opt-out (GA runs from page load and stops on Decline)
+      GA_CONSENT_MODE: ${GA_CONSENT_MODE:-opt-in}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:80/health"]
       interval: 30s

@@ -3,7 +3,28 @@ import { motion } from 'framer-motion';
 import { Shield, Eye, Database, Lock, Trash2, Mail } from 'lucide-react';
 import SEO from '../components/SEO';
 
+/**
+ * What this deployment's operator configured for Google Analytics (GA_ID and
+ * GA_CONSENT_MODE, injected into index.html at runtime). The policy text has to
+ * match what actually runs: a deployment with no GA_ID genuinely loads no
+ * third-party analytics and should keep saying so, and one with GA on has to
+ * disclose it.
+ *
+ * `known` is false while the placeholders are still unsubstituted — during the
+ * production prerender and in `npm run dev`. That snapshot is shared by every
+ * deployment of this image, so it must not claim analytics is on *or* off; the
+ * real answer is filled in on the visitor's own machine.
+ */
+function analyticsDisclosure(): { known: boolean; enabled: boolean; optOut: boolean } {
+    const gaId = window.GA_ID ?? '';
+    const known = !gaId.includes('%%');
+    const enabled = gaId.startsWith('G-');
+    return { known, enabled, optOut: enabled && window.GA_CONSENT_MODE === 'opt-out' };
+}
+
 export default function Privacy() {
+    const analytics = analyticsDisclosure();
+
     return (
         <div className="pb-24">
             <SEO
@@ -161,9 +182,22 @@ export default function Privacy() {
                         >
                             <p className="mb-4">
                                 We use your browser's local storage to keep you signed in (your session token).
-                                We do not use advertising cookies, cross-site tracking, or third-party analytics
-                                or tracking pixels on this site.
+                                We do not use advertising cookies or cross-site tracking.
+                                {analytics.known && !analytics.enabled && ' We do not use third-party analytics or tracking pixels on this site.'}
                             </p>
+                            {analytics.enabled && (
+                                <p className="mb-4">
+                                    This site also uses <strong>Google Analytics</strong> to measure page traffic. IP
+                                    anonymization is on and the advertising features of Google Analytics
+                                    (ad personalization, ad storage, ad user data) are switched off.{' '}
+                                    {analytics.optOut
+                                        ? 'It starts when the page loads and stops as soon as you choose Decline on the cookie banner; your choice is remembered on this browser.'
+                                        : 'It does not load at all until you choose Accept on the cookie banner; your choice is remembered on this browser.'}{' '}
+                                    We honor the Global Privacy Control browser signal
+                                    {!analytics.optOut && ', as well as Do-Not-Track,'} and never load analytics
+                                    when it is set.
+                                </p>
+                            )}
                         </PolicySection>
 
                         <PolicySection
