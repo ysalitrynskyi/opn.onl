@@ -71,3 +71,19 @@ async fn openapi_spec_serves_and_documents_newly_registered_handlers() {
         "verify-email success must $ref MessageResponse"
     );
 }
+
+/// The version used to be a string literal in the `#[openapi(info(...))]`
+/// attribute, so it drifted the moment a release bumped Cargo.toml without
+/// touching it — 1.3.0 shipped with the spec still advertising 1.2.1.
+#[tokio::test]
+async fn openapi_spec_reports_the_crate_version() {
+    let (server, _db) = spawn_real_app().await;
+
+    let spec: Value = server.get("/api-docs/openapi.json").await.json();
+
+    assert_eq!(
+        spec["info"]["version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "served spec must advertise the crate version, not a hand-maintained literal"
+    );
+}
