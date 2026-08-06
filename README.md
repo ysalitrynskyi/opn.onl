@@ -164,7 +164,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 2. Choose the appropriate file for your architecture:
    - `docker-compose.portainer.amd64.yml` - Intel/AMD servers
    - `docker-compose.portainer.arm64.yml` - ARM servers (Raspberry Pi, Apple Silicon, etc.)
-3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.3.1`):
+3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.3.2`):
    ```
    BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
    FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
@@ -181,7 +181,6 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | Variable | Description |
 |----------|-------------|
 | `POSTGRES_PASSWORD` | Database password |
-| `POSTGRES_HOST_PORT` | Optional. Host port for the loopback-published postgres in the arm64 Portainer compose (default `5433`; 5432 is often already taken). Bound to 127.0.0.1 only |
 | `JWT_SECRET` | Unique signing secret (≥32 bytes; known placeholders rejected). Generate with `openssl rand -base64 64` |
 | `BASE_URL` | Public API URL (e.g., https://api.opn.onl) |
 | `FRONTEND_URL` | Public frontend URL (e.g., https://opn.onl) |
@@ -264,6 +263,7 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUST_LOG` | info | Log level (trace, debug, info, warn, error) |
+| `POSTGRES_HOST_PORT` | 5433 | Host port for the loopback-published postgres in the arm64 Portainer compose. 5432 is often already taken on a host running more than one postgres. Bound to 127.0.0.1 only |
 | `FORCE_HTTPS` | true | Force HTTPS redirects |
 | `WEBAUTHN_RP_ID` | (from FRONTEND_URL) | WebAuthn Relying Party ID |
 
