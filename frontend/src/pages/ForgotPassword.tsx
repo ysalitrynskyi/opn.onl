@@ -45,22 +45,22 @@ export default function ForgotPassword() {
         >
           <Link
             to="/login"
-            className="inline-flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors"
+            className="inline-flex items-center gap-2 text-muted hover:text-ink mb-8 transition-colors"
             aria-label="Back to login"
           >
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />
             Back to login
           </Link>
 
-          <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-8">
+          <div className="rounded-2xl border border-line bg-surface p-8 shadow-card">
             {status === 'success' ? (
               <div className="text-center">
-                <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" aria-hidden="true" />
-                <h1 className="text-2xl font-bold text-white mb-2">Check your email</h1>
-                <p className="text-slate-400 mb-6">{message}</p>
+                <CheckCircle className="w-16 h-16 text-success mx-auto mb-4" aria-hidden="true" />
+                <h1 className="font-display text-2xl font-bold text-ink mb-2">Check your email</h1>
+                <p className="text-muted mb-6">{message}</p>
                 <Link
                   to="/login"
-                  className="inline-flex items-center justify-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                  className="inline-flex items-center justify-center px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-semibold transition-colors"
                 >
                   Return to Login
                 </Link>
@@ -68,18 +68,18 @@ export default function ForgotPassword() {
             ) : (
               <>
                 <div className="text-center mb-8">
-                  <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Mail className="w-8 h-8 text-blue-500" aria-hidden="true" />
+                  <div className="w-16 h-16 bg-primary-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Mail className="w-8 h-8 text-primary-600" aria-hidden="true" />
                   </div>
-                  <h1 className="text-2xl font-bold text-white mb-2">Forgot your password?</h1>
-                  <p className="text-slate-400">
+                  <h1 className="font-display text-2xl font-bold text-ink mb-2">Forgot your password?</h1>
+                  <p className="text-muted">
                     Enter your email address and we'll send you a link to reset your password.
                   </p>
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div>
-                    <label htmlFor="email" className="block text-sm font-medium text-slate-300 mb-2">
+                    <label htmlFor="email" className="block text-sm font-medium text-ink mb-2">
                       Email address
                     </label>
                     <input
@@ -88,20 +88,20 @@ export default function ForgotPassword() {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       required
-                      className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="block w-full rounded-xl border border-line2 bg-white px-4 py-3 text-ink shadow-subtle outline-none transition-colors placeholder:text-muted/70 focus:border-primary-500"
                       placeholder="you@example.com"
                       aria-required="true"
                     />
                   </div>
 
                   {status === 'error' && (
-                    <p className="text-red-400 text-sm" role="alert">{message}</p>
+                    <p className="text-danger text-sm" role="alert">{message}</p>
                   )}
 
                   <button
                     type="submit"
                     disabled={status === 'loading'}
-                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                    className="w-full py-3 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-semibold transition-colors"
                   >
                     {status === 'loading' ? 'Sending...' : 'Send reset link'}
                   </button>

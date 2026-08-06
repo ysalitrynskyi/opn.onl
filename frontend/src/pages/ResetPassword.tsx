@@ -64,13 +64,13 @@ export default function ResetPassword() {
         </Helmet>
 
         <div className="min-h-[80vh] flex items-center justify-center py-12 px-4">
-          <div className="max-w-md w-full bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-8 text-center">
-            <XCircle className="w-16 h-16 text-red-500 mx-auto mb-4" aria-hidden="true" />
-            <h1 className="text-2xl font-bold text-white mb-2">Invalid Link</h1>
-            <p className="text-slate-400 mb-6">This password reset link is invalid or has expired.</p>
+          <div className="max-w-md w-full rounded-2xl border border-line bg-surface p-8 text-center shadow-card">
+            <XCircle className="w-16 h-16 text-danger mx-auto mb-4" aria-hidden="true" />
+            <h1 className="font-display text-2xl font-bold text-ink mb-2">Invalid Link</h1>
+            <p className="text-muted mb-6">This password reset link is invalid or has expired.</p>
             <Link
               to="/forgot-password"
-              className="inline-flex items-center justify-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+              className="inline-flex items-center justify-center px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-semibold transition-colors"
             >
               Request New Link
             </Link>
@@ -93,27 +93,27 @@ export default function ResetPassword() {
           animate={{ opacity: 1, y: 0 }}
           className="max-w-md w-full"
         >
-          <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-8">
+          <div className="rounded-2xl border border-line bg-surface p-8 shadow-card">
             {status === 'success' ? (
               <div className="text-center">
-                <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" aria-hidden="true" />
-                <h1 className="text-2xl font-bold text-white mb-2">Password Reset!</h1>
-                <p className="text-slate-400 mb-2">{message}</p>
-                <p className="text-slate-500 text-sm">Redirecting to login...</p>
+                <CheckCircle className="w-16 h-16 text-success mx-auto mb-4" aria-hidden="true" />
+                <h1 className="font-display text-2xl font-bold text-ink mb-2">Password Reset!</h1>
+                <p className="text-muted mb-2">{message}</p>
+                <p className="text-sm text-muted">Redirecting to login...</p>
               </div>
             ) : (
               <>
                 <div className="text-center mb-8">
-                  <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Lock className="w-8 h-8 text-blue-500" aria-hidden="true" />
+                  <div className="w-16 h-16 bg-primary-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Lock className="w-8 h-8 text-primary-600" aria-hidden="true" />
                   </div>
-                  <h1 className="text-2xl font-bold text-white mb-2">Reset your password</h1>
-                  <p className="text-slate-400">Enter your new password below.</p>
+                  <h1 className="font-display text-2xl font-bold text-ink mb-2">Reset your password</h1>
+                  <p className="text-muted">Enter your new password below.</p>
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div>
-                    <label htmlFor="password" className="block text-sm font-medium text-slate-300 mb-2">
+                    <label htmlFor="password" className="block text-sm font-medium text-ink mb-2">
                       New Password
                     </label>
                     <div className="relative">
@@ -124,7 +124,7 @@ export default function ResetPassword() {
                         onChange={(e) => setPassword(e.target.value)}
                         required
                         minLength={8}
-                        className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-12"
+                        className="block w-full rounded-xl border border-line2 bg-white px-4 py-3 text-ink shadow-subtle outline-none transition-colors placeholder:text-muted/70 focus:border-primary-500 pr-12"
                         placeholder="••••••••"
                         aria-required="true"
                         aria-describedby="password-requirements"
@@ -132,19 +132,19 @@ export default function ResetPassword() {
                       <button
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-ink"
                         aria-label={showPassword ? 'Hide password' : 'Show password'}
                       >
                         {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                       </button>
                     </div>
-                    <p id="password-requirements" className="text-xs text-slate-500 mt-1">
+                    <p id="password-requirements" className="text-xs text-muted mt-1">
                       Must be at least 8 characters
                     </p>
                   </div>
 
                   <div>
-                    <label htmlFor="confirmPassword" className="block text-sm font-medium text-slate-300 mb-2">
+                    <label htmlFor="confirmPassword" className="block text-sm font-medium text-ink mb-2">
                       Confirm Password
                     </label>
                     <input
@@ -153,20 +153,20 @@ export default function ResetPassword() {
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
                       required
-                      className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="block w-full rounded-xl border border-line2 bg-white px-4 py-3 text-ink shadow-subtle outline-none transition-colors placeholder:text-muted/70 focus:border-primary-500"
                       placeholder="••••••••"
                       aria-required="true"
                     />
                   </div>
 
                   {status === 'error' && (
-                    <p className="text-red-400 text-sm" role="alert">{message}</p>
+                    <p className="text-danger text-sm" role="alert">{message}</p>
                   )}
 
                   <button
                     type="submit"
                     disabled={status === 'loading'}
-                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                    className="w-full py-3 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-semibold transition-colors"
                   >
                     {status === 'loading' ? 'Resetting...' : 'Reset Password'}
                   </button>
