@@ -50,17 +50,26 @@ export default function VerifyEmail() {
         <meta name="robots" content="noindex, nofollow" />
       </Helmet>
 
+      {/*
+        * Design tokens only (surface / line / ink / muted / primary), matching the
+        * login and password-reset cards. This page used to carry dark-theme classes
+        * — a translucent slate-800 card with white text — which rendered as a grey
+        * slab with near-illegible body copy on the app's light background.
+        */}
       <div className="min-h-[80vh] flex items-center justify-center py-12 px-4">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-8 text-center"
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+          className="w-full max-w-md rounded-2xl border border-line bg-surface p-8 text-center shadow-card"
         >
           {status === 'loading' && (
             <>
-              <Loader2 className="w-16 h-16 text-blue-500 animate-spin mx-auto mb-4" aria-hidden="true" />
-              <h1 className="text-2xl font-bold text-white mb-2">Verifying your email...</h1>
-              <p className="text-slate-400">Please wait while we verify your email address.</p>
+              <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-50">
+                <Loader2 className="h-7 w-7 animate-spin text-primary-600" aria-hidden="true" />
+              </div>
+              <h1 className="font-display text-2xl font-bold text-ink">Verifying your email…</h1>
+              <p className="mt-2 leading-relaxed text-muted">Please wait while we verify your email address.</p>
             </>
           )}
 
@@ -70,16 +79,17 @@ export default function VerifyEmail() {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', delay: 0.1 }}
+                className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-success/10"
               >
-                <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" aria-hidden="true" />
+                <CheckCircle className="h-7 w-7 text-success" aria-hidden="true" />
               </motion.div>
-              <h1 className="text-2xl font-bold text-white mb-2">Email Verified!</h1>
-              <p className="text-slate-400 mb-6">{message}</p>
+              <h1 className="font-display text-2xl font-bold text-ink">Email verified</h1>
+              <p className="mt-2 leading-relaxed text-muted">{message}</p>
               <Link
                 to="/login"
-                className="inline-flex items-center justify-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                className="mt-6 flex w-full items-center justify-center rounded-xl bg-primary-600 py-3 font-semibold text-white transition-colors hover:bg-primary-700"
               >
-                Continue to Login
+                Continue to login
               </Link>
             </>
           )}
@@ -90,23 +100,24 @@ export default function VerifyEmail() {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', delay: 0.1 }}
+                className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-danger/10"
               >
-                <XCircle className="w-16 h-16 text-red-500 mx-auto mb-4" aria-hidden="true" />
+                <XCircle className="h-7 w-7 text-danger" aria-hidden="true" />
               </motion.div>
-              <h1 className="text-2xl font-bold text-white mb-2">Verification Failed</h1>
-              <p className="text-slate-400 mb-6">{message}</p>
-              <div className="flex flex-col gap-3">
+              <h1 className="font-display text-2xl font-bold text-ink">Verification failed</h1>
+              <p className="mt-2 leading-relaxed text-muted">{message}</p>
+              <div className="mt-6 space-y-3">
                 <Link
                   to="/login"
-                  className="inline-flex items-center justify-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                  className="flex w-full items-center justify-center rounded-xl bg-primary-600 py-3 font-semibold text-white transition-colors hover:bg-primary-700"
                 >
-                  Go to Login
+                  Go to login
                 </Link>
                 <Link
                   to="/"
-                  className="inline-flex items-center justify-center px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
+                  className="flex w-full items-center justify-center rounded-xl border border-line2 bg-surface py-3 font-medium text-ink transition-colors hover:border-ink/30"
                 >
-                  Go to Homepage
+                  Go to homepage
                 </Link>
               </div>
             </>
