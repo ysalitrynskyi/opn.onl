@@ -331,6 +331,58 @@ async fn custom_alias_unique_violation_is_conflict() {
     );
 }
 
+/// Bulk create used to mint one 6-character code with no existence check.
+/// Occupying that code (active or soft-deleted) made the insert fail with a
+/// unique-index error instead of allocating a free code like create_link does.
+#[tokio::test]
+async fn bulk_create_retries_when_generated_code_is_taken() {
+    let (server, db) = common::spawn_real_app().await;
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+
+    let taken = common::unique_code();
+    create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": "https://iana.org/taken-bulk-code",
+            "custom_alias": taken,
+        }),
+    )
+    .await;
+
+    let res = server
+        .post("/links/bulk")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "urls": [
+                "https://iana.org/bulk-retry-a",
+                "https://iana.org/bulk-retry-b",
+            ]
+        }))
+        .await;
+    assert_eq!(res.status_code(), 200, "bulk create: {}", res.text());
+    let body: Value = res.json();
+    let links = body["links"].as_array().cloned().unwrap_or_default();
+    let errors = body["errors"].as_array().cloned().unwrap_or_default();
+    assert!(
+        errors.iter().all(|e| !e.as_str().unwrap_or("").contains("duplicate key")),
+        "bulk create must not surface a unique-index error: {errors:?}"
+    );
+    assert_eq!(
+        links.len(),
+        2,
+        "both URLs must be created even when a 6-char code is already taken: {body}"
+    );
+    for link in &links {
+        assert_ne!(
+            link["code"].as_str().unwrap_or(""),
+            taken,
+            "bulk must not reuse the occupied code"
+        );
+    }
+}
+
 /// Regression (account takeover, fixed in 5240b6a): passkey enrollment must
 /// require authentication — knowing a victim's email must not be enough to
 /// start registering an authenticator onto their account.
