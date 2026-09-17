@@ -22,6 +22,10 @@ async fn main() {
     // hardcoded-fallback hole where an unset JWT_SECRET let anyone forge admin tokens.
     utils::jwt::validate_jwt_secret();
 
+    // Fail fast if WEBAUTHN_RP_ID is set to a host the frontend origin cannot
+    // use. A passkey registered under the wrong RP ID is silently unusable.
+    opn_onl_backend::handlers::passkeys::validate_webauthn_rp_id();
+
     // Initialize structured logging
     let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
     let file_appender = tracing_appender::rolling::daily(&log_dir, "opn-onl.log");
