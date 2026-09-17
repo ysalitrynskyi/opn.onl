@@ -212,6 +212,11 @@ pub async fn update_bio_settings(
             }),
         )
             .into_response(),
+        // The read-then-write uniqueness check races; idx-users-bio_username
+        // is the real guard. Map that unique violation to the documented 409.
+        Err(err) if err.to_string().contains("duplicate key value") => {
+            (StatusCode::CONFLICT, "That username is taken").into_response()
+        }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save settings").into_response(),
     }
 }
