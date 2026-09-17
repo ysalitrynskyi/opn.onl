@@ -993,7 +993,9 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
     responses(
         (status = 201, description = "Link created", body = LinkResponse),
         (status = 400, description = "Invalid request"),
+        (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
+        (status = 429, description = "Same URL shortened too many times"),
     ),
     tag = "Links"
 )]
@@ -2912,6 +2914,18 @@ async fn link_for_owner(db: &DatabaseConnection, id: i32, user_id: i32) -> Optio
 }
 
 /// List the routing rules for a link.
+#[utoipa::path(
+    get,
+    path = "/links/{id}/rules",
+    params(("id" = i32, Path, description = "Link ID")),
+    responses(
+        (status = 200, description = "Routing rules for the link", body = Vec<RoutingRuleResponse>),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+    ),
+    tag = "Links",
+    security(("bearer_auth" = []))
+)]
 pub async fn get_routing_rules(
     State(state): State<AppState>,
     Path(id): Path<i32>,
@@ -2951,6 +2965,20 @@ pub async fn get_routing_rules(
 }
 
 /// Replace all routing rules for a link (delete-then-insert in a transaction).
+#[utoipa::path(
+    put,
+    path = "/links/{id}/rules",
+    params(("id" = i32, Path, description = "Link ID")),
+    request_body = ReplaceRoutingRulesRequest,
+    responses(
+        (status = 200, description = "Routing rules replaced", body = RoutingRulesSavedResponse),
+        (status = 400, description = "Too many rules, or a destination URL is invalid or blocked"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+    ),
+    tag = "Links",
+    security(("bearer_auth" = []))
+)]
 pub async fn replace_routing_rules(
     State(state): State<AppState>,
     Path(id): Path<i32>,
@@ -3077,7 +3105,7 @@ pub async fn replace_routing_rules(
     path = "/links",
     params(LinksQuery),
     responses(
-        (status = 200, description = "List of links", body = Vec<LinkResponse>),
+        (status = 200, description = "The caller's non-deleted links", body = Vec<LinkResponse>),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "Links"
@@ -3643,6 +3671,8 @@ pub async fn update_link(
     request_body = BulkCreateLinkRequest,
     responses(
         (status = 200, description = "Links created", body = BulkCreateLinkResponse),
+        (status = 400, description = "Batch too large"),
+        (status = 401, description = "Authentication required"),
     ),
     tag = "Links"
 )]
@@ -4502,6 +4532,7 @@ pub struct UrlHealthResponse {
     responses(
         (status = 200, description = "URL health checked", body = UrlHealthResponse),
         (status = 400, description = "Invalid URL"),
+        (status = 401, description = "Unauthorized"),
     ),
     tag = "Links"
 )]
@@ -4814,8 +4845,9 @@ pub struct PreviewMetadataRequest {
     pub url: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct AvatarProxyQuery {
+    /// External http(s) avatar URL to fetch through this origin.
     pub url: String,
 }
 
@@ -4859,6 +4891,18 @@ fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
 /// visitor's IP (the link-in-bio privacy leak). The fetch is SSRF-guarded
 /// (validated + DNS-pinned, redirects re-validated), restricted to successful
 /// http(s) responses carrying an allowed raster image type, and size-capped.
+#[utoipa::path(
+    get,
+    path = "/api/bio/avatar",
+    params(AvatarProxyQuery),
+    responses(
+        (status = 200, description = "Proxied raster avatar bytes", content_type = "image/png"),
+        (status = 400, description = "Invalid avatar URL"),
+        (status = 415, description = "Avatar is not a supported image type"),
+        (status = 502, description = "Could not fetch avatar"),
+    ),
+    tag = "Bio"
+)]
 pub async fn proxy_bio_avatar(
     axum::extract::Query(query): axum::extract::Query<AvatarProxyQuery>,
 ) -> axum::response::Response {
@@ -4931,6 +4975,7 @@ pub async fn proxy_bio_avatar(
     responses(
         (status = 200, description = "Link preview data", body = LinkPreviewData),
         (status = 400, description = "Invalid URL"),
+        (status = 401, description = "Unauthorized"),
     ),
     tag = "Links"
 )]

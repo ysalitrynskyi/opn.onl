@@ -1384,6 +1384,7 @@ pub struct UpdateProfileRequest {
     responses(
         (status = 200, description = "User profile", body = UserProfileResponse),
         (status = 401, description = "Unauthorized"),
+        (status = 404, description = "User not found"),
     ),
     tag = "Authentication",
     security(("bearer_auth" = []))
@@ -1467,7 +1468,9 @@ pub async fn get_current_user(
     request_body = UpdateProfileRequest,
     responses(
         (status = 200, description = "Profile updated", body = UserProfileResponse),
+        (status = 400, description = "Invalid bio, website, or avatar URL"),
         (status = 401, description = "Unauthorized"),
+        (status = 404, description = "User not found"),
     ),
     tag = "Authentication",
     security(("bearer_auth" = []))

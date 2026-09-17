@@ -129,7 +129,7 @@ fn passkeys_enabled() -> bool {
         .unwrap_or(true)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RegisterStartRequest {
     /// Accepted for wire compatibility but IGNORED server-side: the target
     /// account is taken from the caller's authenticated identity, never from
@@ -143,16 +143,18 @@ pub struct RegisterStartResponse {
     pub options: CreationChallengeResponse,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RegisterFinishRequest {
     /// Accepted for wire compatibility but IGNORED server-side: the credential
     /// is bound to the caller's authenticated identity (see `register_finish`).
     #[allow(dead_code)]
     pub username: String,
+    /// Standard WebAuthn registration credential — not expanded.
+    #[schema(value_type = Object)]
     pub credential: RegisterPublicKeyCredential,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct LoginStartRequest {
     pub username: String,
 }
@@ -162,9 +164,11 @@ pub struct LoginStartResponse {
     pub options: RequestChallengeResponse,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct LoginFinishRequest {
     pub username: String,
+    /// Standard WebAuthn assertion credential — not expanded.
+    #[schema(value_type = Object)]
     pub credential: PublicKeyCredential,
 }
 
@@ -746,7 +750,7 @@ pub async fn list_passkeys(
         .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct DeletePasskeyRequest {
     pub passkey_id: i32,
 }
@@ -886,7 +890,7 @@ pub async fn delete_passkey(
         .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RenamePasskeyRequest {
     pub passkey_id: i32,
     pub name: String,

@@ -229,7 +229,7 @@ pub async fn update_bio_settings(
     path = "/api/bio/{username}",
     params(("username" = String, Path, description = "Public bio username")),
     responses(
-        (status = 200, description = "Public bio profile and visible links", body = BioProfileResponse),
+        (status = 200, description = "Public bio profile and visible active links (click counts are omitted)", body = BioProfileResponse),
         (status = 404, description = "No public bio for this username"),
     ),
     tag = "Bio"
