@@ -61,7 +61,54 @@ pub fn resolve_database_url() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::assemble_database_url;
+    use super::{assemble_database_url, resolve_database_url};
+    use std::sync::Mutex;
+
+    /// `resolve_database_url` reads process-global env. Hold this for the
+    /// whole test body and restore the previous values on drop so parallel
+    /// lib tests cannot observe a torn DATABASE_URL / POSTGRES_* map.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    const POSTGRES_ENV: &[&str] = &[
+        "DATABASE_URL",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+        "POSTGRES_DB",
+    ];
+
+    struct EnvRestore {
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvRestore {
+        fn capture(keys: &[&str]) -> Self {
+            Self {
+                saved: keys
+                    .iter()
+                    .map(|k| ((*k).to_string(), std::env::var(k).ok()))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn decoded_password(parsed: &url::Url) -> String {
+        urlencoding::decode(parsed.password().expect("password in URL"))
+            .expect("password utf-8")
+            .into_owned()
+    }
 
     #[test]
     fn percent_encodes_password_so_host_stays_intact() {
@@ -105,5 +152,75 @@ mod tests {
         let parsed = url::Url::parse(&already).expect("pre-bracketed IPv6 must still parse");
         assert_eq!(parsed.host_str(), Some("[::1]"));
         assert_eq!(parsed.port(), Some(5432));
+    }
+
+    #[test]
+    fn resolve_assembles_from_postgres_parts_when_database_url_unset() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = EnvRestore::capture(POSTGRES_ENV);
+        std::env::remove_var("DATABASE_URL");
+        std::env::set_var("POSTGRES_USER", "postgres");
+        std::env::set_var("POSTGRES_PASSWORD", "p@ss/w:rd");
+        std::env::set_var("POSTGRES_HOST", "db");
+        std::env::set_var("POSTGRES_PORT", "5432");
+        std::env::set_var("POSTGRES_DB", "opn_onl");
+
+        let url = resolve_database_url();
+        let parsed = url::Url::parse(&url).expect("assembled DATABASE_URL must parse");
+        assert_eq!(decoded_password(&parsed), "p@ss/w:rd");
+        assert_eq!(parsed.host_str(), Some("db"));
+        assert_eq!(parsed.port(), Some(5432));
+        assert_eq!(parsed.path(), "/opn_onl");
+    }
+
+    #[test]
+    fn resolve_treats_empty_database_url_as_unset() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = EnvRestore::capture(POSTGRES_ENV);
+        std::env::set_var("DATABASE_URL", "");
+        std::env::set_var("POSTGRES_USER", "postgres");
+        std::env::set_var("POSTGRES_PASSWORD", "p@ss");
+        std::env::set_var("POSTGRES_HOST", "db");
+        std::env::set_var("POSTGRES_PORT", "5432");
+        std::env::set_var("POSTGRES_DB", "opn_onl");
+
+        let url = resolve_database_url();
+        let parsed = url::Url::parse(&url).expect("empty DATABASE_URL must fall through");
+        assert_eq!(decoded_password(&parsed), "p@ss");
+        assert_eq!(parsed.host_str(), Some("db"));
+    }
+
+    #[test]
+    fn resolve_brackets_ipv6_postgres_host() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = EnvRestore::capture(POSTGRES_ENV);
+        std::env::remove_var("DATABASE_URL");
+        std::env::set_var("POSTGRES_USER", "postgres");
+        std::env::set_var("POSTGRES_PASSWORD", "p@ss");
+        std::env::set_var("POSTGRES_HOST", "::1");
+        std::env::set_var("POSTGRES_PORT", "5432");
+        std::env::set_var("POSTGRES_DB", "opn_onl");
+
+        let url = resolve_database_url();
+        let parsed = url::Url::parse(&url)
+            .unwrap_or_else(|e| panic!("IPv6 POSTGRES_HOST must parse (url={url}): {e}"));
+        assert_eq!(parsed.host_str(), Some("[::1]"));
+        assert_eq!(parsed.port(), Some(5432));
+        assert_eq!(decoded_password(&parsed), "p@ss");
+    }
+
+    #[test]
+    fn resolve_prefers_non_empty_database_url() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = EnvRestore::capture(POSTGRES_ENV);
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://explicit:ex@example:6543/explicitdb",
+        );
+        std::env::set_var("POSTGRES_PASSWORD", "ignored");
+        std::env::set_var("POSTGRES_HOST", "db");
+
+        let url = resolve_database_url();
+        assert_eq!(url, "postgres://explicit:ex@example:6543/explicitdb");
     }
 }
