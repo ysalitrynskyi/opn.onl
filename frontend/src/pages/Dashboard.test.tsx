@@ -310,6 +310,29 @@ describe('Dashboard Page', () => {
     expect(screen.getAllByText(/bbb222/i).length).toBeGreaterThan(0);
   });
 
+  it('shows bulk-import API errors from the errors array', async () => {
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.includes('/links/bulk')) {
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({
+            links: [],
+            errors: ['Please verify your email before creating links'],
+          }),
+        });
+      }
+      return mockFetchResponse([]);
+    });
+
+    const { user } = render(<Dashboard />);
+    await user.click(await screen.findByRole('button', { name: /bulk import/i }));
+    await user.type(screen.getByPlaceholderText(/page1/i), 'https://example.com/a');
+    await user.click(screen.getByRole('button', { name: /import all/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/please verify your email/i);
+  });
+
   it('does not treat a failed links fetch as an empty account', async () => {
     mockDashboardFetch((requestUrl) => {
       if (requestUrl.endsWith('/links')) {

@@ -193,7 +193,10 @@ export default function Dashboard() {
                 }
             } else {
                 const data = await res.json();
-                setError(data.error || 'Failed to import links');
+                const fromList = Array.isArray(data.errors) && data.errors.length > 0
+                    ? data.errors.join(', ')
+                    : null;
+                setError(fromList || data.error || 'Failed to import links');
             }
         } catch {
             setError('Network error during import');
