@@ -6,7 +6,7 @@ mod common;
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::utils::click_buffer::ClickData;
 use opn_onl_backend::utils::ClickBuffer;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde_json::{json, Value};
 
 async fn register_verified(
@@ -151,4 +151,37 @@ async fn click_buffer_hard_cap_drops_events_past_max_queued() {
         .await
         .unwrap();
     assert_eq!(persisted.len(), 5, "only the capped events are flushed");
+}
+
+#[tokio::test]
+async fn click_buffer_inserts_past_postgres_bind_limit_in_chunks() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let link_id = create_link_id(&server, &token).await;
+
+    // Postgres rejects a statement with more than 65535 bind parameters.
+    // One click row currently binds 12 columns, so ~5462 rows in one
+    // insert_many fail forever even after the database recovers.
+    const PAST_BIND_LIMIT: usize = 5500;
+    let buffer = ClickBuffer::with_limits(PAST_BIND_LIMIT, PAST_BIND_LIMIT, 60);
+    for _ in 0..PAST_BIND_LIMIT {
+        buffer.add_click(click(link_id));
+    }
+
+    buffer.flush(&db).await;
+    assert_eq!(
+        buffer.queued_event_count(),
+        0,
+        "chunked insert must drain the queue rather than requeue a forever-failing batch"
+    );
+
+    let persisted = opn_onl_backend::entity::click_events::Entity::find()
+        .filter(opn_onl_backend::entity::click_events::Column::LinkId.eq(link_id))
+        .count(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted, PAST_BIND_LIMIT as u64,
+        "every buffered click must persist across insert chunks"
+    );
 }

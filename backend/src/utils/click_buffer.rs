@@ -10,6 +10,12 @@ use tracing::{error, info, warn};
 
 use crate::entity::{click_events, links};
 
+/// Postgres caps a statement at 65535 bind parameters. Each click row binds a
+/// dozen-plus columns, so 500 rows (~6.5k binds) leaves headroom if the row
+/// shape grows. A single `insert_many` past that limit fails forever, even
+/// after the database recovers.
+const INSERT_CHUNK_SIZE: usize = 500;
+
 /// Click event data to be batched
 #[derive(Clone, Debug)]
 pub struct ClickData {
@@ -277,7 +283,11 @@ impl ClickBuffer {
                             ..Default::default()
                         })
                         .collect();
-                    click_events::Entity::insert_many(models).exec(&txn).await?;
+                    for chunk in models.chunks(INSERT_CHUNK_SIZE) {
+                        click_events::Entity::insert_many(chunk.to_vec())
+                            .exec(&txn)
+                            .await?;
+                    }
                 }
 
                 if count > 0 {
