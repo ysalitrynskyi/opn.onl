@@ -98,6 +98,47 @@ async fn post_pin_does_not_consume_link_creation_budget() {
     );
 }
 
+#[tokio::test]
+async fn post_clone_consumes_link_creation_budget_but_pin_does_not() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    let created = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/clone-limit" }))
+        .await;
+    assert_eq!(created.status_code(), 201, "create: {}", created.text());
+    assert_eq!(
+        rate_limit_remaining(&created),
+        99,
+        "create spends one slot of the hourly bucket"
+    );
+    let id = created.json::<Value>()["id"].as_i64().expect("id");
+
+    let cloned = server
+        .post(&format!("/links/{id}/clone"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(cloned.status_code(), 201, "clone: {}", cloned.text());
+    assert_eq!(
+        rate_limit_remaining(&cloned),
+        98,
+        "clone creates a link and must spend the hourly create budget"
+    );
+
+    let pin = server
+        .post(&format!("/links/{id}/pin"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(pin.status_code(), 200, "pin: {}", pin.text());
+    assert_eq!(
+        rate_limit_remaining(&pin),
+        99,
+        "pin must use the general bucket, not the hourly create budget"
+    );
+}
+
 fn click(link_id: i32) -> ClickData {
     ClickData {
         link_id,
