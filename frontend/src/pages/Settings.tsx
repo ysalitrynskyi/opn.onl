@@ -484,6 +484,8 @@ export default function Settings() {
     };
 
     const handleRevokeApiKey = async (id: number) => {
+        if (!confirm('Are you sure you want to revoke this API key? It cannot be recovered.')) return;
+
         setError('');
         setSuccess('');
         try {

@@ -464,6 +464,51 @@ describe('Settings Page', () => {
             // After successful update, should show success message
         });
     });
+
+    describe('API Keys', () => {
+        const settingsWithKeys = { ...mockAppSettings, api_keys_enabled: true };
+        const keys = [{
+            id: 7,
+            name: 'Laptop',
+            key_prefix: 'opn_abcd',
+            last_used_at: null,
+            created_at: '2024-01-01T00:00:00Z',
+        }];
+
+        const mockWithKeys = () => {
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    if (options?.method === 'DELETE') {
+                        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+                    }
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(keys) });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+        };
+
+        it('does not revoke an API key when confirm is cancelled', async () => {
+            mockWithKeys();
+            vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+            render(<Settings />);
+            fireEvent.click(await screen.findByRole('button', { name: /revoke laptop/i }));
+
+            expect(global.fetch).not.toHaveBeenCalledWith(
+                expect.stringContaining('/auth/api-keys/7'),
+                expect.objectContaining({ method: 'DELETE' }),
+            );
+        });
+    });
 });
 
 
