@@ -1094,6 +1094,7 @@ pub async fn create_link(
         .parse::<bool>()
         .unwrap_or(true);
 
+    let using_custom_alias = payload.custom_alias.is_some();
     let code = if let Some(alias) = payload.custom_alias {
         // Check if custom aliases are enabled
         if !custom_aliases_enabled {
@@ -1295,8 +1296,21 @@ pub async fn create_link(
 
     let link_id = match links::Entity::insert(link).exec(&txn).await {
         Ok(link_res) => link_res.last_insert_id,
-        Err(_) => {
+        Err(err) => {
             let _ = txn.rollback().await;
+            // The active/deleted alias lookups run before this transaction, so
+            // two concurrent custom_alias creates can both pass and one INSERT
+            // hits the unique index. Map that to the documented 409 rather than
+            // a 500 "Database error" with no retry signal.
+            if using_custom_alias && err.to_string().contains("duplicate key value") {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Alias already taken".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -3522,9 +3536,25 @@ pub async fn update_link(
             }
         }
 
+        // consume_capped_click compares only links.click_count. Uncapped clicks
+        // still sitting in the buffer would otherwise be spent again after a
+        // cap is added, then added on flush. Fold them into click_count in the
+        // same write that sets max_clicks.
+        let pending_to_fold = if let ActiveValue::Set(Some(_)) = &active_link.max_clicks {
+            state.click_buffer.take_pending_count(link.id)
+        } else {
+            0
+        };
+        if pending_to_fold > 0 {
+            active_link.click_count = Set(link.click_count.saturating_add(pending_to_fold));
+        }
+
         match active_link.update(&txn).await {
             Ok(updated) => {
                 if txn.commit().await.is_err() {
+                    state
+                        .click_buffer
+                        .add_pending_count(link.id, pending_to_fold);
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
@@ -3580,6 +3610,9 @@ pub async fn update_link(
             }
             Err(_) => {
                 let _ = txn.rollback().await;
+                state
+                    .click_buffer
+                    .add_pending_count(link.id, pending_to_fold);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
@@ -3728,68 +3761,95 @@ pub async fn bulk_create_links(
             continue;
         }
 
-        let code: String = thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(6)
-            .map(char::from)
-            .collect();
-
-        let txn = match state.db.begin().await {
-            Ok(txn) => txn,
-            Err(error) => {
-                errors.push(format!("Failed to shorten {}: {}", url, error));
-                continue;
+        // create_link / clone_link loop until links.code is free (the column is
+        // globally unique, including soft-deleted rows). Bulk used to mint one
+        // 6-character code and surface a duplicate-key error on collision.
+        let mut created = false;
+        let mut last_duplicate: Option<String> = None;
+        for _ in 0..8 {
+            let mut code = generate_short_code();
+            while links::Entity::find()
+                .filter(links::Column::Code.eq(&code))
+                .one(&state.db)
+                .await
+                .unwrap_or(None)
+                .is_some()
+            {
+                code = generate_short_code();
             }
-        };
 
-        let scope_allowed = validate_link_resource_scope(
-            &txn,
-            user_id.expect("bulk create authentication checked above"),
-            payload.org_id,
-            payload.folder_id,
-            &[],
-        )
-        .await;
-        match scope_allowed {
-            Ok(true) => {}
-            Ok(false) => {
-                let _ = txn.rollback().await;
-                errors.push(format!("{}: folder or organization access denied", url));
-                continue;
+            let txn = match state.db.begin().await {
+                Ok(txn) => txn,
+                Err(error) => {
+                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    break;
+                }
+            };
+
+            let scope_allowed = validate_link_resource_scope(
+                &txn,
+                user_id.expect("bulk create authentication checked above"),
+                payload.org_id,
+                payload.folder_id,
+                &[],
+            )
+            .await;
+            match scope_allowed {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = txn.rollback().await;
+                    errors.push(format!("{}: folder or organization access denied", url));
+                    break;
+                }
+                Err(error) => {
+                    let _ = txn.rollback().await;
+                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    break;
+                }
             }
-            Err(error) => {
-                let _ = txn.rollback().await;
-                errors.push(format!("Failed to shorten {}: {}", url, error));
-                continue;
+
+            let link = links::ActiveModel {
+                original_url: Set(url.clone()),
+                code: Set(code.clone()),
+                user_id: Set(user_id),
+                folder_id: Set(payload.folder_id),
+                org_id: Set(payload.org_id),
+                ..Default::default()
+            };
+
+            match links::Entity::insert(link).exec(&txn).await {
+                Ok(link_res) => match txn.commit().await {
+                    Ok(()) => {
+                        result_links.push(CreateLinkResponse {
+                            id: link_res.last_insert_id,
+                            code: code.clone(),
+                            short_url: format!("{}/{}", base_url, code),
+                        });
+                        if let Some(b) = remaining_budget.as_mut() {
+                            *b = b.saturating_sub(1);
+                        }
+                        created = true;
+                        break;
+                    }
+                    Err(e) => {
+                        errors.push(format!("Failed to shorten {}: {}", url, e));
+                        break;
+                    }
+                },
+                Err(e) => {
+                    let _ = txn.rollback().await;
+                    if e.to_string().contains("duplicate key value") {
+                        last_duplicate = Some(format!("Failed to shorten {}: {}", url, e));
+                        continue;
+                    }
+                    errors.push(format!("Failed to shorten {}: {}", url, e));
+                    break;
+                }
             }
         }
-
-        let link = links::ActiveModel {
-            original_url: Set(url.clone()),
-            code: Set(code.clone()),
-            user_id: Set(user_id),
-            folder_id: Set(payload.folder_id),
-            org_id: Set(payload.org_id),
-            ..Default::default()
-        };
-
-        match links::Entity::insert(link).exec(&txn).await {
-            Ok(link_res) => match txn.commit().await {
-                Ok(()) => {
-                    result_links.push(CreateLinkResponse {
-                        id: link_res.last_insert_id,
-                        code: code.clone(),
-                        short_url: format!("{}/{}", base_url, code),
-                    });
-                    if let Some(b) = remaining_budget.as_mut() {
-                        *b = b.saturating_sub(1);
-                    }
-                }
-                Err(e) => errors.push(format!("Failed to shorten {}: {}", url, e)),
-            },
-            Err(e) => {
-                let _ = txn.rollback().await;
-                errors.push(format!("Failed to shorten {}: {}", url, e));
+        if !created {
+            if let Some(msg) = last_duplicate {
+                errors.push(msg);
             }
         }
     }
@@ -3936,7 +3996,7 @@ pub async fn bulk_update_links(
             .flatten();
 
         if let Some(link) = link {
-            if link.user_id == Some(user_id) {
+            if link.user_id == Some(user_id) && link.deleted_at.is_none() {
                 let code = link.code.clone();
                 let org_id = link.org_id;
                 let mut active_link: links::ActiveModel = link.into();
