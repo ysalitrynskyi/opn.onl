@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
-use crate::entity::{folders, link_tags, links, org_members, tags};
-use crate::handlers::links::TagInfo;
+use crate::entity::{folders, links, org_members};
+use crate::handlers::links::get_tags_by_link_ids;
 use crate::AppState;
 
 // ============= DTOs =============
@@ -90,35 +90,6 @@ async fn can_edit_folder(
         Some(org_id) => crate::handlers::organizations::member_can_edit(db, org_id, user_id).await,
         None => folder.user_id == Some(user_id),
     }
-}
-
-async fn get_link_tags(db: &sea_orm::DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
-    let link_tags_list = link_tags::Entity::find()
-        .filter(link_tags::Column::LinkId.eq(link_id))
-        .all(db)
-        .await
-        .unwrap_or_default();
-
-    let tag_ids: Vec<i32> = link_tags_list.iter().map(|lt| lt.tag_id).collect();
-
-    if tag_ids.is_empty() {
-        return vec![];
-    }
-
-    let tags_list = tags::Entity::find()
-        .filter(tags::Column::Id.is_in(tag_ids))
-        .all(db)
-        .await
-        .unwrap_or_default();
-
-    tags_list
-        .into_iter()
-        .map(|t| TagInfo {
-            id: t.id,
-            name: t.name,
-            color: t.color,
-        })
-        .collect()
 }
 
 // ============= Handlers =============
@@ -663,10 +634,13 @@ pub async fn get_folder_links(
         ));
     }
 
+    // Same 1000-row cap as GET /links. This route is not used by the
+    // dashboard's client-side pager, but an unbounded folder can still be large.
     let links_list = links::Entity::find()
         .filter(links::Column::FolderId.eq(folder_id))
         .filter(links::Column::DeletedAt.is_null())
         .order_by_desc(links::Column::CreatedAt)
+        .limit(1000)
         .all(&state.db)
         .await
         .map_err(|_| {
@@ -676,12 +650,15 @@ pub async fn get_folder_links(
             )
         })?;
 
+    let page_ids: Vec<i32> = links_list.iter().map(|l| l.id).collect();
+    let mut tags_by_link = get_tags_by_link_ids(&state.db, &page_ids).await;
+
     let base_url =
         std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
     let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let mut responses = Vec::new();
     for l in links_list {
-        let link_tags = get_link_tags(&state.db, l.id).await;
+        let link_tags = tags_by_link.remove(&l.id).unwrap_or_default();
         responses.push(crate::handlers::links::LinkResponse {
             id: l.id,
             code: l.code.clone(),
