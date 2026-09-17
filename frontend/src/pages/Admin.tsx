@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -205,7 +205,9 @@ export default function Admin() {
         return true;
     }, [navigate]);
 
+    const usersLoadId = useRef(0);
     const loadUsers = useCallback(async () => {
+        const loadId = ++usersLoadId.current;
         const params = new URLSearchParams({
             page: String(usersPage),
             per_page: String(PER_PAGE),
@@ -214,14 +216,18 @@ export default function Admin() {
         if (userStatus !== 'all') params.set('status', userStatus);
 
         const res = await authFetch(`${API_ENDPOINTS.adminUsers}?${params}`);
+        if (loadId !== usersLoadId.current) return;
         if (res.ok) {
             const data = await res.json();
+            if (loadId !== usersLoadId.current) return;
             setUsers(data.users ?? []);
             setUsersTotal(data.total ?? 0);
         }
     }, [usersPage, userSearch, userStatus]);
 
+    const linksLoadId = useRef(0);
     const loadLinks = useCallback(async () => {
+        const loadId = ++linksLoadId.current;
         const params = new URLSearchParams({
             page: String(linksPage),
             per_page: String(PER_PAGE),
@@ -237,15 +243,19 @@ export default function Admin() {
         }
 
         const res = await authFetch(`${API_ENDPOINTS.adminLinks}?${params}`);
+        if (loadId !== linksLoadId.current) return;
         if (res.ok) {
             const data = await res.json();
+            if (loadId !== linksLoadId.current) return;
             setLinks(data.links ?? []);
             setLinksTotal(data.total ?? 0);
             setSelectedLinkIds(new Set());
         }
     }, [linksPage, linkSearch, linkStatus, linkSort, linkSuspiciousOnly, linkUserFilter]);
 
+    const orgsLoadId = useRef(0);
     const loadOrgs = useCallback(async () => {
+        const loadId = ++orgsLoadId.current;
         const params = new URLSearchParams({
             page: String(orgsPage),
             per_page: String(PER_PAGE),
@@ -253,8 +263,10 @@ export default function Admin() {
         if (orgSearch.trim()) params.set('search', orgSearch.trim());
 
         const res = await authFetch(`${API_ENDPOINTS.adminOrgs}?${params}`);
+        if (loadId !== orgsLoadId.current) return;
         if (res.ok) {
             const data = await res.json();
+            if (loadId !== orgsLoadId.current) return;
             setOrgs(data.orgs ?? []);
             setOrgsTotal(data.total ?? 0);
         }
