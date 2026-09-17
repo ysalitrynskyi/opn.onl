@@ -193,6 +193,39 @@ describe('Layout Component', () => {
     });
 });
 
+describe('Layout auth and menus', () => {
+    it('picks up a token written before in-app navigation', () => {
+        render(<Layout />);
+        expect(screen.getAllByRole('link', { name: /log in/i }).length).toBeGreaterThan(0);
+
+        localStorage.setItem('token', 'test-token');
+        fireEvent.click(screen.getAllByRole('link', { name: /^features$/i })[0]);
+
+        expect(screen.getByRole('button', { name: /account menu/i })).toBeInTheDocument();
+    });
+
+    it('closes the mobile menu when a nav link is clicked', () => {
+        render(<Layout />);
+        fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }));
+        expect(screen.getByText('View on GitHub')).toBeInTheDocument();
+
+        fireEvent.click(screen.getAllByRole('link', { name: /^features$/i })[0]);
+
+        expect(screen.queryByText('View on GitHub')).not.toBeInTheDocument();
+    });
+
+    it('closes the account menu when a menu link is clicked', () => {
+        localStorage.setItem('token', 'test-token');
+        render(<Layout />);
+        fireEvent.click(screen.getByRole('button', { name: /account menu/i }));
+        expect(screen.getByRole('link', { name: /settings/i })).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('link', { name: /settings/i }));
+
+        expect(screen.queryByRole('link', { name: /settings/i })).not.toBeInTheDocument();
+    });
+});
+
 describe('Layout Mobile Responsiveness', () => {
     it('header is visible on mobile', () => {
         render(<Layout />);

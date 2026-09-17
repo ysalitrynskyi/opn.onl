@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Github, LogOut, Menu, X, User, Settings, LayoutDashboard, Shield } from 'lucide-react';
 import Logo from './Logo';
@@ -6,27 +6,27 @@ import Logo from './Logo';
 export default function Layout() {
     const navigate = useNavigate();
     const location = useLocation();
-    const [token, setToken] = useState<string | null>(null);
-    const [isAdmin, setIsAdmin] = useState(false);
+    const token = localStorage.getItem('token');
+    const isAdmin = localStorage.getItem('is_admin') === 'true';
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const [userMenuOpen, setUserMenuOpen] = useState(false);
 
-    useEffect(() => {
-        setToken(localStorage.getItem('token'));
-        setIsAdmin(localStorage.getItem('is_admin') === 'true');
-    }, [location]);
-
-    useEffect(() => {
+    const closeMenus = () => {
         setMobileMenuOpen(false);
         setUserMenuOpen(false);
-    }, [location.pathname]);
+    };
 
     const handleLogout = () => {
         localStorage.removeItem('token');
         localStorage.removeItem('is_admin');
-        setToken(null);
-        setIsAdmin(false);
+        closeMenus();
         navigate('/login');
+    };
+
+    const handleLayoutClick = (e: React.MouseEvent<HTMLDivElement>) => {
+        if ((e.target as HTMLElement).closest('a')) {
+            closeMenus();
+        }
     };
 
     const navLinks = [
@@ -38,7 +38,7 @@ export default function Layout() {
     ];
 
     return (
-        <div className="min-h-screen flex flex-col bg-paper">
+        <div className="min-h-screen flex flex-col bg-paper" onClick={handleLayoutClick}>
             <header className="sticky top-0 z-50 border-b border-line bg-surface/85 backdrop-blur-md">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="h-16 flex items-center justify-between">
