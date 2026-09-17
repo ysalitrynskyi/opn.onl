@@ -138,6 +138,25 @@ mod tests {
         ))
         .await
         .expect("insert clicks over the stats row cap");
+
+        let res = server
+            .get(&format!("/links/{link_id}/stats"))
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(res.status_code(), 200, "stats: {}", res.text());
+        let body: Value = res.json();
+        assert_eq!(
+            body["total_clicks"].as_i64(),
+            Some(OVER_CAP),
+            "total_clicks must be the window count, not the 50000-row sample: {body}"
+        );
+        assert_eq!(
+            body["truncated"].as_bool(),
+            Some(true),
+            "window larger than the row cap must set truncated: {body}"
+        );
+    }
+
     fn bucket_count(arr: &Value, field: &str, name: &str) -> i64 {
         arr.as_array()
             .unwrap_or(&vec![])
@@ -258,16 +277,6 @@ mod tests {
             .await;
         assert_eq!(res.status_code(), 200, "stats: {}", res.text());
         let body: Value = res.json();
-        assert_eq!(
-            body["total_clicks"].as_i64(),
-            Some(OVER_CAP),
-            "total_clicks must be the window count, not the 50000-row sample: {body}"
-        );
-        assert_eq!(
-            body["truncated"].as_bool(),
-            Some(true),
-            "window larger than the row cap must set truncated: {body}"
-        );
 
         assert_eq!(body["total_clicks"], 4);
         assert_eq!(
