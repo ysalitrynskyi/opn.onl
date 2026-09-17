@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '../test/test-utils';
+import { render, screen, waitFor, fireEvent, wait } from '../test/test-utils';
 import Admin from './Admin';
 import { mockToken } from '../test/test-utils';
 
@@ -388,6 +388,26 @@ describe('Admin Page', () => {
             });
         });
 
+        it('shows an error when stats fail to load', async () => {
+            global.fetch = vi.fn((url: string) => {
+                const respond = (payload: unknown, status = 200) => Promise.resolve({
+                    ok: status >= 200 && status < 300,
+                    status,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/stats')) return respond({}, 500);
+                if (url.includes('/admin/activity')) return respond(mockActivity);
+                return respond({});
+            }) as any;
+
+            render(<Admin />);
+
+            expect(await screen.findByRole('heading', { name: /admin dashboard/i })).toBeInTheDocument();
+            expect(await screen.findByText(/failed to load admin data/i)).toBeInTheDocument();
+            expect(screen.queryByText('Total Users')).not.toBeInTheDocument();
+            expect(screen.queryByText(/create backup/i)).not.toBeInTheDocument();
+        });
+
         it('shows a suspicious-links banner and jumps to the filtered Links tab', async () => {
             render(<Admin />);
 
@@ -481,7 +501,50 @@ describe('Admin Page', () => {
             expect(domainInput).toHaveValue('evil.com');
         });
 
+        it('confirms before blocking a destination domain', async () => {
+            const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/malicious-domain/i);
+            fireEvent.change(domainInput, { target: { value: 'evil.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[1]);
+
+            expect(confirmSpy).toHaveBeenCalledWith(
+                expect.stringMatching(/block evil\.com\?.*all existing and future links to this host stop working/i),
+            );
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/blocked/domains'),
+                    expect.objectContaining({ method: 'POST' }),
+                );
+            });
+        });
+
+        it('does not POST when destination-domain block is cancelled', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(false);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/malicious-domain/i);
+            fireEvent.change(domainInput, { target: { value: 'evil.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[1]);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalled();
+            });
+            expect(global.fetch).not.toHaveBeenCalledWith(
+                expect.stringContaining('/admin/blocked/domains'),
+                expect.objectContaining({ method: 'POST' }),
+            );
+        });
+
         it('can add blocked email domain', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
             render(<Admin />);
             await openBlockedTab();
 
@@ -497,6 +560,48 @@ describe('Admin Page', () => {
                     expect.objectContaining({ method: 'POST' })
                 );
             });
+        });
+
+        it('confirms before blocking an email domain, including the disable warning', async () => {
+            const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/throwaway-mail/i);
+            fireEvent.change(domainInput, { target: { value: 'gmail.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[2]);
+
+            expect(confirmSpy).toHaveBeenCalledWith(
+                expect.stringMatching(/block gmail\.com\?.*disables existing matching users/i),
+            );
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/blocked/email-domains'),
+                    expect.objectContaining({ method: 'POST' }),
+                );
+            });
+        });
+
+        it('does not POST when email-domain block is cancelled', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(false);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/throwaway-mail/i);
+            fireEvent.change(domainInput, { target: { value: 'gmail.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[2]);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalled();
+            });
+            expect(global.fetch).not.toHaveBeenCalledWith(
+                expect.stringContaining('/admin/blocked/email-domains'),
+                expect.objectContaining({ method: 'POST' }),
+            );
         });
 
         it('displays existing blocked URLs', async () => {
@@ -774,6 +879,229 @@ describe('Admin Page', () => {
             expect(await screen.findByText('Acme Team')).toBeInTheDocument();
             expect(screen.getByText('acme-team')).toBeInTheDocument();
             expect(screen.getByText('user@example.com')).toBeInTheDocument();
+        });
+    });
+
+    describe('Stale list responses', () => {
+        const respond = (payload: unknown) => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(payload),
+        });
+
+        const queryPage = (url: string) => new URL(url, 'http://localhost').searchParams.get('page');
+
+        const mockListFetch = (handlers: {
+            users?: (page: string | null) => Promise<unknown> | unknown;
+            links?: (page: string | null) => Promise<unknown> | unknown;
+            orgs?: (page: string | null) => Promise<unknown> | unknown;
+        }) => {
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/admin/stats')) return respond(mockStats);
+                if (url.includes('/admin/activity')) return respond(mockActivity);
+                if (url.includes('/admin/users') && handlers.users) {
+                    const result = handlers.users(queryPage(url));
+                    return result instanceof Promise ? result : respond(result);
+                }
+                if (url.includes('/admin/links') && handlers.links) {
+                    const result = handlers.links(queryPage(url));
+                    return result instanceof Promise ? result : respond(result);
+                }
+                if (url.includes('/admin/orgs') && handlers.orgs) {
+                    const result = handlers.orgs(queryPage(url));
+                    return result instanceof Promise ? result : respond(result);
+                }
+                return respond({});
+            }) as any;
+        };
+
+        it('keeps the latest users page when an earlier request finishes last', async () => {
+            let resolvePage2: (value: unknown) => void = () => {};
+            const page2 = new Promise((r) => { resolvePage2 = r; });
+
+            mockListFetch({
+                users: (page) => {
+                    if (page === '2') return page2;
+                    if (page === '3') {
+                        return {
+                            users: [{
+                                ...userDefaults,
+                                id: 3,
+                                email: 'carol@example.com',
+                                is_admin: false,
+                                email_verified: true,
+                                created_at: '2024-01-01T00:00:00Z',
+                                deleted_at: null,
+                            }],
+                            total: 75,
+                            page: 3,
+                            per_page: 25,
+                        };
+                    }
+                    return {
+                        users: [{
+                            ...userDefaults,
+                            id: 1,
+                            email: 'alice@example.com',
+                            is_admin: false,
+                            email_verified: true,
+                            created_at: '2024-01-01T00:00:00Z',
+                            deleted_at: null,
+                        }],
+                        total: 75,
+                        page: 1,
+                        per_page: 25,
+                    };
+                },
+            });
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+            expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+            expect(await screen.findByText(/page 2 of/i)).toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+            expect(await screen.findByText('carol@example.com')).toBeInTheDocument();
+            expect(screen.getByText(/page 3 of/i)).toBeInTheDocument();
+
+            resolvePage2({
+                ok: true,
+                json: () => Promise.resolve({
+                    users: [{
+                        ...userDefaults,
+                        id: 2,
+                        email: 'bob@example.com',
+                        is_admin: false,
+                        email_verified: true,
+                        created_at: '2024-01-01T00:00:00Z',
+                        deleted_at: null,
+                    }],
+                    total: 75,
+                    page: 2,
+                    per_page: 25,
+                }),
+            });
+            await wait(50);
+
+            expect(screen.getByText('carol@example.com')).toBeInTheDocument();
+            expect(screen.queryByText('bob@example.com')).not.toBeInTheDocument();
+            expect(screen.getByText(/page 3 of/i)).toBeInTheDocument();
+        });
+
+        it('keeps the latest links page when an earlier request finishes last', async () => {
+            let resolvePage2: (value: unknown) => void = () => {};
+            const page2 = new Promise((r) => { resolvePage2 = r; });
+
+            const linkRow = (id: number, code: string) => ({
+                id,
+                code,
+                original_url: `https://example.com/${code}`,
+                title: null,
+                user_id: 2,
+                user_email: 'user@example.com',
+                org_id: null,
+                folder_id: null,
+                click_count: 1,
+                max_clicks: null,
+                created_at: '2024-02-01T00:00:00Z',
+                starts_at: null,
+                expires_at: null,
+                deleted_at: null,
+                burned_at: null,
+                is_pinned: false,
+                burn_after_reading: false,
+                safe_link_interstitial: false,
+                bio_visible: false,
+                has_password: false,
+                is_active: true,
+                inactive_reason: null,
+                suspicious: false,
+                suspicion_reason: null,
+            });
+
+            mockListFetch({
+                links: (page) => {
+                    if (page === '2') return page2;
+                    if (page === '3') {
+                        return { links: [linkRow(3, 'carol3')], total: 75, page: 3, per_page: 25 };
+                    }
+                    return { links: [linkRow(1, 'alice1')], total: 75, page: 1, per_page: 25 };
+                },
+            });
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /^links$/i }));
+            expect(await screen.findByText('/alice1')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+            expect(await screen.findByText(/page 2 of/i)).toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+            expect(await screen.findByText('/carol3')).toBeInTheDocument();
+
+            resolvePage2({
+                ok: true,
+                json: () => Promise.resolve({
+                    links: [linkRow(2, 'bob99')],
+                    total: 75,
+                    page: 2,
+                    per_page: 25,
+                }),
+            });
+            await wait(50);
+
+            expect(screen.getByText('/carol3')).toBeInTheDocument();
+            expect(screen.queryByText('/bob99')).not.toBeInTheDocument();
+            expect(screen.getByText(/page 3 of/i)).toBeInTheDocument();
+        });
+
+        it('keeps the latest orgs page when an earlier request finishes last', async () => {
+            let resolvePage2: (value: unknown) => void = () => {};
+            const page2 = new Promise((r) => { resolvePage2 = r; });
+
+            const orgRow = (id: number, name: string, slug: string) => ({
+                id,
+                name,
+                slug,
+                owner_id: 2,
+                owner_email: 'user@example.com',
+                member_count: 1,
+                links_count: 1,
+                created_at: '2024-01-10T00:00:00Z',
+            });
+
+            mockListFetch({
+                orgs: (page) => {
+                    if (page === '2') return page2;
+                    if (page === '3') {
+                        return { orgs: [orgRow(3, 'Carol Org', 'carol-org')], total: 75, page: 3, per_page: 25 };
+                    }
+                    return { orgs: [orgRow(1, 'Alice Org', 'alice-org')], total: 75, page: 1, per_page: 25 };
+                },
+            });
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /organizations/i }));
+            expect(await screen.findByText('Alice Org')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+            expect(await screen.findByText(/page 2 of/i)).toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+            expect(await screen.findByText('Carol Org')).toBeInTheDocument();
+
+            resolvePage2({
+                ok: true,
+                json: () => Promise.resolve({
+                    orgs: [orgRow(2, 'Bob Org', 'bob-org')],
+                    total: 75,
+                    page: 2,
+                    per_page: 25,
+                }),
+            });
+            await wait(50);
+
+            expect(screen.getByText('Carol Org')).toBeInTheDocument();
+            expect(screen.queryByText('Bob Org')).not.toBeInTheDocument();
+            expect(screen.getByText(/page 3 of/i)).toBeInTheDocument();
         });
     });
 });
