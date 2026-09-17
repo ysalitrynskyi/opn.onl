@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '../test/test-utils';
+import { fireEvent, render, screen, waitFor } from '../test/test-utils';
 import Dashboard from './Dashboard';
 import { mockFetchError, mockFetchResponse, mockToken, mockLink } from '../test/test-utils';
+import { ToastContainer } from '../components/Toast';
 
 describe('Dashboard Page', () => {
   beforeEach(() => {
@@ -454,6 +455,261 @@ describe('Dashboard Page', () => {
 
     await waitFor(() => {
       expect(screen.getAllByRole('button', { name: /^unpin$/i }).length).toBe(2);
+    });
+  });
+
+  it('clones a link via POST /clone and shows the new code', async () => {
+    const cloned = {
+      ...linkA,
+      id: 3,
+      code: 'cloned9',
+      short_url: 'http://localhost:3000/cloned9',
+    };
+    let currentLinks = [linkA];
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.includes('/clone')) {
+        currentLinks = [linkA, cloned];
+        return mockFetchResponse(cloned);
+      }
+      if (requestUrl.endsWith('/links')) {
+        return mockFetchResponse(currentLinks);
+      }
+      return mockFetchResponse(currentLinks);
+    });
+
+    const { user } = render(
+      <>
+        <Dashboard />
+        <ToastContainer />
+      </>,
+    );
+    await user.click(await screen.findByRole('button', { name: /clone link/i }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/links/1/clone'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    expect(await screen.findByText(/link cloned! new code: cloned9/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/cloned9/i).length).toBeGreaterThan(0);
+  });
+
+  it('shows an error toast when clone fails and does not add a link', async () => {
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.includes('/clone')) {
+        return mockFetchError('Clone failed', 500);
+      }
+      return mockFetchResponse([linkA]);
+    });
+
+    const { user } = render(
+      <>
+        <Dashboard />
+        <ToastContainer />
+      </>,
+    );
+    await user.click(await screen.findByRole('button', { name: /clone link/i }));
+
+    expect(await screen.findByText(/clone failed/i)).toBeInTheDocument();
+    expect(screen.queryAllByText(/cloned9/i)).toHaveLength(0);
+  });
+
+  it('unpins a pinned link via POST /pin', async () => {
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.includes('/pin')) {
+        return mockFetchResponse({ is_pinned: false, message: 'Link unpinned' });
+      }
+      return mockFetchResponse([{ ...linkA, is_pinned: true }]);
+    });
+
+    const { user } = render(<Dashboard />);
+    await user.click(await screen.findByRole('button', { name: /^unpin$/i }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/links/1/pin'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    expect(await screen.findByRole('button', { name: /^pin$/i })).toBeInTheDocument();
+  });
+
+  it('lists pinned links before unpinned links even when the pinned one is older', async () => {
+    const olderPinned = {
+      ...linkA,
+      id: 1,
+      code: 'oldpin',
+      is_pinned: true,
+      created_at: '2024-01-01T00:00:00Z',
+    };
+    const newerUnpinned = {
+      ...linkB,
+      id: 2,
+      code: 'newunp',
+      is_pinned: false,
+      created_at: '2024-12-01T00:00:00Z',
+    };
+    mockDashboardFetch(() => mockFetchResponse([newerUnpinned, olderPinned]));
+
+    render(<Dashboard />);
+    await screen.findByRole('button', { name: /^unpin$/i });
+
+    const hrefs = screen.getAllByRole('link')
+      .map((el) => el.getAttribute('href') || '')
+      .filter((href) => href.endsWith('/oldpin') || href.endsWith('/newunp'));
+    expect(hrefs[0]).toMatch(/\/oldpin$/);
+    expect(hrefs[1]).toMatch(/\/newunp$/);
+    expect(screen.getByLabelText('Pinned')).toBeInTheDocument();
+  });
+
+  it('keeps newer pinned links above older pinned links', async () => {
+    const pinOld = {
+      ...linkA,
+      id: 1,
+      code: 'pinold',
+      is_pinned: true,
+      created_at: '2024-01-01T00:00:00Z',
+    };
+    const pinNew = {
+      ...linkB,
+      id: 2,
+      code: 'pinnew',
+      is_pinned: true,
+      created_at: '2024-06-01T00:00:00Z',
+    };
+    mockDashboardFetch(() => mockFetchResponse([pinOld, pinNew]));
+
+    render(<Dashboard />);
+    expect((await screen.findAllByRole('button', { name: /^unpin$/i })).length).toBe(2);
+
+    const hrefs = screen.getAllByRole('link')
+      .map((el) => el.getAttribute('href') || '')
+      .filter((href) => href.endsWith('/pinold') || href.endsWith('/pinnew'));
+    expect(hrefs[0]).toMatch(/\/pinnew$/);
+    expect(hrefs[1]).toMatch(/\/pinold$/);
+  });
+
+  it('rejects an alias shorter than the configured minimum without POSTing', async () => {
+    mockDashboardFetch(() => mockFetchResponse([]));
+
+    const { user } = render(<Dashboard />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/example.com/i)).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByPlaceholderText(/example.com/i), 'https://test.com');
+    await user.type(screen.getByPlaceholderText(/alias/i), 'abc');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/at least 5 characters/i);
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/links'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('rejects an alias longer than the configured maximum without POSTing', async () => {
+    mockDashboardFetch(() => mockFetchResponse([]));
+
+    const { user } = render(<Dashboard />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/alias/i)).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByPlaceholderText(/example.com/i), 'https://test.com');
+    fireEvent.change(screen.getByPlaceholderText(/alias/i), {
+      target: { value: 'a'.repeat(51) },
+    });
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/at most 50 characters/i);
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/links'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('strips invalid characters from the alias as the user types', async () => {
+    mockDashboardFetch(() => mockFetchResponse([]));
+
+    const { user } = render(<Dashboard />);
+    const aliasInput = await screen.findByPlaceholderText(/alias/i);
+    await user.type(aliasInput, 'my link!');
+    expect(aliasInput).toHaveValue('mylink');
+  });
+
+  it('rejects an alias that starts with a hyphen without POSTing', async () => {
+    mockDashboardFetch(() => mockFetchResponse([]));
+
+    const { user } = render(<Dashboard />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/alias/i)).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByPlaceholderText(/example.com/i), 'https://test.com');
+    await user.type(screen.getByPlaceholderText(/alias/i), '-mylink');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /cannot start or end with hyphen or underscore/i,
+    );
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/links'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('rejects an alias that ends with an underscore without POSTing', async () => {
+    mockDashboardFetch(() => mockFetchResponse([]));
+
+    const { user } = render(<Dashboard />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/alias/i)).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByPlaceholderText(/example.com/i), 'https://test.com');
+    await user.type(screen.getByPlaceholderText(/alias/i), 'mylink_');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /cannot start or end with hyphen or underscore/i,
+    );
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/links'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('posts a valid custom alias when creating a link', async () => {
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.endsWith('/links')) {
+        return mockFetchResponse({ ...linkA, code: 'my-link-123' });
+      }
+      return mockFetchResponse([]);
+    });
+
+    const { user } = render(<Dashboard />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/alias/i)).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByPlaceholderText(/example.com/i), 'https://test.com');
+    await user.type(screen.getByPlaceholderText(/alias/i), 'my-link-123');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() => {
+      const createCall = vi.mocked(global.fetch).mock.calls.find(
+        ([url, options]) =>
+          String(url).endsWith('/links') && (options as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(createCall).toBeDefined();
+      expect(JSON.parse((createCall![1] as RequestInit).body as string)).toEqual(
+        expect.objectContaining({
+          original_url: 'https://test.com',
+          custom_alias: 'my-link-123',
+        }),
+      );
     });
   });
 });
