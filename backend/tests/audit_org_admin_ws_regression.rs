@@ -5,8 +5,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{
-    api_keys, click_events, folders, link_tags, links, org_members, passkeys, tags, users,
-    api_keys, folders, link_tags, links, org_members, organizations, passkeys, tags, users,
+    api_keys, click_events, folders, link_tags, links, org_members, organizations, passkeys, tags, users,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
