@@ -371,12 +371,6 @@ fn is_auth_path(path: &str) -> bool {
     path == "/auth" || path.starts_with("/auth/")
 }
 
-/// The hourly create budget is only for creating links, not every POST under
-/// `/links` (pin, clone, health-check, UTM, preview, bulk delete/update).
-fn is_link_creation_path(path: &str) -> bool {
-    path == "/links" || path == "/links/bulk"
-}
-
 /// Rate limit middleware for general API endpoints
 pub async fn rate_limit_middleware(
     State(limiters): State<Arc<RateLimiters>>,
@@ -439,7 +433,7 @@ pub async fn rate_limit_middleware(
         }
     } else if is_auth_path(path) {
         limiters.auth.check(&format!("auth:{}", ip))
-    } else if is_link_creation_path(path) && req.method() == axum::http::Method::POST {
+    } else if path.starts_with("/links") && req.method() == axum::http::Method::POST {
         limiters.link_creation.check(&format!("create:{}", ip))
     } else if path.starts_with("/contact") && req.method() == axum::http::Method::POST {
         limiters.contact.check(&format!("contact:{}", ip))
@@ -511,11 +505,6 @@ mod tests {
         assert!(is_auth_path("/auth"));
         assert!(is_auth_path("/auth/login"));
         assert!(!is_auth_path("/auth-sale"));
-        assert!(is_link_creation_path("/links"));
-        assert!(is_link_creation_path("/links/bulk"));
-        assert!(!is_link_creation_path("/links/bulk/delete"));
-        assert!(!is_link_creation_path("/links/1/pin"));
-        assert!(!is_link_creation_path("/links/health-check"));
         assert!(!is_redirect_path("/links"));
         assert!(!is_redirect_path("/links/bulk"));
         assert!(!is_redirect_path("/admin/stats"));
