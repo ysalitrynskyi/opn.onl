@@ -246,6 +246,13 @@ describe('useKeyboardShortcuts Hook', () => {
     });
 
     describe('Input Elements', () => {
+        function dispatchOn(target: HTMLElement, key: string, init: KeyboardEventInit = {}) {
+            const event = new KeyboardEvent('keydown', { key, bubbles: true, ...init });
+            Object.defineProperty(event, 'target', { value: target, writable: false });
+            window.dispatchEvent(event);
+            return event;
+        }
+
         it('ignores shortcuts when typing in input', () => {
             const handler = vi.fn();
             const shortcuts = [
@@ -260,12 +267,10 @@ describe('useKeyboardShortcuts Hook', () => {
             input.focus();
             
             act(() => {
-                const event = new KeyboardEvent('keydown', { key: 'n', bubbles: true });
-                Object.defineProperty(event, 'target', { value: input, writable: false });
-                window.dispatchEvent(event);
+                dispatchOn(input, 'n');
             });
             
-            // Handler may or may not be called depending on how target is checked
+            expect(handler).not.toHaveBeenCalled();
             
             document.body.removeChild(input);
         });
@@ -283,11 +288,52 @@ describe('useKeyboardShortcuts Hook', () => {
             textarea.focus();
             
             act(() => {
-                const event = new KeyboardEvent('keydown', { key: 'n', bubbles: true });
-                Object.defineProperty(event, 'target', { value: textarea, writable: false });
-                window.dispatchEvent(event);
+                dispatchOn(textarea, 'n');
             });
+
+            expect(handler).not.toHaveBeenCalled();
             
+            document.body.removeChild(textarea);
+        });
+
+        it('still runs Escape when an input is focused', () => {
+            const close = vi.fn();
+            const newItem = vi.fn();
+            const shortcuts = [
+                { key: 'n', handler: newItem, description: 'New item' },
+                { key: 'Escape', handler: close, description: 'Close' },
+            ];
+
+            renderHook(() => useKeyboardShortcuts(shortcuts));
+
+            const input = document.createElement('input');
+            document.body.appendChild(input);
+
+            act(() => {
+                dispatchOn(input, 'Escape');
+            });
+
+            expect(close).toHaveBeenCalledTimes(1);
+            expect(newItem).not.toHaveBeenCalled();
+
+            document.body.removeChild(input);
+        });
+
+        it('still runs Escape when a textarea is focused', () => {
+            const close = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: 'Escape', handler: close, description: 'Close' },
+            ]));
+
+            const textarea = document.createElement('textarea');
+            document.body.appendChild(textarea);
+
+            act(() => {
+                dispatchOn(textarea, 'Escape');
+            });
+
+            expect(close).toHaveBeenCalledTimes(1);
+
             document.body.removeChild(textarea);
         });
     });

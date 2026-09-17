@@ -11,10 +11,13 @@ interface ShortcutHandler {
 
 export function useKeyboardShortcuts(shortcuts: ShortcutHandler[]) {
     const handleKeyDown = useCallback((event: KeyboardEvent) => {
-        // Don't trigger shortcuts when typing in inputs
+        // Don't trigger shortcuts when typing in inputs. Escape still closes
+        // modals / clears search while a field is focused.
         const target = event.target as HTMLElement;
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-            return;
+            if (event.key !== 'Escape') {
+                return;
+            }
         }
 
         for (const shortcut of shortcuts) {
