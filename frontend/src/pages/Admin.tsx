@@ -328,6 +328,24 @@ export default function Admin() {
         loadBlocked().catch(() => setError('Failed to load blocked content'));
     }, [activeTab, loadBlocked]);
 
+    // Clamp to the last valid page when a delete or filter shrinks `total`.
+    // Pagination hides itself at one page, so an unclamped page leaves an
+    // empty table with no way back.
+    useEffect(() => {
+        const pages = Math.max(1, Math.ceil(usersTotal / PER_PAGE));
+        if (usersPage > pages) setUsersPage(pages);
+    }, [usersTotal, usersPage]);
+
+    useEffect(() => {
+        const pages = Math.max(1, Math.ceil(linksTotal / PER_PAGE));
+        if (linksPage > pages) setLinksPage(pages);
+    }, [linksTotal, linksPage]);
+
+    useEffect(() => {
+        const pages = Math.max(1, Math.ceil(orgsTotal / PER_PAGE));
+        if (orgsPage > pages) setOrgsPage(pages);
+    }, [orgsTotal, orgsPage]);
+
     // ---- Actions ----
 
     const doAction = async (

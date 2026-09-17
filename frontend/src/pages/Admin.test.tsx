@@ -733,6 +733,60 @@ describe('Admin Page', () => {
                 );
             });
         });
+
+        it('returns to page 1 after deleting the only user on the last page', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            let userCount = 26;
+            const pagePayload = (page: number) => {
+                const start = (page - 1) * 25;
+                const n = Math.max(0, Math.min(25, userCount - start));
+                return {
+                    users: Array.from({ length: n }, (_, i) => ({
+                        ...userDefaults,
+                        id: start + i + 1,
+                        email: `paged${start + i + 1}@example.com`,
+                        is_admin: false,
+                        email_verified: true,
+                        created_at: '2024-01-01T00:00:00Z',
+                        deleted_at: null,
+                    })),
+                    total: userCount,
+                    page,
+                    per_page: 25,
+                };
+            };
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/stats')) return respond(mockStats);
+                if (url.includes('/admin/activity')) return respond(mockActivity);
+                if (url.includes('/admin/users')) {
+                    if (options?.method === 'DELETE') {
+                        userCount = 25;
+                        return respond({ message: 'User deleted' });
+                    }
+                    const page = Number(new URL(url, 'http://localhost').searchParams.get('page') || '1');
+                    return respond(pagePayload(page));
+                }
+                return respond({});
+            }) as any;
+
+            render(<Admin />);
+            await openUsersTab();
+            expect(await screen.findByText('paged1@example.com')).toBeInTheDocument();
+
+            fireEvent.click(await screen.findByRole('button', { name: /next page/i }));
+            expect(await screen.findByText('paged26@example.com')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+            await waitFor(() => {
+                expect(screen.getByText('paged1@example.com')).toBeInTheDocument();
+            });
+            expect(screen.queryByText(/no users match this filter/i)).not.toBeInTheDocument();
+        });
     });
 
     describe('Links Tab', () => {
@@ -867,6 +921,59 @@ describe('Admin Page', () => {
                 );
             });
         });
+
+        it('returns to page 1 after deleting the only link on the last page', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            let linkCount = 26;
+            const pagePayload = (page: number) => {
+                const start = (page - 1) * 25;
+                const n = Math.max(0, Math.min(25, linkCount - start));
+                return {
+                    links: Array.from({ length: n }, (_, i) => ({
+                        ...mockLinks.links[0],
+                        id: start + i + 1,
+                        code: `p${start + i + 1}`,
+                        original_url: `https://example.com/${start + i + 1}`,
+                        suspicious: false,
+                        suspicion_reason: null,
+                    })),
+                    total: linkCount,
+                    page,
+                    per_page: 25,
+                };
+            };
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/stats')) return respond(mockStats);
+                if (url.includes('/admin/activity')) return respond(mockActivity);
+                if (url.includes('/admin/links')) {
+                    if (options?.method === 'DELETE') {
+                        linkCount = 25;
+                        return respond({ message: 'Link deleted' });
+                    }
+                    const page = Number(new URL(url, 'http://localhost').searchParams.get('page') || '1');
+                    return respond(pagePayload(page));
+                }
+                return respond({});
+            }) as any;
+
+            render(<Admin />);
+            await openLinksTab();
+            expect(await screen.findByText('/p1')).toBeInTheDocument();
+
+            fireEvent.click(await screen.findByRole('button', { name: /next page/i }));
+            expect(await screen.findByText('/p26')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+            await waitFor(() => {
+                expect(screen.getByText('/p1')).toBeInTheDocument();
+            });
+            expect(screen.queryByText(/no links match this filter/i)).not.toBeInTheDocument();
+        });
     });
 
     describe('Organizations Tab', () => {
@@ -879,6 +986,55 @@ describe('Admin Page', () => {
             expect(await screen.findByText('Acme Team')).toBeInTheDocument();
             expect(screen.getByText('acme-team')).toBeInTheDocument();
             expect(screen.getByText('user@example.com')).toBeInTheDocument();
+        });
+
+        it('returns to page 1 when the last page is empty after the total shrinks', async () => {
+            const pagePayload = (page: number) => {
+                if (page > 1) {
+                    return { orgs: [], total: 25, page, per_page: 25 };
+                }
+                return {
+                    orgs: Array.from({ length: 25 }, (_, i) => ({
+                        ...mockOrgs.orgs[0],
+                        id: i + 1,
+                        name: `Org ${i + 1}`,
+                        slug: `org-${i + 1}`,
+                    })),
+                    total: 26,
+                    page: 1,
+                    per_page: 25,
+                };
+            };
+            global.fetch = vi.fn((url: string) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/stats')) return respond(mockStats);
+                if (url.includes('/admin/activity')) return respond(mockActivity);
+                if (url.includes('/admin/orgs')) {
+                    const page = Number(new URL(url, 'http://localhost').searchParams.get('page') || '1');
+                    return respond(pagePayload(page));
+                }
+                return respond({});
+            }) as any;
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /organizations/i }));
+            expect(await screen.findByText('Org 1')).toBeInTheDocument();
+
+            fireEvent.click(await screen.findByRole('button', { name: /next page/i }));
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringMatching(/\/admin\/orgs\?.*page=2/),
+                    expect.anything(),
+                );
+            });
+            await waitFor(() => {
+                expect(screen.getByText('Org 1')).toBeInTheDocument();
+                expect(screen.queryByText(/no organizations found/i)).not.toBeInTheDocument();
+            });
         });
     });
 

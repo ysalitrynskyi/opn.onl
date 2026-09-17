@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
     Copy, Plus, Trash2, BarChart2,
@@ -36,6 +36,7 @@ interface AppSettings {
 }
 
 const LINKS_PER_PAGE = 20;
+const SPARKLINE_BATCH_SIZE = 80;
 
 const ease = [0.16, 1, 0.3, 1] as const;
 
@@ -79,6 +80,8 @@ export default function Dashboard() {
     const [bulkImporting, setBulkImporting] = useState(false);
     const [clipboardUrl, setClipboardUrl] = useState<string | null>(null);
     const navigate = useNavigate();
+    const linksFetchId = useRef(0);
+    const sparklineFetchId = useRef(0);
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -195,7 +198,10 @@ export default function Dashboard() {
                 }
             } else {
                 const data = await res.json();
-                setError(data.error || 'Failed to import links');
+                const fromList = Array.isArray(data.errors) && data.errors.length > 0
+                    ? data.errors.join(', ')
+                    : null;
+                setError(fromList || data.error || 'Failed to import links');
             }
         } catch {
             setError('Network error during import');
@@ -266,34 +272,53 @@ export default function Dashboard() {
     }, [totalPages, currentPage]);
 
     const fetchLinks = async () => {
+        const requestId = ++linksFetchId.current;
         try {
             const res = await authFetch(API_ENDPOINTS.links);
+            if (requestId !== linksFetchId.current) return;
             if (res.ok) {
                 const data = await res.json();
+                if (requestId !== linksFetchId.current) return;
                 setLinks(data);
+            } else {
+                const data = await res.json().catch(() => null) as { error?: string } | null;
+                if (requestId !== linksFetchId.current) return;
+                setError(data?.error || 'Failed to load links. Please try again.');
             }
         } catch (error) {
+            if (requestId !== linksFetchId.current) return;
             logger.error('Failed to fetch links', error);
             setError('Failed to load links. Please try again.');
         } finally {
-            setLoading(false);
+            if (requestId === linksFetchId.current) {
+                setLoading(false);
+            }
         }
     };
 
-    // Fetch sparkline data for all links
+    // Fetch sparkline data for all links. Batch ids so a large account cannot
+    // blow typical request-line limits (~8KB) with one query string.
     const fetchSparklines = useCallback(async (linkIds: number[]) => {
         if (linkIds.length === 0) return;
+        const requestId = ++sparklineFetchId.current;
+        const merged: Record<number, { data: number[]; labels: string[] }> = {};
         try {
-            const res = await authFetch(`${API_ENDPOINTS.sparklines}?ids=${linkIds.join(',')}`);
-            if (res.ok) {
-                const data = await res.json();
-                const sparklines: Record<number, { data: number[]; labels: string[] }> = {};
-                for (const item of data.sparklines) {
-                    sparklines[item.link_id] = { data: item.data, labels: item.labels };
+            for (let i = 0; i < linkIds.length; i += SPARKLINE_BATCH_SIZE) {
+                if (requestId !== sparklineFetchId.current) return;
+                const batch = linkIds.slice(i, i + SPARKLINE_BATCH_SIZE);
+                const res = await authFetch(`${API_ENDPOINTS.sparklines}?ids=${batch.join(',')}`);
+                if (requestId !== sparklineFetchId.current) return;
+                if (res.ok) {
+                    const data = await res.json();
+                    for (const item of data.sparklines) {
+                        merged[item.link_id] = { data: item.data, labels: item.labels };
+                    }
                 }
-                setSparklineData(sparklines);
             }
+            if (requestId !== sparklineFetchId.current) return;
+            setSparklineData(merged);
         } catch (error) {
+            if (requestId !== sparklineFetchId.current) return;
             logger.error('Failed to fetch sparklines', error);
         }
     }, []);
@@ -389,7 +414,10 @@ export default function Dashboard() {
                 method: 'DELETE',
             });
             if (res.ok) {
-                setLinks(links.filter(l => l.id !== id));
+                // Drop any in-flight fetchLinks so it cannot write a snapshot
+                // that still contains this id over the optimistic list.
+                linksFetchId.current += 1;
+                setLinks(prev => prev.filter(l => l.id !== id));
             } else {
                 setError('Failed to delete link');
             }
@@ -451,7 +479,8 @@ export default function Dashboard() {
             });
             if (res.ok) {
                 const data = await res.json();
-                setLinks(links.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
+                linksFetchId.current += 1;
+                setLinks(prev => prev.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
                 toast(data.message, 'success');
             } else {
                 toast('Failed to update pin status', 'error');
@@ -1172,7 +1201,7 @@ export default function Dashboard() {
                     </div>
                 )}
 
-                {links.length === 0 && (
+                {links.length === 0 && !error && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
