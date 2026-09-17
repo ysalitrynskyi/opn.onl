@@ -121,6 +121,42 @@ mod tests {
             stats_clicks(&server, &token, link_id, Some("-9223372036854775808")).await;
         assert_eq!(status, 200, "i64::MIN days must be clamped, not panic");
     }
+
+    /// `total_clicks` must be the window `COUNT(*)`, not the length of the
+    /// capped breakdown sample. A link with more clicks than the row cap
+    /// used to report the slice size as the total.
+    #[tokio::test]
+    async fn link_stats_total_clicks_is_window_count_not_truncated_slice() {
+        use sea_orm::ConnectionTrait;
+
+        let (server, db) = common::spawn_real_app().await;
+        let (token, link_id) = register_and_link(&server, &db).await;
+
+        const OVER_CAP: i64 = 50_001;
+        db.execute_unprepared(&format!(
+            "INSERT INTO click_events (link_id, created_at) \
+             SELECT {link_id}, NOW() FROM generate_series(1, {OVER_CAP})"
+        ))
+        .await
+        .expect("insert clicks over the stats row cap");
+
+        let res = server
+            .get(&format!("/links/{link_id}/stats"))
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(res.status_code(), 200, "stats: {}", res.text());
+        let body: Value = res.json();
+        assert_eq!(
+            body["total_clicks"].as_i64(),
+            Some(OVER_CAP),
+            "total_clicks must be the window count, not the 50000-row sample: {body}"
+        );
+        assert_eq!(
+            body["truncated"].as_bool(),
+            Some(true),
+            "window larger than the row cap must set truncated: {body}"
+        );
+    }
 }
 
 // Unit tests for analytics processing

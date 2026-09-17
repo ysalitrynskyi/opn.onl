@@ -41,7 +41,13 @@ pub struct LinkStatsResponse {
     pub link_id: i32,
     pub code: String,
     pub original_url: String,
+    /// Clicks in the requested window, from a `COUNT(*)` over that window.
+    /// Breakdown maps below may be computed from a newest-first sample when
+    /// `truncated` is true.
     pub total_clicks: i32,
+    /// True when the window contained more click rows than the per-request
+    /// cap, so country/city/day percentages describe the newest sample.
+    pub truncated: bool,
     pub unique_visitors: i32,
     pub clicks_by_day: Vec<DayStats>,
     pub clicks_by_country: Vec<CountryStats>,
@@ -241,9 +247,17 @@ pub async fn get_link_stats(
         .await
         .unwrap_or_default();
 
-    let total_clicks = events.len() as i32;
-    // Prevent division by zero - use 1 as minimum for percentage calculations
-    let total_for_percentage = total_clicks.max(1) as f64;
+    let total_clicks = click_events::Entity::find()
+        .filter(click_events::Column::LinkId.eq(id))
+        .filter(click_events::Column::CreatedAt.gte(start_date))
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+    let truncated = total_clicks > events.len() as u64;
+    let total_clicks = total_clicks.min(i32::MAX as u64) as i32;
+    // Percentages describe the loaded sample, not the full window, so a
+    // truncated response still adds to 100% of what is shown.
+    let total_for_percentage = (events.len() as i32).max(1) as f64;
 
     // Unique visitors (by IP)
     let unique_ips: std::collections::HashSet<_> =
@@ -415,6 +429,7 @@ pub async fn get_link_stats(
         code: link.code,
         original_url: link.original_url,
         total_clicks,
+        truncated,
         unique_visitors,
         clicks_by_day,
         clicks_by_country,
