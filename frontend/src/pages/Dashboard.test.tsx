@@ -153,6 +153,25 @@ describe('Dashboard Page', () => {
     });
   });
 
+  it('uses the local calendar date as the create expiration minimum, not UTC', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(mockFetchResponse([]) as any);
+    const year = vi.spyOn(Date.prototype, 'getFullYear').mockReturnValue(2026);
+    const month = vi.spyOn(Date.prototype, 'getMonth').mockReturnValue(8);
+    const day = vi.spyOn(Date.prototype, 'getDate').mockReturnValue(17);
+    const iso = vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-09-18T03:00:00.000Z');
+
+    try {
+      const { user } = render(<Dashboard />);
+      await user.click(await screen.findByText(/advanced options/i));
+      expect(screen.getByLabelText(/^expiration$/i)).toHaveAttribute('min', '2026-09-17');
+    } finally {
+      year.mockRestore();
+      month.mockRestore();
+      day.mockRestore();
+      iso.mockRestore();
+    }
+  });
+
   it('shows advanced options when toggled', async () => {
     vi.mocked(global.fetch).mockResolvedValue(
       mockFetchResponse([]) as any

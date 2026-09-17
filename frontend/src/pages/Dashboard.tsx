@@ -23,6 +23,7 @@ import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
 import { takePendingUrl } from '../utils/pendingUrl';
+import { localIsoDate } from '../utils/localIsoDate';
 
 interface AppSettings {
     custom_aliases_enabled: boolean;
@@ -899,7 +900,7 @@ export default function Dashboard() {
                                                     className="flex-1 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                                                     value={expiresAt}
                                                     onChange={(e) => setExpiresAt(e.target.value)}
-                                                    min={new Date().toISOString().split('T')[0]}
+                                                    min={localIsoDate()}
                                                 />
                                                 <input
                                                     type="time"
