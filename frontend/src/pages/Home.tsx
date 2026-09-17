@@ -119,7 +119,7 @@ export default function Home() {
                                     initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease, delay: 0.18 }}
                                     className="mt-9 max-w-xl"
                                 >
-                                    <form onSubmit={handleSubmit}>
+                                    <form method="post" onSubmit={handleSubmit}>
                                         <div className="flex flex-col sm:flex-row items-stretch gap-2 rounded-2xl border border-line2 bg-surface p-2 shadow-card focus-within:border-primary-500 transition-colors">
                                             <div className="flex flex-1 items-center gap-3 px-3 min-w-0">
                                                 <CornerDownRight className="h-4 w-4 text-faint shrink-0" aria-hidden="true" />
