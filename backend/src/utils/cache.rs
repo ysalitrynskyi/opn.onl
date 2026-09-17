@@ -267,9 +267,9 @@ mod tests {
 
     #[tokio::test]
     async fn invalidation_generation_key_expires() {
-        if std::env::var("REDIS_URL").is_err() {
-            std::env::set_var("REDIS_URL", "redis://127.0.0.1:6379");
-        }
+        // Do not default REDIS_URL here: set_var mutates process-global env
+        // for every other test in this binary. CI exports REDIS_URL; a local
+        // run without Redis skips below.
         let Some(cache) = RedisCache::new().await else {
             eprintln!("skipping Redis TTL test: REDIS_URL is not set or unavailable");
             return;
