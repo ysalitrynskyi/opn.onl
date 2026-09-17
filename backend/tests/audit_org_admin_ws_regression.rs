@@ -599,79 +599,6 @@ async fn admin_hard_delete_preserves_other_orgs_links_and_clicks() {
 
     assert!(
         users::Entity::find_by_id(editor_id)
-#[tokio::test]
-async fn invite_member_looks_up_normalized_email() {
-    let (server, db) = spawn_real_app().await;
-    let (owner_token, _) = register_verified(&server, &db).await;
-    let local = format!("User_{}", uuid::Uuid::new_v4().simple());
-    let res = server
-        .post("/auth/register")
-        .json(&json!({
-            "email": format!("{local}@Users.OPN.ONL"),
-            "password": "password123",
-        }))
-        .await;
-    assert_eq!(res.status_code(), 201, "register: {}", res.text());
-    let invitee_id = res.json::<Value>()["user_id"].as_i64().unwrap() as i32;
-    mark_email_verified(&db, invitee_id).await;
-
-    let org_id = create_org(&server, &owner_token).await;
-    let res = server
-        .post(&format!("/orgs/{org_id}/members"))
-        .authorization_bearer(&owner_token)
-        .json(&json!({
-            "email": format!(" {local}@USERS.opn.onl "),
-            "role": "viewer",
-        }))
-        .await;
-    assert_eq!(
-        res.status_code(),
-        201,
-        "invite must match the stored normalized email: {}",
-        res.text()
-    );
-    assert_eq!(
-        res.json::<Value>()["user_id"].as_i64().unwrap() as i32,
-        invitee_id
-    );
-}
-
-#[tokio::test]
-async fn invite_member_rejects_deleted_or_disabled_users() {
-    let (server, db) = spawn_real_app().await;
-    let (owner_token, _) = register_verified(&server, &db).await;
-    let (admin_token, admin_id) = register_verified(&server, &db).await;
-    make_admin(&db, admin_id).await;
-    let org_id = create_org(&server, &owner_token).await;
-
-    let (_, deleted_id) = register_verified(&server, &db).await;
-    let deleted_email = users::Entity::find_by_id(deleted_id)
-        .one(&db)
-        .await
-        .unwrap()
-        .unwrap()
-        .email;
-    let res = server
-        .delete(&format!("/admin/users/{deleted_id}"))
-        .authorization_bearer(&admin_token)
-        .await;
-    assert_eq!(res.status_code(), 200, "soft-delete invitee: {}", res.text());
-
-    let res = server
-        .post(&format!("/orgs/{org_id}/members"))
-        .authorization_bearer(&owner_token)
-        .json(&json!({ "email": deleted_email, "role": "viewer" }))
-        .await;
-    assert_eq!(
-        res.status_code(),
-        404,
-        "deleted user must not be invitable: {}",
-        res.text()
-    );
-    assert!(
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(deleted_id))
             .one(&db)
             .await
             .unwrap()
@@ -680,35 +607,6 @@ async fn invite_member_rejects_deleted_or_disabled_users() {
     );
     assert!(
         links::Entity::find_by_id(personal_link_id)
-        "must not insert membership for a deleted user"
-    );
-
-    let (_, disabled_id) = register_verified(&server, &db).await;
-    let disabled = users::Entity::find_by_id(disabled_id)
-        .one(&db)
-        .await
-        .unwrap()
-        .unwrap();
-    let disabled_email = disabled.email.clone();
-    let mut active: users::ActiveModel = disabled.into();
-    active.disabled_at = Set(Some(chrono::Utc::now().naive_utc()));
-    active.update(&db).await.unwrap();
-
-    let res = server
-        .post(&format!("/orgs/{org_id}/members"))
-        .authorization_bearer(&owner_token)
-        .json(&json!({ "email": disabled_email, "role": "viewer" }))
-        .await;
-    assert_eq!(
-        res.status_code(),
-        404,
-        "disabled user must not be invitable: {}",
-        res.text()
-    );
-    assert!(
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(disabled_id))
             .one(&db)
             .await
             .unwrap()
@@ -837,6 +735,119 @@ async fn org_link_count_excludes_soft_deleted_links() {
         transferred.json::<Value>()["link_count"].as_i64(),
         Some(1),
         "transfer-ownership must not count the soft-deleted link"
+    );
+}
+
+#[tokio::test]
+async fn invite_member_looks_up_normalized_email() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let local = format!("User_{}", uuid::Uuid::new_v4().simple());
+    let res = server
+        .post("/auth/register")
+        .json(&json!({
+            "email": format!("{local}@Users.OPN.ONL"),
+            "password": "password123",
+        }))
+        .await;
+    assert_eq!(res.status_code(), 201, "register: {}", res.text());
+    let invitee_id = res.json::<Value>()["user_id"].as_i64().unwrap() as i32;
+    mark_email_verified(&db, invitee_id).await;
+
+    let org_id = create_org(&server, &owner_token).await;
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({
+            "email": format!(" {local}@USERS.opn.onl "),
+            "role": "viewer",
+        }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        201,
+        "invite must match the stored normalized email: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["user_id"].as_i64().unwrap() as i32,
+        invitee_id
+    );
+}
+
+#[tokio::test]
+async fn invite_member_rejects_deleted_or_disabled_users() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let (admin_token, admin_id) = register_verified(&server, &db).await;
+    make_admin(&db, admin_id).await;
+    let org_id = create_org(&server, &owner_token).await;
+
+    let (_, deleted_id) = register_verified(&server, &db).await;
+    let deleted_email = users::Entity::find_by_id(deleted_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .email;
+    let res = server
+        .delete(&format!("/admin/users/{deleted_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "soft-delete invitee: {}", res.text());
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "email": deleted_email, "role": "viewer" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        404,
+        "deleted user must not be invitable: {}",
+        res.text()
+    );
+    assert!(
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(deleted_id))
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "must not insert membership for a deleted user"
+    );
+
+    let (_, disabled_id) = register_verified(&server, &db).await;
+    let disabled = users::Entity::find_by_id(disabled_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let disabled_email = disabled.email.clone();
+    let mut active: users::ActiveModel = disabled.into();
+    active.disabled_at = Set(Some(chrono::Utc::now().naive_utc()));
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "email": disabled_email, "role": "viewer" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        404,
+        "disabled user must not be invitable: {}",
+        res.text()
+    );
+    assert!(
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(disabled_id))
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
         "must not insert membership for a disabled user"
     );
 }
