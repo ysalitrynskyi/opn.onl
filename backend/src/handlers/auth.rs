@@ -121,8 +121,40 @@ pub async fn register(
     let verification_token = generate_token();
     let verification_expires = Utc::now() + Duration::hours(24);
 
-    // Check if this is the first user - make them admin
-    let user_count = users::Entity::find().count(&state.db).await.unwrap_or(0);
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    // Only a truly empty live table bootstraps admin. A failed COUNT must not
+    // be treated as zero — that would promote a later registrant. Soft-deleted
+    // rows do not occupy the seat: after the last live user is gone, the next
+    // signup is once again first.
+    let user_count = match users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .count(&txn)
+        .await
+    {
+        Ok(count) => count,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
     let is_first_user = user_count == 0;
 
     let new_user = users::ActiveModel {
@@ -131,14 +163,23 @@ pub async fn register(
         email_verified: Set(false),
         verification_token: Set(Some(verification_token.clone())),
         verification_token_expires: Set(Some(verification_expires.naive_utc())),
-        is_admin: Set(is_first_user), // First user is automatically admin
+        is_admin: Set(is_first_user),
         ..Default::default()
     };
 
-    let result = users::Entity::insert(new_user).exec(&state.db).await;
+    let result = users::Entity::insert(new_user).exec(&txn).await;
 
     match result {
         Ok(user_res) => {
+            if txn.commit().await.is_err() {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Database error".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             // Send verification email if email service is configured
             if let Some(email_service) = &state.email_service {
                 if email_service.is_configured() {
@@ -177,6 +218,7 @@ pub async fn register(
                 .into_response()
         }
         Err(DbErr::Query(err)) => {
+            let _ = txn.rollback().await;
             if err.to_string().contains("duplicate key value") {
                 (
                     StatusCode::CONFLICT,
@@ -195,13 +237,16 @@ pub async fn register(
                     .into_response()
             }
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Database error".to_string(),
-            }),
-        )
-            .into_response(),
+        Err(_) => {
+            let _ = txn.rollback().await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 

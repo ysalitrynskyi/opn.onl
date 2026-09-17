@@ -407,6 +407,34 @@ async fn password_change_consumes_outstanding_reset_token() {
 }
 
 #[tokio::test]
+async fn second_registered_user_is_not_admin() {
+    let (server, _db) = spawn_real_app().await;
+
+    let first = server
+        .post("/auth/register")
+        .json(&json!({ "email": unique_email(), "password": "password123" }))
+        .await;
+    assert_eq!(first.status_code(), 201, "first register: {}", first.text());
+
+    let second = server
+        .post("/auth/register")
+        .json(&json!({ "email": unique_email(), "password": "password123" }))
+        .await;
+    assert_eq!(
+        second.status_code(),
+        201,
+        "second register: {}",
+        second.text()
+    );
+    let body: Value = second.json();
+    assert_eq!(
+        body["is_admin"].as_bool(),
+        Some(false),
+        "a later registrant must not be granted admin: {body}"
+    );
+}
+
+#[tokio::test]
 async fn resend_verification_does_not_enumerate_accounts() {
     let (server, db) = spawn_real_app().await;
 
