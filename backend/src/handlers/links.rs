@@ -4868,6 +4868,17 @@ pub async fn get_link_preview_metadata(
             .into_response();
     }
 
+    // Same policy as create / health-check / avatar proxy: raw IPs, internal
+    // hostnames, dangerous extensions, and length limits must apply before any
+    // server-side fetch.
+    if let Err(msg) = validate_url(&payload.url) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": msg})),
+        )
+            .into_response();
+    }
+
     // SSRF-guarded GET: the host and every redirect hop are validated against
     // private/internal ranges before any request is sent.
     let response = match ssrf_guarded_fetch(

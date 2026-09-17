@@ -156,6 +156,40 @@ async fn create_rejects_raw_ip_host() {
 }
 
 #[tokio::test]
+async fn preview_metadata_rejects_urls_that_fail_validate_url() {
+    let (server, db) = spawn_real_app().await;
+    let (token, _) = register_verified(&server, &db).await;
+
+    // Preview used to skip validate_url (parse + scheme only). A private raw
+    // IP then came back as a 200 empty preview, and a public raw IP (e.g.
+    // 93.184.216.34:22) was fetched. The private-IP and metadata cases still
+    // 200-empty if the guard is skipped (SSRF swallows them), so a regression
+    // is a status mismatch rather than a hang.
+    let cases: &[(&str, &str)] = &[
+        ("http://192.168.1.1/", "ip"),
+        ("http://metadata.google.internal/", "local"),
+        ("http://malware.iana.org/payload.hta", "hta"),
+    ];
+    for (url, needle) in cases {
+        let res = server
+            .post("/links/preview-metadata")
+            .authorization_bearer(&token)
+            .json(&json!({ "url": url }))
+            .await;
+        assert_eq!(res.status_code(), 400, "{url}: {}", res.text());
+        let body: Value = res.json();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains(needle),
+            "{url} error should mention {needle}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn create_allows_benign_link() {
     let (server, db) = spawn_real_app().await;
     let (token, _) = register_verified(&server, &db).await;
