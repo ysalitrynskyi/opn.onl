@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -158,14 +158,25 @@ export default function Analytics() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [days, setDays] = useState(30);
+    const requestGen = useRef(0);
+    const loadedId = useRef<string | undefined>(undefined);
 
     const fetchStats = useCallback(async () => {
+        const gen = ++requestGen.current;
+        if (loadedId.current !== id) {
+            loadedId.current = id;
+            setStats(null);
+        }
+        setError('');
+        setLoading(true);
+
         try {
-            setLoading(true);
             const res = await authFetch(`${API_ENDPOINTS.linkStats(Number(id))}?days=${days}`);
+            if (gen !== requestGen.current) return;
 
             if (res.ok) {
                 const data = await res.json();
+                if (gen !== requestGen.current) return;
                 setStats(data);
             } else if (res.status === 403) {
                 setError('You do not have permission to view this link\'s analytics.');
@@ -175,10 +186,13 @@ export default function Analytics() {
                 setError('Failed to load analytics.');
             }
         } catch (error) {
+            if (gen !== requestGen.current) return;
             logger.error('Failed to fetch stats', error);
             setError('Network error. Please try again.');
         } finally {
-            setLoading(false);
+            if (gen === requestGen.current) {
+                setLoading(false);
+            }
         }
     }, [id, days]);
 

@@ -289,6 +289,85 @@ describe('Analytics Page', () => {
                 expect(urls.some(url => url.includes('/links/2/stats'))).toBe(true);
             });
         });
+
+        it('ignores a slower response for a previous time range', async () => {
+            let releaseSeven: () => void = () => {};
+            const sevenGate = new Promise<void>(resolve => {
+                releaseSeven = resolve;
+            });
+
+            global.fetch = vi.fn().mockImplementation((url: string) => {
+                const href = String(url);
+                if (href.includes('days=7')) {
+                    return sevenGate.then(() => ({
+                        ok: true,
+                        status: 200,
+                        json: () => Promise.resolve({ ...mockLinkStats, code: 'seven-day' }),
+                    }));
+                }
+                if (href.includes('days=90')) {
+                    return Promise.resolve({
+                        ok: true,
+                        status: 200,
+                        json: () => Promise.resolve({ ...mockLinkStats, code: 'ninety-day' }),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve({ ...mockLinkStats, code: 'thirty-day' }),
+                });
+            });
+
+            const { user } = render(<Analytics />);
+            await screen.findByText('thirty-day');
+
+            await user.selectOptions(screen.getByLabelText('Time range'), '7');
+            await user.selectOptions(screen.getByLabelText('Time range'), '90');
+            await screen.findByText('ninety-day');
+
+            releaseSeven();
+
+            await waitFor(() => {
+                expect(screen.getByText('ninety-day')).toBeInTheDocument();
+            });
+            expect(screen.queryByText('seven-day')).not.toBeInTheDocument();
+        });
+
+        it('does not keep showing the previous link while a new id loads', async () => {
+            let releaseTwo: () => void = () => {};
+            const twoGate = new Promise<void>(resolve => {
+                releaseTwo = resolve;
+            });
+
+            global.fetch = vi.fn().mockImplementation((url: string) => {
+                if (String(url).includes('/links/2/stats')) {
+                    return twoGate.then(() => ({
+                        ok: true,
+                        status: 200,
+                        json: () => Promise.resolve({ ...mockLinkStats, link_id: 2, code: 'second' }),
+                    }));
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(mockLinkStats),
+                });
+            });
+
+            const { rerender } = render(<Analytics />);
+            await screen.findByText(/abc123/);
+
+            mockParams.id = '2';
+            rerender(<Analytics />);
+
+            await waitFor(() => {
+                expect(screen.queryByText(/abc123/)).not.toBeInTheDocument();
+            });
+
+            releaseTwo();
+            await screen.findByText(/second/);
+        });
     });
 
     describe('Navigation', () => {
@@ -312,10 +391,32 @@ describe('Analytics Page', () => {
             });
 
             render(<Analytics />);
-            
-            await waitFor(() => {
-                const error = screen.queryByText(/error|not found/i);
-            });
+
+            expect(await screen.findByText('Link not found.')).toBeInTheDocument();
+        });
+
+        it('clears a previous error when a later fetch succeeds', async () => {
+            global.fetch = vi.fn()
+                .mockResolvedValueOnce({
+                    ok: false,
+                    status: 404,
+                    json: () => Promise.resolve({ error: 'Link not found' }),
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(mockLinkStats),
+                });
+
+            mockParams.id = '999';
+            const { rerender } = render(<Analytics />);
+            expect(await screen.findByText('Link not found.')).toBeInTheDocument();
+
+            mockParams.id = '1';
+            rerender(<Analytics />);
+
+            await screen.findByText(/abc123/);
+            expect(screen.queryByText('Link not found.')).not.toBeInTheDocument();
         });
 
         it('redirects to login on 401', async () => {
