@@ -40,9 +40,10 @@ async fn main() {
         .init();
 
     // Database connection. Required — fail fast rather than silently falling back
-    // to an insecure hardcoded dev credential in production.
-    let database_url =
-        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set (no default is used)");
+    // to an insecure hardcoded dev credential in production. Compose passes
+    // discrete POSTGRES_* pieces; we assemble (and percent-encode userinfo) here
+    // so a password containing `@` / `:` / `/` does not split the URL.
+    let database_url = utils::database_url::resolve_database_url();
 
     let db = Database::connect(&database_url)
         .await

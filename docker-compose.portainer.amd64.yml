@@ -55,7 +55,14 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-opn_onl}
+      # Discrete Postgres pieces. The backend percent-encodes userinfo when
+      # assembling DATABASE_URL, so a password containing `@`, `:`, or `/`
+      # still parses. Do not interpolate POSTGRES_PASSWORD into a URL here.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-opn_onl}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       HOST: 0.0.0.0
       PORT: 3000
