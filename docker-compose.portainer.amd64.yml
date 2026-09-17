@@ -61,6 +61,8 @@ services:
       PORT: 3000
       BASE_URL: ${BASE_URL:-https://opn.onl}
       FRONTEND_URL: ${FRONTEND_URL:-https://opn.onl}
+      # WebAuthn RP ID. Empty: derived from FRONTEND_URL. Set to override.
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       REAL_IP_HEADER: ${REAL_IP_HEADER:-cf-connecting-ip}
@@ -91,6 +93,8 @@ services:
       ENABLE_CUSTOM_ALIASES: ${ENABLE_CUSTOM_ALIASES:-true}
       MIN_ALIAS_LENGTH: ${MIN_ALIAS_LENGTH:-5}
       MAX_ALIAS_LENGTH: ${MAX_ALIAS_LENGTH:-25}
+      # Per-user link cap. Empty or 0 means unlimited (the default).
+      MAX_LINKS_PER_USER: ${MAX_LINKS_PER_USER:-}
       ALLOW_DELETED_SLUG_REUSE: ${ALLOW_DELETED_SLUG_REUSE:-false}
       ENABLE_URL_SANITIZATION: ${ENABLE_URL_SANITIZATION:-true}
       # Branded QR codes (brand colour / centre logo / SVG). Kill-switch, default on.
@@ -105,6 +109,8 @@ services:
       ENABLE_LINK_IN_BIO: ${ENABLE_LINK_IN_BIO:-true}
       # API keys (personal access tokens for the MCP server / API clients). Default on.
       ENABLE_API_KEYS: ${ENABLE_API_KEYS:-true}
+      # Passkeys (WebAuthn enroll/login). Kill-switch, default on.
+      ENABLE_PASSKEYS: ${ENABLE_PASSKEYS:-true}
       # Account settings
       ENABLE_ACCOUNT_DELETION: ${ENABLE_ACCOUNT_DELETION:-false}
       # Days before per-visitor click identifiers are anonymized (0 disables)
