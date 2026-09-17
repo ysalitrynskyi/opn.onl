@@ -4,9 +4,11 @@ use axum::{
     Json,
 };
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::ToSchema;
 
 use crate::entity::{folders, link_tags, links, org_members, tags};
@@ -254,25 +256,39 @@ pub async fn get_folders(
             )
         })?;
 
-    let mut responses = Vec::new();
-    for folder in folders {
-        let link_count = links::Entity::find()
-            .filter(links::Column::FolderId.eq(folder.id))
+    let folder_ids: Vec<i32> = folders.iter().map(|f| f.id).collect();
+    let mut link_counts: HashMap<i32, i64> = HashMap::new();
+    if !folder_ids.is_empty() {
+        let rows: Vec<(Option<i32>, i64)> = links::Entity::find()
+            .select_only()
+            .column(links::Column::FolderId)
+            .column_as(links::Column::Id.count(), "cnt")
+            .filter(links::Column::FolderId.is_in(folder_ids))
             .filter(links::Column::DeletedAt.is_null())
-            .count(&state.db)
+            .group_by(links::Column::FolderId)
+            .into_tuple()
+            .all(&state.db)
             .await
-            .unwrap_or(0) as i64;
+            .unwrap_or_default();
+        for (folder_id, count) in rows {
+            if let Some(folder_id) = folder_id {
+                link_counts.insert(folder_id, count);
+            }
+        }
+    }
 
-        responses.push(FolderResponse {
+    let responses = folders
+        .into_iter()
+        .map(|folder| FolderResponse {
             id: folder.id,
             name: folder.name.clone(),
             color: folder.color.clone(),
             user_id: folder.user_id,
             org_id: folder.org_id,
             created_at: folder.created_at.to_string(),
-            link_count,
-        });
-    }
+            link_count: link_counts.get(&folder.id).copied().unwrap_or(0),
+        })
+        .collect();
 
     Ok(Json(responses))
 }
