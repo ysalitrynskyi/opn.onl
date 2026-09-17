@@ -8,8 +8,8 @@ use opn_onl_backend::entity::{api_keys, passkeys, users};
 use opn_onl_backend::handlers::auth::hash_secret_token;
 use opn_onl_backend::handlers::links::hash_api_key;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
-    PaginatorTrait, QueryFilter,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    EntityTrait, PaginatorTrait, QueryFilter,
 };
 use serde_json::{json, Value};
 
@@ -35,6 +35,54 @@ async fn promote_directly(db: &DatabaseConnection, user_id: i32) {
     let mut active: users::ActiveModel = user.into();
     active.is_admin = Set(true);
     active.update(db).await.expect("promote admin");
+}
+
+/// Session-scoped advisory lock so last-admin and non-last-admin tests cannot
+/// interleave while one of them temporarily demotes other live admins.
+const ADMIN_COUNT_LOCK: i64 = 872_364_198;
+
+async fn lock_admin_count() -> DatabaseConnection {
+    let mut opts = sea_orm::ConnectOptions::new(
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+    );
+    opts.max_connections(1);
+    let db = sea_orm::Database::connect(opts)
+        .await
+        .expect("admin-count lock connection");
+    db.execute_unprepared(&format!("SELECT pg_advisory_lock({ADMIN_COUNT_LOCK})"))
+        .await
+        .expect("pg_advisory_lock");
+    db
+}
+
+async fn unlock_admin_count(lock_db: &DatabaseConnection) {
+    let _ = lock_db
+        .execute_unprepared(&format!("SELECT pg_advisory_unlock({ADMIN_COUNT_LOCK})"))
+        .await;
+}
+
+async fn demote_other_live_admins(db: &DatabaseConnection, keep_id: i32) -> Vec<i32> {
+    let others: Vec<i32> = users::Entity::find()
+        .filter(users::Column::IsAdmin.eq(true))
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::Id.ne(keep_id))
+        .all(db)
+        .await
+        .expect("list other live admins")
+        .into_iter()
+        .map(|u| u.id)
+        .collect();
+    for id in &others {
+        let user = users::Entity::find_by_id(*id)
+            .one(db)
+            .await
+            .expect("db")
+            .expect("user");
+        let mut active: users::ActiveModel = user.into();
+        active.is_admin = Set(false);
+        active.update(db).await.expect("demote other admin");
+    }
+    others
 }
 
 async fn seed_credentials(db: &DatabaseConnection, user_id: i32) -> String {
@@ -423,6 +471,7 @@ async fn password_change_consumes_outstanding_reset_token() {
 #[tokio::test]
 async fn a_non_last_admin_can_self_delete() {
     std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let lock_db = lock_admin_count().await;
     let (server, db) = spawn_real_app().await;
 
     let (jwt_a, user_a) = register(&server, &unique_email()).await;
@@ -435,11 +484,12 @@ async fn a_non_last_admin_can_self_delete() {
         .authorization_bearer(&jwt_a)
         .json(&json!({ "password": "password123" }))
         .await;
+    let status = res.status_code();
+    let body = res.text();
+    unlock_admin_count(&lock_db).await;
     assert_eq!(
-        res.status_code(),
-        200,
-        "non-last admin must still be able to leave: {}",
-        res.text()
+        status, 200,
+        "non-last admin must still be able to leave: {body}"
     );
 
     let deleted = users::Entity::find_by_id(user_a)
@@ -460,62 +510,42 @@ async fn a_non_last_admin_can_self_delete() {
 #[tokio::test]
 async fn last_remaining_admin_cannot_self_delete() {
     std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let lock_db = lock_admin_count().await;
     let (server, db) = spawn_real_app().await;
 
     let (jwt, user_id) = register(&server, &unique_email()).await;
     promote_directly(&db, user_id).await;
 
-    let other_admins = users::Entity::find()
-        .filter(users::Column::IsAdmin.eq(true))
-        .filter(users::Column::DeletedAt.is_null())
-        .filter(users::Column::Id.ne(user_id))
-        .count(&db)
-        .await
-        .expect("count other admins");
+    // The production guard counts every live admin in the shared database.
+    // Temporarily demote the others so this test is actually the last admin
+    // and can assert 409 unconditionally, then restore them.
+    let others = demote_other_live_admins(&db, user_id).await;
 
     let res = server
         .post("/auth/delete-account")
         .authorization_bearer(&jwt)
         .json(&json!({ "password": "password123" }))
         .await;
+    let status = res.status_code();
+    let body = res.text();
+    let still = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
 
-    if other_admins == 0 {
-        assert_eq!(
-            res.status_code(),
-            409,
-            "last admin must be refused: {}",
-            res.text()
-        );
-        assert!(
-            res.text().contains("last remaining admin"),
-            "last admin body: {}",
-            res.text()
-        );
-        let still = users::Entity::find_by_id(user_id)
-            .one(&db)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(still.deleted_at.is_none());
-        assert!(still.is_admin);
-    } else {
-        assert_eq!(
-            res.status_code(),
-            200,
-            "non-last admin may leave: {}",
-            res.text()
-        );
-        let remaining = users::Entity::find()
-            .filter(users::Column::IsAdmin.eq(true))
-            .filter(users::Column::DeletedAt.is_null())
-            .count(&db)
-            .await
-            .expect("count remaining admins");
-        assert!(
-            remaining >= 1,
-            "self-delete must not leave the instance without an admin"
-        );
+    for id in others {
+        promote_directly(&db, id).await;
     }
+    unlock_admin_count(&lock_db).await;
+
+    assert_eq!(status, 409, "last admin must be refused: {body}");
+    assert!(
+        body.contains("last remaining admin"),
+        "last admin body: {body}"
+    );
+    assert!(still.deleted_at.is_none());
+    assert!(still.is_admin);
 }
 
 #[tokio::test]
