@@ -5,7 +5,9 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::entity::links;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseConnection, EntityTrait,
+};
 use serde_json::{json, Value};
 
 async fn register_verified(
@@ -96,5 +98,72 @@ async fn public_bio_omits_per_link_click_counts() {
         links[0].get("click_count").is_none(),
         "public bio must not leak click_count, got {}",
         links[0]
+    );
+}
+
+/// Two callers can both pass the read-then-write uniqueness check. The loser
+/// then hits `idx-users-bio_username`. That unique violation must be 409, not
+/// the generic 500 from `update`.
+///
+/// A BEFORE UPDATE trigger assigns the chosen username to another user after
+/// the pre-check, so this is a deterministic unique-index collision rather
+/// than a flake-prone race.
+#[tokio::test]
+async fn bio_username_unique_violation_returns_409() {
+    let (server, db) = spawn_real_app().await;
+    let (_token_a, user_a) = register_verified(&server, &db).await;
+    let (token_b, user_b) = register_verified(&server, &db).await;
+    let username = unique_bio_username();
+
+    let suffix = unique_code().to_lowercase();
+    let fn_name = format!("steal_bio_un_{suffix}");
+    db.execute_unprepared(&format!(
+        r#"
+        CREATE FUNCTION {fn_name}() RETURNS trigger AS $$
+        BEGIN
+            UPDATE users SET bio_username = NEW.bio_username WHERE id = {user_a};
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        "#
+    ))
+    .await
+    .expect("create steal-username function");
+    db.execute_unprepared(&format!(
+        r#"
+        CREATE TRIGGER {fn_name}
+        BEFORE UPDATE ON users
+        FOR EACH ROW
+        WHEN (OLD.id = {user_b} AND NEW.bio_username IS NOT NULL)
+        EXECUTE PROCEDURE {fn_name}()
+        "#
+    ))
+    .await
+    .expect("install steal-username trigger");
+
+    let res = server
+        .put("/auth/bio")
+        .authorization_bearer(&token_b)
+        .json(&json!({ "bio_username": username }))
+        .await;
+
+    let _ = db
+        .execute_unprepared(&format!("DROP TRIGGER IF EXISTS {fn_name} ON users"))
+        .await;
+    let _ = db
+        .execute_unprepared(&format!("DROP FUNCTION IF EXISTS {fn_name}()"))
+        .await;
+
+    assert_eq!(
+        res.status_code(),
+        409,
+        "unique-index collision on bio_username must be 409, got {}: {}",
+        res.status_code(),
+        res.text()
+    );
+    assert!(
+        res.text().contains("That username is taken"),
+        "documented 409 body, got {}",
+        res.text()
     );
 }
