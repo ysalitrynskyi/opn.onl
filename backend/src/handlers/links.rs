@@ -359,7 +359,11 @@ fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.octets()[0] >= 240 // 240.0.0.0/4 reserved
         }
         std::net::IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            // to_ipv4() unwraps both IPv4-mapped (::ffff:a.b.c.d) and the
+            // deprecated IPv4-compatible form (::a.b.c.d). to_ipv4_mapped()
+            // misses the latter, so 192.168.1.1 / 169.254.169.254 encoded that
+            // way would otherwise pass this guard.
+            if let Some(v4) = v6.to_ipv4() {
                 return is_disallowed_ip(&std::net::IpAddr::V4(v4));
             }
             v6.is_loopback()
@@ -2638,8 +2642,8 @@ mod api_key_tests {
 
 #[cfg(test)]
 mod ssrf_tests {
-    use super::{build_pinned_client, resolve_and_validate, ValidatedTarget};
-    use std::net::SocketAddr;
+    use super::{build_pinned_client, is_disallowed_ip, resolve_and_validate, ValidatedTarget};
+    use std::net::{IpAddr, SocketAddr};
 
     /// Minimal HTTP/1.1 server that answers every connection with `200 ok`.
     /// Returns the address it is listening on (always 127.0.0.1:<ephemeral>).
@@ -2689,6 +2693,17 @@ mod ssrf_tests {
         assert_eq!(resp.text().await.unwrap(), "ok");
     }
 
+    #[test]
+    fn ipv4_compatible_private_and_metadata_are_disallowed() {
+        for s in ["::192.168.1.1", "::169.254.169.254", "::c0a8:1"] {
+            let ip: IpAddr = s.parse().expect(s);
+            assert!(
+                is_disallowed_ip(&ip),
+                "{s} encodes a private/metadata IPv4 and must be refused"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn literal_private_and_metadata_ips_are_refused() {
         for url in [
@@ -2702,6 +2717,8 @@ mod ssrf_tests {
             "http://[fd00::1]/",  // IPv6 ULA
             "http://0.0.0.0/",
             "http://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
+            "http://[::192.168.1.1]/",    // IPv4-compatible private
+            "http://[::169.254.169.254]/", // IPv4-compatible cloud metadata
         ] {
             let err = resolve_and_validate(url)
                 .await
@@ -4849,6 +4866,17 @@ pub async fn get_link_preview_metadata(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "Only HTTP/HTTPS URLs supported"})),
+        )
+            .into_response();
+    }
+
+    // Same policy as create / health-check / avatar proxy: raw IPs, internal
+    // hostnames, dangerous extensions, and length limits must apply before any
+    // server-side fetch.
+    if let Err(msg) = validate_url(&payload.url) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": msg})),
         )
             .into_response();
     }
