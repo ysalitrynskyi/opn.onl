@@ -7,7 +7,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -252,6 +252,27 @@ fn parse_ip(token: &str) -> Option<String> {
     token.trim().parse::<IpAddr>().ok().map(|ip| ip.to_string())
 }
 
+/// Collapse a client IP into a rate-limit bucket key.
+///
+/// IPv6 interface IDs are not a client identity: a typical assignment is a
+/// whole /64, so keying the full address lets one subscriber mint unlimited
+/// buckets. IPv4-mapped IPv6 (`:ffff:x.x.x.x`) is keyed as IPv4 so dual-stack
+/// views of the same client share a bucket. Unparseable input is returned
+/// unchanged (the `"unknown"` fallback).
+pub fn rate_limit_bucket(ip: &str) -> String {
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.to_string(),
+        Ok(IpAddr::V6(v6)) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return v4.to_string();
+            }
+            let s = v6.segments();
+            IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0)).to_string()
+        }
+        Err(_) => ip.to_string(),
+    }
+}
+
 /// Resolve the real client IP from forwarding headers per `config`.
 ///
 /// Returns `None` when proxy headers are not trusted or no trustworthy value
@@ -300,11 +321,11 @@ pub fn client_ip_from_headers(headers: &HeaderMap) -> Option<String> {
 /// socket peer address (requires serving with `ConnectInfo<SocketAddr>`).
 pub fn extract_ip(req: &Request<Body>) -> String {
     if let Some(ip) = client_ip_from_headers(req.headers()) {
-        return ip;
+        return rate_limit_bucket(&ip);
     }
 
     if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
-        return addr.ip().to_string();
+        return rate_limit_bucket(&addr.ip().to_string());
     }
 
     "unknown".to_string()
@@ -704,6 +725,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ipv6_rate_limit_bucket_is_the_slash_64_prefix() {
+        assert_eq!(
+            rate_limit_bucket("2001:db8:1:2::1"),
+            rate_limit_bucket("2001:db8:1:2::ffff")
+        );
+        assert_eq!(rate_limit_bucket("2001:db8:1:2::1"), "2001:db8:1:2::");
+        assert_ne!(
+            rate_limit_bucket("2001:db8:1:2::1"),
+            rate_limit_bucket("2001:db8:1:3::1")
+        );
+        assert_eq!(rate_limit_bucket("203.0.113.7"), "203.0.113.7");
+        assert_eq!(
+            rate_limit_bucket("::ffff:203.0.113.7"),
+            rate_limit_bucket("203.0.113.7")
+        );
+    }
+
     /// Black-box regression tests for the client identity used by the rate
     /// limiter behind the production proxy chain (Cloudflare -> nginx ->
     /// backend, or Cloudflare tunnel -> backend directly for l.opn.onl).
@@ -819,6 +858,30 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(res.status().as_u16(), 429);
+        }
+
+        #[tokio::test]
+        async fn ipv6_interface_ids_in_one_slash_64_share_auth_bucket() {
+            let addr = spawn_test_server().await;
+            let client = reqwest::Client::new();
+
+            for i in 1..=4u16 {
+                let res = client
+                    .post(format!("http://{addr}/auth/login"))
+                    .header("cf-connecting-ip", format!("2001:db8:1:2::{i}"))
+                    .send()
+                    .await
+                    .unwrap();
+                if i <= 2 {
+                    assert_eq!(res.status().as_u16(), 200, "request {i} should be allowed");
+                } else {
+                    assert_eq!(
+                        res.status().as_u16(),
+                        429,
+                        "request {i}: rotating IPv6 interface IDs in one /64 must share the auth bucket"
+                    );
+                }
+            }
         }
     }
 }
