@@ -394,15 +394,87 @@ pub async fn register_finish(
     (StatusCode::OK, "Passkey registered").into_response()
 }
 
+/// HMAC-SHA256 used to mint a deterministic decoy credential id so unknown
+/// usernames cannot be distinguished from real ones by watching the allow-list
+/// change between requests.
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    const BLOCK: usize = 64;
+    let mut key_block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        let hashed = Sha256::digest(key);
+        key_block[..hashed.len()].copy_from_slice(&hashed);
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; BLOCK];
+    let mut opad = [0x5cu8; BLOCK];
+    for i in 0..BLOCK {
+        ipad[i] ^= key_block[i];
+        opad[i] ^= key_block[i];
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner_hash);
+    outer.finalize().into()
+}
+
+fn decoy_login_challenge(username: &str) -> RequestChallengeResponse {
+    use base64::Engine as _;
+    use rand::RngCore;
+
+    let secret = std::env::var("JWT_SECRET").unwrap_or_default();
+    let cred_id = hmac_sha256(secret.as_bytes(), username.as_bytes());
+    let mut challenge = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut challenge);
+
+    let rp_id = std::env::var("FRONTEND_URL")
+        .ok()
+        .and_then(|url| Url::parse(&url).ok())
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "localhost".to_string());
+
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+
+    serde_json::from_value(serde_json::json!({
+        "publicKey": {
+            "challenge": b64(&challenge),
+            "timeout": 60000,
+            "rpId": rp_id,
+            "allowCredentials": [{
+                "type": "public-key",
+                "id": b64(&cred_id),
+            }],
+            "userVerification": "required"
+        }
+    }))
+    .expect("decoy WebAuthn challenge")
+}
+
+fn decoy_login_start(username: &str) -> axum::response::Response {
+    (
+        StatusCode::OK,
+        Json(LoginStartResponse {
+            options: decoy_login_challenge(username),
+        }),
+    )
+        .into_response()
+}
+
 /// Begin passkey login. Returns a WebAuthn `RequestChallengeResponse`.
+/// Unknown users, disabled users, and users without passkeys receive the same
+/// 200 challenge shape as a real account; pending state is stored only when
+/// the account exists and has parseable passkeys.
 #[utoipa::path(
     post,
     path = "/auth/passkey/login/start",
     responses(
         (status = 200, description = "WebAuthn assertion challenge"),
-        (status = 400, description = "User has no registered passkeys"),
         (status = 403, description = "Passkeys are disabled on this instance"),
-        (status = 404, description = "User not found"),
     ),
     tag = "Authentication"
 )]
@@ -422,7 +494,7 @@ pub async fn login_start(
         .await
         .is_err()
     {
-        return (StatusCode::NOT_FOUND, "User not found").into_response();
+        return decoy_login_start(&username);
     }
 
     let user = users::Entity::find()
@@ -433,34 +505,23 @@ pub async fn login_start(
         .await
         .unwrap_or(None);
 
-    let user = match user {
-        Some(u) => u,
-        None => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+    let Some(user) = user else {
+        return decoy_login_start(&username);
     };
 
-    // Fetch user's passkeys from DB
     let db_passkeys = passkeys::Entity::find()
         .filter(passkeys::Column::UserId.eq(user.id))
         .all(&state.db)
         .await
         .unwrap_or(vec![]);
 
-    if db_passkeys.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "No passkeys registered for this user",
-        )
-            .into_response();
-    }
-
-    // Convert DB models to webauthn-rs Passkey structs by deserializing
     let allow_credentials: Vec<Passkey> = db_passkeys
         .iter()
         .filter_map(|pk| serde_json::from_str(&pk.cred_public_key).ok())
         .collect();
 
     if allow_credentials.is_empty() {
-        return (StatusCode::BAD_REQUEST, "Failed to parse stored passkeys").into_response();
+        return decoy_login_start(&username);
     }
 
     let webauthn = get_webauthn();

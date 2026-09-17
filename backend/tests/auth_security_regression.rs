@@ -5,6 +5,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{api_keys, passkeys, users};
+use opn_onl_backend::handlers::auth::hash_secret_token;
 use opn_onl_backend::handlers::links::hash_api_key;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -271,6 +272,19 @@ async fn self_delete_revokes_sessions_and_credentials() {
 
     let (server, db) = spawn_real_app().await;
     let (jwt, user_id) = register(&server, &unique_email()).await;
+    // First-user bootstrap may grant admin on an empty table; last-admin
+    // protection would then refuse this delete. This test is about credential
+    // revocation, not admin tenure.
+    let registered = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    if registered.is_admin {
+        let mut active: users::ActiveModel = registered.into();
+        active.is_admin = Set(false);
+        active.update(&db).await.expect("demote bootstrap admin");
+    }
     mark_email_verified(&db, user_id).await;
     let api_key = seed_credentials(&db, user_id).await;
     let original_version = users::Entity::find_by_id(user_id)
@@ -404,4 +418,322 @@ async fn password_change_consumes_outstanding_reset_token() {
         .unwrap();
     assert!(user.password_reset_token.is_none());
     assert!(user.password_reset_expires.is_none());
+}
+
+#[tokio::test]
+async fn a_non_last_admin_can_self_delete() {
+    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let (server, db) = spawn_real_app().await;
+
+    let (jwt_a, user_a) = register(&server, &unique_email()).await;
+    promote_directly(&db, user_a).await;
+    let (_jwt_b, user_b) = register(&server, &unique_email()).await;
+    promote_directly(&db, user_b).await;
+
+    let res = server
+        .post("/auth/delete-account")
+        .authorization_bearer(&jwt_a)
+        .json(&json!({ "password": "password123" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        200,
+        "non-last admin must still be able to leave: {}",
+        res.text()
+    );
+
+    let deleted = users::Entity::find_by_id(user_a)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(deleted.deleted_at.is_some());
+    let remaining = users::Entity::find_by_id(user_b)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(remaining.deleted_at.is_none());
+    assert!(remaining.is_admin);
+}
+
+#[tokio::test]
+async fn last_remaining_admin_cannot_self_delete() {
+    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let (server, db) = spawn_real_app().await;
+
+    let (jwt, user_id) = register(&server, &unique_email()).await;
+    promote_directly(&db, user_id).await;
+
+    let other_admins = users::Entity::find()
+        .filter(users::Column::IsAdmin.eq(true))
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::Id.ne(user_id))
+        .count(&db)
+        .await
+        .expect("count other admins");
+
+    let res = server
+        .post("/auth/delete-account")
+        .authorization_bearer(&jwt)
+        .json(&json!({ "password": "password123" }))
+        .await;
+
+    if other_admins == 0 {
+        assert_eq!(
+            res.status_code(),
+            409,
+            "last admin must be refused: {}",
+            res.text()
+        );
+        assert!(
+            res.text().contains("last remaining admin"),
+            "last admin body: {}",
+            res.text()
+        );
+        let still = users::Entity::find_by_id(user_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(still.deleted_at.is_none());
+        assert!(still.is_admin);
+    } else {
+        assert_eq!(
+            res.status_code(),
+            200,
+            "non-last admin may leave: {}",
+            res.text()
+        );
+        let remaining = users::Entity::find()
+            .filter(users::Column::IsAdmin.eq(true))
+            .filter(users::Column::DeletedAt.is_null())
+            .count(&db)
+            .await
+            .expect("count remaining admins");
+        assert!(
+            remaining >= 1,
+            "self-delete must not leave the instance without an admin"
+        );
+    }
+}
+
+#[tokio::test]
+async fn forgot_password_does_not_enumerate_accounts() {
+    let (server, db) = spawn_real_app().await;
+
+    let known_email = unique_email();
+    register(&server, &known_email).await;
+    let unknown_email = unique_email();
+
+    let post = |email: &str| {
+        server
+            .post("/auth/forgot-password")
+            .json(&json!({ "email": email }))
+    };
+
+    let known = post(&known_email).await;
+    let unknown = post(&unknown_email).await;
+
+    assert_eq!(known.status_code(), 200, "known: {}", known.text());
+    assert!(
+        known.text().contains("If account exists"),
+        "generic body: {}",
+        known.text()
+    );
+    assert_eq!(
+        (unknown.status_code(), unknown.text()),
+        (known.status_code(), known.text()),
+        "unknown vs known must be indistinguishable"
+    );
+
+    let stored = users::Entity::find()
+        .filter(users::Column::Email.eq(&known_email))
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_reset_token
+        .expect("known account must receive a reset token");
+    assert_eq!(stored.len(), 64);
+    assert!(
+        stored.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "reset token must be sha256 hex, got {stored}"
+    );
+}
+
+#[tokio::test]
+async fn verification_and_reset_tokens_are_stored_hashed() {
+    let (server, db) = spawn_real_app().await;
+    let email = unique_email();
+    let (_, user_id) = register(&server, &email).await;
+
+    let stored = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .verification_token
+        .expect("register must store a verification token");
+    assert_eq!(stored.len(), 64);
+    assert!(
+        stored.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "verification_token must be sha256 hex, got {stored}"
+    );
+
+    let raw_verify = format!("verify-{}", uuid::Uuid::new_v4());
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: users::ActiveModel = user.into();
+    active.verification_token = Set(Some(hash_secret_token(&raw_verify)));
+    active.verification_token_expires = Set(Some(
+        (chrono::Utc::now() + chrono::Duration::hours(24)).naive_utc(),
+    ));
+    active.update(&db).await.expect("seed hashed verification token");
+
+    let stored_hash = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .verification_token
+        .unwrap();
+    let steal = server
+        .post("/auth/verify-email")
+        .json(&json!({ "token": stored_hash }))
+        .await;
+    assert_eq!(
+        steal.status_code(),
+        400,
+        "presenting the stored digest must not verify: {}",
+        steal.text()
+    );
+
+    let ok = server
+        .post("/auth/verify-email")
+        .json(&json!({ "token": raw_verify }))
+        .await;
+    assert_eq!(ok.status_code(), 200, "raw token must verify: {}", ok.text());
+    let verified = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(verified.email_verified);
+    assert!(verified.verification_token.is_none());
+
+    let raw_reset = format!("reset-{}", uuid::Uuid::new_v4());
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: users::ActiveModel = user.into();
+    active.password_reset_token = Set(Some(hash_secret_token(&raw_reset)));
+    active.password_reset_expires = Set(Some(
+        (chrono::Utc::now() + chrono::Duration::hours(1)).naive_utc(),
+    ));
+    active.update(&db).await.expect("seed hashed reset token");
+
+    let stored_reset = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_reset_token
+        .unwrap();
+    let steal = server
+        .post("/auth/reset-password")
+        .json(&json!({ "token": stored_reset, "password": "newpassword1" }))
+        .await;
+    assert_eq!(
+        steal.status_code(),
+        400,
+        "presenting the stored digest must not reset: {}",
+        steal.text()
+    );
+
+    let ok = server
+        .post("/auth/reset-password")
+        .json(&json!({ "token": raw_reset, "password": "newpassword1" }))
+        .await;
+    assert_eq!(ok.status_code(), 200, "raw token must reset: {}", ok.text());
+    let reset = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reset.password_reset_token.is_none());
+}
+
+#[tokio::test]
+async fn second_registered_user_is_not_admin() {
+    let (server, _db) = spawn_real_app().await;
+
+    let first = server
+        .post("/auth/register")
+        .json(&json!({ "email": unique_email(), "password": "password123" }))
+        .await;
+    assert_eq!(first.status_code(), 201, "first register: {}", first.text());
+
+    let second = server
+        .post("/auth/register")
+        .json(&json!({ "email": unique_email(), "password": "password123" }))
+        .await;
+    assert_eq!(
+        second.status_code(),
+        201,
+        "second register: {}",
+        second.text()
+    );
+    let body: Value = second.json();
+    assert_eq!(
+        body["is_admin"].as_bool(),
+        Some(false),
+        "a later registrant must not be granted admin: {body}"
+    );
+}
+
+#[tokio::test]
+async fn resend_verification_does_not_enumerate_accounts() {
+    let (server, db) = spawn_real_app().await;
+
+    let unverified_email = unique_email();
+    register(&server, &unverified_email).await;
+
+    let verified_email = unique_email();
+    let (_, verified_id) = register(&server, &verified_email).await;
+    mark_email_verified(&db, verified_id).await;
+
+    let unknown_email = unique_email();
+
+    let post = |email: &str| {
+        server
+            .post("/auth/resend-verification")
+            .json(&json!({ "email": email }))
+    };
+
+    let unverified = post(&unverified_email).await;
+    let verified = post(&verified_email).await;
+    let unknown = post(&unknown_email).await;
+
+    assert_eq!(unverified.status_code(), 200, "{}", unverified.text());
+    assert!(
+        unverified.text().contains("If account exists"),
+        "generic body: {}",
+        unverified.text()
+    );
+    assert_eq!(
+        (verified.status_code(), verified.text()),
+        (unverified.status_code(), unverified.text()),
+        "verified vs unverified must be indistinguishable"
+    );
+    assert_eq!(
+        (unknown.status_code(), unknown.text()),
+        (unverified.status_code(), unverified.text()),
+        "unknown vs unverified must be indistinguishable"
+    );
 }

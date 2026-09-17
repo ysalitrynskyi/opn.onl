@@ -121,24 +121,65 @@ pub async fn register(
     let verification_token = generate_token();
     let verification_expires = Utc::now() + Duration::hours(24);
 
-    // Check if this is the first user - make them admin
-    let user_count = users::Entity::find().count(&state.db).await.unwrap_or(0);
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    // Only a truly empty live table bootstraps admin. A failed COUNT must not
+    // be treated as zero — that would promote a later registrant. Soft-deleted
+    // rows do not occupy the seat: after the last live user is gone, the next
+    // signup is once again first.
+    let user_count = match users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .count(&txn)
+        .await
+    {
+        Ok(count) => count,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
     let is_first_user = user_count == 0;
 
     let new_user = users::ActiveModel {
         email: Set(email.clone()),
         password_hash: Set(hashed_password),
         email_verified: Set(false),
-        verification_token: Set(Some(verification_token.clone())),
+        verification_token: Set(Some(hash_secret_token(&verification_token))),
         verification_token_expires: Set(Some(verification_expires.naive_utc())),
-        is_admin: Set(is_first_user), // First user is automatically admin
+        is_admin: Set(is_first_user),
         ..Default::default()
     };
 
-    let result = users::Entity::insert(new_user).exec(&state.db).await;
+    let result = users::Entity::insert(new_user).exec(&txn).await;
 
     match result {
         Ok(user_res) => {
+            if txn.commit().await.is_err() {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Database error".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             // Send verification email if email service is configured
             if let Some(email_service) = &state.email_service {
                 if email_service.is_configured() {
@@ -177,6 +218,7 @@ pub async fn register(
                 .into_response()
         }
         Err(DbErr::Query(err)) => {
+            let _ = txn.rollback().await;
             if err.to_string().contains("duplicate key value") {
                 (
                     StatusCode::CONFLICT,
@@ -195,13 +237,16 @@ pub async fn register(
                     .into_response()
             }
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Database error".to_string(),
-            }),
-        )
-            .into_response(),
+        Err(_) => {
+            let _ = txn.rollback().await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -285,6 +330,14 @@ pub async fn login(
         .into_response()
 }
 
+/// SHA-256 hex of an email verification or password-reset secret. The raw
+/// token is mailed to the user; only this digest is stored, so a database
+/// dump cannot be replayed against `/auth/verify-email` or `/auth/reset-password`.
+pub fn hash_secret_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
 /// A lazily-computed bcrypt hash used to equalize login timing when the account
 /// does not exist, mitigating user enumeration via response time.
 fn dummy_password_hash() -> &'static str {
@@ -310,7 +363,7 @@ pub async fn verify_email(
     Json(payload): Json<VerifyEmailRequest>,
 ) -> impl IntoResponse {
     let user = users::Entity::find()
-        .filter(users::Column::VerificationToken.eq(&payload.token))
+        .filter(users::Column::VerificationToken.eq(hash_secret_token(&payload.token)))
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
@@ -393,8 +446,8 @@ pub async fn verify_email(
     path = "/auth/resend-verification",
     request_body = ResendVerificationRequest,
     responses(
-        (status = 200, description = "Verification email sent", body = MessageResponse),
-        (status = 400, description = "Email already verified or not found"),
+        (status = 200, description = "Verification email sent if an unverified account exists", body = MessageResponse),
+        (status = 400, description = "Email domain is not allowed"),
     ),
     tag = "Authentication"
 )]
@@ -421,57 +474,34 @@ pub async fn resend_verification(
         .await
         .unwrap_or(None);
 
+    // Always the same 200 body, including on verified / unknown / update
+    // failure: distinct status codes here enumerate live accounts.
     if let Some(user) = user {
-        if user.email_verified {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Email already verified".to_string(),
-                }),
-            )
-                .into_response();
-        }
+        if !user.email_verified {
+            let verification_token = generate_token();
+            let verification_expires = Utc::now() + Duration::hours(24);
 
-        // Generate new token
-        let verification_token = generate_token();
-        let verification_expires = Utc::now() + Duration::hours(24);
+            let mut active_user: users::ActiveModel = user.clone().into();
+            active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
+            active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
-        let mut active_user: users::ActiveModel = user.clone().into();
-        active_user.verification_token = Set(Some(verification_token.clone()));
-        active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
-
-        if active_user.update(&state.db).await.is_err() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to generate token".to_string(),
-                }),
-            )
-                .into_response();
-        }
-
-        // Send verification email
-        if let Some(email_service) = &state.email_service {
-            if email_service.is_configured() {
-                if let Err(e) = email_service
-                    .send_verification_email(&user.email, &verification_token)
-                    .await
-                {
-                    tracing::error!("Failed to send verification email: {}", e);
+            if active_user.update(&state.db).await.is_ok() {
+                if let Some(email_service) = &state.email_service {
+                    if email_service.is_configured() {
+                        if let Err(e) = email_service
+                            .send_verification_email(&user.email, &verification_token)
+                            .await
+                        {
+                            tracing::error!("Failed to send verification email: {}", e);
+                        }
+                    }
                 }
+            } else {
+                tracing::error!("Failed to generate verification token");
             }
         }
-
-        return (
-            StatusCode::OK,
-            Json(MessageResponse {
-                message: "Verification email sent".to_string(),
-            }),
-        )
-            .into_response();
     }
 
-    // Don't reveal if email exists
     (
         StatusCode::OK,
         Json(MessageResponse {
@@ -496,10 +526,17 @@ pub async fn forgot_password(
     Json(payload): Json<ForgotPasswordRequest>,
 ) -> impl IntoResponse {
     let email = normalize_email(&payload.email);
+    // Same dummy bcrypt as login, paid on every path so a miss is not a
+    // cheap SELECT while a hit pays for UPDATE (and SMTP when configured).
+    let equalize_work = || {
+        let _ = verify_password("not-a-real-password", dummy_password_hash());
+    };
+
     if ensure_email_domain_allowed(&state.db, &email)
         .await
         .is_err()
     {
+        equalize_work();
         return (
             StatusCode::OK,
             Json(MessageResponse {
@@ -517,38 +554,32 @@ pub async fn forgot_password(
         .await
         .unwrap_or(None);
 
+    equalize_work();
+
     if let Some(user) = user {
         let reset_token = generate_token();
         let reset_expires = Utc::now() + Duration::hours(1);
 
         let mut active_user: users::ActiveModel = user.clone().into();
-        active_user.password_reset_token = Set(Some(reset_token.clone()));
+        active_user.password_reset_token = Set(Some(hash_secret_token(&reset_token)));
         active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
-        if active_user.update(&state.db).await.is_err() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to generate token".to_string(),
-                }),
-            )
-                .into_response();
-        }
-
-        // Send password reset email
-        if let Some(email_service) = &state.email_service {
-            if email_service.is_configured() {
-                if let Err(e) = email_service
-                    .send_password_reset_email(&user.email, &reset_token)
-                    .await
-                {
-                    tracing::error!("Failed to send password reset email: {}", e);
+        if active_user.update(&state.db).await.is_ok() {
+            if let Some(email_service) = &state.email_service {
+                if email_service.is_configured() {
+                    if let Err(e) = email_service
+                        .send_password_reset_email(&user.email, &reset_token)
+                        .await
+                    {
+                        tracing::error!("Failed to send password reset email: {}", e);
+                    }
                 }
             }
+        } else {
+            tracing::error!("Failed to generate password reset token");
         }
     }
 
-    // Always return success to prevent email enumeration
     (
         StatusCode::OK,
         Json(MessageResponse {
@@ -596,7 +627,7 @@ pub async fn reset_password(
         }
     };
     let user = users::Entity::find()
-        .filter(users::Column::PasswordResetToken.eq(&payload.token))
+        .filter(users::Column::PasswordResetToken.eq(hash_secret_token(&payload.token)))
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::DisabledAt.is_null())
         .lock_exclusive()
@@ -1031,6 +1062,39 @@ pub async fn delete_account(
                 }),
             )
                 .into_response();
+        }
+
+        // Refusing the last live admin avoids a window with no admin until
+        // process restart (`ensure_admin_exists` runs only at boot).
+        if user.is_admin {
+            let live_admins = match users::Entity::find()
+                .filter(users::Column::IsAdmin.eq(true))
+                .filter(users::Column::DeletedAt.is_null())
+                .count(&txn)
+                .await
+            {
+                Ok(count) => count,
+                Err(_) => {
+                    let _ = txn.rollback().await;
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to delete account".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            if live_admins <= 1 {
+                let _ = txn.rollback().await;
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Cannot delete the last remaining admin".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
         }
 
         // An org owner cannot delete their account while the org still has
