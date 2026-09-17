@@ -547,3 +547,40 @@ async fn self_delete_revokes_credentials_and_preserves_org_links() {
         0
     );
 }
+
+#[tokio::test]
+async fn invite_member_looks_up_normalized_email() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let local = format!("User_{}", uuid::Uuid::new_v4().simple());
+    let res = server
+        .post("/auth/register")
+        .json(&json!({
+            "email": format!("{local}@Users.OPN.ONL"),
+            "password": "password123",
+        }))
+        .await;
+    assert_eq!(res.status_code(), 201, "register: {}", res.text());
+    let invitee_id = res.json::<Value>()["user_id"].as_i64().unwrap() as i32;
+    mark_email_verified(&db, invitee_id).await;
+
+    let org_id = create_org(&server, &owner_token).await;
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({
+            "email": format!(" {local}@USERS.opn.onl "),
+            "role": "viewer",
+        }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        201,
+        "invite must match the stored normalized email: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["user_id"].as_i64().unwrap() as i32,
+        invitee_id
+    );
+}

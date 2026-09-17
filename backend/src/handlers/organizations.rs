@@ -13,6 +13,7 @@ use utoipa::ToSchema;
 use crate::entity::{
     audit_log, click_events, folders, link_tags, links, org_members, organizations, tags, users,
 };
+use crate::utils::email_domain_policy::normalize_email;
 use crate::AppState;
 
 // ============= DTOs =============
@@ -789,9 +790,11 @@ pub async fn invite_member(
         ));
     }
 
-    // Find user by email
+    // Find user by email. Registration stores normalize_email (trimmed, domain
+    // lowercased), so the invite lookup must use the same form or a real user 404s.
+    let email = normalize_email(&payload.email);
     let invite_user = users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.email))
+        .filter(users::Column::Email.eq(&email))
         .one(&state.db)
         .await
         .map_err(|_| {
