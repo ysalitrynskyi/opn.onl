@@ -490,12 +490,14 @@ export default function Admin() {
     );
 
     const blockDomain = () => {
-        if (!newBlockedDomain.trim()) return;
+        const domain = newBlockedDomain.trim();
+        if (!domain) return;
+        if (!confirm(`Block ${domain}? All existing and future links to this host stop working.`)) return;
         doAction(
             () => authFetch(API_ENDPOINTS.adminBlockedDomains, {
                 method: 'POST',
                 body: JSON.stringify({
-                    domain: newBlockedDomain.trim(),
+                    domain,
                     reason: newBlockedDomainReason.trim() || null,
                 }),
             }),
@@ -515,12 +517,14 @@ export default function Admin() {
     );
 
     const blockEmailDomain = () => {
-        if (!newBlockedEmailDomain.trim()) return;
+        const domain = newBlockedEmailDomain.trim();
+        if (!domain) return;
+        if (!confirm(`Block ${domain}? Rejects future signups/resets for this email domain and disables existing matching users without deleting their data.`)) return;
         doAction(
             () => authFetch(API_ENDPOINTS.adminBlockedEmailDomains, {
                 method: 'POST',
                 body: JSON.stringify({
-                    domain: newBlockedEmailDomain.trim(),
+                    domain,
                     reason: newBlockedEmailDomainReason.trim() || null,
                 }),
             }),

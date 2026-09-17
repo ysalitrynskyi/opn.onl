@@ -481,7 +481,50 @@ describe('Admin Page', () => {
             expect(domainInput).toHaveValue('evil.com');
         });
 
+        it('confirms before blocking a destination domain', async () => {
+            const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/malicious-domain/i);
+            fireEvent.change(domainInput, { target: { value: 'evil.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[1]);
+
+            expect(confirmSpy).toHaveBeenCalledWith(
+                expect.stringMatching(/block evil\.com\?.*all existing and future links to this host stop working/i),
+            );
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/blocked/domains'),
+                    expect.objectContaining({ method: 'POST' }),
+                );
+            });
+        });
+
+        it('does not POST when destination-domain block is cancelled', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(false);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/malicious-domain/i);
+            fireEvent.change(domainInput, { target: { value: 'evil.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[1]);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalled();
+            });
+            expect(global.fetch).not.toHaveBeenCalledWith(
+                expect.stringContaining('/admin/blocked/domains'),
+                expect.objectContaining({ method: 'POST' }),
+            );
+        });
+
         it('can add blocked email domain', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
             render(<Admin />);
             await openBlockedTab();
 
@@ -497,6 +540,48 @@ describe('Admin Page', () => {
                     expect.objectContaining({ method: 'POST' })
                 );
             });
+        });
+
+        it('confirms before blocking an email domain, including the disable warning', async () => {
+            const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/throwaway-mail/i);
+            fireEvent.change(domainInput, { target: { value: 'gmail.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[2]);
+
+            expect(confirmSpy).toHaveBeenCalledWith(
+                expect.stringMatching(/block gmail\.com\?.*disables existing matching users/i),
+            );
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/blocked/email-domains'),
+                    expect.objectContaining({ method: 'POST' }),
+                );
+            });
+        });
+
+        it('does not POST when email-domain block is cancelled', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(false);
+            render(<Admin />);
+            await openBlockedTab();
+
+            const domainInput = await screen.findByPlaceholderText(/throwaway-mail/i);
+            fireEvent.change(domainInput, { target: { value: 'gmail.com' } });
+
+            const blockBtns = screen.getAllByRole('button', { name: /^block$/i });
+            fireEvent.click(blockBtns[2]);
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalled();
+            });
+            expect(global.fetch).not.toHaveBeenCalledWith(
+                expect.stringContaining('/admin/blocked/email-domains'),
+                expect.objectContaining({ method: 'POST' }),
+            );
         });
 
         it('displays existing blocked URLs', async () => {
