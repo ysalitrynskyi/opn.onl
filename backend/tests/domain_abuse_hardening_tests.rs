@@ -296,13 +296,20 @@ async fn email_domain_blocks_reject_registration_and_disable_existing_users_with
             .status_code(),
         401
     );
+    let passkey_start = server
+        .post("/auth/passkey/login/start")
+        .json(&json!({ "username": &user_email }))
+        .await;
     assert_eq!(
-        server
-            .post("/auth/passkey/login/start")
-            .json(&json!({ "username": &user_email }))
-            .await
-            .status_code(),
-        404
+        passkey_start.status_code(),
+        200,
+        "disabled-domain passkey start must not enumerate: {}",
+        passkey_start.text()
+    );
+    let passkey_body: Value = passkey_start.json();
+    assert!(
+        passkey_body["options"]["publicKey"]["challenge"].is_string(),
+        "decoy challenge: {passkey_body}"
     );
     assert_eq!(
         server
