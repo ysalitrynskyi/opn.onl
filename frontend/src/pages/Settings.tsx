@@ -474,7 +474,17 @@ export default function Settings() {
             setCreatedApiKey(data.key);
             setNewKeyName('');
             setSuccess("API key created — copy it now, it won't be shown again.");
-            await fetchData();
+            // Do not refetch: fetchData sets loading and can null profile,
+            // which unmounts this banner. The plaintext secret is shown once.
+            if (data.id != null) {
+                setApiKeys(prev => [{
+                    id: data.id,
+                    name: data.name || 'API key',
+                    key_prefix: data.key_prefix || String(data.key).slice(0, 12),
+                    last_used_at: null,
+                    created_at: data.created_at || new Date().toISOString(),
+                }, ...prev]);
+            }
         } catch (err) {
             setError(errorMessage(err));
         } finally {

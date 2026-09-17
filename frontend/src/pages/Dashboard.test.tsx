@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '../test/test-utils';
 import Dashboard from './Dashboard';
@@ -97,7 +98,11 @@ describe('Dashboard Page', () => {
       return mockFetchResponse([]) as any;
     });
 
-    render(<Dashboard />);
+    render(
+      <StrictMode>
+        <Dashboard />
+      </StrictMode>,
+    );
 
     await waitFor(() => {
       expect(screen.getByPlaceholderText(/example.com/i)).toHaveValue(
@@ -151,6 +156,25 @@ describe('Dashboard Page', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
+  });
+
+  it('uses the local calendar date as the create expiration minimum, not UTC', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(mockFetchResponse([]) as any);
+    const year = vi.spyOn(Date.prototype, 'getFullYear').mockReturnValue(2026);
+    const month = vi.spyOn(Date.prototype, 'getMonth').mockReturnValue(8);
+    const day = vi.spyOn(Date.prototype, 'getDate').mockReturnValue(17);
+    const iso = vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-09-18T03:00:00.000Z');
+
+    try {
+      const { user } = render(<Dashboard />);
+      await user.click(await screen.findByText(/advanced options/i));
+      expect(screen.getByLabelText(/^expiration$/i)).toHaveAttribute('min', '2026-09-17');
+    } finally {
+      year.mockRestore();
+      month.mockRestore();
+      day.mockRestore();
+      iso.mockRestore();
+    }
   });
 
   it('shows advanced options when toggled', async () => {
@@ -354,6 +378,7 @@ describe('Dashboard Page', () => {
     });
     expect(screen.queryAllByText(/aaa111/i)).toHaveLength(0);
     expect(screen.getAllByText(/bbb222/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/ccc333/i).length).toBeGreaterThan(0);
   });
 
   it('fetches sparklines in bounded id batches', async () => {
@@ -387,6 +412,64 @@ describe('Dashboard Page', () => {
         expect(ids.length).toBeLessThanOrEqual(80);
       }
     });
+  });
+
+  it('keeps cached sparklines when a later batch fails', async () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({
+      ...mockLink,
+      id: i + 1,
+      code: `c${String(i + 1).padStart(3, '0')}`,
+      created_at: new Date(Date.UTC(2024, 0, 1, 0, 0, i)).toISOString(),
+      is_active: true,
+      is_pinned: false,
+    }));
+    let sparkCalls = 0;
+    vi.mocked(global.fetch).mockImplementation((url, options) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/auth/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 50,
+        }) as any;
+      }
+      if (requestUrl.includes('/links/sparklines')) {
+        sparkCalls += 1;
+        const ids = new URL(requestUrl).searchParams.get('ids')?.split(',') ?? [];
+        const firstId = Number(ids[0]);
+        if (sparkCalls > 2 && firstId > 80) {
+          return mockFetchError('sparkline batch failed', 500) as any;
+        }
+        return mockFetchResponse({
+          sparklines: ids.map((id) => ({
+            link_id: Number(id),
+            data: [1, 2, 3],
+            labels: ['a', 'b', 'c'],
+          })),
+        }) as any;
+      }
+      if (options?.method === 'POST' && requestUrl.includes('/pin')) {
+        return mockFetchResponse({ is_pinned: true, message: 'Pinned' }) as any;
+      }
+      if (requestUrl.endsWith('/links')) {
+        return mockFetchResponse(many) as any;
+      }
+      return mockFetchResponse([]) as any;
+    });
+
+    const sparkSvgs = () => document.querySelectorAll('svg[width="70"]');
+    const { user } = render(<Dashboard />);
+    expect(await screen.findByText(/150 links/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(sparkSvgs().length).toBeGreaterThan(0);
+    });
+    const svgCountAfterLoad = sparkSvgs().length;
+
+    await user.click(screen.getAllByRole('button', { name: /^pin$/i })[0]);
+    await waitFor(() => {
+      expect(sparkCalls).toBeGreaterThan(2);
+    });
+    expect(sparkSvgs().length).toBe(svgCountAfterLoad);
   });
 
   it('shows bulk-import API errors from the errors array', async () => {
@@ -425,6 +508,24 @@ describe('Dashboard Page', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/database down/i);
     expect(screen.queryByText(/no links yet/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/create your first shortened link/i)).not.toBeInTheDocument();
+  });
+
+  it('does not clear search when Escape closes the edit modal', async () => {
+    mockDashboardFetch(() => mockFetchResponse([linkA, linkB]));
+    const { user } = render(<Dashboard />);
+    const search = await screen.findByPlaceholderText(/search links/i);
+    await user.type(search, 'aaa111');
+    expect(search).toHaveValue('aaa111');
+
+    await user.click(screen.getAllByRole('button', { name: /edit link/i })[0]);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(screen.getByPlaceholderText(/search links/i)).toHaveValue('aaa111');
   });
 
   it('keeps both pin updates when two pins finish out of order', async () => {

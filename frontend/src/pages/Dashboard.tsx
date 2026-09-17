@@ -23,6 +23,7 @@ import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
 import { takePendingUrl } from '../utils/pendingUrl';
+import { localIsoDate } from '../utils/localIsoDate';
 
 interface AppSettings {
     custom_aliases_enabled: boolean;
@@ -82,6 +83,9 @@ export default function Dashboard() {
     const navigate = useNavigate();
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
+    // IDs removed locally while a fetchLinks was in flight. Stale responses
+    // must not fold these back in when they merge newly created rows.
+    const droppedLinkIds = useRef(new Set<number>());
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -160,9 +164,12 @@ export default function Dashboard() {
         {
             key: 'Escape',
             handler: () => {
-                setEditingLink(null);
-                setQrLink(null);
-                setShareLink(null);
+                if (editingLink || qrLink || shareLink) {
+                    setEditingLink(null);
+                    setQrLink(null);
+                    setShareLink(null);
+                    return;
+                }
                 setSearchQuery('');
             },
             description: 'Close modal / Clear search',
@@ -275,10 +282,22 @@ export default function Dashboard() {
         const requestId = ++linksFetchId.current;
         try {
             const res = await authFetch(API_ENDPOINTS.links);
-            if (requestId !== linksFetchId.current) return;
             if (res.ok) {
-                const data = await res.json();
-                if (requestId !== linksFetchId.current) return;
+                const data: LinkData[] = await res.json();
+                if (requestId !== linksFetchId.current) {
+                    // Delete/pin bumped the generation so this snapshot must
+                    // not replace the optimistic list (that would resurrect a
+                    // deleted row). Still fold in ids we do not have, or a
+                    // create that raced the mutation never appears.
+                    setLinks(prev => {
+                        const have = new Set(prev.map(l => l.id));
+                        const extras = data.filter(
+                            l => !have.has(l.id) && !droppedLinkIds.current.has(l.id),
+                        );
+                        return extras.length === 0 ? prev : [...extras, ...prev];
+                    });
+                    return;
+                }
                 setLinks(data);
             } else {
                 const data = await res.json().catch(() => null) as { error?: string } | null;
@@ -316,7 +335,10 @@ export default function Dashboard() {
                 }
             }
             if (requestId !== sparklineFetchId.current) return;
-            setSparklineData(merged);
+            // A failed batch is skipped above, so `merged` can be a subset.
+            // Fold into the previous cache instead of replacing it, or a
+            // later batch failure wipes sparklines we already had.
+            setSparklineData(prev => ({ ...prev, ...merged }));
         } catch (error) {
             if (requestId !== sparklineFetchId.current) return;
             logger.error('Failed to fetch sparklines', error);
@@ -416,6 +438,7 @@ export default function Dashboard() {
             if (res.ok) {
                 // Drop any in-flight fetchLinks so it cannot write a snapshot
                 // that still contains this id over the optimistic list.
+                droppedLinkIds.current.add(id);
                 linksFetchId.current += 1;
                 setLinks(prev => prev.filter(l => l.id !== id));
             } else {
@@ -883,7 +906,7 @@ export default function Dashboard() {
                                                     className="flex-1 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                                                     value={expiresAt}
                                                     onChange={(e) => setExpiresAt(e.target.value)}
-                                                    min={new Date().toISOString().split('T')[0]}
+                                                    min={localIsoDate()}
                                                 />
                                                 <input
                                                     type="time"
@@ -1143,6 +1166,7 @@ export default function Dashboard() {
                                             </button>
                                             <button
                                                 onClick={() => setEditingLink(link)}
+                                                data-edit-link={link.id}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Edit"
                                                 aria-label="Edit link"

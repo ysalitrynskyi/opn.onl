@@ -544,6 +544,56 @@ describe('Settings Page', () => {
             expect(screen.getByText('opn_secret_one_time')).toBeInTheDocument();
         });
 
+        it('keeps the one-time API secret when the following profile fetch fails', async () => {
+            let meCalls = 0;
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                if (url.includes('/auth/me')) {
+                    meCalls += 1;
+                    if (meCalls === 1) {
+                        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                    }
+                    return Promise.resolve({
+                        ok: false,
+                        status: 500,
+                        json: () => Promise.resolve({ error: 'profile down' }),
+                    });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys') && options?.method === 'POST') {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({
+                            id: 8,
+                            name: 'First',
+                            key: 'opn_secret_survives',
+                            key_prefix: 'opn_secret_s',
+                            created_at: '2024-01-02T00:00:00Z',
+                        }),
+                    });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(keys) });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+
+            render(<Settings />);
+            const nameInput = await screen.findByPlaceholderText(/key name/i);
+            fireEvent.change(nameInput, { target: { value: 'First' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            await waitFor(() => {
+                expect(screen.getByRole('button', { name: /create key/i })).not.toBeDisabled();
+            });
+            expect(screen.getByText('opn_secret_survives')).toBeInTheDocument();
+            expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+        });
+
         it('does not revoke an API key when confirm is cancelled', async () => {
             mockWithKeys();
             vi.spyOn(window, 'confirm').mockReturnValue(false);

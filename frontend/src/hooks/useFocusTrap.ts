@@ -55,7 +55,9 @@ export function useFocusTrap(containerRef: RefObject<HTMLElement | null>) {
         document.addEventListener('keydown', onKeyDown);
         return () => {
             document.removeEventListener('keydown', onKeyDown);
-            previouslyFocused?.focus();
+            if (previouslyFocused?.isConnected) {
+                previouslyFocused.focus();
+            }
         };
     }, [containerRef]);
 }
