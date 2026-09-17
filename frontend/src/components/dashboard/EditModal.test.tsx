@@ -83,6 +83,30 @@ describe('EditModal', () => {
         expect(onSave.mock.calls[0][1].expires_at).toBe('2031-06-20T00:00:00.000Z');
     });
 
+    it('uses the local calendar date as the expiration minimum, not UTC', () => {
+        const year = vi.spyOn(Date.prototype, 'getFullYear').mockReturnValue(2026);
+        const month = vi.spyOn(Date.prototype, 'getMonth').mockReturnValue(8);
+        const day = vi.spyOn(Date.prototype, 'getDate').mockReturnValue(17);
+        const iso = vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-09-18T03:00:00.000Z');
+
+        try {
+            render(
+                <EditModal
+                    link={baseLink}
+                    onClose={vi.fn()}
+                    onSave={vi.fn()}
+                />
+            );
+
+            expect(screen.getByLabelText(/^expiration date$/i)).toHaveAttribute('min', '2026-09-17');
+        } finally {
+            year.mockRestore();
+            month.mockRestore();
+            day.mockRestore();
+            iso.mockRestore();
+        }
+    });
+
     it('keeps the modal open and skips routing when the link save fails', async () => {
         vi.mocked(global.fetch).mockResolvedValue(okResponse() as Response);
         const onClose = vi.fn();
