@@ -683,7 +683,7 @@ pub struct LinkResponse {
     pub api_url: String,
     pub original_url: String,
     pub title: Option<String>,
-    pub click_count: i32,
+    pub click_count: i64,
     pub created_at: String,
     pub expires_at: Option<String>,
     pub has_password: bool,
@@ -1401,7 +1401,7 @@ pub struct LinkPreviewResponse {
     /// False when the link is not currently live (scheduled, expired, capped, or burned).
     pub is_active: bool,
     pub created_at: String,
-    pub click_count: i32,
+    pub click_count: i64,
     /// Destination reputation signal for the safe-link interstitial.
     pub reputation: ReputationInfo,
     /// Whether the instance has the safe-link interstitial feature enabled.
@@ -1703,7 +1703,7 @@ pub async fn redirect_link(
         // conditional UPDATE below (consume_capped_click), which runs once the
         // request is actually going to be served a destination.
         if let Some(max) = link.max_clicks {
-            if link.click_count + state.click_buffer.pending_count(link.id) >= max {
+            if link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max) {
                 let msg = if link.burn_after_reading {
                     "This one-time link has already been opened"
                 } else {
@@ -1947,11 +1947,11 @@ pub async fn redirect_link(
 enum ClickAccounting {
     /// Uncapped link: the click buffer owns the count — the per-link counter is
     /// incremented and added to `links.click_count` at flush.
-    Buffered { db_click_count: i32 },
+    Buffered { db_click_count: i64 },
     /// Capped (max_clicks) link: the count was already consumed atomically at
     /// the DB by `consume_capped_click`, so only the analytics event row is
     /// buffered — incrementing the counter too would double-count at flush.
-    Consumed { new_click_count: i32 },
+    Consumed { new_click_count: i64 },
 }
 
 /// Atomically consume one click slot on a capped (`max_clicks`) link.
@@ -1961,7 +1961,7 @@ enum ClickAccounting {
 /// `burned_at` is stamped in the same statement when this click exhausts a
 /// burn-after-reading link. Returns `Ok(Some(new_click_count))` when a slot
 /// was consumed, `Ok(None)` when the cap is already exhausted.
-async fn consume_capped_click(db: &DatabaseConnection, link_id: i32) -> Result<Option<i32>, DbErr> {
+async fn consume_capped_click(db: &DatabaseConnection, link_id: i32) -> Result<Option<i64>, DbErr> {
     let stmt = Statement::from_sql_and_values(
         DbBackend::Postgres,
         r#"UPDATE links
@@ -1979,7 +1979,7 @@ async fn consume_capped_click(db: &DatabaseConnection, link_id: i32) -> Result<O
         [link_id.into(), chrono::Utc::now().naive_utc().into()],
     );
     let row = db.query_one(stmt).await?;
-    row.map(|r| r.try_get::<i32>("", "click_count")).transpose()
+    row.map(|r| r.try_get::<i64>("", "click_count")).transpose()
 }
 
 /// Helper function to record a click event using the click buffer
@@ -2124,7 +2124,7 @@ pub async fn verify_link_password(
     }
 
     if let Some(max) = link.max_clicks {
-        if link.click_count + state.click_buffer.pending_count(link.id) >= max {
+        if link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max) {
             let msg = if link.burn_after_reading {
                 "This one-time link has already been opened"
             } else {

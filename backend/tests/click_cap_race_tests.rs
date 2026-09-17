@@ -215,7 +215,7 @@ async fn capped_link_never_overshoots_under_concurrency() {
 
     let stored = persisted_link(&db, &code).await;
     assert_eq!(
-        stored.click_count, MAX as i32,
+        stored.click_count, MAX as i64,
         "persisted click_count must settle at exactly max_clicks"
     );
 }

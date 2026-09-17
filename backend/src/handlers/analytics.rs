@@ -144,7 +144,7 @@ pub struct TopLink {
     pub id: i32,
     pub code: String,
     pub original_url: String,
-    pub click_count: i32,
+    pub click_count: i64,
 }
 
 // ============= Handlers =============
@@ -464,7 +464,7 @@ pub async fn get_dashboard_stats(
         .unwrap_or_default();
 
     let total_links = user_links.len() as i64;
-    let total_clicks: i64 = user_links.iter().map(|l| l.click_count as i64).sum();
+    let total_clicks: i64 = user_links.iter().map(|l| l.click_count).sum();
     let active_links = user_links.iter().filter(|l| l.is_active()).count() as i64;
 
     let link_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();

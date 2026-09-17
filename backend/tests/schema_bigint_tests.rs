@@ -45,3 +45,13 @@ async fn click_events_id_is_bigint() {
         "click_events_id_seq must be bigint, got {seq_type}"
     );
 }
+
+#[tokio::test]
+async fn links_click_count_is_bigint() {
+    let (_server, db) = common::spawn_real_app().await;
+    let data_type = column_data_type(&db, "links", "click_count").await;
+    assert_eq!(
+        data_type, "bigint",
+        "links.click_count must be bigint after m20220101_000033, got {data_type}"
+    );
+}

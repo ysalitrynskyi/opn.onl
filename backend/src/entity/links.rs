@@ -11,7 +11,7 @@ pub struct Model {
     pub original_url: String,
     pub user_id: Option<i32>,
     pub created_at: DateTime,
-    pub click_count: i32,
+    pub click_count: i64,
     pub expires_at: Option<DateTime>,
     pub password_hash: Option<String>,
     // New fields
@@ -141,7 +141,7 @@ impl Model {
 
         // Check if max clicks reached
         if let Some(max_clicks) = self.max_clicks {
-            if self.click_count >= max_clicks {
+            if self.click_count >= i64::from(max_clicks) {
                 return false;
             }
         }
@@ -159,7 +159,7 @@ impl Model {
             || (self.burn_after_reading
                 && self
                     .max_clicks
-                    .map(|m| self.click_count >= m)
+                    .map(|m| self.click_count >= i64::from(m))
                     .unwrap_or(false))
         {
             return Some("This one-time link has already been opened");
@@ -178,7 +178,7 @@ impl Model {
         }
 
         if let Some(max_clicks) = self.max_clicks {
-            if self.click_count >= max_clicks {
+            if self.click_count >= i64::from(max_clicks) {
                 return Some("Link has reached maximum clicks");
             }
         }

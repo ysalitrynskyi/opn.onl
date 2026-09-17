@@ -2474,7 +2474,7 @@ pub struct AdminLinkResponse {
     pub user_email: Option<String>,
     pub org_id: Option<i32>,
     pub folder_id: Option<i32>,
-    pub click_count: i32,
+    pub click_count: i64,
     pub max_clicks: Option<i32>,
     pub created_at: String,
     pub starts_at: Option<String>,
