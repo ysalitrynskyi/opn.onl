@@ -373,6 +373,45 @@ describe('Settings Page', () => {
             // Should handle error gracefully
         });
 
+        it('shows a retryable error instead of an empty profile when /auth/me fails', async () => {
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 500,
+                        json: () => Promise.resolve({ error: 'Server error' }),
+                    });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockAppSettings),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({}),
+                });
+            }) as any;
+
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert')).toHaveTextContent(/server error/i);
+            expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+            expect(screen.queryByText('test@example.com')).not.toBeInTheDocument();
+            expect(screen.queryByText('Total Links')).not.toBeInTheDocument();
+        });
+
+        it('shows a retryable error when the settings fetch throws', async () => {
+            global.fetch = vi.fn().mockRejectedValue(new Error('Network down'));
+
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load account settings/i);
+            expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+            expect(screen.queryByText('Total Links')).not.toBeInTheDocument();
+        });
+
         it('displays success messages', async () => {
             render(<Settings />);
             
