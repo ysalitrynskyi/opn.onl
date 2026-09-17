@@ -4,6 +4,9 @@
 mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
+use opn_onl_backend::utils::click_buffer::ClickData;
+use opn_onl_backend::utils::ClickBuffer;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::{json, Value};
 
 async fn register_verified(
@@ -90,4 +93,62 @@ async fn post_pin_does_not_consume_link_creation_budget() {
         99,
         "pin must use the general bucket, not the hourly create budget"
     );
+}
+
+fn click(link_id: i32) -> ClickData {
+    ClickData {
+        link_id,
+        ip_address: None,
+        user_agent: None,
+        referer: None,
+        country: None,
+        city: None,
+        region: None,
+        latitude: None,
+        longitude: None,
+        device: None,
+        browser: None,
+        os: None,
+    }
+}
+
+async fn create_link_id(server: &axum_test::TestServer, token: &str) -> i32 {
+    let created = server
+        .post("/links")
+        .authorization_bearer(token)
+        .json(&json!({ "original_url": "https://iana.org/click-buffer" }))
+        .await;
+    assert_eq!(created.status_code(), 201, "create: {}", created.text());
+    created.json::<Value>()["id"].as_i64().expect("id") as i32
+}
+
+#[tokio::test]
+async fn click_buffer_hard_cap_drops_events_past_max_queued() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let link_id = create_link_id(&server, &token).await;
+
+    // Flush threshold 2, hard cap 5. Twenty clicks must not grow past 5.
+    let buffer = ClickBuffer::with_limits(2, 5, 60);
+    for _ in 0..20 {
+        buffer.add_click(click(link_id));
+    }
+    assert_eq!(
+        buffer.queued_event_count(),
+        5,
+        "queue must stop growing at the hard cap"
+    );
+    assert_eq!(
+        buffer.pending_count(link_id),
+        5,
+        "aggregate counter must not count dropped clicks"
+    );
+
+    buffer.flush(&db).await;
+    let persisted = opn_onl_backend::entity::click_events::Entity::find()
+        .filter(opn_onl_backend::entity::click_events::Column::LinkId.eq(link_id))
+        .all(&db)
+        .await
+        .unwrap();
+    assert_eq!(persisted.len(), 5, "only the capped events are flushed");
 }

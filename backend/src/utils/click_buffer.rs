@@ -40,6 +40,9 @@ pub struct ClickBuffer {
     counters: Arc<RwLock<HashMap<i32, ClickCounter>>>,
     /// Maximum buffer size before forced flush
     max_buffer_size: usize,
+    /// Hard cap on queued events. `max_buffer_size` is the early-flush
+    /// threshold; this bound exists so a failed flush cannot grow until OOM.
+    max_queued: usize,
     /// Flush interval in seconds
     flush_interval_secs: u64,
     /// Signals the flush task to flush early once the buffer reaches max_buffer_size.
@@ -54,40 +57,59 @@ impl Default for ClickBuffer {
 
 impl ClickBuffer {
     pub fn new() -> Self {
-        let max_buffer_size = std::env::var("CLICK_BUFFER_SIZE")
+        let max_buffer_size: usize = std::env::var("CLICK_BUFFER_SIZE")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(100);
 
-        let flush_interval_secs = std::env::var("CLICK_FLUSH_INTERVAL")
+        let flush_interval_secs: u64 = std::env::var("CLICK_FLUSH_INTERVAL")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(5);
 
+        // Early-flush threshold is small (default 100). The hard cap is a
+        // multiple of that so brief DB slowness can still queue, but a stuck
+        // flush cannot grow without bound.
+        let max_queued = max_buffer_size.saturating_mul(100).max(max_buffer_size);
+        Self::with_limits(max_buffer_size, max_queued, flush_interval_secs)
+    }
+
+    /// Construct a buffer with explicit flush threshold, hard cap, and interval.
+    pub fn with_limits(
+        max_buffer_size: usize,
+        max_queued: usize,
+        flush_interval_secs: u64,
+    ) -> Self {
+        let max_buffer_size = max_buffer_size.max(1);
+        let max_queued = max_queued.max(max_buffer_size);
         Self {
             events: Arc::new(RwLock::new(Vec::with_capacity(max_buffer_size))),
             counters: Arc::new(RwLock::new(HashMap::new())),
             max_buffer_size,
+            max_queued,
             flush_interval_secs,
             flush_notify: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Number of click events waiting to be flushed.
+    pub fn queued_event_count(&self) -> usize {
+        self.events.read().len()
     }
 
     /// Add a click event to the buffer and count it towards the link's
     /// aggregate click_count (applied to links.click_count at flush).
     pub fn add_click(&self, data: ClickData) {
         let link_id = data.link_id;
-
-        // Increment counter
-        {
-            let mut counters = self.counters.write();
-            counters
-                .entry(link_id)
-                .and_modify(|c| c.count += 1)
-                .or_insert(ClickCounter { count: 1 });
+        if !self.push_event(data) {
+            return;
         }
 
-        self.push_event(data);
+        let mut counters = self.counters.write();
+        counters
+            .entry(link_id)
+            .and_modify(|c| c.count += 1)
+            .or_insert(ClickCounter { count: 1 });
     }
 
     /// Buffer only the analytics event row, without touching the aggregate
@@ -98,18 +120,28 @@ impl ClickBuffer {
         self.push_event(data);
     }
 
-    fn push_event(&self, data: ClickData) {
-        let should_flush = {
+    /// Returns false when the event was shed because the hard cap is full.
+    fn push_event(&self, data: ClickData) -> bool {
+        let (queued, should_flush) = {
             let mut events = self.events.write();
+            if events.len() >= self.max_queued {
+                warn!(
+                    cap = self.max_queued,
+                    "click buffer at hard cap; shedding incoming click"
+                );
+                return false;
+            }
             events.push(data);
-            events.len() >= self.max_buffer_size
+            let len = events.len();
+            (true, len >= self.max_buffer_size)
         };
 
-        // Trigger an early flush when the buffer is full so it can't grow
-        // unbounded between timer ticks under load.
+        // Trigger an early flush when the buffer hits the flush threshold so
+        // it drains before the hard cap starts shedding.
         if should_flush {
             self.flush_notify.notify_one();
         }
+        queued
     }
 
     /// Check if buffer should be flushed
@@ -283,13 +315,46 @@ impl ClickBuffer {
         // Orphans are deliberately not requeued, avoiding an infinite poison
         // loop after their parent link has been hard-deleted.
         if !retry_events.is_empty() {
-            let mut buffer = self.events.write();
-            retry_events.append(&mut *buffer);
-            *buffer = retry_events;
+            let mut dropped_per_link: HashMap<i32, i32> = HashMap::new();
+            {
+                let mut buffer = self.events.write();
+                retry_events.append(&mut *buffer);
+                if retry_events.len() > self.max_queued {
+                    let dropped = retry_events.len() - self.max_queued;
+                    for event in retry_events.drain(self.max_queued..) {
+                        *dropped_per_link.entry(event.link_id).or_insert(0) += 1;
+                    }
+                    warn!(
+                        dropped,
+                        cap = self.max_queued,
+                        "click buffer cap: dropped requeued events"
+                    );
+                }
+                *buffer = retry_events;
+            }
+            for (link_id, mut n) in dropped_per_link {
+                if let Some(count) = retry_counts.get_mut(&link_id) {
+                    let take = (*count).min(n);
+                    *count -= take;
+                    n -= take;
+                }
+                if n > 0 {
+                    let mut counters = self.counters.write();
+                    if let Some(counter) = counters.get_mut(&link_id) {
+                        counter.count = (counter.count - n).max(0);
+                        if counter.count == 0 {
+                            counters.remove(&link_id);
+                        }
+                    }
+                }
+            }
         }
         if !retry_counts.is_empty() {
             let mut buffer = self.counters.write();
             for (link_id, count) in retry_counts {
+                if count <= 0 {
+                    continue;
+                }
                 buffer
                     .entry(link_id)
                     .and_modify(|counter| counter.count += count)
@@ -327,6 +392,7 @@ impl Clone for ClickBuffer {
             events: self.events.clone(),
             counters: self.counters.clone(),
             max_buffer_size: self.max_buffer_size,
+            max_queued: self.max_queued,
             flush_interval_secs: self.flush_interval_secs,
             flush_notify: self.flush_notify.clone(),
         }
