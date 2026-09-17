@@ -55,6 +55,32 @@ async fn custom_alias_starting_with_auth_uses_redirect_limit_not_login_limit() {
     }
 }
 
+fn click(link_id: i32) -> ClickData {
+    ClickData {
+        link_id,
+        ip_address: None,
+        user_agent: None,
+        referer: None,
+        country: None,
+        city: None,
+        region: None,
+        latitude: None,
+        longitude: None,
+        device: None,
+        browser: None,
+        os: None,
+    }
+}
+
+async fn create_link_id(server: &axum_test::TestServer, token: &str) -> i32 {
+    let created = server
+        .post("/links")
+        .authorization_bearer(token)
+        .json(&json!({ "original_url": "https://iana.org/click-buffer" }))
+        .await;
+    assert_eq!(created.status_code(), 201, "create: {}", created.text());
+    created.json::<Value>()["id"].as_i64().expect("id") as i32
+}
 
 #[tokio::test]
 async fn click_buffer_hard_cap_drops_events_past_max_queued() {
