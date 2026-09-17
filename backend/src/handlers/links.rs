@@ -1090,6 +1090,7 @@ pub async fn create_link(
         .parse::<bool>()
         .unwrap_or(true);
 
+    let using_custom_alias = payload.custom_alias.is_some();
     let code = if let Some(alias) = payload.custom_alias {
         // Check if custom aliases are enabled
         if !custom_aliases_enabled {
@@ -1291,8 +1292,21 @@ pub async fn create_link(
 
     let link_id = match links::Entity::insert(link).exec(&txn).await {
         Ok(link_res) => link_res.last_insert_id,
-        Err(_) => {
+        Err(err) => {
             let _ = txn.rollback().await;
+            // The active/deleted alias lookups run before this transaction, so
+            // two concurrent custom_alias creates can both pass and one INSERT
+            // hits the unique index. Map that to the documented 409 rather than
+            // a 500 "Database error" with no retry signal.
+            if using_custom_alias && err.to_string().contains("duplicate key value") {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Alias already taken".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {

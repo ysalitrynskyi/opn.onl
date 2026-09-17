@@ -281,6 +281,56 @@ async fn adding_click_cap_counts_unflushed_buffer_clicks() {
     assert_eq!(gone, 8, "remaining clicks after the cap must be 410");
 }
 
+/// Two creates can both pass the pre-insert alias lookup. The unique index
+/// still rejects the loser; that must be 409 "Alias already taken", not 500.
+#[tokio::test]
+async fn custom_alias_unique_violation_is_conflict() {
+    let (server, db) = common::spawn_real_app().await;
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+
+    let alias = common::unique_code();
+
+    use opn_onl_backend::entity::links;
+    use sea_orm::{ActiveModelTrait, Set, TransactionTrait};
+
+    // Hold an uncommitted row with this code so the handler's existence check
+    // (READ COMMITTED) misses it and the INSERT waits on the unique index.
+    let txn = db.begin().await.expect("begin");
+    links::ActiveModel {
+        original_url: Set("https://iana.org/held-alias".to_string()),
+        code: Set(alias.clone()),
+        user_id: Set(Some(user_id)),
+        ..Default::default()
+    }
+    .insert(&txn)
+    .await
+    .expect("hold unique code");
+
+    let create_fut = server.post("/links").authorization_bearer(&token).json(
+        &json!({ "original_url": "https://iana.org/racer-alias", "custom_alias": alias }),
+    );
+    let commit_fut = async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        txn.commit().await.expect("commit held alias");
+    };
+    let (res, _) = tokio::join!(create_fut, commit_fut);
+
+    assert_eq!(
+        res.status_code(),
+        409,
+        "unique alias race must be 409, got {}: {}",
+        res.status_code(),
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"],
+        "Alias already taken",
+        "loser must get the documented alias conflict: {}",
+        res.text()
+    );
+}
+
 /// Regression (account takeover, fixed in 5240b6a): passkey enrollment must
 /// require authentication — knowing a victim's email must not be enough to
 /// start registering an authenticator onto their account.
