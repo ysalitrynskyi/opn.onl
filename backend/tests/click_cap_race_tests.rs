@@ -17,9 +17,14 @@ mod common;
 
 use std::future::IntoFuture;
 
-use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
+use common::{mark_email_verified, setup_test_db, spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::entity::links;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use opn_onl_backend::utils::click_buffer::ClickData;
+use opn_onl_backend::utils::ClickBuffer;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
+    EntityTrait, QueryFilter, Set, Statement, TransactionTrait,
+};
 use serde_json::{json, Value};
 
 async fn register_verified(server: &axum_test::TestServer, db: &DatabaseConnection) -> String {
@@ -217,5 +222,104 @@ async fn capped_link_never_overshoots_under_concurrency() {
     assert_eq!(
         stored.click_count, MAX as i32,
         "persisted click_count must settle at exactly max_clicks"
+    );
+}
+
+fn buffered_click(link_id: i32) -> ClickData {
+    ClickData {
+        link_id,
+        ip_address: None,
+        user_agent: None,
+        referer: None,
+        country: None,
+        city: None,
+        region: None,
+        latitude: None,
+        longitude: None,
+        device: None,
+        browser: None,
+        os: None,
+        created_at: None,
+    }
+}
+
+/// Folding pending clicks into `click_count` when a cap is written must not
+/// run in the gap after `flush` has taken the counters and before it commits.
+/// Otherwise `take_pending_count` returns 0, the cap is stored against the
+/// old `click_count`, and the flush then overshoots.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn take_pending_count_waits_for_in_flight_flush() {
+    let db = setup_test_db().await;
+    let link = links::ActiveModel {
+        original_url: Set("https://iana.org/fold-flush".to_string()),
+        code: Set(unique_code()),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert link");
+    let link_id = link.id;
+
+    let txn = db.begin().await.expect("begin");
+    txn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT id FROM links WHERE id = $1 FOR UPDATE",
+        [link_id.into()],
+    ))
+    .await
+    .expect("lock link");
+
+    let buffer = std::sync::Arc::new(ClickBuffer::with_limits(1000, 1000, 60));
+    const PENDING: i32 = 50;
+    for _ in 0..PENDING {
+        buffer.add_click(buffered_click(link_id));
+    }
+
+    let flush_buf = buffer.clone();
+    let flush_db = db.clone();
+    let flush_task = tokio::spawn(async move { flush_buf.flush(&flush_db).await });
+
+    let started = std::time::Instant::now();
+    while buffer.pending_count(link_id) != 0 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "flush never took the pending counters"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let take_buf = buffer.clone();
+    let take_task = tokio::spawn(async move { take_buf.take_pending_count(link_id).await });
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let (taken, count_when_taken) = if take_task.is_finished() {
+        let taken = take_task.await.expect("take task");
+        let count_when_taken = links::Entity::find_by_id(link_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap()
+            .click_count;
+        txn.rollback().await.expect("release link lock");
+        let _ = flush_task.await;
+        (taken, count_when_taken)
+    } else {
+        txn.rollback().await.expect("release link lock");
+        let taken = take_task.await.expect("take task");
+        let _ = flush_task.await;
+        let count_when_taken = links::Entity::find_by_id(link_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap()
+            .click_count;
+        (taken, count_when_taken)
+    };
+
+    assert!(
+        taken > 0 || count_when_taken >= PENDING,
+        "take_pending_count returned {taken} while flush still held {PENDING} uncommitted clicks \
+         (db click_count={count_when_taken}); fold and flush must not both miss"
     );
 }

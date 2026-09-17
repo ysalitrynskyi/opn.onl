@@ -556,7 +556,7 @@ async fn admin_hard_delete_preserves_other_orgs_links_and_clicks() {
     let (setup_server, db) = spawn_real_app().await;
     let (admin_token, admin_id) = register_verified(&setup_server, &db).await;
     make_admin(&db, admin_id).await;
-    let (owner_token, _) = register_verified(&setup_server, &db).await;
+    let (owner_token, owner_id) = register_verified(&setup_server, &db).await;
     let (editor_token, editor_id) = register_verified(&setup_server, &db).await;
 
     let org_id = create_org(&setup_server, &owner_token).await;
@@ -624,9 +624,10 @@ async fn admin_hard_delete_preserves_other_orgs_links_and_clicks() {
         "surviving org link must stay live"
     );
     assert_eq!(org_link.org_id, Some(org_id));
-    assert!(
-        org_link.user_id.is_none(),
-        "org link creator FK must be cleared so user DELETE cannot cascade it"
+    assert_eq!(
+        org_link.user_id,
+        Some(owner_id),
+        "org link must be reassigned to the org owner so they can list and manage it"
     );
 
     assert!(
@@ -652,6 +653,48 @@ async fn admin_hard_delete_preserves_other_orgs_links_and_clicks() {
         res.status_code().is_redirection(),
         "org link must keep redirecting after creator hard-delete, got {}",
         res.status_code()
+    );
+
+    // A remaining org member (the owner) must still be able to list and
+    // manage the surviving link. Clearing user_id to NULL without reassigning
+    // leaves a live redirect that only an instance admin can take down.
+    let listed: Value = server
+        .get(&format!("/links?org_id={org_id}"))
+        .authorization_bearer(&owner_token)
+        .await
+        .json();
+    let listed_ids: Vec<i64> = listed
+        .as_array()
+        .expect("GET /links returns an array")
+        .iter()
+        .filter_map(|l| l["id"].as_i64())
+        .collect();
+    assert!(
+        listed_ids.contains(&(org_link_id as i64)),
+        "org owner must see the surviving link in GET /links, got {listed_ids:?}"
+    );
+
+    let upd = server
+        .put(&format!("/links/{org_link_id}"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "original_url": "https://iana.org/retargeted" }))
+        .await;
+    assert_eq!(
+        upd.status_code(),
+        200,
+        "org owner must be able to retarget the surviving link: {}",
+        upd.text()
+    );
+
+    let del = server
+        .delete(&format!("/links/{org_link_id}"))
+        .authorization_bearer(&owner_token)
+        .await;
+    assert_eq!(
+        del.status_code(),
+        200,
+        "org owner must be able to take down the surviving link: {}",
+        del.text()
     );
 }
 

@@ -654,11 +654,20 @@ pub async fn hard_delete_user(
         }
 
         // Organization links belong to the team, not their original creator.
-        // `fk-link-user_id` is ON DELETE CASCADE, so the creator FK must be
-        // cleared before the user row is removed or those org links (and their
-        // click history) die with the account.
+        // `fk-link-user_id` is ON DELETE CASCADE, so the creator FK must
+        // leave this user before the row is removed or those org links (and
+        // their click history) die with the account. Reassign to the org
+        // owner rather than NULL: list/update/delete/clone/pin all key off
+        // `user_id == caller`, and an org always has an owner. Remaining
+        // rows here cannot be in orgs this user owns (solo orgs were purged
+        // above; orgs with other members blocked the delete).
         links::Entity::update_many()
-            .col_expr(links::Column::UserId, Expr::value(Option::<i32>::None))
+            .col_expr(
+                links::Column::UserId,
+                Expr::cust(
+                    "(SELECT owner_id FROM organizations WHERE organizations.id = links.org_id)",
+                ),
+            )
             .filter(links::Column::UserId.eq(user_id))
             .filter(links::Column::OrgId.is_not_null())
             .exec(&txn)

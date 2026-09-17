@@ -61,8 +61,9 @@ pub struct ClickBuffer {
     /// mid-statement with a taken-but-unwritten batch.
     stop: Arc<tokio::sync::Notify>,
     stopped: Arc<AtomicBool>,
-    /// Serializes `flush` so shutdown cannot take an empty buffer while the
-    /// background task still holds the in-flight events.
+    /// Serializes `flush` against shutdown and against `take_pending_count` /
+    /// `add_pending_count`, so a cap-write cannot fold from an empty map while
+    /// an in-flight flush still holds those counters.
     flush_lock: Arc<tokio::sync::Mutex<()>>,
     flush_attempts: Arc<AtomicU64>,
 }
@@ -175,11 +176,6 @@ impl ClickBuffer {
         queued
     }
 
-    /// Check if buffer should be flushed
-    pub fn should_flush(&self) -> bool {
-        self.events.read().len() >= self.max_buffer_size
-    }
-
     /// Number of clicks buffered (not yet flushed to the DB) for a link.
     /// Used so click limits account for in-flight clicks, not just the DB count.
     pub fn pending_count(&self, link_id: i32) -> i32 {
@@ -193,7 +189,11 @@ impl ClickBuffer {
     /// Remove and return the unflushed aggregate count for one link so a
     /// later max_clicks write can fold those clicks into `links.click_count`
     /// instead of letting a cap-blind flush overshoot the new cap.
-    pub fn take_pending_count(&self, link_id: i32) -> i32 {
+    ///
+    /// Takes `flush_lock` so this cannot run in the gap after flush has
+    /// `mem::take`n the counters but before it commits `click_count`.
+    pub async fn take_pending_count(&self, link_id: i32) -> i32 {
+        let _guard = self.flush_lock.lock().await;
         self.counters
             .write()
             .remove(&link_id)
@@ -202,10 +202,11 @@ impl ClickBuffer {
     }
 
     /// Put clicks back into the buffer when folding them into click_count failed.
-    pub fn add_pending_count(&self, link_id: i32, n: i32) {
+    pub async fn add_pending_count(&self, link_id: i32, n: i32) {
         if n <= 0 {
             return;
         }
+        let _guard = self.flush_lock.lock().await;
         self.counters
             .write()
             .entry(link_id)

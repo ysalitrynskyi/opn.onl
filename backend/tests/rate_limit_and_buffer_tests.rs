@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{mark_email_verified, spawn_real_app, unique_email};
+use common::{mark_email_verified, setup_test_db, spawn_real_app, unique_email};
 use opn_onl_backend::utils::click_buffer::ClickData;
 use opn_onl_backend::utils::ClickBuffer;
 use sea_orm::{
@@ -136,6 +136,48 @@ async fn post_clone_consumes_link_creation_budget_but_pin_does_not() {
         rate_limit_remaining(&pin),
         99,
         "pin must use the general bucket, not the hourly create budget"
+    );
+}
+
+/// `POST /links/bulk` used to spend 1 middleware token plus 1 per URL in the
+/// handler, so a 100/hour budget admitted at most 99 URLs. Charge only in the
+/// handler: N URLs spend N tokens, matching `POST /links`.
+#[tokio::test]
+async fn bulk_create_charges_one_create_token_per_url() {
+    use opn_onl_backend::utils::rate_limiter::{RateLimitConfig, RateLimiter, RateLimiters};
+    use std::sync::Arc;
+
+    let db = setup_test_db().await;
+    let mut state = opn_onl_backend::AppState::for_tests(db.clone()).await;
+    let mut limiters = RateLimiters::new();
+    limiters.link_creation = Arc::new(RateLimiter::new(RateLimitConfig::new(3, 3600)));
+    state.rate_limiters = Arc::new(limiters);
+    let server = axum_test::TestServer::new(opn_onl_backend::build_router(state))
+        .expect("test server");
+
+    let token = register_verified(&server, &db).await;
+    let res = server
+        .post("/links/bulk")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "urls": [
+                "https://iana.org/bulk-a",
+                "https://iana.org/bulk-b",
+                "https://iana.org/bulk-c",
+            ]
+        }))
+        .await;
+    assert_eq!(res.status_code(), 200, "bulk: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(
+        body["links"].as_array().map(|a| a.len()),
+        Some(3),
+        "a 3-token create budget must admit 3 bulk URLs: {body}"
+    );
+    assert_eq!(
+        body["errors"].as_array().map(|a| a.len()),
+        Some(0),
+        "no URL should be rate-limited: {body}"
     );
 }
 
