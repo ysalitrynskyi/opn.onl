@@ -1714,6 +1714,7 @@ pub async fn redirect_link(
                 // Header-based password checks bypass the /verify middleware, so
                 // enforce both the per-IP CPU budget and per-IP+code budget here.
                 let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
+                    .map(|ip| crate::utils::rate_limiter::rate_limit_bucket(&ip))
                     .unwrap_or_else(|| "unknown".to_string());
                 for (limiter, key) in [
                     (
@@ -3645,6 +3646,7 @@ pub async fn bulk_create_links(
     // Per-link rate key: charged once per URL below so a bulk request cannot
     // create more links than the single-create budget allows.
     let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
+        .map(|ip| crate::utils::rate_limiter::rate_limit_bucket(&ip))
         .unwrap_or_else(|| "unknown".to_string());
 
     // Per-user link cap (MAX_LINKS_PER_USER), enforced across the whole batch so
