@@ -4,9 +4,11 @@ use axum::{
     Json,
 };
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::ToSchema;
 
 use crate::entity::{link_tags, links, org_members, tags};
@@ -266,20 +268,36 @@ pub async fn get_tags(
             )
         })?;
 
-    let mut responses = Vec::new();
-    for tag in tags_list {
-        let link_count = count_active_tagged_links(&state.db, tag.id).await;
+    let tag_ids: Vec<i32> = tags_list.iter().map(|t| t.id).collect();
+    let mut link_counts: HashMap<i32, i64> = HashMap::new();
+    if !tag_ids.is_empty() {
+        let rows: Vec<(i32, i64)> = link_tags::Entity::find()
+            .select_only()
+            .column(link_tags::Column::TagId)
+            .column_as(link_tags::Column::LinkId.count(), "cnt")
+            .inner_join(links::Entity)
+            .filter(link_tags::Column::TagId.is_in(tag_ids))
+            .filter(links::Column::DeletedAt.is_null())
+            .group_by(link_tags::Column::TagId)
+            .into_tuple()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        link_counts.extend(rows);
+    }
 
-        responses.push(TagResponse {
+    let responses = tags_list
+        .into_iter()
+        .map(|tag| TagResponse {
             id: tag.id,
             name: tag.name.clone(),
             color: tag.color.clone(),
             user_id: tag.user_id,
             org_id: tag.org_id,
             created_at: tag.created_at.to_string(),
-            link_count,
-        });
-    }
+            link_count: link_counts.get(&tag.id).copied().unwrap_or(0),
+        })
+        .collect();
 
     Ok(Json(responses))
 }
