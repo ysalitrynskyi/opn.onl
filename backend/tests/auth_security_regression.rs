@@ -234,6 +234,7 @@ async fn credential_creation_requires_a_verified_jwt() {
 
 #[tokio::test]
 async fn admin_delete_and_restore_revoke_sessions_and_credentials() {
+    let lock_db = lock_admin_count().await;
     let (server, db) = spawn_real_app().await;
     let (admin_token, admin_id) = register(&server, &unique_email()).await;
     promote_directly(&db, admin_id).await;
@@ -312,6 +313,7 @@ async fn admin_delete_and_restore_revoke_sessions_and_credentials() {
         401,
         "restore must not revive old API key"
     );
+    unlock_admin_count(&lock_db).await;
 }
 
 #[tokio::test]
@@ -377,6 +379,7 @@ async fn self_delete_revokes_sessions_and_credentials() {
 
 #[tokio::test]
 async fn admin_promotion_revokes_the_pre_promotion_jwt() {
+    let lock_db = lock_admin_count().await;
     let (server, db) = spawn_real_app().await;
     let (admin_token, admin_id) = register(&server, &unique_email()).await;
     promote_directly(&db, admin_id).await;
@@ -430,6 +433,7 @@ async fn admin_promotion_revokes_the_pre_promotion_jwt() {
             .status_code(),
         200
     );
+    unlock_admin_count(&lock_db).await;
 }
 
 #[tokio::test]
@@ -518,8 +522,22 @@ async fn last_remaining_admin_cannot_self_delete() {
 
     // The production guard counts every live admin in the shared database.
     // Temporarily demote the others so this test is actually the last admin
-    // and can assert 409 unconditionally, then restore them.
-    let others = demote_other_live_admins(&db, user_id).await;
+    // and can assert 409 unconditionally, then restore them. Parallel tests
+    // in other binaries may promote during the gap; re-demote until we are
+    // the sole live admin, then delete immediately.
+    let mut others = Vec::new();
+    for _ in 0..8 {
+        others = demote_other_live_admins(&db, user_id).await;
+        let live = users::Entity::find()
+            .filter(users::Column::IsAdmin.eq(true))
+            .filter(users::Column::DeletedAt.is_null())
+            .count(&db)
+            .await
+            .expect("count live admins");
+        if live == 1 {
+            break;
+        }
+    }
 
     let res = server
         .post("/auth/delete-account")
