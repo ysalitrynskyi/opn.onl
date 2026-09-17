@@ -310,6 +310,39 @@ describe('Dashboard Page', () => {
     expect(screen.getAllByText(/bbb222/i).length).toBeGreaterThan(0);
   });
 
+  it('fetches sparklines in bounded id batches', async () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({
+      ...mockLink,
+      id: i + 1,
+      code: `c${String(i + 1).padStart(3, '0')}`,
+      is_active: true,
+      is_pinned: false,
+    }));
+    mockDashboardFetch((requestUrl) => {
+      if (requestUrl.includes('/links/sparklines')) {
+        return mockFetchResponse({ sparklines: [] });
+      }
+      if (requestUrl.endsWith('/links')) {
+        return mockFetchResponse(many);
+      }
+      return mockFetchResponse([]);
+    });
+
+    render(<Dashboard />);
+    expect(await screen.findByText(/150 links/i)).toBeInTheDocument();
+
+    await waitFor(() => {
+      const sparkCalls = vi.mocked(global.fetch).mock.calls.filter(([url]) =>
+        String(url).includes('/links/sparklines'),
+      );
+      expect(sparkCalls.length).toBeGreaterThan(1);
+      for (const [url] of sparkCalls) {
+        const ids = new URL(String(url)).searchParams.get('ids')?.split(',') ?? [];
+        expect(ids.length).toBeLessThanOrEqual(80);
+      }
+    });
+  });
+
   it('shows bulk-import API errors from the errors array', async () => {
     mockDashboardFetch((requestUrl, options) => {
       if (options?.method === 'POST' && requestUrl.includes('/links/bulk')) {
