@@ -130,6 +130,7 @@ async fn get_link_tags(db: &sea_orm::DatabaseConnection, link_id: i32) -> Vec<Ta
         (status = 201, description = "Folder created", body = FolderResponse),
         (status = 400, description = "Invalid request"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions to create an organization folder"),
     ),
     tag = "Folders"
 )]
@@ -512,7 +513,7 @@ pub async fn delete_folder(
     ),
     request_body = MoveLinkToFolderRequest,
     responses(
-        (status = 200, description = "Links moved", body = serde_json::Value),
+        (status = 200, description = "Links moved (`{\"moved\": N}`)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),
@@ -601,7 +602,7 @@ pub async fn move_links_to_folder(
         ("folder_id" = i32, Path, description = "Folder ID")
     ),
     responses(
-        (status = 200, description = "Links in folder"),
+        (status = 200, description = "Non-deleted links in folder"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),

@@ -33,6 +33,7 @@ type GeoAggregate = (f64, f64, Option<String>, Option<String>, i64);
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct AnalyticsQuery {
+    /// Stats window in days. Omitted defaults to 30; values are clamped to 1..=366.
     pub days: Option<i64>,
 }
 
@@ -583,6 +584,8 @@ pub async fn get_dashboard_stats(
     ),
     responses(
         (status = 200, description = "Current click count"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
     tag = "Analytics"

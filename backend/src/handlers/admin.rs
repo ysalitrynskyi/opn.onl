@@ -735,6 +735,7 @@ pub async fn hard_delete_user(
     ),
     responses(
         (status = 200, description = "User restored successfully", body = AdminResponse),
+        (status = 400, description = "User is not deleted"),
         (status = 403, description = "Admin access required"),
         (status = 404, description = "User not found"),
     ),
@@ -1045,6 +1046,7 @@ pub async fn enable_user(
     responses(
         (status = 200, description = "Backup created successfully", body = BackupResponse),
         (status = 403, description = "Admin access required"),
+        (status = 503, description = "Backup service not configured"),
         (status = 500, description = "Backup failed"),
     ),
     tag = "Admin",
@@ -1096,6 +1098,7 @@ pub async fn create_backup(State(state): State<AppState>, headers: HeaderMap) ->
     responses(
         (status = 200, description = "List of backups", body = BackupListResponse),
         (status = 403, description = "Admin access required"),
+        (status = 503, description = "Backup service not configured"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -1139,6 +1142,7 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
     responses(
         (status = 200, description = "Old backups cleaned up", body = AdminResponse),
         (status = 403, description = "Admin access required"),
+        (status = 503, description = "Backup service not configured"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
