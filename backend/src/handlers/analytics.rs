@@ -13,6 +13,19 @@ use crate::entity::{click_events, links};
 use crate::handlers::links::get_user_id_from_header;
 use crate::AppState;
 
+/// Default stats window when `days` is omitted. The dashboard's "Last 90 days"
+/// option must stay inside the clamp below.
+const DEFAULT_STATS_DAYS: i64 = 30;
+const MIN_STATS_DAYS: i64 = 1;
+const MAX_STATS_DAYS: i64 = 366;
+/// Hard cap on click rows loaded for one stats request.
+const MAX_STATS_EVENTS: u64 = 50_000;
+
+fn clamp_stats_days(days: Option<i64>) -> i64 {
+    days.unwrap_or(DEFAULT_STATS_DAYS)
+        .clamp(MIN_STATS_DAYS, MAX_STATS_DAYS)
+}
+
 /// Aggregated geo bucket value: (latitude, longitude, city, country, hit count).
 type GeoAggregate = (f64, f64, Option<String>, Option<String>, i64);
 
@@ -210,15 +223,20 @@ pub async fn get_link_stats(
             .into_response();
     }
 
-    // Get time range
-    let days = query.days.unwrap_or(30);
-    let start_date = chrono::Utc::now().naive_utc() - chrono::Duration::days(days);
+    // Get time range. Clamp so a huge/negative `days` cannot panic inside
+    // `TimeDelta::days` or load a link's entire click history into memory.
+    let days = clamp_stats_days(query.days);
+    let start_date = chrono::Utc::now().naive_utc()
+        - chrono::Duration::try_days(days).unwrap_or(chrono::Duration::days(MAX_STATS_DAYS));
 
-    // Fetch click events
+    // Fetch click events. Newest-first with a hard row cap so a busy link's
+    // year of clicks cannot OOM the worker; aggregates then describe the most
+    // recent events in the window.
     let events = click_events::Entity::find()
         .filter(click_events::Column::LinkId.eq(id))
         .filter(click_events::Column::CreatedAt.gte(start_date))
         .order_by_desc(click_events::Column::CreatedAt)
+        .limit(MAX_STATS_EVENTS)
         .all(&state.db)
         .await
         .unwrap_or_default();
