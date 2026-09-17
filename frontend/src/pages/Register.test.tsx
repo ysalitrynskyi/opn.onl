@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '../test/test-utils';
+import Home from './Home';
 import Register from './Register';
+import Dashboard from './Dashboard';
 import { mockFetchResponse, mockFetchError, mockToken } from '../test/test-utils';
 
 describe('Register Page', () => {
@@ -105,6 +107,56 @@ describe('Register Page', () => {
     render(<Register />);
     expect(screen.getByRole('link', { name: /terms/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /privacy policy/i })).toBeInTheDocument();
+  });
+
+  it('carries a logged-out shorten URL through registration onto the dashboard', async () => {
+    sessionStorage.clear();
+
+    const home = render(<Home />);
+    await home.user.type(
+      screen.getByPlaceholderText(/your-very-long-link/i),
+      'https://example.com/long'
+    );
+    await home.user.click(screen.getByRole('button', { name: /shorten/i }));
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBe('https://example.com/long');
+    home.unmount();
+
+    vi.mocked(global.fetch).mockResolvedValue(
+      mockFetchResponse({ token: mockToken, email_verified: true }) as any
+    );
+
+    const register = render(<Register />);
+    await register.user.type(screen.getByLabelText(/email address/i), 'new@example.com');
+    await register.user.type(screen.getByLabelText(/password/i), 'password123');
+    await register.user.click(screen.getByRole('button', { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(localStorage.setItem).toHaveBeenCalledWith('token', mockToken);
+    });
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBe('https://example.com/long');
+    register.unmount();
+
+    vi.mocked(localStorage.getItem).mockReturnValue(mockToken);
+    vi.mocked(global.fetch).mockImplementation((url) => {
+      if (typeof url === 'string' && url.includes('/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 25,
+        }) as any;
+      }
+      return mockFetchResponse([]) as any;
+    });
+
+    render(<Dashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/example.com/i)).toHaveValue(
+        'https://example.com/long'
+      );
+    });
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 

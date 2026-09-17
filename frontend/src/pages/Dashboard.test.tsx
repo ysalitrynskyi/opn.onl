@@ -84,6 +84,52 @@ describe('Dashboard Page', () => {
     });
   });
 
+  it('prefills the create field from a pending homepage URL and then forgets it', async () => {
+    sessionStorage.setItem('opn.pendingUrl', 'https://example.com/long');
+    vi.mocked(global.fetch).mockImplementation((url) => {
+      if (typeof url === 'string' && url.includes('/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 25,
+        }) as any;
+      }
+      return mockFetchResponse([]) as any;
+    });
+
+    render(<Dashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/example.com/i)).toHaveValue(
+        'https://example.com/long'
+      );
+    });
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('drops an invalid pending URL without showing an error', async () => {
+    sessionStorage.setItem('opn.pendingUrl', 'javascript:alert(1)');
+    vi.mocked(global.fetch).mockImplementation((url) => {
+      if (typeof url === 'string' && url.includes('/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 25,
+        }) as any;
+      }
+      return mockFetchResponse([]) as any;
+    });
+
+    render(<Dashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/example.com/i)).toHaveValue('');
+    });
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('creates new link on form submission', async () => {
     vi.mocked(global.fetch)
       .mockResolvedValueOnce(mockFetchResponse([]) as any) // Initial fetch

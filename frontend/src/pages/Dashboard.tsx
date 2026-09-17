@@ -22,6 +22,7 @@ import QRModal from '../components/dashboard/QRModal';
 import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
+import { takePendingUrl } from '../utils/pendingUrl';
 
 interface AppSettings {
     custom_aliases_enabled: boolean;
@@ -85,6 +86,8 @@ export default function Dashboard() {
             navigate('/login');
             return;
         }
+        const pending = takePendingUrl();
+        if (pending) setNewUrl(pending);
         fetchLinks();
         fetchSettings();
     }, [navigate]);

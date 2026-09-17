@@ -51,6 +51,19 @@ describe('Home Page', () => {
     expect(input).toHaveValue('https://example.com/test');
   });
 
+  it('stashes the pasted URL in sessionStorage when a logged-out visitor shortens', async () => {
+    vi.mocked(localStorage.getItem).mockReturnValue(null);
+    sessionStorage.clear();
+
+    const { user } = render(<Home />);
+
+    const input = screen.getByPlaceholderText(/your-very-long-link/i);
+    await user.type(input, 'https://example.com/long');
+    await user.click(screen.getByRole('button', { name: /shorten/i }));
+
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBe('https://example.com/long');
+  });
+
   it('creates link when logged in', async () => {
     vi.mocked(localStorage.getItem).mockReturnValue(mockToken);
     vi.mocked(global.fetch).mockResolvedValue(mockFetchResponse(mockLink) as any);
