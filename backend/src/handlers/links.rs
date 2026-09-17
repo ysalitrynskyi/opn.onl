@@ -3542,7 +3542,7 @@ pub async fn update_link(
         // cap is added, then added on flush. Fold them into click_count in the
         // same write that sets max_clicks.
         let pending_to_fold = if let ActiveValue::Set(Some(_)) = &active_link.max_clicks {
-            state.click_buffer.take_pending_count(link.id)
+            state.click_buffer.take_pending_count(link.id).await
         } else {
             0
         };
@@ -3555,7 +3555,8 @@ pub async fn update_link(
                 if txn.commit().await.is_err() {
                     state
                         .click_buffer
-                        .add_pending_count(link.id, pending_to_fold);
+                        .add_pending_count(link.id, pending_to_fold)
+                        .await;
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
@@ -3613,7 +3614,8 @@ pub async fn update_link(
                 let _ = txn.rollback().await;
                 state
                     .click_buffer
-                    .add_pending_count(link.id, pending_to_fold);
+                    .add_pending_count(link.id, pending_to_fold)
+                    .await;
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
