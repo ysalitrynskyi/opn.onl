@@ -225,6 +225,52 @@ describe('Settings Page', () => {
             });
         });
 
+        it('starts passkey registration without decoding the JWT payload', async () => {
+            localStorage.setItem('token', 'eyJhbGciOiJIUzI1NiJ9.abc-def_ghi.sig');
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/passkey/register/start')) {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 400,
+                        json: () => Promise.resolve({ error: 'nope' }),
+                    });
+                }
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockUserProfile),
+                    });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockAppSettings),
+                    });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockPasskeys),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({}),
+                });
+            }) as any;
+
+            render(<Settings />);
+            fireEvent.click(await screen.findByRole('button', { name: /add passkey/i }));
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/passkey/register/start'),
+                    expect.objectContaining({ method: 'POST' }),
+                );
+            });
+            expect(screen.queryByText(/invalid character/i)).not.toBeInTheDocument();
+        });
+
         it('can delete passkey', async () => {
             render(<Settings />);
             

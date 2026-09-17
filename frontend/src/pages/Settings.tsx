@@ -157,11 +157,10 @@ export default function Settings() {
         setSuccess('');
 
         try {
-            const token = localStorage.getItem('token');
-            if (!token) return;
-
-            const payload = JSON.parse(atob(token.split('.')[1]));
-            const username = payload.sub;
+            // register_start binds the passkey to the authenticated account;
+            // the username field is ignored server-side. Use the loaded profile
+            // rather than decoding the JWT — atob rejects base64url payloads.
+            const username = profile?.email ?? '';
 
             // Step 1: Start registration. Uses authFetch so the Bearer token is
             // sent — the backend binds the new passkey to the authenticated
