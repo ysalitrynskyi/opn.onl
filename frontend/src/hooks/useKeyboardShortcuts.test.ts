@@ -177,6 +177,36 @@ describe('useKeyboardShortcuts Hook', () => {
             expect(handler).toHaveBeenCalled();
         });
 
+        it('does not fire an unmodified shortcut when Ctrl is held', () => {
+            const handler = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: '/', handler, description: 'Focus search' },
+            ]));
+
+            const event = new KeyboardEvent('keydown', { key: '/', ctrlKey: true });
+            const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+
+            act(() => {
+                window.dispatchEvent(event);
+            });
+
+            expect(handler).not.toHaveBeenCalled();
+            expect(preventDefaultSpy).not.toHaveBeenCalled();
+        });
+
+        it('does not fire an unmodified shortcut when Meta is held', () => {
+            const handler = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: 'n', handler, description: 'Focus new link' },
+            ]));
+
+            act(() => {
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true }));
+            });
+
+            expect(handler).not.toHaveBeenCalled();
+        });
+
         it('handles multiple modifier keys', () => {
             const handler = vi.fn();
             const shortcuts = [
@@ -335,6 +365,61 @@ describe('useKeyboardShortcuts Hook', () => {
             expect(close).toHaveBeenCalledTimes(1);
 
             document.body.removeChild(textarea);
+        });
+
+        it('ignores shortcuts when a select is focused', () => {
+            const handler = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: 'n', handler, description: 'Focus new link' },
+            ]));
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+
+            act(() => {
+                dispatchOn(select, 'n');
+            });
+
+            expect(handler).not.toHaveBeenCalled();
+
+            document.body.removeChild(select);
+        });
+
+        it('still runs Escape when a select is focused', () => {
+            const close = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: 'Escape', handler: close, description: 'Close' },
+            ]));
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+
+            act(() => {
+                dispatchOn(select, 'Escape');
+            });
+
+            expect(close).toHaveBeenCalledTimes(1);
+
+            document.body.removeChild(select);
+        });
+
+        it('ignores shortcuts when a combobox is focused', () => {
+            const handler = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: 'n', handler, description: 'Focus new link' },
+            ]));
+
+            const combobox = document.createElement('div');
+            combobox.setAttribute('role', 'combobox');
+            document.body.appendChild(combobox);
+
+            act(() => {
+                dispatchOn(combobox, 'n');
+            });
+
+            expect(handler).not.toHaveBeenCalled();
+
+            document.body.removeChild(combobox);
         });
     });
 

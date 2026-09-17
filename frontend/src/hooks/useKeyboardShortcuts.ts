@@ -13,16 +13,23 @@ export function useKeyboardShortcuts(shortcuts: ShortcutHandler[]) {
     const handleKeyDown = useCallback((event: KeyboardEvent) => {
         // Don't trigger shortcuts when typing in inputs. Escape still closes
         // modals / clears search while a field is focused.
-        const target = event.target as HTMLElement;
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-            if (event.key !== 'Escape') {
+        const target = event.target;
+        if (target instanceof HTMLElement) {
+            const isTypingField =
+                target.tagName === 'INPUT'
+                || target.tagName === 'TEXTAREA'
+                || target.tagName === 'SELECT'
+                || target.isContentEditable
+                || target.closest('[role="combobox"]') !== null;
+            if (isTypingField && event.key !== 'Escape') {
                 return;
             }
         }
 
         for (const shortcut of shortcuts) {
             const keyMatch = event.key.toLowerCase() === shortcut.key.toLowerCase();
-            const ctrlMatch = shortcut.ctrl ? (event.ctrlKey || event.metaKey) : true;
+            const ctrlOrMeta = event.ctrlKey || event.metaKey;
+            const ctrlMatch = shortcut.ctrl ? ctrlOrMeta : !ctrlOrMeta;
             const altMatch = shortcut.alt ? event.altKey : !event.altKey;
             const shiftMatch = shortcut.shift ? event.shiftKey : !event.shiftKey;
 
