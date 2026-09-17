@@ -105,7 +105,7 @@ pub struct RefererStats {
 
 #[derive(Serialize, ToSchema)]
 pub struct RecentClick {
-    pub id: i32,
+    pub id: i64,
     pub timestamp: String,
     pub country: Option<String>,
     pub city: Option<String>,
