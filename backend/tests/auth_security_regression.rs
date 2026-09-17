@@ -519,6 +519,50 @@ async fn last_remaining_admin_cannot_self_delete() {
 }
 
 #[tokio::test]
+async fn forgot_password_does_not_enumerate_accounts() {
+    let (server, db) = spawn_real_app().await;
+
+    let known_email = unique_email();
+    register(&server, &known_email).await;
+    let unknown_email = unique_email();
+
+    let post = |email: &str| {
+        server
+            .post("/auth/forgot-password")
+            .json(&json!({ "email": email }))
+    };
+
+    let known = post(&known_email).await;
+    let unknown = post(&unknown_email).await;
+
+    assert_eq!(known.status_code(), 200, "known: {}", known.text());
+    assert!(
+        known.text().contains("If account exists"),
+        "generic body: {}",
+        known.text()
+    );
+    assert_eq!(
+        (unknown.status_code(), unknown.text()),
+        (known.status_code(), known.text()),
+        "unknown vs known must be indistinguishable"
+    );
+
+    let stored = users::Entity::find()
+        .filter(users::Column::Email.eq(&known_email))
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_reset_token
+        .expect("known account must receive a reset token");
+    assert_eq!(stored.len(), 64);
+    assert!(
+        stored.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "reset token must be sha256 hex, got {stored}"
+    );
+}
+
+#[tokio::test]
 async fn verification_and_reset_tokens_are_stored_hashed() {
     let (server, db) = spawn_real_app().await;
     let email = unique_email();

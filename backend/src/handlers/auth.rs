@@ -526,10 +526,17 @@ pub async fn forgot_password(
     Json(payload): Json<ForgotPasswordRequest>,
 ) -> impl IntoResponse {
     let email = normalize_email(&payload.email);
+    // Same dummy bcrypt as login, paid on every path so a miss is not a
+    // cheap SELECT while a hit pays for UPDATE (and SMTP when configured).
+    let equalize_work = || {
+        let _ = verify_password("not-a-real-password", dummy_password_hash());
+    };
+
     if ensure_email_domain_allowed(&state.db, &email)
         .await
         .is_err()
     {
+        equalize_work();
         return (
             StatusCode::OK,
             Json(MessageResponse {
@@ -547,6 +554,8 @@ pub async fn forgot_password(
         .await
         .unwrap_or(None);
 
+    equalize_work();
+
     if let Some(user) = user {
         let reset_token = generate_token();
         let reset_expires = Utc::now() + Duration::hours(1);
@@ -555,30 +564,22 @@ pub async fn forgot_password(
         active_user.password_reset_token = Set(Some(hash_secret_token(&reset_token)));
         active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
-        if active_user.update(&state.db).await.is_err() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to generate token".to_string(),
-                }),
-            )
-                .into_response();
-        }
-
-        // Send password reset email
-        if let Some(email_service) = &state.email_service {
-            if email_service.is_configured() {
-                if let Err(e) = email_service
-                    .send_password_reset_email(&user.email, &reset_token)
-                    .await
-                {
-                    tracing::error!("Failed to send password reset email: {}", e);
+        if active_user.update(&state.db).await.is_ok() {
+            if let Some(email_service) = &state.email_service {
+                if email_service.is_configured() {
+                    if let Err(e) = email_service
+                        .send_password_reset_email(&user.email, &reset_token)
+                        .await
+                    {
+                        tracing::error!("Failed to send password reset email: {}", e);
+                    }
                 }
             }
+        } else {
+            tracing::error!("Failed to generate password reset token");
         }
     }
 
-    // Always return success to prevent email enumeration
     (
         StatusCode::OK,
         Json(MessageResponse {
