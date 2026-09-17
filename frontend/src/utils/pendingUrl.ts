@@ -11,11 +11,17 @@ function isUsablePendingUrl(url: string): boolean {
     }
 }
 
+// Strict Mode remounts with fresh state and re-runs the dashboard effect.
+// Keep the last take in memory until the next microtask so the second
+// effect still sees it after sessionStorage is cleared.
+let leftover: string | null = null;
+
 /** Homepage shorten while logged out. sessionStorage survives the auth
  *  flow's full-page reloads; router location state does not. */
 export function savePendingUrl(url: string): void {
     const trimmed = url.trim();
     if (!isUsablePendingUrl(trimmed)) return;
+    leftover = null;
     sessionStorage.setItem(PENDING_URL_KEY, trimmed);
 }
 
@@ -23,8 +29,14 @@ export function savePendingUrl(url: string): void {
  *  later in the tab, and the dashboard never shows an error for them. */
 export function takePendingUrl(): string | null {
     const raw = sessionStorage.getItem(PENDING_URL_KEY);
-    sessionStorage.removeItem(PENDING_URL_KEY);
-    if (!raw) return null;
-    const trimmed = raw.trim();
-    return isUsablePendingUrl(trimmed) ? trimmed : null;
+    if (raw !== null) {
+        sessionStorage.removeItem(PENDING_URL_KEY);
+        const trimmed = raw.trim();
+        leftover = isUsablePendingUrl(trimmed) ? trimmed : null;
+        queueMicrotask(() => {
+            leftover = null;
+        });
+        return leftover;
+    }
+    return leftover;
 }

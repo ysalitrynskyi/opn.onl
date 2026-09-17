@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '../test/test-utils';
 import Dashboard from './Dashboard';
@@ -97,7 +98,11 @@ describe('Dashboard Page', () => {
       return mockFetchResponse([]) as any;
     });
 
-    render(<Dashboard />);
+    render(
+      <StrictMode>
+        <Dashboard />
+      </StrictMode>,
+    );
 
     await waitFor(() => {
       expect(screen.getByPlaceholderText(/example.com/i)).toHaveValue(
