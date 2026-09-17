@@ -82,18 +82,58 @@ pub async fn https_redirect(req: Request<Body>, next: axum::middleware::Next) ->
     if is_https {
         next.run(req).await
     } else {
-        // Get host from headers
-        let host = req
-            .headers()
-            .get("host")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("localhost");
-
-        let uri = req.uri();
-        let redirect_url = format!("https://{}{}", host, uri);
+        let request_host = req.headers().get("host").and_then(|h| h.to_str().ok());
+        let host = https_redirect_host(
+            std::env::var("BASE_URL").ok().as_deref(),
+            std::env::var("FRONTEND_URL").ok().as_deref(),
+            request_host,
+        );
+        let path = req
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/");
+        let redirect_url = format!("https://{host}{path}");
 
         Redirect::permanent(&redirect_url).into_response()
     }
+}
+
+/// Host for a FORCE_HTTPS `Location`. Prefer `BASE_URL`, then `FRONTEND_URL`,
+/// so a client-supplied Host cannot mint `https://evil.example/...`. Fall back
+/// to the request Host only when neither public URL is set, so a self-hoster
+/// with neither configured still gets a working redirect.
+pub fn https_redirect_host(
+    base_url: Option<&str>,
+    frontend_url: Option<&str>,
+    request_host: Option<&str>,
+) -> String {
+    for candidate in [base_url, frontend_url].into_iter().flatten() {
+        if let Some(host) = host_from_public_url(candidate) {
+            return host;
+        }
+    }
+    request_host
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .unwrap_or("localhost")
+        .to_string()
+}
+
+fn host_from_public_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    with_scheme
+        .parse::<axum::http::Uri>()
+        .ok()
+        .and_then(|u| u.authority().map(|a| a.as_str().to_string()))
 }
 
 /// Ensure at least one admin exists in the system
