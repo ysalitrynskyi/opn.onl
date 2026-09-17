@@ -86,7 +86,8 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             bio_visible: bioEnabled ? bioVisible : undefined,
         };
         if (expirationChanged && expiresAt && !shouldRemoveExpiration) {
-            payload.expires_at = new Date(expiresAt).toISOString();
+            // Date-only value: end of that local day, matching the create form.
+            payload.expires_at = new Date(`${expiresAt}T23:59:00`).toISOString();
         }
 
         try {

@@ -81,7 +81,12 @@ describe('EditModal', () => {
         await user.click(screen.getByRole('button', { name: /save changes/i }));
 
         await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
-        expect(onSave.mock.calls[0][1].expires_at).toBe('2031-06-20T00:00:00.000Z');
+        // Date-only expiry is end of that local day, matching the create
+        // form's 23:59 default. `new Date('YYYY-MM-DD')` is UTC midnight,
+        // which is already yesterday west of UTC.
+        expect(onSave.mock.calls[0][1].expires_at).toBe(
+            new Date('2031-06-20T23:59:00').toISOString(),
+        );
     });
 
     it('uses the local calendar date as the expiration minimum, not UTC', () => {
