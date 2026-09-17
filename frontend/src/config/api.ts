@@ -378,7 +378,7 @@ export interface AuditLog {
     action: string;
     resource_type: string;
     resource_id?: number;
-    details?: Record<string, any>;
+    details?: Record<string, string | number | boolean | null>;
     ip_address?: string;
     created_at: string;
 }
