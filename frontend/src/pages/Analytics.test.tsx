@@ -4,13 +4,18 @@ import Analytics from './Analytics';
 import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
 import { mockToken } from '../test/test-utils';
 
+const { mockParams, mockNavigate } = vi.hoisted(() => ({
+    mockParams: { id: '1' },
+    mockNavigate: vi.fn(),
+}));
+
 // Mock the react-router-dom hooks
 vi.mock('react-router-dom', async () => {
     const actual = await vi.importActual('react-router-dom');
     return {
         ...actual,
-        useParams: () => ({ id: '1' }),
-        useNavigate: () => vi.fn(),
+        useParams: () => ({ id: mockParams.id }),
+        useNavigate: () => mockNavigate,
     };
 });
 
@@ -72,6 +77,7 @@ describe('Analytics Page', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        mockParams.id = '1';
         localStorage.setItem('token', mockToken);
         
         // Mock successful API response
@@ -251,6 +257,36 @@ describe('Analytics Page', () => {
             await waitFor(() => {
                 const selector = screen.queryByRole('combobox') || 
                                 screen.queryByText(/7 days|30 days/i);
+            });
+        });
+
+        it('refetches with the new range when the selector changes', async () => {
+            const { user } = render(<Analytics />);
+
+            await screen.findByLabelText('Time range');
+            expect(String(vi.mocked(global.fetch).mock.calls[0][0])).toContain('days=30');
+
+            await user.selectOptions(screen.getByLabelText('Time range'), '7');
+
+            await waitFor(() => {
+                const urls = vi.mocked(global.fetch).mock.calls.map(call => String(call[0]));
+                expect(urls.some(url => url.includes('days=7'))).toBe(true);
+            });
+        });
+
+        it('refetches when the link id changes', async () => {
+            const { rerender } = render(<Analytics />);
+
+            await waitFor(() => {
+                expect(String(vi.mocked(global.fetch).mock.calls[0][0])).toContain('/links/1/stats');
+            });
+
+            mockParams.id = '2';
+            rerender(<Analytics />);
+
+            await waitFor(() => {
+                const urls = vi.mocked(global.fetch).mock.calls.map(call => String(call[0]));
+                expect(urls.some(url => url.includes('/links/2/stats'))).toBe(true);
             });
         });
     });
