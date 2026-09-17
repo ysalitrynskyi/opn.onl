@@ -496,6 +496,54 @@ describe('Settings Page', () => {
             }) as any;
         };
 
+        it('keeps an uncopied API secret when a second create fails', async () => {
+            let creates = 0;
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys') && options?.method === 'POST') {
+                    creates += 1;
+                    if (creates === 1) {
+                        return Promise.resolve({
+                            ok: true,
+                            json: () => Promise.resolve({ key: 'opn_secret_one_time' }),
+                        });
+                    }
+                    return Promise.resolve({
+                        ok: false,
+                        status: 400,
+                        text: () => Promise.resolve('Too many keys'),
+                    });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(keys) });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+
+            render(<Settings />);
+            const nameInput = await screen.findByPlaceholderText(/key name/i);
+            fireEvent.change(nameInput, { target: { value: 'First' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            expect(await screen.findByText('opn_secret_one_time')).toBeInTheDocument();
+
+            fireEvent.change(nameInput, { target: { value: 'Second' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            await waitFor(() => {
+                expect(screen.getByRole('alert')).toHaveTextContent(/too many keys/i);
+            });
+            expect(screen.getByText('opn_secret_one_time')).toBeInTheDocument();
+        });
+
         it('does not revoke an API key when confirm is cancelled', async () => {
             mockWithKeys();
             vi.spyOn(window, 'confirm').mockReturnValue(false);

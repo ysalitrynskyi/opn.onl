@@ -461,7 +461,6 @@ export default function Settings() {
         setCreatingKey(true);
         setError('');
         setSuccess('');
-        setCreatedApiKey(null);
         try {
             const res = await authFetch(API_ENDPOINTS.apiKeys, {
                 method: 'POST',
