@@ -116,6 +116,7 @@ pub struct DashboardStats {
     pub total_links: i64,
     pub total_clicks: i64,
     pub active_links: i64,
+    /// Clicks since 00:00:00 UTC of the current UTC day. Not the caller's local day.
     pub clicks_today: i64,
     pub clicks_this_week: i64,
     pub clicks_this_month: i64,
@@ -416,7 +417,7 @@ pub async fn get_link_stats(
     get,
     path = "/analytics/dashboard",
     responses(
-        (status = 200, description = "Dashboard statistics", body = DashboardStats),
+        (status = 200, description = "Dashboard statistics. clicks_today is the UTC calendar day.", body = DashboardStats),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "Analytics"
@@ -450,7 +451,8 @@ pub async fn get_dashboard_stats(
 
     let link_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
 
-    // Get time boundaries
+    // Get time boundaries. "Today" is the UTC calendar day; this endpoint
+    // does not take a timezone, so the field is documented as UTC.
     let now = chrono::Utc::now().naive_utc();
     let today_start = now.date().and_hms_opt(0, 0, 0).unwrap();
     let week_start = now - chrono::Duration::days(7);
