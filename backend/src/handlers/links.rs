@@ -3917,7 +3917,7 @@ pub async fn bulk_update_links(
             .flatten();
 
         if let Some(link) = link {
-            if link.user_id == Some(user_id) {
+            if link.user_id == Some(user_id) && link.deleted_at.is_none() {
                 let code = link.code.clone();
                 let org_id = link.org_id;
                 let mut active_link: links::ActiveModel = link.into();

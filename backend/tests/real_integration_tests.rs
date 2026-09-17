@@ -175,6 +175,55 @@ async fn deleted_link_cannot_be_updated() {
     );
 }
 
+/// bulk_delete_links skips rows with deleted_at set. bulk_update_links must
+/// do the same: mutating a soft-deleted row would survive a later restore.
+#[tokio::test]
+async fn bulk_update_skips_soft_deleted_links() {
+    let (server, db) = common::spawn_real_app().await;
+
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+    let (link_id, _code) = create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://iana.org/bulk-update-deleted" }),
+    )
+    .await;
+
+    let res = server
+        .delete(&format!("/links/{link_id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(res.status_code(), 200, "delete link: {}", res.text());
+
+    let expires = (Utc::now() + Duration::hours(2)).to_rfc3339();
+    let res = server
+        .post("/links/bulk/update")
+        .authorization_bearer(&token)
+        .json(&json!({ "ids": [link_id], "expires_at": expires }))
+        .await;
+    assert_eq!(res.status_code(), 200, "bulk update: {}", res.text());
+    assert_eq!(
+        res.json::<Value>()["updated"],
+        0,
+        "soft-deleted link must not be bulk-updated"
+    );
+
+    use opn_onl_backend::entity::links;
+    use sea_orm::EntityTrait;
+    let stored = links::Entity::find_by_id(link_id as i32)
+        .one(&db)
+        .await
+        .expect("db")
+        .expect("link row");
+    assert!(stored.deleted_at.is_some(), "row must stay soft-deleted");
+    assert!(
+        stored.expires_at.is_none(),
+        "deleted row expiry must be unchanged: {:?}",
+        stored.expires_at
+    );
+}
+
 /// Regression (account takeover, fixed in 5240b6a): passkey enrollment must
 /// require authentication — knowing a victim's email must not be enough to
 /// start registering an authenticator onto their account.
