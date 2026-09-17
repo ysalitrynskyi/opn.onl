@@ -8,7 +8,7 @@ use sea_orm::{
     QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 use crate::entity::{link_tags, links, org_members, tags};
@@ -47,6 +47,7 @@ pub struct TagResponse {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AddTagsToLinkRequest {
+    /// Tag IDs to attach. At most 50 are considered; duplicates are ignored.
     pub tag_ids: Vec<i32>,
 }
 
@@ -571,34 +572,53 @@ pub async fn add_tags_to_link(
         ));
     }
 
+    const MAX_TAGS_PER_ATTACH: usize = 50;
+    let mut seen = HashSet::new();
+    let tag_ids: Vec<i32> = payload
+        .tag_ids
+        .into_iter()
+        .take(MAX_TAGS_PER_ATTACH)
+        .filter(|id| seen.insert(*id))
+        .collect();
+
     let mut added_count = 0;
-    for tag_id in payload.tag_ids {
-        let tag = tags::Entity::find_by_id(tag_id)
-            .one(&state.db)
+    if !tag_ids.is_empty() {
+        let loaded = tags::Entity::find()
+            .filter(tags::Column::Id.is_in(tag_ids))
+            .all(&state.db)
             .await
-            .ok()
-            .flatten();
+            .unwrap_or_default();
+        let in_scope: Vec<i32> = loaded
+            .into_iter()
+            .filter(|tag| tag_matches_link_scope(tag, &link, user_id))
+            .map(|tag| tag.id)
+            .collect();
 
-        if let Some(tag) = tag {
-            if tag_matches_link_scope(&tag, &link, user_id) {
-                // Check if already linked
-                let existing = link_tags::Entity::find()
-                    .filter(link_tags::Column::LinkId.eq(link_id))
-                    .filter(link_tags::Column::TagId.eq(tag_id))
-                    .one(&state.db)
-                    .await
-                    .ok()
-                    .flatten();
+        if !in_scope.is_empty() {
+            let existing: HashSet<i32> = link_tags::Entity::find()
+                .filter(link_tags::Column::LinkId.eq(link_id))
+                .filter(link_tags::Column::TagId.is_in(in_scope.clone()))
+                .all(&state.db)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|lt| lt.tag_id)
+                .collect();
 
-                if existing.is_none() {
-                    let link_tag = link_tags::ActiveModel {
-                        link_id: Set(link_id),
-                        tag_id: Set(tag_id),
-                        ..Default::default()
-                    };
-                    let _ = link_tag.insert(&state.db).await;
-                    added_count += 1;
-                }
+            let to_insert: Vec<link_tags::ActiveModel> = in_scope
+                .into_iter()
+                .filter(|id| !existing.contains(id))
+                .map(|tag_id| link_tags::ActiveModel {
+                    link_id: Set(link_id),
+                    tag_id: Set(tag_id),
+                    ..Default::default()
+                })
+                .collect();
+            added_count = to_insert.len();
+            if !to_insert.is_empty() {
+                let _ = link_tags::Entity::insert_many(to_insert)
+                    .exec(&state.db)
+                    .await;
             }
         }
     }
