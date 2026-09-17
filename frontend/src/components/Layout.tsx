@@ -157,6 +157,11 @@ export default function Layout() {
                                     <Link to="/settings" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
                                         <Settings className="h-5 w-5 text-muted" /> Settings
                                     </Link>
+                                    {isAdmin && (
+                                        <Link to="/admin" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-primary-700">
+                                            <Shield className="h-5 w-5" /> Admin Panel
+                                        </Link>
+                                    )}
                                     <button onClick={handleLogout} className="flex w-full items-center gap-2.5 px-2 py-2.5 text-base font-medium text-danger">
                                         <LogOut className="h-5 w-5" /> Log out
                                     </button>

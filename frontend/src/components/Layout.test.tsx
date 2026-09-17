@@ -224,6 +224,25 @@ describe('Layout auth and menus', () => {
 
         expect(screen.queryByRole('link', { name: /settings/i })).not.toBeInTheDocument();
     });
+
+    it('shows Admin Panel in the mobile menu for admin users', () => {
+        localStorage.setItem('token', 'test-token');
+        localStorage.setItem('is_admin', 'true');
+        render(<Layout />);
+        fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }));
+
+        const adminLink = screen.getByRole('link', { name: /admin panel/i });
+        expect(adminLink).toHaveAttribute('href', '/admin');
+    });
+
+    it('omits Admin Panel from the mobile menu for non-admin users', () => {
+        localStorage.setItem('token', 'test-token');
+        localStorage.setItem('is_admin', 'false');
+        render(<Layout />);
+        fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }));
+
+        expect(screen.queryByRole('link', { name: /admin panel/i })).not.toBeInTheDocument();
+    });
 });
 
 describe('Layout Mobile Responsiveness', () => {
