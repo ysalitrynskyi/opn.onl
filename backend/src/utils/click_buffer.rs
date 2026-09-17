@@ -176,11 +176,6 @@ impl ClickBuffer {
         queued
     }
 
-    /// Check if buffer should be flushed
-    pub fn should_flush(&self) -> bool {
-        self.events.read().len() >= self.max_buffer_size
-    }
-
     /// Number of clicks buffered (not yet flushed to the DB) for a link.
     /// Used so click limits account for in-flight clicks, not just the DB count.
     pub fn pending_count(&self, link_id: i32) -> i32 {
