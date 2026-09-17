@@ -6,6 +6,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
+import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
 
 interface DayStats {
     date: string;
@@ -214,16 +215,11 @@ export default function Analytics() {
     // Calculate today and this week clicks
     const today = new Date().toISOString().split('T')[0];
     const todayClicks = stats.clicks_by_day.find(d => d.date === today)?.count || 0;
-
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    const weekClicks = stats.clicks_by_day
-        .filter(d => new Date(d.date) >= weekAgo)
-        .reduce((sum, d) => sum + d.count, 0);
+    const weekClicks = sumClicksInUtcWindow(stats.clicks_by_day, 7);
 
     // Format chart data
     const chartData = stats.clicks_by_day.map(d => ({
-        date: new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        date: formatDayBucketLabel(d.date),
         clicks: d.count
     }));
 

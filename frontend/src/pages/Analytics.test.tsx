@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '../test/test-utils';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, within } from '../test/test-utils';
 import Analytics from './Analytics';
+import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
 import { mockToken } from '../test/test-utils';
 
 // Mock the react-router-dom hooks
@@ -141,6 +142,52 @@ describe('Analytics Page', () => {
                 const chart = document.querySelector('.recharts-wrapper') || 
                              document.querySelector('[class*="chart"]');
             });
+        });
+
+        it('labels a UTC date-only bucket as that calendar day, not the previous local date', () => {
+            expect(formatDayBucketLabel('2026-09-17')).toBe('Sep 17');
+            expect(formatDayBucketLabel('2026-01-05')).toBe('Jan 5');
+        });
+    });
+
+    describe('This Week', () => {
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it('includes a UTC day from seven days ago even when it is afternoon', () => {
+            const now = new Date('2026-09-17T18:00:00.000Z');
+            expect(sumClicksInUtcWindow([
+                { date: '2026-09-10', count: 5 },
+                { date: '2026-09-17', count: 10 },
+            ], 7, now)).toBe(15);
+        });
+
+        it('shows the UTC-week total on the This Week card', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-09-17T18:00:00.000Z'));
+
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    total_clicks: 99,
+                    clicks_by_day: [
+                        { date: '2026-09-10', count: 5 },
+                        { date: '2026-09-17', count: 10 },
+                    ],
+                }),
+            });
+
+            render(<Analytics />);
+
+            await waitFor(() => {
+                expect(screen.getByText('This Week')).toBeInTheDocument();
+            });
+            const card = screen.getByText('This Week').closest('.bg-surface');
+            expect(card).not.toBeNull();
+            expect(within(card as HTMLElement).getByText('15')).toBeInTheDocument();
         });
     });
 
