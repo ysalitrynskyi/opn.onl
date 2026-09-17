@@ -97,6 +97,13 @@ impl RedisCache {
         format!("link_generation:{}", code)
     }
 
+    /// Generation keys must outlive the cached row so a slow writer cannot
+    /// observe generation 0 again, but they cannot live forever: every cached
+    /// redirect `INCR`s one. 2× the link TTL is past any in-flight writer.
+    fn generation_ttl_secs(&self) -> u64 {
+        self.ttl_seconds.saturating_mul(2).max(1)
+    }
+
     /// Read a cached link and its invalidation generation in one Redis command.
     ///
     /// Writers capture this generation before loading from Postgres and may only
@@ -160,8 +167,9 @@ impl RedisCache {
 
     /// Atomically advance the invalidation generation and delete the cached row.
     ///
-    /// The generation key intentionally outlives cached values. Expiring it could
-    /// let a very slow stale writer observe generation zero again.
+    /// The generation key is given a TTL of 2× the link cache so it outlives
+    /// cached values (a slower writer is already past TTL) without accumulating
+    /// forever under `volatile-*` / `noeviction`.
     pub async fn invalidate_link(&self, code: &str) -> Result<(), redis::RedisError> {
         let conn_guard = self.connection.read().await;
         if let Some(conn) = conn_guard.as_ref() {
@@ -169,11 +177,13 @@ impl RedisCache {
             let _: i32 = Script::new(
                 r#"
                 redis.call('INCR', KEYS[1])
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
                 return redis.call('DEL', KEYS[2])
                 "#,
             )
             .key(Self::generation_key(code))
             .key(Self::link_key(code))
+            .arg(self.generation_ttl_secs())
             .invoke_async(&mut conn)
             .await?;
         }
@@ -253,5 +263,39 @@ mod tests {
         assert!(new_generation > generation);
 
         cache.invalidate_link(&code).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalidation_generation_key_expires() {
+        if std::env::var("REDIS_URL").is_err() {
+            std::env::set_var("REDIS_URL", "redis://127.0.0.1:6379");
+        }
+        let Some(cache) = RedisCache::new().await else {
+            eprintln!("skipping Redis TTL test: REDIS_URL is not set or unavailable");
+            return;
+        };
+        let code = format!("cache-ttl-{}", uuid::Uuid::new_v4());
+        cache.invalidate_link(&code).await.unwrap();
+
+        let client = redis::Client::open(std::env::var("REDIS_URL").unwrap()).unwrap();
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let ttl: i64 = redis::cmd("TTL")
+            .arg(format!("link_generation:{code}"))
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        let expected = cache.generation_ttl_secs() as i64;
+        assert!(
+            ttl > 0,
+            "generation key must have a TTL, got {ttl} (no expiry is -1)"
+        );
+        assert!(
+            ttl <= expected,
+            "generation TTL {ttl} must not exceed 2× link TTL ({expected})"
+        );
+        assert!(
+            ttl >= expected - 5,
+            "generation TTL {ttl} should be about {expected}"
+        );
     }
 }
