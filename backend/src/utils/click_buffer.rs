@@ -344,9 +344,9 @@ impl ClickBuffer {
                             device: Set(e.device),
                             browser: Set(e.browser),
                             os: Set(e.os),
-                            created_at: Set(e.created_at.unwrap_or_else(|| {
-                                chrono::Utc::now().naive_utc()
-                            })),
+                            created_at: Set(e
+                                .created_at
+                                .unwrap_or_else(|| chrono::Utc::now().naive_utc())),
                             ..Default::default()
                         })
                         .collect();
@@ -449,7 +449,10 @@ impl ClickBuffer {
     }
 
     /// Start the background flush task
-    pub fn start_flush_task(self: Arc<Self>, db: DatabaseConnection) -> tokio::task::JoinHandle<()> {
+    pub fn start_flush_task(
+        self: Arc<Self>,
+        db: DatabaseConnection,
+    ) -> tokio::task::JoinHandle<()> {
         let interval_secs = self.flush_interval_secs.max(1);
 
         tokio::spawn(async move {
@@ -509,5 +512,44 @@ impl Clone for ClickBuffer {
             flush_lock: self.flush_lock.clone(),
             flush_attempts: self.flush_attempts.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn click(link_id: i32) -> ClickData {
+        ClickData {
+            link_id,
+            ip_address: None,
+            user_agent: None,
+            referer: None,
+            country: None,
+            city: None,
+            region: None,
+            latitude: None,
+            longitude: None,
+            device: None,
+            browser: None,
+            os: None,
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn should_flush_at_threshold_not_under() {
+        let buf = ClickBuffer::with_limits(3, 10, 60);
+        assert!(!buf.should_flush());
+        buf.add_click(click(1));
+        buf.add_click(click(1));
+        assert!(!buf.should_flush());
+        assert_eq!(buf.queued_event_count(), 2);
+        assert_eq!(buf.pending_count(1), 2);
+
+        buf.add_click(click(2));
+        assert!(buf.should_flush());
+        assert_eq!(buf.queued_event_count(), 3);
+        assert_eq!(buf.pending_count(2), 1);
     }
 }

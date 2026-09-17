@@ -139,6 +139,100 @@ async fn ws_delivers_owner_click_and_filters_other_users() {
         "socket must receive its own event, never another user's: {msg}"
     );
     assert_eq!(msg["user_id"], user_id);
+    assert_eq!(msg["country"], "US");
+    assert_eq!(msg["city"], "NYC");
+    assert_eq!(msg["device"], "Desktop");
+    assert_eq!(msg["browser"], "Firefox");
+
+    socket.close().await;
+}
+
+/// SSE is the untagged ClickEvent JSON, not the WS `{type: click}` envelope.
+/// Same per-user filter as `/ws`.
+#[tokio::test]
+async fn sse_delivers_owner_click_and_filters_other_users() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let mut body = response.bytes_stream();
+
+    wait_for_subscriber(&ws).await;
+
+    let other_user = user_id + 100_000;
+    ws.broadcast_click(click_for(other_user, "OTHER-SSE-EVENT"));
+    ws.broadcast_click(click_for(user_id, "MY-SSE-EVENT"));
+
+    let mut acc = Vec::new();
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(chunk) = body.next().await {
+            acc.extend_from_slice(&chunk.expect("read SSE body"));
+            let text = String::from_utf8_lossy(&acc);
+            if let Some(start) = text.find("data:") {
+                let rest = text[start + 5..].trim_start();
+                let json_line = rest.lines().next().unwrap_or("").trim();
+                if let Ok(v) = serde_json::from_str::<Value>(json_line) {
+                    return v;
+                }
+            }
+        }
+        panic!("SSE stream ended before a click event");
+    })
+    .await
+    .expect("timed out waiting for SSE click");
+
+    assert_eq!(
+        event["link_code"], "MY-SSE-EVENT",
+        "SSE must skip other users: {event}"
+    );
+    assert_eq!(event["user_id"], user_id);
+    assert!(
+        event.get("type").is_none(),
+        "SSE payload is the ClickEvent struct, not a tagged WsMessage: {event}"
+    );
+    assert_eq!(event["country"], "US");
+    assert_eq!(event["device"], "Desktop");
+}
+
+/// `handle_socket` only forwards `event.user_id == Some(subscriber)`. A click
+/// with `user_id: None` (anonymous / unowned) must not leak to any socket.
+#[tokio::test]
+async fn ws_drops_clicks_with_no_user_id() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    let mut anon = click_for(user_id, "ANON-EVENT");
+    anon.user_id = None;
+    ws.broadcast_click(anon);
+    ws.broadcast_click(click_for(user_id, "OWNED-EVENT"));
+
+    let msg: Value = socket.receive_json().await;
+    assert_eq!(msg["type"], "click");
+    assert_eq!(
+        msg["link_code"], "OWNED-EVENT",
+        "anonymous click must not be delivered: {msg}"
+    );
 
     socket.close().await;
 }
