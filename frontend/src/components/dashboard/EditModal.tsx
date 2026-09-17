@@ -20,6 +20,14 @@ function expiryDateInputValue(value: string | null): string {
     return value.match(/^(\d{4}-\d{2}-\d{2})(?:T| |$)/)?.[1] ?? '';
 }
 
+// Local Y-M-D: toISOString() is UTC and can be tomorrow (or yesterday) for the user.
+function localIsoDate(date = new Date()): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
 async function responseError(response: Response, fallback: string): Promise<string> {
     const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
     return body?.error || body?.message || fallback;
@@ -175,7 +183,7 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                             value={expiresAt}
                             onChange={(e) => setExpiresAt(e.target.value)}
                             className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
-                            min={new Date().toISOString().split('T')[0]}
+                            min={localIsoDate()}
                         />
                         {link.expires_at && (
                             <label className="flex items-center gap-2 mt-2 text-sm text-muted">
