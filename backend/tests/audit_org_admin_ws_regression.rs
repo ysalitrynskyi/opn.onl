@@ -5,7 +5,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{
-    api_keys, folders, link_tags, links, org_members, passkeys, tags, users,
+    api_keys, click_events, folders, link_tags, links, org_members, passkeys, tags, users,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -545,5 +545,112 @@ async fn self_delete_revokes_credentials_and_preserves_org_links() {
             .await
             .unwrap(),
         0
+    );
+}
+
+/// Hard-deleting an editor must not destroy links they created inside someone
+/// else's organization (or those links' click history). Organization links
+/// belong to the team; only the editor's personal links die with the account.
+#[tokio::test]
+async fn admin_hard_delete_preserves_other_orgs_links_and_clicks() {
+    let (setup_server, db) = spawn_real_app().await;
+    let (admin_token, admin_id) = register_verified(&setup_server, &db).await;
+    make_admin(&db, admin_id).await;
+    let (owner_token, _) = register_verified(&setup_server, &db).await;
+    let (editor_token, editor_id) = register_verified(&setup_server, &db).await;
+
+    let org_id = create_org(&setup_server, &owner_token).await;
+    add_member(&db, org_id, editor_id, "editor").await;
+    let personal_link_id = create_link(&setup_server, &editor_token, None).await;
+    let org_link_id = create_link(&setup_server, &editor_token, Some(org_id)).await;
+
+    let org_click = click_events::ActiveModel {
+        link_id: Set(org_link_id),
+        created_at: Set(chrono::Utc::now().naive_utc()),
+        ip_address: Set(Some("203.0.113.10".to_string())),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert org click");
+    click_events::ActiveModel {
+        link_id: Set(personal_link_id),
+        created_at: Set(chrono::Utc::now().naive_utc()),
+        ip_address: Set(Some("203.0.113.11".to_string())),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert personal click");
+
+    let org_link_before = links::Entity::find_by_id(org_link_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let org_code = org_link_before.code.clone();
+
+    let (server, _) = spawn_real_app().await;
+    let res = server
+        .delete(&format!("/admin/users/{editor_id}/hard"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "hard delete: {}", res.text());
+
+    assert!(
+        users::Entity::find_by_id(editor_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "target user row must be gone"
+    );
+    assert!(
+        links::Entity::find_by_id(personal_link_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "personal links must be permanently deleted"
+    );
+
+    let org_link = links::Entity::find_by_id(org_link_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .expect("org-owned link must survive hard delete of its creator");
+    assert!(
+        org_link.deleted_at.is_none(),
+        "surviving org link must stay live"
+    );
+    assert_eq!(org_link.org_id, Some(org_id));
+    assert!(
+        org_link.user_id.is_none(),
+        "org link creator FK must be cleared so user DELETE cannot cascade it"
+    );
+
+    assert!(
+        click_events::Entity::find_by_id(org_click.id)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_some(),
+        "click history on the surviving org link must remain"
+    );
+    assert_eq!(
+        click_events::Entity::find()
+            .filter(click_events::Column::LinkId.eq(personal_link_id))
+            .count(&db)
+            .await
+            .unwrap(),
+        0,
+        "clicks on deleted personal links must cascade away"
+    );
+
+    let res = server.get(&format!("/{org_code}")).await;
+    assert!(
+        res.status_code().is_redirection(),
+        "org link must keep redirecting after creator hard-delete, got {}",
+        res.status_code()
     );
 }

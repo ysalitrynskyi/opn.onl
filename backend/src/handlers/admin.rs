@@ -650,10 +650,21 @@ pub async fn hard_delete_user(
             crate::handlers::organizations::purge_organization(&txn, org.id).await?;
         }
 
-        // Delete all user's links and associated data
-        // (cascade delete handles click_events and link_tags)
+        // Organization links belong to the team, not their original creator.
+        // `fk-link-user_id` is ON DELETE CASCADE, so the creator FK must be
+        // cleared before the user row is removed or those org links (and their
+        // click history) die with the account.
+        links::Entity::update_many()
+            .col_expr(links::Column::UserId, Expr::value(Option::<i32>::None))
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_not_null())
+            .exec(&txn)
+            .await?;
+
+        // Personal links (and their click_events / link_tags via cascade).
         links::Entity::delete_many()
             .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_null())
             .exec(&txn)
             .await?;
 
