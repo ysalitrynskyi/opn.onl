@@ -10,6 +10,7 @@ use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -645,12 +646,50 @@ pub struct BulkUpdateRequest {
     pub remove_expiration: Option<bool>,
 }
 
+/// Dashboard fetches GET /links with no `limit` and paginates in the browser,
+/// so omitting `limit` must still return a complete-enough list. 1000 is a
+/// safety cap, not "every row the user owns".
+const DEFAULT_LINKS_LIMIT: u64 = 1000;
+const MAX_LINKS_LIMIT: u64 = 1000;
+
+fn clamp_links_limit(limit: Option<u64>) -> u64 {
+    limit
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_LINKS_LIMIT)
+        .min(MAX_LINKS_LIMIT)
+}
+
+#[cfg(test)]
+mod links_limit_tests {
+    use super::{clamp_links_limit, DEFAULT_LINKS_LIMIT, MAX_LINKS_LIMIT};
+
+    #[test]
+    fn omitted_or_zero_uses_default() {
+        assert_eq!(clamp_links_limit(None), DEFAULT_LINKS_LIMIT);
+        assert_eq!(clamp_links_limit(Some(0)), DEFAULT_LINKS_LIMIT);
+    }
+
+    #[test]
+    fn values_inside_the_range_pass_through() {
+        assert_eq!(clamp_links_limit(Some(1)), 1);
+        assert_eq!(clamp_links_limit(Some(25)), 25);
+        assert_eq!(clamp_links_limit(Some(MAX_LINKS_LIMIT)), MAX_LINKS_LIMIT);
+    }
+
+    #[test]
+    fn values_above_the_maximum_are_clamped() {
+        assert_eq!(clamp_links_limit(Some(MAX_LINKS_LIMIT + 1)), MAX_LINKS_LIMIT);
+        assert_eq!(clamp_links_limit(Some(u64::MAX)), MAX_LINKS_LIMIT);
+    }
+}
+
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct LinksQuery {
     pub folder_id: Option<i32>,
     pub org_id: Option<i32>,
     pub tag_id: Option<i32>,
     pub search: Option<String>,
+    /// Page size. Omitted or 0 defaults to 1000. Maximum 1000.
     pub limit: Option<u64>,
     pub offset: Option<u64>,
 }
@@ -954,33 +993,64 @@ fn destination_redirect(url: &str) -> axum::response::Response {
     response
 }
 
-async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
-    let link_tags_list = link_tags::Entity::find()
-        .filter(link_tags::Column::LinkId.eq(link_id))
+/// Tags for many links in two queries: all `link_tags` for the page, then the
+/// distinct `tags` rows. Soft-deleted links are excluded by the caller — this
+/// table has no `deleted_at`, so a leftover assignment on a deleted link is
+/// only dropped when that link is not in `link_ids`.
+pub(crate) async fn get_tags_by_link_ids(
+    db: &DatabaseConnection,
+    link_ids: &[i32],
+) -> HashMap<i32, Vec<TagInfo>> {
+    let mut by_link: HashMap<i32, Vec<TagInfo>> = HashMap::new();
+    if link_ids.is_empty() {
+        return by_link;
+    }
+
+    let assignments = link_tags::Entity::find()
+        .filter(link_tags::Column::LinkId.is_in(link_ids.to_vec()))
         .all(db)
         .await
         .unwrap_or_default();
-
-    let tag_ids: Vec<i32> = link_tags_list.iter().map(|lt| lt.tag_id).collect();
-
-    if tag_ids.is_empty() {
-        return vec![];
+    if assignments.is_empty() {
+        return by_link;
     }
 
+    let tag_ids: Vec<i32> = assignments.iter().map(|lt| lt.tag_id).collect();
     let tags_list = tags::Entity::find()
         .filter(tags::Column::Id.is_in(tag_ids))
         .all(db)
         .await
         .unwrap_or_default();
-
-    tags_list
+    let tags_by_id: HashMap<i32, TagInfo> = tags_list
         .into_iter()
-        .map(|t| TagInfo {
-            id: t.id,
-            name: t.name,
-            color: t.color,
+        .map(|t| {
+            (
+                t.id,
+                TagInfo {
+                    id: t.id,
+                    name: t.name,
+                    color: t.color,
+                },
+            )
         })
-        .collect()
+        .collect();
+
+    for assignment in assignments {
+        if let Some(tag) = tags_by_id.get(&assignment.tag_id) {
+            by_link
+                .entry(assignment.link_id)
+                .or_default()
+                .push(tag.clone());
+        }
+    }
+    by_link
+}
+
+async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
+    get_tags_by_link_ids(db, &[link_id])
+        .await
+        .remove(&link_id)
+        .unwrap_or_default()
 }
 
 // ============= Handlers =============
@@ -3105,7 +3175,7 @@ pub async fn replace_routing_rules(
     path = "/links",
     params(LinksQuery),
     responses(
-        (status = 200, description = "The caller's non-deleted links", body = Vec<LinkResponse>),
+        (status = 200, description = "The caller's non-deleted links (limit defaults to 1000, maximum 1000)", body = Vec<LinkResponse>),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "Links"
@@ -3142,7 +3212,10 @@ pub async fn get_user_links(
         link_query = link_query.filter(links::Column::OrgId.eq(org_id));
     }
 
-    // Search by URL or code
+    // Search by URL or code. `contains` becomes LIKE '%…%' / ILIKE, which
+    // cannot use btree idx_links_original_url (or any btree). A pg_trgm GIN
+    // index is the real answer if this filter becomes hot; do not add another
+    // btree expecting it to serve a leading wildcard.
     if let Some(search) = query.search {
         link_query = link_query.filter(
             Condition::any()
@@ -3168,13 +3241,8 @@ pub async fn get_user_links(
 
     let link_query = link_query.order_by_desc(links::Column::CreatedAt);
 
-    // Pagination
-    let link_query = if let Some(limit) = query.limit {
-        link_query.limit(limit)
-    } else {
-        link_query
-    };
-
+    let limit = clamp_links_limit(query.limit);
+    let link_query = link_query.limit(limit);
     let link_query = if let Some(offset) = query.offset {
         link_query.offset(offset)
     } else {
@@ -3182,12 +3250,14 @@ pub async fn get_user_links(
     };
 
     let user_links = link_query.all(&state.db).await.unwrap_or_default();
+    let page_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
+    let mut tags_by_link = get_tags_by_link_ids(&state.db, &page_ids).await;
 
     let base_url = get_base_url();
     let api_url = get_api_url();
     let mut response = Vec::new();
     for l in user_links {
-        let tags = get_link_tags(&state.db, l.id).await;
+        let tags = tags_by_link.remove(&l.id).unwrap_or_default();
         response.push(LinkResponse {
             id: l.id,
             code: l.code.clone(),
