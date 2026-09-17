@@ -271,6 +271,19 @@ async fn self_delete_revokes_sessions_and_credentials() {
 
     let (server, db) = spawn_real_app().await;
     let (jwt, user_id) = register(&server, &unique_email()).await;
+    // First-user bootstrap may grant admin on an empty table; last-admin
+    // protection would then refuse this delete. This test is about credential
+    // revocation, not admin tenure.
+    let registered = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    if registered.is_admin {
+        let mut active: users::ActiveModel = registered.into();
+        active.is_admin = Set(false);
+        active.update(&db).await.expect("demote bootstrap admin");
+    }
     mark_email_verified(&db, user_id).await;
     let api_key = seed_credentials(&db, user_id).await;
     let original_version = users::Entity::find_by_id(user_id)
@@ -404,6 +417,104 @@ async fn password_change_consumes_outstanding_reset_token() {
         .unwrap();
     assert!(user.password_reset_token.is_none());
     assert!(user.password_reset_expires.is_none());
+}
+
+#[tokio::test]
+async fn a_non_last_admin_can_self_delete() {
+    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let (server, db) = spawn_real_app().await;
+
+    let (jwt_a, user_a) = register(&server, &unique_email()).await;
+    promote_directly(&db, user_a).await;
+    let (_jwt_b, user_b) = register(&server, &unique_email()).await;
+    promote_directly(&db, user_b).await;
+
+    let res = server
+        .post("/auth/delete-account")
+        .authorization_bearer(&jwt_a)
+        .json(&json!({ "password": "password123" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        200,
+        "non-last admin must still be able to leave: {}",
+        res.text()
+    );
+
+    let deleted = users::Entity::find_by_id(user_a)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(deleted.deleted_at.is_some());
+    let remaining = users::Entity::find_by_id(user_b)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(remaining.deleted_at.is_none());
+    assert!(remaining.is_admin);
+}
+
+#[tokio::test]
+async fn last_remaining_admin_cannot_self_delete() {
+    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let (server, db) = spawn_real_app().await;
+
+    let (jwt, user_id) = register(&server, &unique_email()).await;
+    promote_directly(&db, user_id).await;
+
+    let other_admins = users::Entity::find()
+        .filter(users::Column::IsAdmin.eq(true))
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::Id.ne(user_id))
+        .count(&db)
+        .await
+        .expect("count other admins");
+
+    let res = server
+        .post("/auth/delete-account")
+        .authorization_bearer(&jwt)
+        .json(&json!({ "password": "password123" }))
+        .await;
+
+    if other_admins == 0 {
+        assert_eq!(
+            res.status_code(),
+            409,
+            "last admin must be refused: {}",
+            res.text()
+        );
+        assert!(
+            res.text().contains("last remaining admin"),
+            "last admin body: {}",
+            res.text()
+        );
+        let still = users::Entity::find_by_id(user_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(still.deleted_at.is_none());
+        assert!(still.is_admin);
+    } else {
+        assert_eq!(
+            res.status_code(),
+            200,
+            "non-last admin may leave: {}",
+            res.text()
+        );
+        let remaining = users::Entity::find()
+            .filter(users::Column::IsAdmin.eq(true))
+            .filter(users::Column::DeletedAt.is_null())
+            .count(&db)
+            .await
+            .expect("count remaining admins");
+        assert!(
+            remaining >= 1,
+            "self-delete must not leave the instance without an admin"
+        );
+    }
 }
 
 #[tokio::test]

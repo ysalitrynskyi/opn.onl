@@ -1055,6 +1055,39 @@ pub async fn delete_account(
                 .into_response();
         }
 
+        // Refusing the last live admin avoids a window with no admin until
+        // process restart (`ensure_admin_exists` runs only at boot).
+        if user.is_admin {
+            let live_admins = match users::Entity::find()
+                .filter(users::Column::IsAdmin.eq(true))
+                .filter(users::Column::DeletedAt.is_null())
+                .count(&txn)
+                .await
+            {
+                Ok(count) => count,
+                Err(_) => {
+                    let _ = txn.rollback().await;
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to delete account".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            if live_admins <= 1 {
+                let _ = txn.rollback().await;
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Cannot delete the last remaining admin".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
         // An org owner cannot delete their account while the org still has
         // other members. Check inside the deletion transaction so all database
         // cleanup either commits together or fails together.
