@@ -654,3 +654,86 @@ async fn admin_hard_delete_preserves_other_orgs_links_and_clicks() {
         res.status_code()
     );
 }
+
+fn org_link_count(orgs: &Value, org_id: i32) -> i64 {
+    orgs.as_array()
+        .unwrap()
+        .iter()
+        .find(|org| org["id"].as_i64() == Some(org_id as i64))
+        .expect("org present")["link_count"]
+        .as_i64()
+        .unwrap()
+}
+
+/// Org-facing `link_count` must match the live-link listing (and admin
+/// `links_count`), not raw `links.org_id` rows. Soft-deleted links used to
+/// inflate GET /orgs, GET /orgs/{id}, PUT /orgs/{id}, and transfer.
+#[tokio::test]
+async fn org_link_count_excludes_soft_deleted_links() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let (_member_token, member_id) = register_verified(&server, &db).await;
+
+    let org_id = create_org(&server, &owner_token).await;
+    add_member(&db, org_id, member_id, "admin").await;
+    let live_id = create_link(&server, &owner_token, Some(org_id)).await;
+    let deleted_id = create_link(&server, &owner_token, Some(org_id)).await;
+    let _ = live_id;
+
+    let del = server
+        .delete(&format!("/links/{deleted_id}"))
+        .authorization_bearer(&owner_token)
+        .await;
+    assert_eq!(del.status_code(), 200, "soft-delete org link: {}", del.text());
+
+    let list: Value = server
+        .get("/orgs")
+        .authorization_bearer(&owner_token)
+        .await
+        .json();
+    assert_eq!(
+        org_link_count(&list, org_id),
+        1,
+        "GET /orgs must not count the soft-deleted link"
+    );
+
+    let detail: Value = server
+        .get(&format!("/orgs/{org_id}"))
+        .authorization_bearer(&owner_token)
+        .await
+        .json();
+    assert_eq!(
+        detail["link_count"].as_i64(),
+        Some(1),
+        "GET /orgs/{{id}} must not count the soft-deleted link"
+    );
+
+    let updated: Value = server
+        .put(&format!("/orgs/{org_id}"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "name": "Audit Org Renamed" }))
+        .await
+        .json();
+    assert_eq!(
+        updated["link_count"].as_i64(),
+        Some(1),
+        "PUT /orgs/{{id}} must not count the soft-deleted link"
+    );
+
+    let transferred = server
+        .post(&format!("/orgs/{org_id}/transfer-ownership"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "new_owner_user_id": member_id }))
+        .await;
+    assert_eq!(
+        transferred.status_code(),
+        200,
+        "transfer: {}",
+        transferred.text()
+    );
+    assert_eq!(
+        transferred.json::<Value>()["link_count"].as_i64(),
+        Some(1),
+        "transfer-ownership must not count the soft-deleted link"
+    );
+}
