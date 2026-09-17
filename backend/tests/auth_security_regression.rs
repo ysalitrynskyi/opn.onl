@@ -5,6 +5,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{api_keys, passkeys, users};
+use opn_onl_backend::handlers::auth::hash_secret_token;
 use opn_onl_backend::handlers::links::hash_api_key;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -515,6 +516,113 @@ async fn last_remaining_admin_cannot_self_delete() {
             "self-delete must not leave the instance without an admin"
         );
     }
+}
+
+#[tokio::test]
+async fn verification_and_reset_tokens_are_stored_hashed() {
+    let (server, db) = spawn_real_app().await;
+    let email = unique_email();
+    let (_, user_id) = register(&server, &email).await;
+
+    let stored = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .verification_token
+        .expect("register must store a verification token");
+    assert_eq!(stored.len(), 64);
+    assert!(
+        stored.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "verification_token must be sha256 hex, got {stored}"
+    );
+
+    let raw_verify = format!("verify-{}", uuid::Uuid::new_v4());
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: users::ActiveModel = user.into();
+    active.verification_token = Set(Some(hash_secret_token(&raw_verify)));
+    active.verification_token_expires = Set(Some(
+        (chrono::Utc::now() + chrono::Duration::hours(24)).naive_utc(),
+    ));
+    active.update(&db).await.expect("seed hashed verification token");
+
+    let stored_hash = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .verification_token
+        .unwrap();
+    let steal = server
+        .post("/auth/verify-email")
+        .json(&json!({ "token": stored_hash }))
+        .await;
+    assert_eq!(
+        steal.status_code(),
+        400,
+        "presenting the stored digest must not verify: {}",
+        steal.text()
+    );
+
+    let ok = server
+        .post("/auth/verify-email")
+        .json(&json!({ "token": raw_verify }))
+        .await;
+    assert_eq!(ok.status_code(), 200, "raw token must verify: {}", ok.text());
+    let verified = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(verified.email_verified);
+    assert!(verified.verification_token.is_none());
+
+    let raw_reset = format!("reset-{}", uuid::Uuid::new_v4());
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: users::ActiveModel = user.into();
+    active.password_reset_token = Set(Some(hash_secret_token(&raw_reset)));
+    active.password_reset_expires = Set(Some(
+        (chrono::Utc::now() + chrono::Duration::hours(1)).naive_utc(),
+    ));
+    active.update(&db).await.expect("seed hashed reset token");
+
+    let stored_reset = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_reset_token
+        .unwrap();
+    let steal = server
+        .post("/auth/reset-password")
+        .json(&json!({ "token": stored_reset, "password": "newpassword1" }))
+        .await;
+    assert_eq!(
+        steal.status_code(),
+        400,
+        "presenting the stored digest must not reset: {}",
+        steal.text()
+    );
+
+    let ok = server
+        .post("/auth/reset-password")
+        .json(&json!({ "token": raw_reset, "password": "newpassword1" }))
+        .await;
+    assert_eq!(ok.status_code(), 200, "raw token must reset: {}", ok.text());
+    let reset = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reset.password_reset_token.is_none());
 }
 
 #[tokio::test]

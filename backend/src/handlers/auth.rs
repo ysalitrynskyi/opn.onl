@@ -161,7 +161,7 @@ pub async fn register(
         email: Set(email.clone()),
         password_hash: Set(hashed_password),
         email_verified: Set(false),
-        verification_token: Set(Some(verification_token.clone())),
+        verification_token: Set(Some(hash_secret_token(&verification_token))),
         verification_token_expires: Set(Some(verification_expires.naive_utc())),
         is_admin: Set(is_first_user),
         ..Default::default()
@@ -330,6 +330,14 @@ pub async fn login(
         .into_response()
 }
 
+/// SHA-256 hex of an email verification or password-reset secret. The raw
+/// token is mailed to the user; only this digest is stored, so a database
+/// dump cannot be replayed against `/auth/verify-email` or `/auth/reset-password`.
+pub fn hash_secret_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
 /// A lazily-computed bcrypt hash used to equalize login timing when the account
 /// does not exist, mitigating user enumeration via response time.
 fn dummy_password_hash() -> &'static str {
@@ -355,7 +363,7 @@ pub async fn verify_email(
     Json(payload): Json<VerifyEmailRequest>,
 ) -> impl IntoResponse {
     let user = users::Entity::find()
-        .filter(users::Column::VerificationToken.eq(&payload.token))
+        .filter(users::Column::VerificationToken.eq(hash_secret_token(&payload.token)))
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
@@ -474,7 +482,7 @@ pub async fn resend_verification(
             let verification_expires = Utc::now() + Duration::hours(24);
 
             let mut active_user: users::ActiveModel = user.clone().into();
-            active_user.verification_token = Set(Some(verification_token.clone()));
+            active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
             active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
             if active_user.update(&state.db).await.is_ok() {
@@ -544,7 +552,7 @@ pub async fn forgot_password(
         let reset_expires = Utc::now() + Duration::hours(1);
 
         let mut active_user: users::ActiveModel = user.clone().into();
-        active_user.password_reset_token = Set(Some(reset_token.clone()));
+        active_user.password_reset_token = Set(Some(hash_secret_token(&reset_token)));
         active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
         if active_user.update(&state.db).await.is_err() {
@@ -618,7 +626,7 @@ pub async fn reset_password(
         }
     };
     let user = users::Entity::find()
-        .filter(users::Column::PasswordResetToken.eq(&payload.token))
+        .filter(users::Column::PasswordResetToken.eq(hash_secret_token(&payload.token)))
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::DisabledAt.is_null())
         .lock_exclusive()
