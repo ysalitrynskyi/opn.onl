@@ -804,3 +804,54 @@ async fn update_organization_duplicate_slug_returns_409() {
         .unwrap();
     assert_eq!(org_b.slug, slug_b, "slug must stay unchanged on conflict");
 }
+
+#[tokio::test]
+async fn deleted_members_are_omitted_and_do_not_block_owner_deletion() {
+    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, owner_id) = register_verified(&server, &db).await;
+    let (admin_token, admin_id) = register_verified(&server, &db).await;
+    make_admin(&db, admin_id).await;
+    let (_, member_id) = register_verified(&server, &db).await;
+    let org_id = create_org(&server, &owner_token).await;
+    add_member(&db, org_id, member_id, "viewer").await;
+
+    let res = server
+        .delete(&format!("/admin/users/{member_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "soft-delete member: {}", res.text());
+
+    let members = server
+        .get(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .await;
+    assert_eq!(members.status_code(), 200, "list members: {}", members.text());
+    let member_ids: Vec<i32> = members
+        .json::<Value>()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["user_id"].as_i64().unwrap() as i32)
+        .collect();
+    assert!(
+        member_ids.contains(&owner_id),
+        "owner must still appear in the member list"
+    );
+    assert!(
+        !member_ids.contains(&member_id),
+        "soft-deleted user must not appear in the member list: {member_ids:?}"
+    );
+
+    let res = server
+        .post("/auth/delete-account")
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "password": "password123" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        200,
+        "deleted members must not block owner account deletion: {}",
+        res.text()
+    );
+}

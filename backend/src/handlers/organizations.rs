@@ -5,7 +5,7 @@ use axum::{
 };
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, Set, TransactionTrait,
+    QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -152,10 +152,11 @@ pub(crate) async fn member_can_edit(
 }
 
 /// Organizations owned by a user, split by what deleting that user would do
-/// to them. `blocking` orgs still have other members, so the account cannot
-/// be deleted until ownership is transferred (or the org deliberately
-/// deleted). `solo` orgs have no member besides the owner and die with the
-/// account on hard delete.
+/// to them. `blocking` orgs still have other live members, so the account
+/// cannot be deleted until ownership is transferred (or the org deliberately
+/// deleted). Soft-deleted users are ignored: they cannot log in or accept a
+/// transfer. `solo` orgs have no live member besides the owner and die with
+/// the account on hard delete.
 pub(crate) struct OwnedOrgsSplit {
     pub blocking: Vec<organizations::Model>,
     pub solo: Vec<organizations::Model>,
@@ -174,8 +175,10 @@ pub(crate) async fn split_owned_orgs<C: ConnectionTrait>(
     let mut solo = Vec::new();
     for org in owned {
         let other_members = org_members::Entity::find()
+            .inner_join(users::Entity)
             .filter(org_members::Column::OrgId.eq(org.id))
             .filter(org_members::Column::UserId.ne(user_id))
+            .filter(users::Column::DeletedAt.is_null())
             .count(db)
             .await?;
         if other_members > 0 {
@@ -784,16 +787,20 @@ pub async fn get_organization_members(
 
     let mut responses = Vec::new();
     for member in members {
-        let user = users::Entity::find_by_id(member.user_id)
+        let Some(user) = users::Entity::find_by_id(member.user_id)
+            .filter(users::Column::DeletedAt.is_null())
             .one(&state.db)
             .await
             .ok()
-            .flatten();
+            .flatten()
+        else {
+            continue;
+        };
 
         responses.push(OrgMemberResponse {
             id: member.id,
             user_id: member.user_id,
-            email: user.map(|u| u.email).unwrap_or_default(),
+            email: user.email,
             role: member.role,
             joined_at: member.joined_at.to_string(),
         });
