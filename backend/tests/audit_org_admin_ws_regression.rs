@@ -705,3 +705,55 @@ async fn transfer_ownership_rejects_disabled_member() {
         "ownership must stay with the original owner"
     );
 }
+
+#[tokio::test]
+async fn create_organization_duplicate_slug_returns_409() {
+    let (server, db) = spawn_real_app().await;
+    let (token_a, _) = register_verified(&server, &db).await;
+    let (token_b, _) = register_verified(&server, &db).await;
+    let slug = format!("slug-{}", uuid::Uuid::new_v4().simple());
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_a)
+        .json(&json!({ "name": "Org A", "slug": &slug }))
+        .await;
+    assert_eq!(res.status_code(), 201, "first create: {}", res.text());
+
+    let listed = server
+        .get("/orgs")
+        .authorization_bearer(&token_a)
+        .await;
+    assert_eq!(listed.status_code(), 200);
+    assert_eq!(
+        listed.json::<Value>().as_array().unwrap().len(),
+        1,
+        "owner membership must commit with the org row"
+    );
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_b)
+        .json(&json!({ "name": "Org B", "slug": &slug }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        409,
+        "duplicate slug must conflict: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"].as_str(),
+        Some("Slug already exists")
+    );
+
+    let listed_b = server
+        .get("/orgs")
+        .authorization_bearer(&token_b)
+        .await;
+    assert_eq!(listed_b.status_code(), 200);
+    assert!(
+        listed_b.json::<Value>().as_array().unwrap().is_empty(),
+        "losing create must not leave a membership-less org for the caller"
+    );
+}

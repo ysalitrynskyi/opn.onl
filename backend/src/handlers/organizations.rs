@@ -324,7 +324,17 @@ pub async fn create_organization(
         ));
     }
 
-    // Create organization
+    let txn = state.db.begin().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Database error"})),
+        )
+    })?;
+
+    // Create organization and owner membership together. A membership insert
+    // failure used to leave an org row whose slug was taken but which
+    // `check_org_permission` could not see, so the owner could neither list
+    // nor delete it.
     let org = organizations::ActiveModel {
         name: Set(payload.name.clone()),
         slug: Set(payload.slug.clone()),
@@ -332,14 +342,24 @@ pub async fn create_organization(
         ..Default::default()
     };
 
-    let org = org.insert(&state.db).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to create organization"})),
-        )
-    })?;
+    let org = match org.insert(&txn).await {
+        Ok(org) => org,
+        Err(err) if err.to_string().contains("duplicate key value") => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Slug already exists"})),
+            ));
+        }
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to create organization"})),
+            ));
+        }
+    };
 
-    // Add owner as member with owner role
     let member = org_members::ActiveModel {
         org_id: Set(org.id),
         user_id: Set(user_id),
@@ -347,10 +367,18 @@ pub async fn create_organization(
         ..Default::default()
     };
 
-    member.insert(&state.db).await.map_err(|_| {
-        (
+    if member.insert(&txn).await.is_err() {
+        let _ = txn.rollback().await;
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "Failed to add owner as member"})),
+        ));
+    }
+
+    txn.commit().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to create organization"})),
         )
     })?;
 
