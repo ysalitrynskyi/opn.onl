@@ -1160,6 +1160,7 @@ export default function Dashboard() {
                                             </button>
                                             <button
                                                 onClick={() => setEditingLink(link)}
+                                                data-edit-link={link.id}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Edit"
                                                 aria-label="Edit link"

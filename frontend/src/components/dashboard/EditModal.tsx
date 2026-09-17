@@ -98,6 +98,10 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             }
 
             onClose();
+            const editId = link.id;
+            requestAnimationFrame(() => {
+                document.querySelector<HTMLElement>(`[data-edit-link="${editId}"]`)?.focus();
+            });
         } catch (error) {
             setSaveError(error instanceof Error ? error.message : 'Failed to update link');
         } finally {

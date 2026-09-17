@@ -202,4 +202,42 @@ describe('EditModal', () => {
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
         expect(opener).toHaveFocus();
     });
+
+    it('does not restore focus to an opener that save replaced', async () => {
+        function Harness() {
+            const [open, setOpen] = useState(false);
+            const [version, setVersion] = useState(0);
+            return (
+                <>
+                    <button
+                        key={version}
+                        type="button"
+                        data-edit-link={baseLink.id}
+                        onClick={() => setOpen(true)}
+                    >
+                        Open editor
+                    </button>
+                    {open && (
+                        <EditModal
+                            link={baseLink}
+                            onClose={() => setOpen(false)}
+                            onSave={async () => {
+                                setVersion(v => v + 1);
+                            }}
+                        />
+                    )}
+                </>
+            );
+        }
+
+        const { user } = render(<Harness />);
+        await user.click(screen.getByRole('button', { name: 'Open editor' }));
+        await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+        await waitFor(() => {
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Open editor' })).toHaveFocus();
+        });
+        expect(document.activeElement).not.toBe(document.body);
+    });
 });
