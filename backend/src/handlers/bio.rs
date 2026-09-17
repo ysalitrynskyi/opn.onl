@@ -74,7 +74,6 @@ pub struct BioLink {
     pub code: String,
     pub short_url: String,
     pub label: String,
-    pub click_count: i32,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -276,7 +275,6 @@ pub async fn get_public_bio(
                 short_url: format!("{}/{}", base_url, l.code),
                 code: l.code,
                 label,
-                click_count: l.click_count,
             }
         })
         .collect();
