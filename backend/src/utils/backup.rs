@@ -75,11 +75,9 @@ impl BackupService {
         info!("Creating database backup: {}", filename);
 
         // Run pg_dump asynchronously so the dump doesn't block a runtime worker
-        // thread (tokio::process spawns and awaits without blocking).
-        let output = Command::new("pg_dump")
-            .arg(&self.database_url)
-            .arg("--no-owner")
-            .arg("--no-acl")
+        // thread (tokio::process spawns and awaits without blocking). The
+        // password is passed via PGPASSWORD, not argv — see pg_dump_command.
+        let output = Command::from(pg_dump_command(&self.database_url))
             .output()
             .await
             .map_err(|e| format!("Failed to run pg_dump: {}", e))?;
@@ -204,5 +202,103 @@ impl Clone for BackupService {
             bucket: self.bucket.clone(),
             database_url: self.database_url.clone(),
         }
+    }
+}
+
+/// Split a postgres URL into a password-free connection URI and the password.
+/// The password is returned separately so `pg_dump` can receive it via
+/// `PGPASSWORD` instead of the process argument list (`/proc/pid/cmdline`, `ps`).
+fn pg_dump_connection(database_url: &str) -> (String, Option<String>) {
+    let mut parsed = match url::Url::parse(database_url) {
+        Ok(u) => u,
+        Err(_) => return (database_url.to_string(), None),
+    };
+
+    let password = parsed.password().and_then(|encoded| {
+        if encoded.is_empty() {
+            return None;
+        }
+        Some(
+            urlencoding::decode(encoded)
+                .map(|cow| cow.into_owned())
+                .unwrap_or_else(|_| encoded.to_string()),
+        )
+    });
+
+    if parsed.password().is_some() {
+        let _ = parsed.set_password(None);
+    }
+
+    (parsed.to_string(), password)
+}
+
+fn pg_dump_command(database_url: &str) -> std::process::Command {
+    let (safe_url, password) = pg_dump_connection(database_url);
+    let mut cmd = std::process::Command::new("pg_dump");
+    if let Some(password) = password {
+        cmd.env("PGPASSWORD", password);
+    }
+    cmd.arg(safe_url).arg("--no-owner").arg("--no-acl");
+    cmd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_pgpassword(cmd: &std::process::Command) -> Option<String> {
+        cmd.get_envs().find_map(|(k, v)| {
+            if k == "PGPASSWORD" {
+                v.map(|val| val.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn argv_joined(cmd: &std::process::Command) -> String {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn pg_dump_argv_omits_password() {
+        let url = "postgres://opn:s3cret-pass@localhost:5432/opn_onl";
+        let cmd = pg_dump_command(url);
+        let joined = argv_joined(&cmd);
+        assert!(
+            !joined.contains("s3cret-pass"),
+            "password leaked onto argv: {joined}"
+        );
+        assert_eq!(env_pgpassword(&cmd).as_deref(), Some("s3cret-pass"));
+        assert!(
+            joined.contains("postgres://opn@localhost:5432/opn_onl"),
+            "password-stripped URI missing from argv: {joined}"
+        );
+    }
+
+    #[test]
+    fn pg_dump_argv_decodes_percent_encoded_password() {
+        let url = "postgres://opn:p%40ss%2Fword@localhost:5432/opn_onl";
+        let cmd = pg_dump_command(url);
+        let joined = argv_joined(&cmd);
+        assert!(!joined.contains("p%40ss"), "encoded password on argv: {joined}");
+        assert!(
+            !joined.contains("p@ss/word"),
+            "decoded password on argv: {joined}"
+        );
+        assert_eq!(env_pgpassword(&cmd).as_deref(), Some("p@ss/word"));
+    }
+
+    #[test]
+    fn pg_dump_skips_pgpassword_when_url_has_no_password() {
+        let url = "postgresql://opn@localhost:5432/opn_onl?sslmode=require";
+        let (safe, pw) = pg_dump_connection(url);
+        assert!(pw.is_none());
+        assert!(safe.contains("sslmode=require"));
+        let cmd = pg_dump_command(url);
+        assert!(env_pgpassword(&cmd).is_none());
     }
 }
