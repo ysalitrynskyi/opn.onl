@@ -7,260 +7,215 @@
 //! capped links consume their click with a single atomic conditional UPDATE
 //! (`click_count < max_clicks`), so at most `max_clicks` requests can ever win.
 //!
-//! These are black-box tests against a REAL running backend (the crate has no
-//! lib target, so the handler cannot be driven in-process). They are gated on
-//! `E2E_BASE_URL` and skip silently when it is unset, e.g.:
-//!
-//! ```sh
-//! E2E_BASE_URL=http://localhost:3105 cargo test --test click_cap_race_tests -- --nocapture
-//! ```
-//!
-//! Requests in a round are released together via a Barrier — sequential curl
-//! does NOT reproduce the race; simultaneous arrival does, reliably.
+//! These tests drive the real router in-process via `common::spawn_real_app()`
+//! (`opn_onl_backend::build_router` against a real Postgres). Concurrent
+//! requests are issued with `futures::future::join_all` so the race is
+//! exercised in CI with no external server and no env gate. (`JoinSet::spawn`
+//! cannot carry `TestServer::get()`: axum-test's `AutoFuture` is `!Send`.)
 
-use std::sync::Arc;
-use tokio::sync::Barrier;
+mod common;
 
-/// The tests hammer the same backend from one IP; running them concurrently
-/// trips the server's per-IP rate limits and pollutes each other's counts.
-/// Each test holds this lock for its whole body so they run serially even
-/// under cargo's default parallel test runner.
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+use std::future::IntoFuture;
 
-fn base_url() -> Option<String> {
-    std::env::var("E2E_BASE_URL").ok().filter(|s| !s.is_empty())
-}
+use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
+use opn_onl_backend::entity::links;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use serde_json::{json, Value};
 
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client")
-}
-
-async fn create_link(base: &str, body: serde_json::Value) -> String {
-    // Retry on 429: the backend's per-IP limiter may still be draining from a
-    // previous test's burst; that's environmental, not the behavior under test.
-    for _ in 0..10 {
-        let resp = client()
-            .post(format!("{base}/links"))
-            .json(&body)
-            .send()
-            .await
-            .expect("create link request");
-        if resp.status() == 429 {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            continue;
-        }
-        assert_eq!(resp.status(), 201, "link creation failed");
-        let v: serde_json::Value = resp.json().await.expect("create link json");
-        return v["code"].as_str().expect("code").to_string();
-    }
-    panic!("link creation still rate-limited after 10 retries");
-}
-
-/// Fire `n` GET /{code} requests that all start at the same instant.
-/// Returns (redirects, gone, other).
-async fn slam(base: &str, code: &str, n: usize) -> (usize, usize, usize) {
-    let barrier = Arc::new(Barrier::new(n));
-    let mut handles = Vec::with_capacity(n);
-    for _ in 0..n {
-        let barrier = barrier.clone();
-        let url = format!("{base}/{code}");
-        let client = client();
-        handles.push(tokio::spawn(async move {
-            barrier.wait().await;
-            match client.get(&url).send().await {
-                Ok(resp) => resp.status().as_u16(),
-                Err(_) => 0,
-            }
-        }));
-    }
-    let mut redirects = 0;
-    let mut gone = 0;
-    let mut other = 0;
-    for h in handles {
-        match h.await.expect("task") {
-            301 | 302 | 307 | 308 => redirects += 1,
-            410 => gone += 1,
-            _ => other += 1,
-        }
-    }
-    (redirects, gone, other)
-}
-
-/// A burn-after-reading link (max_clicks = 1) must serve exactly ONE redirect,
-/// no matter how many requests arrive simultaneously. Pre-fix this failed with
-/// up to 20 redirects per round.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn burn_link_is_exactly_once_under_concurrency() {
-    let Some(base) = base_url() else {
-        eprintln!("skipping: E2E_BASE_URL not set (needs a running backend)");
-        return;
-    };
-    let _serial = SERIAL.lock().await;
-    const N: usize = 20;
-    const ROUNDS: usize = 3;
-
-    for round in 1..=ROUNDS {
-        let code = create_link(
-            &base,
-            serde_json::json!({
-                "original_url": "https://iana.org/burn-race-secret",
-                "burn_after_reading": true,
-            }),
-        )
+async fn register_verified(server: &axum_test::TestServer, db: &DatabaseConnection) -> String {
+    let res = server
+        .post("/auth/register")
+        .json(&json!({
+            "email": unique_email(),
+            "password": "password123",
+        }))
         .await;
-
-        let (redirects, gone, other) = slam(&base, &code, N).await;
-        println!("round {round}: code={code} redirects={redirects} gone={gone} other={other}");
-        assert_eq!(
-            redirects, 1,
-            "burn link {code} served {redirects} redirects to {N} concurrent requests (round {round}); \
-             a one-time link must be opened exactly once"
-        );
-        // `other` tolerates transport errors / 429s; the invariant is that no
-        // loser ever gets the destination.
-        assert_eq!(redirects + gone + other, N);
-        assert!(gone >= 1, "concurrent losers must get 410 Gone");
-
-        // A follow-up request must also be refused.
-        let status = client()
-            .get(format!("{base}/{code}"))
-            .send()
-            .await
-            .expect("follow-up")
-            .status()
-            .as_u16();
-        assert_eq!(status, 410, "burned link must stay 410 after the race");
-
-        // Space rounds out so the per-IP redirect rate limit can't interfere.
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
+    assert_eq!(res.status_code(), 201, "register: {}", res.text());
+    let body: Value = res.json();
+    let user_id = body["user_id"].as_i64().expect("user_id") as i32;
+    mark_email_verified(db, user_id).await;
+    body["token"].as_str().expect("token").to_string()
 }
 
-/// A plain max_clicks = N link must serve at most N redirects under
-/// concurrency, and the persisted click_count must settle at exactly N after
-/// the click-buffer flush window (no double-counting between the atomic
-/// consume and the buffer's aggregate flush).
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn capped_link_never_overshoots_and_count_settles_exactly() {
-    let Some(base) = base_url() else {
-        eprintln!("skipping: E2E_BASE_URL not set (needs a running backend)");
-        return;
-    };
-    let _serial = SERIAL.lock().await;
-    const MAX: usize = 3;
-    const N: usize = 30;
+async fn create_link(server: &axum_test::TestServer, token: &str, mut payload: Value) -> String {
+    payload["custom_alias"] = json!(unique_code());
+    let res = server
+        .post("/links")
+        .authorization_bearer(token)
+        .json(&payload)
+        .await;
+    assert_eq!(res.status_code(), 201, "create link: {}", res.text());
+    res.json::<Value>()["code"]
+        .as_str()
+        .expect("code")
+        .to_string()
+}
 
+struct Slam {
+    redirects: usize,
+    gone: usize,
+    other: usize,
+}
+
+/// Fire `n` GET /{code} requests concurrently. Each `TestServer::get` clones
+/// the inner transport handle; `join_all` polls them together so they
+/// interleave at the DB await (sequential `.await` would not reproduce the race).
+async fn slam(server: &axum_test::TestServer, code: &str, n: usize) -> Slam {
+    let path = format!("/{code}");
+    let responses =
+        futures::future::join_all((0..n).map(|_| server.get(&path).into_future())).await;
+
+    let mut slam = Slam {
+        redirects: 0,
+        gone: 0,
+        other: 0,
+    };
+    for res in responses {
+        match res.status_code().as_u16() {
+            301 | 302 | 307 | 308 => slam.redirects += 1,
+            410 => slam.gone += 1,
+            _ => slam.other += 1,
+        }
+    }
+    slam
+}
+
+async fn persisted_link(db: &DatabaseConnection, code: &str) -> links::Model {
+    links::Entity::find()
+        .filter(links::Column::Code.eq(code))
+        .one(db)
+        .await
+        .expect("db error")
+        .expect("link not found")
+}
+
+/// A link with max_clicks = 1 hit by N concurrent redirects yields exactly one
+/// success and N-1 refusals, and click_count ends at 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn max_clicks_one_is_exactly_once_under_concurrency() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
     let code = create_link(
-        &base,
-        serde_json::json!({
-            "original_url": "https://iana.org/capped-race",
-            "max_clicks": MAX,
+        &server,
+        &token,
+        json!({
+            "original_url": "https://iana.org/capped-once",
+            "max_clicks": 1,
         }),
     )
     .await;
 
-    let (redirects, gone, other) = slam(&base, &code, N).await;
-    println!("code={code} redirects={redirects} gone={gone} other={other}");
+    const N: usize = 20;
+    let slam = slam(&server, &code, N).await;
+
     assert_eq!(
-        redirects, MAX,
-        "max_clicks={MAX} link {code} served {redirects} redirects to {N} concurrent requests"
+        slam.redirects, 1,
+        "max_clicks=1 link {code} served {} redirects to {N} concurrent requests \
+         (gone={} other={})",
+        slam.redirects, slam.gone, slam.other
+    );
+    assert_eq!(
+        slam.gone,
+        N - 1,
+        "the other {} concurrent requests must be refused with 410 (other={})",
+        N - 1,
+        slam.other
+    );
+    assert_eq!(slam.redirects + slam.gone + slam.other, N);
+
+    let stored = persisted_link(&db, &code).await;
+    assert_eq!(
+        stored.click_count, 1,
+        "atomic consume must leave click_count at exactly 1"
     );
 
-    // Wait past the click-buffer flush interval (CLICK_FLUSH_INTERVAL, default
-    // 5s), then check the persisted count through the public preview endpoint.
-    // If the atomic consume were also counted in the buffer, this would read
-    // 2 * MAX.
-    let flush_secs = std::env::var("CLICK_FLUSH_INTERVAL")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(5);
-    tokio::time::sleep(std::time::Duration::from_secs(flush_secs + 2)).await;
-    let preview: serde_json::Value = client()
-        .get(format!("{base}/{code}/preview"))
-        .send()
-        .await
-        .expect("preview")
-        .json()
-        .await
-        .expect("preview json");
-    assert_eq!(
-        preview["click_count"].as_i64(),
-        Some(MAX as i64),
-        "persisted click_count must settle at exactly max_clicks (no double count at flush)"
-    );
+    let follow_up = server.get(&format!("/{code}")).await.status_code().as_u16();
+    assert_eq!(follow_up, 410, "exhausted cap must stay 410 after the race");
 }
 
-/// POST /{code}/verify discloses the destination URL, so it must consume a
-/// click slot for capped links exactly like a redirect — including the
-/// passwordless form, which previously returned the URL without any counting
-/// at all (an unlimited read of a "one-time" secret that never burned it).
+/// A burn-after-reading link hit concurrently is consumed exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn verify_endpoint_consumes_burn_link_exactly_once() {
-    let Some(base) = base_url() else {
-        eprintln!("skipping: E2E_BASE_URL not set (needs a running backend)");
-        return;
-    };
-    let _serial = SERIAL.lock().await;
-    const N: usize = 10;
-
+async fn burn_link_is_exactly_once_under_concurrency() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
     let code = create_link(
-        &base,
-        serde_json::json!({
-            "original_url": "https://iana.org/verify-burn-secret",
+        &server,
+        &token,
+        json!({
+            "original_url": "https://iana.org/burn-race-secret",
             "burn_after_reading": true,
         }),
     )
     .await;
 
-    let barrier = Arc::new(Barrier::new(N));
-    let mut handles = Vec::with_capacity(N);
-    for _ in 0..N {
-        let barrier = barrier.clone();
-        let url = format!("{base}/{code}/verify");
-        let client = client();
-        handles.push(tokio::spawn(async move {
-            barrier.wait().await;
-            match client
-                .post(&url)
-                .json(&serde_json::json!({ "password": "" }))
-                .send()
-                .await
-            {
-                Ok(resp) => resp.status().as_u16(),
-                Err(_) => 0,
-            }
-        }));
-    }
-    let mut disclosed = 0;
-    let mut gone = 0;
-    let mut other = 0;
-    for h in handles {
-        match h.await.expect("task") {
-            200 => disclosed += 1,
-            410 => gone += 1,
-            _ => other += 1,
-        }
-    }
-    println!("code={code} disclosed={disclosed} gone={gone} other={other}");
+    const N: usize = 20;
+    let slam = slam(&server, &code, N).await;
+
     assert_eq!(
-        disclosed, 1,
-        "verify endpoint disclosed burn link {code} to {disclosed} of {N} concurrent callers; \
-         a one-time secret must be disclosed exactly once"
+        slam.redirects, 1,
+        "burn link {code} served {} redirects to {N} concurrent requests \
+         (gone={} other={}); a one-time link must be opened exactly once",
+        slam.redirects, slam.gone, slam.other
+    );
+    assert_eq!(
+        slam.gone,
+        N - 1,
+        "concurrent losers must get 410 Gone (other={})",
+        slam.other
+    );
+    assert_eq!(slam.redirects + slam.gone + slam.other, N);
+
+    let stored = persisted_link(&db, &code).await;
+    assert_eq!(
+        stored.click_count, 1,
+        "burn consume must leave click_count at 1"
+    );
+    assert!(
+        stored.burned_at.is_some(),
+        "the winning click must stamp burned_at"
     );
 
-    // The link must now be burned for redirects too.
-    let status = client()
-        .get(format!("{base}/{code}"))
-        .send()
-        .await
-        .expect("follow-up")
-        .status()
-        .as_u16();
+    let follow_up = server.get(&format!("/{code}")).await.status_code().as_u16();
+    assert_eq!(follow_up, 410, "burned link must stay 410 after the race");
+}
+
+/// A link with max_clicks = 5 hit by 20 concurrent requests yields exactly 5
+/// successes, and the persisted click_count settles at 5.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn capped_link_never_overshoots_under_concurrency() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let code = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": "https://iana.org/capped-race",
+            "max_clicks": 5,
+        }),
+    )
+    .await;
+
+    const MAX: usize = 5;
+    const N: usize = 20;
+    let slam = slam(&server, &code, N).await;
+
     assert_eq!(
-        status, 410,
-        "burned link must be 410 after verify consumed it"
+        slam.redirects, MAX,
+        "max_clicks={MAX} link {code} served {} redirects to {N} concurrent requests \
+         (gone={} other={})",
+        slam.redirects, slam.gone, slam.other
+    );
+    assert_eq!(
+        slam.gone,
+        N - MAX,
+        "the remaining requests must be 410 (other={})",
+        slam.other
+    );
+    assert_eq!(slam.redirects + slam.gone + slam.other, N);
+
+    let stored = persisted_link(&db, &code).await;
+    assert_eq!(
+        stored.click_count, MAX as i32,
+        "persisted click_count must settle at exactly max_clicks"
     );
 }
