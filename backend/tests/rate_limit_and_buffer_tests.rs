@@ -6,7 +6,10 @@ mod common;
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::utils::click_buffer::ClickData;
 use opn_onl_backend::utils::ClickBuffer;
-use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseBackend, EntityTrait, PaginatorTrait, QueryFilter,
+    Statement, TransactionTrait,
+};
 use serde_json::{json, Value};
 
 async fn register_verified(
@@ -213,5 +216,72 @@ async fn click_buffer_flush_error_does_not_busy_loop() {
         buffer.queued_event_count(),
         5,
         "failed flush must requeue rather than drop"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn click_buffer_shutdown_joins_in_flight_flush() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let link_id = create_link_id(&server, &token).await;
+
+    // Hold FOR UPDATE on this link so the in-flight flush blocks at its
+    // parent lock_shared, after taking events out of the queue. Row-level
+    // so parallel tests on other links are unaffected.
+    let lock_db = sea_orm::Database::connect(
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+    )
+    .await
+    .expect("lock conn");
+    let txn = lock_db.begin().await.expect("begin");
+    txn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT id FROM links WHERE id = $1 FOR UPDATE",
+        [link_id.into()],
+    ))
+    .await
+    .expect("lock link");
+
+    let buffer = std::sync::Arc::new(ClickBuffer::with_limits(1, 20, 60));
+    for _ in 0..5 {
+        buffer.add_click(click(link_id));
+    }
+    let handle = buffer.clone().start_flush_task(db.clone());
+
+    let started = std::time::Instant::now();
+    while buffer.queued_event_count() != 0 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "background flush never took the queued events"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let shutting_down = {
+        let buffer = buffer.clone();
+        let db = db.clone();
+        tokio::spawn(async move {
+            buffer.request_stop();
+            let _ = handle.await;
+            buffer.flush(&db).await;
+        })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    txn.rollback().await.expect("release link lock");
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutting_down)
+        .await
+        .expect("shutdown timed out")
+        .expect("shutdown task");
+
+    assert_eq!(buffer.queued_event_count(), 0);
+    let persisted = opn_onl_backend::entity::click_events::Entity::find()
+        .filter(opn_onl_backend::entity::click_events::Column::LinkId.eq(link_id))
+        .count(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted, 5,
+        "in-flight flush must persist rather than be dropped on shutdown"
     );
 }

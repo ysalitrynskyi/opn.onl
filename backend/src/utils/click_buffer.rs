@@ -3,7 +3,7 @@ use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set, TransactionTrait,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
@@ -54,6 +54,13 @@ pub struct ClickBuffer {
     flush_interval_secs: u64,
     /// Signals the flush task to flush early once the buffer reaches max_buffer_size.
     flush_notify: Arc<tokio::sync::Notify>,
+    /// Wakes the flush task so it can exit on shutdown instead of being dropped
+    /// mid-statement with a taken-but-unwritten batch.
+    stop: Arc<tokio::sync::Notify>,
+    stopped: Arc<AtomicBool>,
+    /// Serializes `flush` so shutdown cannot take an empty buffer while the
+    /// background task still holds the in-flight events.
+    flush_lock: Arc<tokio::sync::Mutex<()>>,
     flush_attempts: Arc<AtomicU64>,
 }
 
@@ -97,6 +104,9 @@ impl ClickBuffer {
             max_queued,
             flush_interval_secs,
             flush_notify: Arc::new(tokio::sync::Notify::new()),
+            stop: Arc::new(tokio::sync::Notify::new()),
+            stopped: Arc::new(AtomicBool::new(false)),
+            flush_lock: Arc::new(tokio::sync::Mutex::new(())),
             flush_attempts: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -174,9 +184,21 @@ impl ClickBuffer {
             .unwrap_or(0)
     }
 
+    /// Ask the background flush task to exit after its current (or next) flush.
+    ///
+    /// `Notify::notify_waiters` is lost if the task is inside `flush` and not
+    /// polling, so the AtomicBool is the source of truth and `flush_notify`
+    /// stores a permit to wake the select.
+    pub fn request_stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.stop.notify_waiters();
+        self.flush_notify.notify_one();
+    }
+
     /// Flush the buffer to the database. Returns true when any events or
     /// counters were requeued because persistence failed.
     pub async fn flush(&self, db: &DatabaseConnection) -> bool {
+        let _guard = self.flush_lock.lock().await;
         self.flush_attempts.fetch_add(1, Ordering::Relaxed);
 
         // Take events from buffer
@@ -402,14 +424,33 @@ impl ClickBuffer {
             let mut backoff = Duration::from_millis(200);
 
             loop {
+                if self.stopped.load(Ordering::SeqCst) {
+                    let _ = self.flush(&db).await;
+                    break;
+                }
                 // Flush on the timer, or early when the buffer signals it is full.
                 tokio::select! {
                     _ = ticker.tick() => {}
                     _ = self.flush_notify.notified() => {}
+                    _ = self.stop.notified() => {}
+                }
+                if self.stopped.load(Ordering::SeqCst) {
+                    let _ = self.flush(&db).await;
+                    break;
                 }
                 let had_retry = self.flush(&db).await;
+                if self.stopped.load(Ordering::SeqCst) {
+                    break;
+                }
                 if had_retry {
-                    tokio::time::sleep(backoff).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = self.stop.notified() => {}
+                    }
+                    if self.stopped.load(Ordering::SeqCst) {
+                        let _ = self.flush(&db).await;
+                        break;
+                    }
                     backoff = backoff
                         .saturating_mul(2)
                         .min(Duration::from_secs(interval_secs));
@@ -430,6 +471,9 @@ impl Clone for ClickBuffer {
             max_queued: self.max_queued,
             flush_interval_secs: self.flush_interval_secs,
             flush_notify: self.flush_notify.clone(),
+            stop: self.stop.clone(),
+            stopped: self.stopped.clone(),
+            flush_lock: self.flush_lock.clone(),
             flush_attempts: self.flush_attempts.clone(),
         }
     }
