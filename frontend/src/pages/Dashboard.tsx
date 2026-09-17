@@ -272,6 +272,10 @@ export default function Dashboard() {
                 const data = await res.json();
                 if (requestId !== linksFetchId.current) return;
                 setLinks(data);
+            } else {
+                const data = await res.json().catch(() => null) as { error?: string } | null;
+                if (requestId !== linksFetchId.current) return;
+                setError(data?.error || 'Failed to load links. Please try again.');
             }
         } catch (error) {
             if (requestId !== linksFetchId.current) return;
@@ -1180,7 +1184,7 @@ export default function Dashboard() {
                     </div>
                 )}
 
-                {links.length === 0 && (
+                {links.length === 0 && !error && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}

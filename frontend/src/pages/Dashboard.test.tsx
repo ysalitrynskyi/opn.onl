@@ -310,6 +310,21 @@ describe('Dashboard Page', () => {
     expect(screen.getAllByText(/bbb222/i).length).toBeGreaterThan(0);
   });
 
+  it('does not treat a failed links fetch as an empty account', async () => {
+    mockDashboardFetch((requestUrl) => {
+      if (requestUrl.endsWith('/links')) {
+        return mockFetchError('Database down', 500);
+      }
+      return mockFetchResponse([]);
+    });
+
+    render(<Dashboard />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/database down/i);
+    expect(screen.queryByText(/no links yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/create your first shortened link/i)).not.toBeInTheDocument();
+  });
+
   it('keeps both pin updates when two pins finish out of order', async () => {
     const pinResolvers: Array<() => void> = [];
     mockDashboardFetch((requestUrl, options) => {
