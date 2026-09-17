@@ -164,9 +164,12 @@ export default function Dashboard() {
         {
             key: 'Escape',
             handler: () => {
-                setEditingLink(null);
-                setQrLink(null);
-                setShareLink(null);
+                if (editingLink || qrLink || shareLink) {
+                    setEditingLink(null);
+                    setQrLink(null);
+                    setShareLink(null);
+                    return;
+                }
                 setSearchQuery('');
             },
             description: 'Close modal / Clear search',

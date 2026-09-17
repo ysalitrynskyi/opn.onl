@@ -403,6 +403,28 @@ describe('useKeyboardShortcuts Hook', () => {
             document.body.removeChild(select);
         });
 
+        it('does not preventDefault Escape when a select is focused', () => {
+            const close = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: 'Escape', handler: close, description: 'Close' },
+            ]));
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+            const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+            Object.defineProperty(event, 'target', { value: select, writable: false });
+            const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+
+            act(() => {
+                window.dispatchEvent(event);
+            });
+
+            expect(close).toHaveBeenCalledTimes(1);
+            expect(preventDefaultSpy).not.toHaveBeenCalled();
+
+            document.body.removeChild(select);
+        });
+
         it('ignores shortcuts when a combobox is focused', () => {
             const handler = vi.fn();
             renderHook(() => useKeyboardShortcuts([

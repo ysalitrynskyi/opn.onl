@@ -34,7 +34,11 @@ export function useKeyboardShortcuts(shortcuts: ShortcutHandler[]) {
             const shiftMatch = shortcut.shift ? event.shiftKey : !event.shiftKey;
 
             if (keyMatch && ctrlMatch && altMatch && shiftMatch) {
-                event.preventDefault();
+                // Native <select> uses Escape to close an open listbox.
+                const selectEscape = event.key === 'Escape' && target instanceof HTMLSelectElement;
+                if (!selectEscape) {
+                    event.preventDefault();
+                }
                 shortcut.handler();
                 return;
             }

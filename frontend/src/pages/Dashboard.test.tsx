@@ -452,6 +452,24 @@ describe('Dashboard Page', () => {
     expect(screen.queryByText(/create your first shortened link/i)).not.toBeInTheDocument();
   });
 
+  it('does not clear search when Escape closes the edit modal', async () => {
+    mockDashboardFetch(() => mockFetchResponse([linkA, linkB]));
+    const { user } = render(<Dashboard />);
+    const search = await screen.findByPlaceholderText(/search links/i);
+    await user.type(search, 'aaa111');
+    expect(search).toHaveValue('aaa111');
+
+    await user.click(screen.getAllByRole('button', { name: /edit link/i })[0]);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(screen.getByPlaceholderText(/search links/i)).toHaveValue('aaa111');
+  });
+
   it('keeps both pin updates when two pins finish out of order', async () => {
     const pinResolvers: Array<() => void> = [];
     mockDashboardFetch((requestUrl, options) => {
