@@ -197,7 +197,11 @@ export default function Admin() {
             navigate('/dashboard');
             return false;
         }
-        if (statsRes.ok) setStats(await statsRes.json());
+        if (statsRes.ok) {
+            setStats(await statsRes.json());
+        } else {
+            setError('Failed to load admin data');
+        }
         if (activityRes.ok) {
             const data = await activityRes.json();
             setActivity(data.days ?? []);

@@ -388,6 +388,26 @@ describe('Admin Page', () => {
             });
         });
 
+        it('shows an error when stats fail to load', async () => {
+            global.fetch = vi.fn((url: string) => {
+                const respond = (payload: unknown, status = 200) => Promise.resolve({
+                    ok: status >= 200 && status < 300,
+                    status,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/stats')) return respond({}, 500);
+                if (url.includes('/admin/activity')) return respond(mockActivity);
+                return respond({});
+            }) as any;
+
+            render(<Admin />);
+
+            expect(await screen.findByRole('heading', { name: /admin dashboard/i })).toBeInTheDocument();
+            expect(await screen.findByText(/failed to load admin data/i)).toBeInTheDocument();
+            expect(screen.queryByText('Total Users')).not.toBeInTheDocument();
+            expect(screen.queryByText(/create backup/i)).not.toBeInTheDocument();
+        });
+
         it('shows a suspicious-links banner and jumps to the filtered Links tab', async () => {
             render(<Admin />);
 
