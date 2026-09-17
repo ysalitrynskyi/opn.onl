@@ -757,3 +757,50 @@ async fn create_organization_duplicate_slug_returns_409() {
         "losing create must not leave a membership-less org for the caller"
     );
 }
+
+#[tokio::test]
+async fn update_organization_duplicate_slug_returns_409() {
+    let (server, db) = spawn_real_app().await;
+    let (token_a, _) = register_verified(&server, &db).await;
+    let (token_b, _) = register_verified(&server, &db).await;
+    let slug_a = format!("acme-{}", uuid::Uuid::new_v4().simple());
+    let slug_b = format!("beta-{}", uuid::Uuid::new_v4().simple());
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_a)
+        .json(&json!({ "name": "Acme", "slug": &slug_a }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create A: {}", res.text());
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_b)
+        .json(&json!({ "name": "Beta", "slug": &slug_b }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create B: {}", res.text());
+    let org_b_id = res.json::<Value>()["id"].as_i64().unwrap() as i32;
+
+    let res = server
+        .put(&format!("/orgs/{org_b_id}"))
+        .authorization_bearer(&token_b)
+        .json(&json!({ "slug": &slug_a }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        409,
+        "taken slug must conflict: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"].as_str(),
+        Some("Slug already exists")
+    );
+
+    let org_b = organizations::Entity::find_by_id(org_b_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(org_b.slug, slug_b, "slug must stay unchanged on conflict");
+}

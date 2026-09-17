@@ -571,6 +571,7 @@ pub async fn get_organization(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
+        (status = 409, description = "Slug already exists"),
     ),
     tag = "Organizations"
 )]
@@ -613,15 +614,41 @@ pub async fn update_organization(
         org.name = Set(name);
     }
     if let Some(slug) = payload.slug {
+        let taken = organizations::Entity::find()
+            .filter(organizations::Column::Slug.eq(&slug))
+            .filter(organizations::Column::Id.ne(org_id))
+            .one(&state.db)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Database error"})),
+                )
+            })?;
+        if taken.is_some() {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Slug already exists"})),
+            ));
+        }
         org.slug = Set(slug);
     }
 
-    let org = org.update(&state.db).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to update organization"})),
-        )
-    })?;
+    let org = match org.update(&state.db).await {
+        Ok(org) => org,
+        Err(err) if err.to_string().contains("duplicate key value") => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Slug already exists"})),
+            ));
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to update organization"})),
+            ));
+        }
+    };
 
     log_audit(
         &state.db,
