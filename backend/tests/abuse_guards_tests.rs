@@ -91,6 +91,33 @@ async fn create_rejects_dangerous_file_extension() {
 }
 
 #[tokio::test]
+async fn create_rejects_dangerous_extension_with_trailing_slash() {
+    let (server, db) = spawn_real_app().await;
+    let (token, _) = register_verified(&server, &db).await;
+
+    for url in [
+        "http://malware.iana.org/payload.hta/",
+        "http://malware.iana.org/payload.hta%2F",
+    ] {
+        let res = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": url }))
+            .await;
+        assert_eq!(res.status_code(), 400, "{url}: {}", res.text());
+        let body: Value = res.json();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("hta"),
+            "error should name the extension for {url}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn create_rejects_dangerous_extension_even_with_lure_query() {
     let (server, db) = spawn_real_app().await;
     let (token, _) = register_verified(&server, &db).await;
