@@ -32,6 +32,9 @@ pub struct ClickData {
     pub device: Option<String>,
     pub browser: Option<String>,
     pub os: Option<String>,
+    /// When the click happened. Stamped in `push_event` if unset, so a delayed
+    /// flush does not collapse analytics onto the recover instant.
+    pub created_at: Option<chrono::NaiveDateTime>,
 }
 
 /// Buffered click counter for aggregating click count updates
@@ -146,7 +149,10 @@ impl ClickBuffer {
     }
 
     /// Returns false when the event was shed because the hard cap is full.
-    fn push_event(&self, data: ClickData) -> bool {
+    fn push_event(&self, mut data: ClickData) -> bool {
+        if data.created_at.is_none() {
+            data.created_at = Some(chrono::Utc::now().naive_utc());
+        }
         let (queued, should_flush) = {
             let mut events = self.events.write();
             if events.len() >= self.max_queued {
@@ -314,6 +320,9 @@ impl ClickBuffer {
                             device: Set(e.device),
                             browser: Set(e.browser),
                             os: Set(e.os),
+                            created_at: Set(e.created_at.unwrap_or_else(|| {
+                                chrono::Utc::now().naive_utc()
+                            })),
                             ..Default::default()
                         })
                         .collect();

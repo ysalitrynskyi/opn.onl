@@ -153,6 +153,7 @@ fn click(link_id: i32) -> ClickData {
         device: None,
         browser: None,
         os: None,
+        created_at: None,
     }
 }
 
@@ -324,5 +325,38 @@ async fn click_buffer_shutdown_joins_in_flight_flush() {
     assert_eq!(
         persisted, 5,
         "in-flight flush must persist rather than be dropped on shutdown"
+    );
+}
+
+#[tokio::test]
+async fn click_buffer_persists_click_time_not_flush_time() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let link_id = create_link_id(&server, &token).await;
+
+    let clicked_at = chrono::Utc::now().naive_utc() - chrono::Duration::minutes(10);
+    let mut data = click(link_id);
+    data.created_at = Some(clicked_at);
+
+    let buffer = ClickBuffer::with_limits(10, 10, 60);
+    buffer.add_click(data);
+    buffer.flush(&db).await;
+
+    let stored = opn_onl_backend::entity::click_events::Entity::find()
+        .filter(opn_onl_backend::entity::click_events::Column::LinkId.eq(link_id))
+        .one(&db)
+        .await
+        .unwrap()
+        .expect("click row");
+    let delta = (stored.created_at - clicked_at).num_seconds().abs();
+    assert!(
+        delta <= 1,
+        "created_at must be the click time ({clicked_at}), not flush time, got {}",
+        stored.created_at
+    );
+    let lag = (chrono::Utc::now().naive_utc() - stored.created_at).num_minutes();
+    assert!(
+        lag >= 9,
+        "stored created_at should be ~10 minutes ago, lag={lag} min"
     );
 }

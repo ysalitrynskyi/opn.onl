@@ -2007,6 +2007,7 @@ fn record_click_buffered(
         device: ua_info.device.clone(),
         browser: ua_info.browser.clone(),
         os: ua_info.os,
+        created_at: None,
     };
     match accounting {
         ClickAccounting::Buffered { .. } => click_buffer.add_click(click_data),
