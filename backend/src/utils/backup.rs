@@ -4,8 +4,10 @@ use aws_sdk_s3::Client as S3Client;
 use chrono::Utc;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::io::Write;
-use tokio::process::Command;
+use aws_sdk_s3::primitives::ByteStream;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tracing::{error, info};
 
 /// Backup service for PostgreSQL to S3/R2
@@ -74,38 +76,26 @@ impl BackupService {
 
         info!("Creating database backup: {}", filename);
 
-        // Run pg_dump asynchronously so the dump doesn't block a runtime worker
-        // thread (tokio::process spawns and awaits without blocking). The
-        // password is passed via PGPASSWORD, not argv — see pg_dump_command.
-        let output = Command::from(pg_dump_command(&self.database_url))
-            .output()
+        // Stream pg_dump stdout through gzip onto disk so the API process never
+        // holds the raw dump and the compressed copy together in RSS.
+        let tmp_path = std::env::temp_dir().join(format!("{filename}.{}", uuid::Uuid::new_v4()));
+        let _guard = DeleteOnDrop(tmp_path.clone());
+        stream_pg_dump_to_gzip_file(&self.database_url, &tmp_path).await?;
+
+        let compressed_len = std::fs::metadata(&tmp_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        info!("Backup compressed: {} bytes", compressed_len);
+
+        let body = ByteStream::from_path(&tmp_path)
             .await
-            .map_err(|e| format!("Failed to run pg_dump: {}", e))?;
+            .map_err(|e| format!("Failed to read compressed backup: {}", e))?;
 
-        if !output.status.success() {
-            return Err(format!(
-                "pg_dump failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-
-        // Compress the dump
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(&output.stdout)
-            .map_err(|e| format!("Failed to compress backup: {}", e))?;
-        let compressed = encoder
-            .finish()
-            .map_err(|e| format!("Failed to finish compression: {}", e))?;
-
-        info!("Backup compressed: {} bytes", compressed.len());
-
-        // Upload to S3
         client
             .put_object()
             .bucket(&self.bucket)
             .key(&filename)
-            .body(compressed.into())
+            .body(body)
             .content_type("application/gzip")
             .send()
             .await
@@ -242,6 +232,85 @@ fn pg_dump_command(database_url: &str) -> std::process::Command {
     cmd
 }
 
+struct DeleteOnDrop(PathBuf);
+
+impl Drop for DeleteOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Gzip `reader` onto `dest` in bounded chunks so the raw dump never sits in RSS.
+fn gzip_chunked_copy(mut reader: impl Read, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::create(dest)
+        .map_err(|e| format!("Failed to create temp backup file: {e}"))?;
+    let mut encoder = GzEncoder::new(file, Compression::default());
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("Failed to read dump: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        encoder
+            .write_all(&buf[..n])
+            .map_err(|e| format!("Failed to compress backup: {e}"))?;
+        encoder
+            .flush()
+            .map_err(|e| format!("Failed to flush compressed backup: {e}"))?;
+    }
+    encoder
+        .finish()
+        .map_err(|e| format!("Failed to finish compression: {e}"))?;
+    Ok(())
+}
+
+async fn stream_pg_dump_to_gzip_file(database_url: &str, dest: &Path) -> Result<(), String> {
+    let dest = dest.to_path_buf();
+    let database_url = database_url.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = pg_dump_command(&database_url);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to run pg_dump: {e}"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "pg_dump stdout not piped".to_string())?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "pg_dump stderr not piped".to_string())?;
+
+        let stderr_thread = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        });
+
+        let compress_result = gzip_chunked_copy(stdout, &dest);
+        if compress_result.is_err() {
+            let _ = child.kill();
+        }
+        let status = child
+            .wait()
+            .map_err(|e| format!("Failed to wait for pg_dump: {e}"))?;
+        let stderr_bytes = stderr_thread.join().unwrap_or_default();
+        if !status.success() {
+            return Err(format!(
+                "pg_dump failed: {}",
+                String::from_utf8_lossy(&stderr_bytes)
+            ));
+        }
+        compress_result
+    })
+    .await
+    .map_err(|e| format!("Backup task failed: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +369,42 @@ mod tests {
         assert!(safe.contains("sslmode=require"));
         let cmd = pg_dump_command(url);
         assert!(env_pgpassword(&cmd).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gzip_emits_output_before_reader_eof() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+
+        let dest = std::env::temp_dir().join(format!(
+            "opn-gzip-stream-{}.gz",
+            uuid::Uuid::new_v4()
+        ));
+        let dest_for_thread = dest.clone();
+        let _guard = DeleteOnDrop(dest.clone());
+
+        let (mut tx, rx) = UnixStream::pair().expect("unix socket pair");
+        let handle = std::thread::spawn(move || gzip_chunked_copy(rx, &dest_for_thread));
+
+        let chunk = vec![b'X'; 256 * 1024];
+        tx.write_all(&chunk).expect("write dump chunk");
+        tx.flush().expect("flush dump chunk");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "gzip waited for the full dump before writing; would double RSS"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(tx);
+        handle.join().expect("gzip thread").expect("gzip copy");
     }
 }
