@@ -354,6 +354,7 @@ describe('Dashboard Page', () => {
     });
     expect(screen.queryAllByText(/aaa111/i)).toHaveLength(0);
     expect(screen.getAllByText(/bbb222/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/ccc333/i).length).toBeGreaterThan(0);
   });
 
   it('fetches sparklines in bounded id batches', async () => {

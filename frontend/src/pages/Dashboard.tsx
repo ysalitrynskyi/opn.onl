@@ -82,6 +82,9 @@ export default function Dashboard() {
     const navigate = useNavigate();
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
+    // IDs removed locally while a fetchLinks was in flight. Stale responses
+    // must not fold these back in when they merge newly created rows.
+    const droppedLinkIds = useRef(new Set<number>());
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -275,10 +278,22 @@ export default function Dashboard() {
         const requestId = ++linksFetchId.current;
         try {
             const res = await authFetch(API_ENDPOINTS.links);
-            if (requestId !== linksFetchId.current) return;
             if (res.ok) {
-                const data = await res.json();
-                if (requestId !== linksFetchId.current) return;
+                const data: LinkData[] = await res.json();
+                if (requestId !== linksFetchId.current) {
+                    // Delete/pin bumped the generation so this snapshot must
+                    // not replace the optimistic list (that would resurrect a
+                    // deleted row). Still fold in ids we do not have, or a
+                    // create that raced the mutation never appears.
+                    setLinks(prev => {
+                        const have = new Set(prev.map(l => l.id));
+                        const extras = data.filter(
+                            l => !have.has(l.id) && !droppedLinkIds.current.has(l.id),
+                        );
+                        return extras.length === 0 ? prev : [...extras, ...prev];
+                    });
+                    return;
+                }
                 setLinks(data);
             } else {
                 const data = await res.json().catch(() => null) as { error?: string } | null;
@@ -416,6 +431,7 @@ export default function Dashboard() {
             if (res.ok) {
                 // Drop any in-flight fetchLinks so it cannot write a snapshot
                 // that still contains this id over the optimistic list.
+                droppedLinkIds.current.add(id);
                 linksFetchId.current += 1;
                 setLinks(prev => prev.filter(l => l.id !== id));
             } else {
