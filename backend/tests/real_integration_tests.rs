@@ -11,6 +11,7 @@
 
 mod common;
 
+use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 /// Register a user through the real handler; returns (token, user_id).
@@ -230,6 +231,57 @@ async fn preview_hides_password_protected_destination() {
     let res = server.get(&format!("/{plain_code}/preview")).await;
     assert_eq!(res.status_code(), 200);
     assert_eq!(res.json::<Value>()["original_url"], plain_destination);
+}
+
+/// A not-yet-live scheduled link 410s on redirect; the public preview must
+/// not leak the embargoed destination in the meantime.
+#[tokio::test]
+async fn preview_hides_scheduled_link_destination() {
+    let (server, db) = common::spawn_real_app().await;
+
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+
+    let secret_destination = "https://iana.org/embargoed-destination";
+    let starts_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+    let (_, code) = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": secret_destination,
+            "starts_at": starts_at,
+        }),
+    )
+    .await;
+
+    let redirect = server.get(&format!("/{code}")).await;
+    assert_eq!(
+        redirect.status_code(),
+        410,
+        "scheduled redirect must be 410: {}",
+        redirect.text()
+    );
+    assert!(
+        redirect.text().contains("scheduled to activate later"),
+        "redirect body should explain the schedule: {}",
+        redirect.text()
+    );
+
+    let res = server.get(&format!("/{code}/preview")).await;
+    assert_eq!(res.status_code(), 200, "preview: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(
+        body["original_url"], "",
+        "scheduled preview must not leak the destination: {body}"
+    );
+    assert_eq!(
+        body["domain"], "",
+        "scheduled preview must not leak the destination host: {body}"
+    );
+    assert_eq!(
+        body["is_active"], false,
+        "scheduled preview must surface that the link is not yet active: {body}"
+    );
 }
 
 /// The real /health endpoint reports a healthy database through the real

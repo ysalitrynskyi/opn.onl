@@ -1384,6 +1384,8 @@ pub struct LinkPreviewResponse {
     pub domain: String,
     pub has_password: bool,
     pub is_expired: bool,
+    /// False when the link is not currently live (scheduled, expired, capped, or burned).
+    pub is_active: bool,
     pub created_at: String,
     pub click_count: i32,
     /// Destination reputation signal for the safe-link interstitial.
@@ -1470,9 +1472,16 @@ pub async fn preview_link(
 
             // A valid unlock may reveal an ordinary password-protected target so
             // the interstitial can describe it. Burn links stay secret until the
-            // authoritative redirect consumes their one-time click.
-            let protected =
-                (link.password_hash.is_some() && !password_unlocked) || link.burn_after_reading;
+            // authoritative redirect consumes their one-time click. A not-yet-live
+            // scheduled link is embargoed the same way: GET /{code} already 410s
+            // until starts_at, so the public preview must not leak original_url.
+            let not_yet_started = link
+                .starts_at
+                .map(|starts_at| Utc::now().naive_utc() < starts_at)
+                .unwrap_or(false);
+            let protected = (link.password_hash.is_some() && !password_unlocked)
+                || link.burn_after_reading
+                || not_yet_started;
             let (shown_url, shown_domain) = if protected {
                 (String::new(), String::new())
             } else {
@@ -1488,6 +1497,7 @@ pub async fn preview_link(
                     domain: shown_domain,
                     has_password: link.password_hash.is_some(),
                     is_expired,
+                    is_active: link.is_active(),
                     created_at: link.created_at.to_string(),
                     click_count: link.click_count,
                     reputation: ReputationInfo {
@@ -4131,6 +4141,30 @@ pub async fn clone_link(
                 }),
             )
                 .into_response();
+        }
+
+        // Clone inserts a new row, so it must honour the same per-user cap as
+        // create_link / bulk_create_links. Skipping it lets a user at the
+        // advertised MAX_LINKS_PER_USER mint extra active links.
+        if let Some(cap) = get_max_links_per_user() {
+            let existing = links::Entity::find()
+                .filter(links::Column::UserId.eq(user_id))
+                .filter(links::Column::DeletedAt.is_null())
+                .count(&state.db)
+                .await
+                .unwrap_or(0);
+            if existing >= cap {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "You have reached the maximum of {} links for this account",
+                            cap
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
         }
 
         // Generate new short code
