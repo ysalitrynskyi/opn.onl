@@ -190,6 +190,29 @@ impl ClickBuffer {
             .unwrap_or(0)
     }
 
+    /// Remove and return the unflushed aggregate count for one link so a
+    /// later max_clicks write can fold those clicks into `links.click_count`
+    /// instead of letting a cap-blind flush overshoot the new cap.
+    pub fn take_pending_count(&self, link_id: i32) -> i32 {
+        self.counters
+            .write()
+            .remove(&link_id)
+            .map(|c| c.count)
+            .unwrap_or(0)
+    }
+
+    /// Put clicks back into the buffer when folding them into click_count failed.
+    pub fn add_pending_count(&self, link_id: i32, n: i32) {
+        if n <= 0 {
+            return;
+        }
+        self.counters
+            .write()
+            .entry(link_id)
+            .and_modify(|c| c.count += n)
+            .or_insert(ClickCounter { count: n });
+    }
+
     /// Ask the background flush task to exit after its current (or next) flush.
     ///
     /// `Notify::notify_waiters` is lost if the task is inside `flush` and not
