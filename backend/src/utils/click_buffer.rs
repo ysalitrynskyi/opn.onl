@@ -39,7 +39,7 @@ pub struct ClickData {
 
 /// Buffered click counter for aggregating click count updates
 struct ClickCounter {
-    count: i32,
+    count: i64,
 }
 
 /// Click buffer for batching database writes
@@ -178,7 +178,7 @@ impl ClickBuffer {
 
     /// Number of clicks buffered (not yet flushed to the DB) for a link.
     /// Used so click limits account for in-flight clicks, not just the DB count.
-    pub fn pending_count(&self, link_id: i32) -> i32 {
+    pub fn pending_count(&self, link_id: i32) -> i64 {
         self.counters
             .read()
             .get(&link_id)
@@ -192,7 +192,7 @@ impl ClickBuffer {
     ///
     /// Takes `flush_lock` so this cannot run in the gap after flush has
     /// `mem::take`n the counters but before it commits `click_count`.
-    pub async fn take_pending_count(&self, link_id: i32) -> i32 {
+    pub async fn take_pending_count(&self, link_id: i32) -> i64 {
         let _guard = self.flush_lock.lock().await;
         self.counters
             .write()
@@ -202,7 +202,7 @@ impl ClickBuffer {
     }
 
     /// Put clicks back into the buffer when folding them into click_count failed.
-    pub async fn add_pending_count(&self, link_id: i32, n: i32) {
+    pub async fn add_pending_count(&self, link_id: i32, n: i64) {
         if n <= 0 {
             return;
         }
@@ -260,7 +260,7 @@ impl ClickBuffer {
         for event in events {
             events_by_link.entry(event.link_id).or_default().push(event);
         }
-        let mut counts: HashMap<i32, i32> = counters
+        let mut counts: HashMap<i32, i64> = counters
             .into_iter()
             .map(|(link_id, counter)| (link_id, counter.count))
             .collect();
@@ -271,7 +271,7 @@ impl ClickBuffer {
             .collect();
 
         let mut retry_events = Vec::new();
-        let mut retry_counts: HashMap<i32, i32> = HashMap::new();
+        let mut retry_counts: HashMap<i32, i64> = HashMap::new();
 
         for link_id in link_ids {
             let link_events = events_by_link.remove(&link_id).unwrap_or_default();
@@ -393,7 +393,7 @@ impl ClickBuffer {
         // loop after their parent link has been hard-deleted.
         let had_retry = !retry_events.is_empty() || !retry_counts.is_empty();
         if !retry_events.is_empty() {
-            let mut dropped_per_link: HashMap<i32, i32> = HashMap::new();
+            let mut dropped_per_link: HashMap<i32, i64> = HashMap::new();
             {
                 let mut buffer = self.events.write();
                 retry_events.append(&mut *buffer);

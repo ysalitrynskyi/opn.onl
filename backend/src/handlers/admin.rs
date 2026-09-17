@@ -30,6 +30,13 @@ fn clamp_pagination(page: Option<u64>, per_page: Option<u64>) -> (u64, u64) {
 
 /// Escape LIKE/ILIKE wildcards in user-supplied search text and wrap it for a
 /// substring match.
+/// Postgres `SUM(bigint)` returns `numeric`, which SeaORM will not decode as
+/// `i64`. Cast so the admin aggregates keep the i64 API. A sum past 2^63-1
+/// makes the CAST fail rather than wrap.
+fn sum_click_count_as_bigint() -> sea_orm::sea_query::SimpleExpr {
+    Expr::cust("CAST(SUM(\"click_count\") AS BIGINT)")
+}
+
 fn ilike_pattern(search: &str) -> String {
     let escaped = search
         .replace('\\', "\\\\")
@@ -1566,7 +1573,7 @@ pub async fn get_admin_stats(
     // survive a table with millions of rows.
     let total_clicks: i64 = links::Entity::find()
         .select_only()
-        .column_as(links::Column::ClickCount.sum(), "total")
+        .column_as(sum_click_count_as_bigint(), "total")
         .into_tuple::<Option<i64>>()
         .one(&state.db)
         .await
@@ -2364,7 +2371,7 @@ pub async fn get_all_users(
             .select_only()
             .column(links::Column::UserId)
             .column_as(links::Column::Id.count(), "links_count")
-            .column_as(links::Column::ClickCount.sum(), "clicks")
+            .column_as(sum_click_count_as_bigint(), "clicks")
             .filter(links::Column::UserId.is_in(user_ids.clone()))
             .filter(links::Column::DeletedAt.is_null())
             .group_by(links::Column::UserId)
@@ -2487,7 +2494,7 @@ pub struct AdminLinkResponse {
     pub user_email: Option<String>,
     pub org_id: Option<i32>,
     pub folder_id: Option<i32>,
-    pub click_count: i32,
+    pub click_count: i64,
     pub max_clicks: Option<i32>,
     pub created_at: String,
     pub starts_at: Option<String>,

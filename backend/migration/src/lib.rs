@@ -30,6 +30,9 @@ mod m20220101_000027_links_not_null;
 mod m20220101_000028_normalize_blocked_domains;
 mod m20220101_000029_passkey_cred_id_unique;
 mod m20220101_000030_domain_abuse_controls;
+mod m20220101_000031_users_email_partial_unique;
+mod m20220101_000032_click_events_id_bigint;
+mod m20220101_000033_links_click_count_bigint;
 
 pub struct Migrator;
 
@@ -67,6 +70,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000028_normalize_blocked_domains::Migration),
             Box::new(m20220101_000029_passkey_cred_id_unique::Migration),
             Box::new(m20220101_000030_domain_abuse_controls::Migration),
+            Box::new(m20220101_000031_users_email_partial_unique::Migration),
+            Box::new(m20220101_000032_click_events_id_bigint::Migration),
+            Box::new(m20220101_000033_links_click_count_bigint::Migration),
         ]
     }
 }
