@@ -365,6 +365,12 @@ fn is_redirect_path(path: &str) -> bool {
     }
 }
 
+/// Auth API routes are `/auth` and `/auth/...` only. A short code that merely
+/// begins with "auth" (`/auth-sale`) is a redirect, not a login attempt.
+fn is_auth_path(path: &str) -> bool {
+    path == "/auth" || path.starts_with("/auth/")
+}
+
 /// Rate limit middleware for general API endpoints
 pub async fn rate_limit_middleware(
     State(limiters): State<Arc<RateLimiters>>,
@@ -425,7 +431,7 @@ pub async fn rate_limit_middleware(
                     .check(&format!("pwverify:{}:{}", ip, code))
             }
         }
-    } else if path.starts_with("/auth") {
+    } else if is_auth_path(path) {
         limiters.auth.check(&format!("auth:{}", ip))
     } else if path.starts_with("/links") && req.method() == axum::http::Method::POST {
         limiters.link_creation.check(&format!("create:{}", ip))
@@ -495,6 +501,10 @@ mod tests {
         // since the relaxed redirect bucket was an email-flood vector.
         assert!(!is_redirect_path("/contact"));
         assert!(!is_redirect_path("/auth/login"));
+        assert!(is_redirect_path("/auth-sale"));
+        assert!(is_auth_path("/auth"));
+        assert!(is_auth_path("/auth/login"));
+        assert!(!is_auth_path("/auth-sale"));
         assert!(!is_redirect_path("/links"));
         assert!(!is_redirect_path("/links/bulk"));
         assert!(!is_redirect_path("/admin/stats"));
