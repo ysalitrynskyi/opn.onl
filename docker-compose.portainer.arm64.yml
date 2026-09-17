@@ -103,6 +103,9 @@ services:
       # Per-user link cap. Empty or 0 means unlimited (the default).
       MAX_LINKS_PER_USER: ${MAX_LINKS_PER_USER:-}
       ENABLE_URL_SANITIZATION: ${ENABLE_URL_SANITIZATION:-true}
+      # Abuse guards on link destinations (both default on).
+      BLOCK_DANGEROUS_FILE_EXTENSIONS: ${BLOCK_DANGEROUS_FILE_EXTENSIONS:-true}
+      BLOCK_RAW_IP_URLS: ${BLOCK_RAW_IP_URLS:-true}
       # Branded QR codes (brand colour / centre logo / SVG). Kill-switch, default on.
       ENABLE_QR_BRANDING: ${ENABLE_QR_BRANDING:-true}
       # Burn-after-reading (one-time / self-destruct links). Opt-in, default off.
