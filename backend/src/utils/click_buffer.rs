@@ -537,19 +537,22 @@ mod tests {
         }
     }
 
+    /// `add_click` must account every event once in the queue and once against
+    /// its own link. Asserted through the queue and per-link counters rather
+    /// than through `should_flush`, which had no production caller left after
+    /// the flush-backoff change and was removed.
     #[test]
-    fn should_flush_at_threshold_not_under() {
+    fn add_click_accounts_events_in_queue_and_per_link() {
         let buf = ClickBuffer::with_limits(3, 10, 60);
-        assert!(!buf.should_flush());
+        assert_eq!(buf.queued_event_count(), 0);
         buf.add_click(click(1));
         buf.add_click(click(1));
-        assert!(!buf.should_flush());
         assert_eq!(buf.queued_event_count(), 2);
         assert_eq!(buf.pending_count(1), 2);
 
         buf.add_click(click(2));
-        assert!(buf.should_flush());
         assert_eq!(buf.queued_event_count(), 3);
         assert_eq!(buf.pending_count(2), 1);
+        assert_eq!(buf.pending_count(1), 2);
     }
 }
