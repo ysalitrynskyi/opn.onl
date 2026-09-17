@@ -169,7 +169,11 @@ services:
     networks:
       - opn-network
 
-  # Optional: Database admin UI.
+  # Optional: Database admin UI. Off unless you enable the `pgadmin` profile
+  # (`docker compose --profile pgadmin up`, or enable the profile in Portainer).
+  # Interpolation of ${PGADMIN_PASSWORD:?} is evaluated for every service when
+  # Compose parses the file, so a required-password check here aborted the
+  # whole stack even when pgAdmin was not wanted.
   # SECURITY: this is a full Postgres admin console. If exposed (e.g. tunneled to
   # db.opn.onl) it must require login — SERVER_MODE=True forces the login screen,
   # MASTER_PASSWORD_REQUIRED=True protects saved server credentials. Prefer gating
@@ -177,10 +181,11 @@ services:
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: opn_onl_pgadmin
+    profiles: ["pgadmin"]
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@opn.onl}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?PGADMIN_PASSWORD must be set to run pgAdmin}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-}
       PGADMIN_CONFIG_SERVER_MODE: "True"
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "True"
     volumes:
