@@ -414,6 +414,64 @@ describe('Dashboard Page', () => {
     });
   });
 
+  it('keeps cached sparklines when a later batch fails', async () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({
+      ...mockLink,
+      id: i + 1,
+      code: `c${String(i + 1).padStart(3, '0')}`,
+      created_at: new Date(Date.UTC(2024, 0, 1, 0, 0, i)).toISOString(),
+      is_active: true,
+      is_pinned: false,
+    }));
+    let sparkCalls = 0;
+    vi.mocked(global.fetch).mockImplementation((url, options) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/auth/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 50,
+        }) as any;
+      }
+      if (requestUrl.includes('/links/sparklines')) {
+        sparkCalls += 1;
+        const ids = new URL(requestUrl).searchParams.get('ids')?.split(',') ?? [];
+        const firstId = Number(ids[0]);
+        if (sparkCalls > 2 && firstId > 80) {
+          return mockFetchError('sparkline batch failed', 500) as any;
+        }
+        return mockFetchResponse({
+          sparklines: ids.map((id) => ({
+            link_id: Number(id),
+            data: [1, 2, 3],
+            labels: ['a', 'b', 'c'],
+          })),
+        }) as any;
+      }
+      if (options?.method === 'POST' && requestUrl.includes('/pin')) {
+        return mockFetchResponse({ is_pinned: true, message: 'Pinned' }) as any;
+      }
+      if (requestUrl.endsWith('/links')) {
+        return mockFetchResponse(many) as any;
+      }
+      return mockFetchResponse([]) as any;
+    });
+
+    const sparkSvgs = () => document.querySelectorAll('svg[width="70"]');
+    const { user } = render(<Dashboard />);
+    expect(await screen.findByText(/150 links/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(sparkSvgs().length).toBeGreaterThan(0);
+    });
+    const svgCountAfterLoad = sparkSvgs().length;
+
+    await user.click(screen.getAllByRole('button', { name: /^pin$/i })[0]);
+    await waitFor(() => {
+      expect(sparkCalls).toBeGreaterThan(2);
+    });
+    expect(sparkSvgs().length).toBe(svgCountAfterLoad);
+  });
+
   it('shows bulk-import API errors from the errors array', async () => {
     mockDashboardFetch((requestUrl, options) => {
       if (options?.method === 'POST' && requestUrl.includes('/links/bulk')) {

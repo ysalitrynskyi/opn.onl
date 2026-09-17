@@ -335,7 +335,10 @@ export default function Dashboard() {
                 }
             }
             if (requestId !== sparklineFetchId.current) return;
-            setSparklineData(merged);
+            // A failed batch is skipped above, so `merged` can be a subset.
+            // Fold into the previous cache instead of replacing it, or a
+            // later batch failure wipes sparklines we already had.
+            setSparklineData(prev => ({ ...prev, ...merged }));
         } catch (error) {
             if (requestId !== sparklineFetchId.current) return;
             logger.error('Failed to fetch sparklines', error);
