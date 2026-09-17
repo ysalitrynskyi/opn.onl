@@ -5,6 +5,16 @@
 //! the backend never reaches Postgres even though the server accepted the
 //! password. Percent-encode userinfo here instead.
 
+/// Wrap an IPv6 literal so `url::Url` / libpq see a host rather than a port.
+/// Hostnames and already-bracketed values are returned unchanged.
+fn bracket_ipv6_host(host: &str) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
 /// Build a postgres URL with RFC 3986 percent-encoded user and password.
 pub fn assemble_database_url(
     user: &str,
@@ -17,7 +27,7 @@ pub fn assemble_database_url(
         "postgres://{}:{}@{}:{}/{}",
         urlencoding::encode(user),
         urlencoding::encode(password),
-        host,
+        bracket_ipv6_host(host),
         port,
         db
     )
@@ -73,5 +83,27 @@ mod tests {
             !url.contains("p@ss"),
             "raw password must not appear in the URL"
         );
+    }
+
+    #[test]
+    fn ipv6_host_is_wrapped_in_brackets() {
+        for host in ["::1", "2001:db8::1"] {
+            let url = assemble_database_url("postgres", "p@ss", host, "5432", "opn_onl");
+            let parsed = url::Url::parse(&url).unwrap_or_else(|e| {
+                panic!("IPv6 DATABASE_URL must parse (host={host}, url={url}): {e}")
+            });
+            let bracketed = format!("[{host}]");
+            assert_eq!(
+                parsed.host_str(),
+                Some(bracketed.as_str()),
+                "host={host} url={url}"
+            );
+            assert_eq!(parsed.port(), Some(5432), "host={host} url={url}");
+        }
+
+        let already = assemble_database_url("postgres", "p@ss", "[::1]", "5432", "opn_onl");
+        let parsed = url::Url::parse(&already).expect("pre-bracketed IPv6 must still parse");
+        assert_eq!(parsed.host_str(), Some("[::1]"));
+        assert_eq!(parsed.port(), Some(5432));
     }
 }
