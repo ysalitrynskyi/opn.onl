@@ -3184,7 +3184,10 @@ pub async fn get_user_links(
         link_query = link_query.filter(links::Column::OrgId.eq(org_id));
     }
 
-    // Search by URL or code
+    // Search by URL or code. `contains` becomes LIKE '%…%' / ILIKE, which
+    // cannot use btree idx_links_original_url (or any btree). A pg_trgm GIN
+    // index is the real answer if this filter becomes hot; do not add another
+    // btree expecting it to serve a leading wildcard.
     if let Some(search) = query.search {
         link_query = link_query.filter(
             Condition::any()
