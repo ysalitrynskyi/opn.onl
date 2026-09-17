@@ -277,6 +277,9 @@ async fn disable_users_for_email_domain<C: ConnectionTrait>(
         .await?
         .into_iter()
         .filter(|user| user_matches_email_domain(user, domain))
+        // Admins must remain able to unblock the domain. The caller is also
+        // refused earlier in `block_email_domain` if their own address matches.
+        .filter(|user| !user.is_admin)
         .collect::<Vec<_>>();
 
     if matching.is_empty() {
@@ -2008,7 +2011,7 @@ pub async fn unblock_domain(
     request_body = BlockEmailDomainRequest,
     responses(
         (status = 201, description = "Email domain blocked", body = BlockedEmailDomainResponse),
-        (status = 400, description = "Invalid email domain"),
+        (status = 400, description = "Invalid email domain, or block would disable the acting admin"),
         (status = 403, description = "Admin access required"),
         (status = 409, description = "Email domain already blocked"),
     ),
@@ -2042,6 +2045,33 @@ pub async fn block_email_domain(
             Json(AdminResponse {
                 success: false,
                 message: "Email domain is already blocked by reserved-domain policy".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let admin_user = match users::Entity::find_by_id(admin_id).one(&state.db).await {
+        Ok(Some(user)) => user,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block email domain".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if user_matches_email_domain(&admin_user, &domain) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: format!(
+                    "Blocking this domain would disable the acting admin account {}",
+                    admin_user.email
+                ),
             }),
         )
             .into_response();
