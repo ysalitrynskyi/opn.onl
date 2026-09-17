@@ -4124,6 +4124,30 @@ pub async fn clone_link(
                 .into_response();
         }
 
+        // Clone inserts a new row, so it must honour the same per-user cap as
+        // create_link / bulk_create_links. Skipping it lets a user at the
+        // advertised MAX_LINKS_PER_USER mint extra active links.
+        if let Some(cap) = get_max_links_per_user() {
+            let existing = links::Entity::find()
+                .filter(links::Column::UserId.eq(user_id))
+                .filter(links::Column::DeletedAt.is_null())
+                .count(&state.db)
+                .await
+                .unwrap_or(0);
+            if existing >= cap {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "You have reached the maximum of {} links for this account",
+                            cap
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
         // Generate new short code
         let mut code = generate_short_code();
         while links::Entity::find()
