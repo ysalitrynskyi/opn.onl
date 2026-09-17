@@ -51,3 +51,43 @@ async fn custom_alias_starting_with_auth_uses_redirect_limit_not_login_limit() {
         );
     }
 }
+
+fn rate_limit_remaining(res: &axum_test::TestResponse) -> i64 {
+    res.headers()
+        .get("x-ratelimit-remaining")
+        .expect("X-RateLimit-Remaining")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn post_pin_does_not_consume_link_creation_budget() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    let created = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/pin-limit" }))
+        .await;
+    assert_eq!(created.status_code(), 201, "create: {}", created.text());
+    assert_eq!(
+        rate_limit_remaining(&created),
+        99,
+        "create spends one slot of the hourly bucket"
+    );
+    let id = created.json::<Value>()["id"].as_i64().expect("id");
+
+    let pin = server
+        .post(&format!("/links/{id}/pin"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(pin.status_code(), 200, "pin: {}", pin.text());
+    assert_eq!(
+        rate_limit_remaining(&pin),
+        99,
+        "pin must use the general bucket, not the hourly create budget"
+    );
+}
