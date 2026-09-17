@@ -393,8 +393,8 @@ pub async fn verify_email(
     path = "/auth/resend-verification",
     request_body = ResendVerificationRequest,
     responses(
-        (status = 200, description = "Verification email sent", body = MessageResponse),
-        (status = 400, description = "Email already verified or not found"),
+        (status = 200, description = "Verification email sent if an unverified account exists", body = MessageResponse),
+        (status = 400, description = "Email domain is not allowed"),
     ),
     tag = "Authentication"
 )]
@@ -421,57 +421,34 @@ pub async fn resend_verification(
         .await
         .unwrap_or(None);
 
+    // Always the same 200 body, including on verified / unknown / update
+    // failure: distinct status codes here enumerate live accounts.
     if let Some(user) = user {
-        if user.email_verified {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Email already verified".to_string(),
-                }),
-            )
-                .into_response();
-        }
+        if !user.email_verified {
+            let verification_token = generate_token();
+            let verification_expires = Utc::now() + Duration::hours(24);
 
-        // Generate new token
-        let verification_token = generate_token();
-        let verification_expires = Utc::now() + Duration::hours(24);
+            let mut active_user: users::ActiveModel = user.clone().into();
+            active_user.verification_token = Set(Some(verification_token.clone()));
+            active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
-        let mut active_user: users::ActiveModel = user.clone().into();
-        active_user.verification_token = Set(Some(verification_token.clone()));
-        active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
-
-        if active_user.update(&state.db).await.is_err() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to generate token".to_string(),
-                }),
-            )
-                .into_response();
-        }
-
-        // Send verification email
-        if let Some(email_service) = &state.email_service {
-            if email_service.is_configured() {
-                if let Err(e) = email_service
-                    .send_verification_email(&user.email, &verification_token)
-                    .await
-                {
-                    tracing::error!("Failed to send verification email: {}", e);
+            if active_user.update(&state.db).await.is_ok() {
+                if let Some(email_service) = &state.email_service {
+                    if email_service.is_configured() {
+                        if let Err(e) = email_service
+                            .send_verification_email(&user.email, &verification_token)
+                            .await
+                        {
+                            tracing::error!("Failed to send verification email: {}", e);
+                        }
+                    }
                 }
+            } else {
+                tracing::error!("Failed to generate verification token");
             }
         }
-
-        return (
-            StatusCode::OK,
-            Json(MessageResponse {
-                message: "Verification email sent".to_string(),
-            }),
-        )
-            .into_response();
     }
 
-    // Don't reveal if email exists
     (
         StatusCode::OK,
         Json(MessageResponse {

@@ -405,3 +405,44 @@ async fn password_change_consumes_outstanding_reset_token() {
     assert!(user.password_reset_token.is_none());
     assert!(user.password_reset_expires.is_none());
 }
+
+#[tokio::test]
+async fn resend_verification_does_not_enumerate_accounts() {
+    let (server, db) = spawn_real_app().await;
+
+    let unverified_email = unique_email();
+    register(&server, &unverified_email).await;
+
+    let verified_email = unique_email();
+    let (_, verified_id) = register(&server, &verified_email).await;
+    mark_email_verified(&db, verified_id).await;
+
+    let unknown_email = unique_email();
+
+    let post = |email: &str| {
+        server
+            .post("/auth/resend-verification")
+            .json(&json!({ "email": email }))
+    };
+
+    let unverified = post(&unverified_email).await;
+    let verified = post(&verified_email).await;
+    let unknown = post(&unknown_email).await;
+
+    assert_eq!(unverified.status_code(), 200, "{}", unverified.text());
+    assert!(
+        unverified.text().contains("If account exists"),
+        "generic body: {}",
+        unverified.text()
+    );
+    assert_eq!(
+        (verified.status_code(), verified.text()),
+        (unverified.status_code(), unverified.text()),
+        "verified vs unverified must be indistinguishable"
+    );
+    assert_eq!(
+        (unknown.status_code(), unknown.text()),
+        (unverified.status_code(), unverified.text()),
+        "unknown vs unverified must be indistinguishable"
+    );
+}
