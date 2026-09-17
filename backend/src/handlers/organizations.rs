@@ -1116,9 +1116,10 @@ pub async fn transfer_ownership(
             )
         })?;
 
-    // Target must be an existing, non-deleted user...
+    // Target must be an existing, non-deleted, non-disabled user...
     let new_owner = users::Entity::find_by_id(payload.new_owner_user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {

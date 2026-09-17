@@ -5,7 +5,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{
-    api_keys, folders, link_tags, links, org_members, passkeys, tags, users,
+    api_keys, folders, link_tags, links, org_members, organizations, passkeys, tags, users,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -659,5 +659,49 @@ async fn invite_member_rejects_deleted_or_disabled_users() {
             .unwrap()
             .is_none(),
         "must not insert membership for a disabled user"
+    );
+}
+
+#[tokio::test]
+async fn transfer_ownership_rejects_disabled_member() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let (_, member_id) = register_verified(&server, &db).await;
+    let org_id = create_org(&server, &owner_token).await;
+    add_member(&db, org_id, member_id, "admin").await;
+
+    let member = users::Entity::find_by_id(member_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: users::ActiveModel = member.into();
+    active.disabled_at = Set(Some(chrono::Utc::now().naive_utc()));
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/transfer-ownership"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "new_owner_user_id": member_id }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        400,
+        "disabled member must not become owner: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"].as_str(),
+        Some("New owner must be an active user")
+    );
+
+    let org = organizations::Entity::find_by_id(org_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        org.owner_id, member_id,
+        "ownership must stay with the original owner"
     );
 }
