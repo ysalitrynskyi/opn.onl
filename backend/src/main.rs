@@ -3,7 +3,7 @@
 //! All routes and middleware live in `src/lib.rs` so integration tests exercise
 //! exactly what this binary serves.
 
-use sea_orm::{Database, DatabaseConnection};
+use sea_orm::Database;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

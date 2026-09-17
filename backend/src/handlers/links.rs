@@ -4827,6 +4827,7 @@ pub struct AvatarProxyQuery {
 ///   * `image/svg+xml` — an SVG can carry `<script>`, which runs on navigation.
 ///   * a spoofed `image/png` header on an HTML/JS body — a sniffing browser
 ///     could execute it.
+///
 /// So we allow only inert raster types and return a fixed canonical string for
 /// each (never the raw upstream header). SVG is deliberately excluded. The
 /// handler additionally sends `X-Content-Type-Options: nosniff` and a locked-down
