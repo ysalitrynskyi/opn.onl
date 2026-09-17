@@ -560,5 +560,58 @@ pub fn build_router(app_state: AppState) -> Router {
         // CORS (origins restricted to FRONTEND_URL/BASE_URL when configured)
         .layer(build_cors())
         // Tracing
-        .layer(TraceLayer::new_for_http())
+        .layer(http_trace_layer())
+}
+
+fn http_trace_layer() -> TraceLayer<
+    tower_http::classify::SharedClassifier<tower_http::classify::ServerErrorsAsFailures>,
+    RedactingMakeSpan,
+> {
+    TraceLayer::new_for_http().make_span_with(RedactingMakeSpan)
+}
+
+/// Subscriber auth for `/ws` and `/sse` is `?token=<jwt>`. The default HTTP
+/// trace span logs `request.uri()`, so the raw JWT would land in
+/// `logs/opn-onl.log` at `tower_http=debug`. Redact it before the span is
+/// created. Browser WebSocket clients cannot set `Authorization`, so the
+/// query param itself stays supported.
+#[derive(Clone, Copy, Debug)]
+struct RedactingMakeSpan;
+
+impl<B> tower_http::trace::MakeSpan<B> for RedactingMakeSpan {
+    fn make_span(&mut self, request: &Request<B>) -> tracing::Span {
+        tracing::debug_span!(
+            "request",
+            method = %request.method(),
+            uri = %redact_request_uri(&request.uri().to_string()),
+            version = ?request.version(),
+        )
+    }
+}
+
+/// Replace `token=` query values so a trace/log line cannot replay a session.
+pub fn redact_request_uri(uri: &str) -> String {
+    let parsed = match uri.parse::<axum::http::Uri>() {
+        Ok(parsed) => parsed,
+        Err(_) => return uri.to_string(),
+    };
+    let Some(query) = parsed.query() else {
+        return uri.to_string();
+    };
+    let redacted = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if key.eq_ignore_ascii_case("token") => {
+                format!("{key}=REDACTED")
+            }
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    match (parsed.scheme_str(), parsed.authority()) {
+        (Some(scheme), Some(auth)) => {
+            format!("{scheme}://{auth}{}?{redacted}", parsed.path())
+        }
+        _ => format!("{}?{redacted}", parsed.path()),
+    }
 }
