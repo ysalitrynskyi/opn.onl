@@ -371,11 +371,13 @@ fn is_auth_path(path: &str) -> bool {
     path == "/auth" || path.starts_with("/auth/")
 }
 
-/// The hourly create budget is for creating links: `POST /links`,
-/// `POST /links/bulk`, and `POST /links/{id}/clone`. Management POSTs
-/// (pin, health-check, UTM, preview, bulk delete/update) stay on `general`.
+/// The hourly create budget is for creating links: `POST /links` and
+/// `POST /links/{id}/clone`. `POST /links/bulk` is charged per URL in the
+/// handler, so middleware must not spend an extra token for the request.
+/// Management POSTs (pin, health-check, UTM, preview, bulk delete/update)
+/// stay on `general`.
 fn is_link_creation_path(path: &str) -> bool {
-    if path == "/links" || path == "/links/bulk" {
+    if path == "/links" {
         return true;
     }
     // Clone's id segment is variable, so equality cannot match it.
@@ -521,7 +523,7 @@ mod tests {
         assert!(is_auth_path("/auth/login"));
         assert!(!is_auth_path("/auth-sale"));
         assert!(is_link_creation_path("/links"));
-        assert!(is_link_creation_path("/links/bulk"));
+        assert!(!is_link_creation_path("/links/bulk"));
         assert!(is_link_creation_path("/links/1/clone"));
         assert!(!is_link_creation_path("/links/1/clone/extra"));
         assert!(!is_link_creation_path("/links/bulk/delete"));
