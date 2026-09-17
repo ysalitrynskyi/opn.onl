@@ -85,7 +85,7 @@ async fn main() {
 
     // Initialize click buffer for batching
     let click_buffer = Arc::new(ClickBuffer::new());
-    click_buffer.clone().start_flush_task(db.clone());
+    let flush_task = click_buffer.clone().start_flush_task(db.clone());
     tracing::info!("Click buffer initialized");
 
     // Daily sweep anonymizing per-visitor click identifiers past the
@@ -135,19 +135,26 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     // Serve with ConnectInfo so the rate limiter can use the real socket peer IP.
-    // On SIGTERM/Ctrl-C, drain the click buffer so buffered clicks aren't lost.
+    // On SIGTERM/Ctrl-C, drain connections first, then join the in-flight click
+    // flush so a deploy cannot drop a batch the background task already took.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(shutdown_buffer, shutdown_db))
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .unwrap();
+
+    tracing::info!("Server stopped — draining click buffer");
+    shutdown_buffer.request_stop();
+    let _ = flush_task.await;
+    shutdown_buffer.flush(&shutdown_db).await;
+    tracing::info!("Click buffer flushed; shutting down");
 }
 
-/// Wait for SIGTERM / Ctrl-C, then flush the click buffer so a deploy or restart
-/// doesn't drop buffered (not-yet-persisted) clicks.
-async fn shutdown_signal(click_buffer: Arc<ClickBuffer>, db: DatabaseConnection) {
+/// Wait for SIGTERM / Ctrl-C. The click buffer is drained after `serve` returns
+/// so in-flight HTTP clicks and an in-flight flush are both persisted.
+async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -169,7 +176,5 @@ async fn shutdown_signal(click_buffer: Arc<ClickBuffer>, db: DatabaseConnection)
         _ = terminate => {},
     }
 
-    tracing::info!("Shutdown signal received — flushing click buffer before exit");
-    click_buffer.flush(&db).await;
-    tracing::info!("Click buffer flushed; shutting down");
+    tracing::info!("Shutdown signal received");
 }

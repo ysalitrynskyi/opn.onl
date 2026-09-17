@@ -3,6 +3,7 @@ use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set, TransactionTrait,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
@@ -31,6 +32,9 @@ pub struct ClickData {
     pub device: Option<String>,
     pub browser: Option<String>,
     pub os: Option<String>,
+    /// When the click happened. Stamped in `push_event` if unset, so a delayed
+    /// flush does not collapse analytics onto the recover instant.
+    pub created_at: Option<chrono::NaiveDateTime>,
 }
 
 /// Buffered click counter for aggregating click count updates
@@ -53,6 +57,14 @@ pub struct ClickBuffer {
     flush_interval_secs: u64,
     /// Signals the flush task to flush early once the buffer reaches max_buffer_size.
     flush_notify: Arc<tokio::sync::Notify>,
+    /// Wakes the flush task so it can exit on shutdown instead of being dropped
+    /// mid-statement with a taken-but-unwritten batch.
+    stop: Arc<tokio::sync::Notify>,
+    stopped: Arc<AtomicBool>,
+    /// Serializes `flush` so shutdown cannot take an empty buffer while the
+    /// background task still holds the in-flight events.
+    flush_lock: Arc<tokio::sync::Mutex<()>>,
+    flush_attempts: Arc<AtomicU64>,
 }
 
 impl Default for ClickBuffer {
@@ -95,7 +107,17 @@ impl ClickBuffer {
             max_queued,
             flush_interval_secs,
             flush_notify: Arc::new(tokio::sync::Notify::new()),
+            stop: Arc::new(tokio::sync::Notify::new()),
+            stopped: Arc::new(AtomicBool::new(false)),
+            flush_lock: Arc::new(tokio::sync::Mutex::new(())),
+            flush_attempts: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// How many times `flush` has run. Used to assert the background task
+    /// backs off on database errors instead of notify-spinning.
+    pub fn flush_attempt_count(&self) -> u64 {
+        self.flush_attempts.load(Ordering::Relaxed)
     }
 
     /// Number of click events waiting to be flushed.
@@ -127,7 +149,10 @@ impl ClickBuffer {
     }
 
     /// Returns false when the event was shed because the hard cap is full.
-    fn push_event(&self, data: ClickData) -> bool {
+    fn push_event(&self, mut data: ClickData) -> bool {
+        if data.created_at.is_none() {
+            data.created_at = Some(chrono::Utc::now().naive_utc());
+        }
         let (queued, should_flush) = {
             let mut events = self.events.write();
             if events.len() >= self.max_queued {
@@ -165,31 +190,23 @@ impl ClickBuffer {
             .unwrap_or(0)
     }
 
-    /// Remove and return the unflushed aggregate count for one link so a
-    /// later max_clicks write can fold those clicks into `links.click_count`
-    /// instead of letting a cap-blind flush overshoot the new cap.
-    pub fn take_pending_count(&self, link_id: i32) -> i32 {
-        self.counters
-            .write()
-            .remove(&link_id)
-            .map(|c| c.count)
-            .unwrap_or(0)
+    /// Ask the background flush task to exit after its current (or next) flush.
+    ///
+    /// `Notify::notify_waiters` is lost if the task is inside `flush` and not
+    /// polling, so the AtomicBool is the source of truth and `flush_notify`
+    /// stores a permit to wake the select.
+    pub fn request_stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.stop.notify_waiters();
+        self.flush_notify.notify_one();
     }
 
-    /// Put clicks back into the buffer when folding them into click_count failed.
-    pub fn add_pending_count(&self, link_id: i32, n: i32) {
-        if n <= 0 {
-            return;
-        }
-        self.counters
-            .write()
-            .entry(link_id)
-            .and_modify(|c| c.count += n)
-            .or_insert(ClickCounter { count: n });
-    }
+    /// Flush the buffer to the database. Returns true when any events or
+    /// counters were requeued because persistence failed.
+    pub async fn flush(&self, db: &DatabaseConnection) -> bool {
+        let _guard = self.flush_lock.lock().await;
+        self.flush_attempts.fetch_add(1, Ordering::Relaxed);
 
-    /// Flush the buffer to the database
-    pub async fn flush(&self, db: &DatabaseConnection) {
         // Take events from buffer
         let events: Vec<ClickData> = {
             let mut buffer = self.events.write();
@@ -203,7 +220,7 @@ impl ClickBuffer {
         };
 
         if events.is_empty() && counters.is_empty() {
-            return;
+            return false;
         }
 
         info!(
@@ -303,6 +320,9 @@ impl ClickBuffer {
                             device: Set(e.device),
                             browser: Set(e.browser),
                             os: Set(e.os),
+                            created_at: Set(e.created_at.unwrap_or_else(|| {
+                                chrono::Utc::now().naive_utc()
+                            })),
                             ..Default::default()
                         })
                         .collect();
@@ -347,6 +367,7 @@ impl ClickBuffer {
         // Transient DB failures are requeued ahead of newly arrived clicks.
         // Orphans are deliberately not requeued, avoiding an infinite poison
         // loop after their parent link has been hard-deleted.
+        let had_retry = !retry_events.is_empty() || !retry_counts.is_empty();
         if !retry_events.is_empty() {
             let mut dropped_per_link: HashMap<i32, i32> = HashMap::new();
             {
@@ -395,27 +416,58 @@ impl ClickBuffer {
             }
         }
 
-        if self.should_flush() {
-            self.flush_notify.notify_one();
-        }
+        // A failed flush that requeues past the threshold used to notify
+        // immediately, spinning the background task until the database
+        // recovered (or the process ran out of memory). Pace retries with
+        // the timer and the sleep in `start_flush_task`; new clicks still
+        // notify via `push_event`.
+        had_retry
     }
 
     /// Start the background flush task
-    pub fn start_flush_task(self: Arc<Self>, db: DatabaseConnection) {
-        let interval_secs = self.flush_interval_secs;
+    pub fn start_flush_task(self: Arc<Self>, db: DatabaseConnection) -> tokio::task::JoinHandle<()> {
+        let interval_secs = self.flush_interval_secs.max(1);
 
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(interval_secs));
+            let mut backoff = Duration::from_millis(200);
 
             loop {
+                if self.stopped.load(Ordering::SeqCst) {
+                    let _ = self.flush(&db).await;
+                    break;
+                }
                 // Flush on the timer, or early when the buffer signals it is full.
                 tokio::select! {
                     _ = ticker.tick() => {}
                     _ = self.flush_notify.notified() => {}
+                    _ = self.stop.notified() => {}
                 }
-                self.flush(&db).await;
+                if self.stopped.load(Ordering::SeqCst) {
+                    let _ = self.flush(&db).await;
+                    break;
+                }
+                let had_retry = self.flush(&db).await;
+                if self.stopped.load(Ordering::SeqCst) {
+                    break;
+                }
+                if had_retry {
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = self.stop.notified() => {}
+                    }
+                    if self.stopped.load(Ordering::SeqCst) {
+                        let _ = self.flush(&db).await;
+                        break;
+                    }
+                    backoff = backoff
+                        .saturating_mul(2)
+                        .min(Duration::from_secs(interval_secs));
+                } else {
+                    backoff = Duration::from_millis(200);
+                }
             }
-        });
+        })
     }
 }
 
@@ -428,6 +480,10 @@ impl Clone for ClickBuffer {
             max_queued: self.max_queued,
             flush_interval_secs: self.flush_interval_secs,
             flush_notify: self.flush_notify.clone(),
+            stop: self.stop.clone(),
+            stopped: self.stopped.clone(),
+            flush_lock: self.flush_lock.clone(),
+            flush_attempts: self.flush_attempts.clone(),
         }
     }
 }

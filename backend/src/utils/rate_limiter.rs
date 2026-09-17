@@ -371,6 +371,21 @@ fn is_auth_path(path: &str) -> bool {
     path == "/auth" || path.starts_with("/auth/")
 }
 
+/// The hourly create budget is for creating links: `POST /links`,
+/// `POST /links/bulk`, and `POST /links/{id}/clone`. Management POSTs
+/// (pin, health-check, UTM, preview, bulk delete/update) stay on `general`.
+fn is_link_creation_path(path: &str) -> bool {
+    if path == "/links" || path == "/links/bulk" {
+        return true;
+    }
+    // Clone's id segment is variable, so equality cannot match it.
+    let mut segs = path.trim_start_matches('/').split('/');
+    matches!(
+        (segs.next(), segs.next(), segs.next(), segs.next()),
+        (Some("links"), Some(id), Some("clone"), None) if !id.is_empty()
+    )
+}
+
 /// Rate limit middleware for general API endpoints
 pub async fn rate_limit_middleware(
     State(limiters): State<Arc<RateLimiters>>,
@@ -433,7 +448,7 @@ pub async fn rate_limit_middleware(
         }
     } else if is_auth_path(path) {
         limiters.auth.check(&format!("auth:{}", ip))
-    } else if path.starts_with("/links") && req.method() == axum::http::Method::POST {
+    } else if is_link_creation_path(path) && req.method() == axum::http::Method::POST {
         limiters.link_creation.check(&format!("create:{}", ip))
     } else if path.starts_with("/contact") && req.method() == axum::http::Method::POST {
         limiters.contact.check(&format!("contact:{}", ip))
@@ -505,6 +520,13 @@ mod tests {
         assert!(is_auth_path("/auth"));
         assert!(is_auth_path("/auth/login"));
         assert!(!is_auth_path("/auth-sale"));
+        assert!(is_link_creation_path("/links"));
+        assert!(is_link_creation_path("/links/bulk"));
+        assert!(is_link_creation_path("/links/1/clone"));
+        assert!(!is_link_creation_path("/links/1/clone/extra"));
+        assert!(!is_link_creation_path("/links/bulk/delete"));
+        assert!(!is_link_creation_path("/links/1/pin"));
+        assert!(!is_link_creation_path("/links/health-check"));
         assert!(!is_redirect_path("/links"));
         assert!(!is_redirect_path("/links/bulk"));
         assert!(!is_redirect_path("/admin/stats"));

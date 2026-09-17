@@ -6,7 +6,10 @@ mod common;
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::utils::click_buffer::ClickData;
 use opn_onl_backend::utils::ClickBuffer;
-use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseBackend, EntityTrait, PaginatorTrait, QueryFilter,
+    Statement, TransactionTrait,
+};
 use serde_json::{json, Value};
 
 async fn register_verified(
@@ -55,6 +58,87 @@ async fn custom_alias_starting_with_auth_uses_redirect_limit_not_login_limit() {
     }
 }
 
+fn rate_limit_remaining(res: &axum_test::TestResponse) -> i64 {
+    res.headers()
+        .get("x-ratelimit-remaining")
+        .expect("X-RateLimit-Remaining")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn post_pin_does_not_consume_link_creation_budget() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    let created = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/pin-limit" }))
+        .await;
+    assert_eq!(created.status_code(), 201, "create: {}", created.text());
+    assert_eq!(
+        rate_limit_remaining(&created),
+        99,
+        "create spends one slot of the hourly bucket"
+    );
+    let id = created.json::<Value>()["id"].as_i64().expect("id");
+
+    let pin = server
+        .post(&format!("/links/{id}/pin"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(pin.status_code(), 200, "pin: {}", pin.text());
+    assert_eq!(
+        rate_limit_remaining(&pin),
+        99,
+        "pin must use the general bucket, not the hourly create budget"
+    );
+}
+
+#[tokio::test]
+async fn post_clone_consumes_link_creation_budget_but_pin_does_not() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    let created = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/clone-limit" }))
+        .await;
+    assert_eq!(created.status_code(), 201, "create: {}", created.text());
+    assert_eq!(
+        rate_limit_remaining(&created),
+        99,
+        "create spends one slot of the hourly bucket"
+    );
+    let id = created.json::<Value>()["id"].as_i64().expect("id");
+
+    let cloned = server
+        .post(&format!("/links/{id}/clone"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(cloned.status_code(), 201, "clone: {}", cloned.text());
+    assert_eq!(
+        rate_limit_remaining(&cloned),
+        98,
+        "clone creates a link and must spend the hourly create budget"
+    );
+
+    let pin = server
+        .post(&format!("/links/{id}/pin"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(pin.status_code(), 200, "pin: {}", pin.text());
+    assert_eq!(
+        rate_limit_remaining(&pin),
+        99,
+        "pin must use the general bucket, not the hourly create budget"
+    );
+}
+
 fn click(link_id: i32) -> ClickData {
     ClickData {
         link_id,
@@ -69,6 +153,7 @@ fn click(link_id: i32) -> ClickData {
         device: None,
         browser: None,
         os: None,
+        created_at: None,
     }
 }
 
@@ -143,5 +228,135 @@ async fn click_buffer_inserts_past_postgres_bind_limit_in_chunks() {
     assert_eq!(
         persisted, PAST_BIND_LIMIT as u64,
         "every buffered click must persist across insert chunks"
+    );
+}
+
+#[tokio::test]
+async fn click_buffer_flush_error_does_not_busy_loop() {
+    let mut opts = sea_orm::ConnectOptions::new(
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+    );
+    opts.acquire_timeout(std::time::Duration::from_millis(50));
+    opts.connect_timeout(std::time::Duration::from_secs(2));
+    let fail_db = sea_orm::Database::connect(opts).await.expect("connect");
+    fail_db.close_by_ref().await.expect("close pool");
+
+    let buffer = std::sync::Arc::new(ClickBuffer::with_limits(1, 20, 60));
+    for _ in 0..5 {
+        buffer.add_click(click(1));
+    }
+    let handle = buffer.clone().start_flush_task(fail_db);
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let attempts = buffer.flush_attempt_count();
+    handle.abort();
+    let _ = handle.await;
+    assert!(
+        attempts <= 2,
+        "flush failure must back off rather than notify-spin, got {attempts}"
+    );
+    assert_eq!(
+        buffer.queued_event_count(),
+        5,
+        "failed flush must requeue rather than drop"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn click_buffer_shutdown_joins_in_flight_flush() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let link_id = create_link_id(&server, &token).await;
+
+    // Hold FOR UPDATE on this link so the in-flight flush blocks at its
+    // parent lock_shared, after taking events out of the queue. Row-level
+    // so parallel tests on other links are unaffected.
+    let lock_db = sea_orm::Database::connect(
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+    )
+    .await
+    .expect("lock conn");
+    let txn = lock_db.begin().await.expect("begin");
+    txn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT id FROM links WHERE id = $1 FOR UPDATE",
+        [link_id.into()],
+    ))
+    .await
+    .expect("lock link");
+
+    let buffer = std::sync::Arc::new(ClickBuffer::with_limits(1, 20, 60));
+    for _ in 0..5 {
+        buffer.add_click(click(link_id));
+    }
+    let handle = buffer.clone().start_flush_task(db.clone());
+
+    let started = std::time::Instant::now();
+    while buffer.queued_event_count() != 0 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "background flush never took the queued events"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let shutting_down = {
+        let buffer = buffer.clone();
+        let db = db.clone();
+        tokio::spawn(async move {
+            buffer.request_stop();
+            let _ = handle.await;
+            buffer.flush(&db).await;
+        })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    txn.rollback().await.expect("release link lock");
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutting_down)
+        .await
+        .expect("shutdown timed out")
+        .expect("shutdown task");
+
+    assert_eq!(buffer.queued_event_count(), 0);
+    let persisted = opn_onl_backend::entity::click_events::Entity::find()
+        .filter(opn_onl_backend::entity::click_events::Column::LinkId.eq(link_id))
+        .count(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted, 5,
+        "in-flight flush must persist rather than be dropped on shutdown"
+    );
+}
+
+#[tokio::test]
+async fn click_buffer_persists_click_time_not_flush_time() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let link_id = create_link_id(&server, &token).await;
+
+    let clicked_at = chrono::Utc::now().naive_utc() - chrono::Duration::minutes(10);
+    let mut data = click(link_id);
+    data.created_at = Some(clicked_at);
+
+    let buffer = ClickBuffer::with_limits(10, 10, 60);
+    buffer.add_click(data);
+    buffer.flush(&db).await;
+
+    let stored = opn_onl_backend::entity::click_events::Entity::find()
+        .filter(opn_onl_backend::entity::click_events::Column::LinkId.eq(link_id))
+        .one(&db)
+        .await
+        .unwrap()
+        .expect("click row");
+    let delta = (stored.created_at - clicked_at).num_seconds().abs();
+    assert!(
+        delta <= 1,
+        "created_at must be the click time ({clicked_at}), not flush time, got {}",
+        stored.created_at
+    );
+    let lag = (chrono::Utc::now().naive_utc() - stored.created_at).num_minutes();
+    assert!(
+        lag >= 9,
+        "stored created_at should be ~10 minutes ago, lag={lag} min"
     );
 }
