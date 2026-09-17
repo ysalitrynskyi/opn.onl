@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, Flame, ShieldCheck, Route, ChevronDown, LayoutList } from 'lucide-react';
 import { API_ENDPOINTS, authFetch } from '../../config/api';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
 import RoutingRulesEditor from './RoutingRulesEditor';
 
@@ -47,6 +48,8 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     const [showRouting, setShowRouting] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState('');
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useFocusTrap(dialogRef);
 
     useEffect(() => {
         if (!routingEnabled) return;
@@ -117,6 +120,9 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             onClick={onClose}
         >
             <motion.div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
                 initial={{ scale: 0.97, opacity: 0, y: 8 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 8 }}

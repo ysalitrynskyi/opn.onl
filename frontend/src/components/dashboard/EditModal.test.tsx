@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '../../test/test-utils';
 import EditModal from './EditModal';
@@ -154,5 +155,46 @@ describe('EditModal', () => {
         expect(await screen.findByRole('alert')).toHaveTextContent('Routing update rejected');
         expect(onSave).toHaveBeenCalledOnce();
         expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('focuses the first control, traps Tab, and restores focus on close', async () => {
+        function Harness() {
+            const [open, setOpen] = useState(false);
+            return (
+                <>
+                    <button type="button" onClick={() => setOpen(true)}>Open editor</button>
+                    {open && (
+                        <EditModal
+                            link={baseLink}
+                            onClose={() => setOpen(false)}
+                            onSave={vi.fn()}
+                        />
+                    )}
+                </>
+            );
+        }
+
+        const { user } = render(<Harness />);
+        const opener = screen.getByRole('button', { name: 'Open editor' });
+        await user.click(opener);
+
+        const dialog = screen.getByRole('dialog');
+        expect(dialog).toHaveAttribute('aria-modal', 'true');
+        expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+
+        for (let i = 0; i < 12; i++) {
+            await user.tab();
+            expect(dialog.contains(document.activeElement)).toBe(true);
+            expect(opener).not.toHaveFocus();
+        }
+
+        screen.getByRole('button', { name: 'Close' }).focus();
+        await user.tab({ shift: true });
+        expect(dialog.contains(document.activeElement)).toBe(true);
+        expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Close' }));
+
+        await user.click(screen.getByRole('button', { name: 'Close' }));
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        expect(opener).toHaveFocus();
     });
 });
