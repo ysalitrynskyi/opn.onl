@@ -3504,9 +3504,25 @@ pub async fn update_link(
             }
         }
 
+        // consume_capped_click compares only links.click_count. Uncapped clicks
+        // still sitting in the buffer would otherwise be spent again after a
+        // cap is added, then added on flush. Fold them into click_count in the
+        // same write that sets max_clicks.
+        let pending_to_fold = if let ActiveValue::Set(Some(_)) = &active_link.max_clicks {
+            state.click_buffer.take_pending_count(link.id)
+        } else {
+            0
+        };
+        if pending_to_fold > 0 {
+            active_link.click_count = Set(link.click_count.saturating_add(pending_to_fold));
+        }
+
         match active_link.update(&txn).await {
             Ok(updated) => {
                 if txn.commit().await.is_err() {
+                    state
+                        .click_buffer
+                        .add_pending_count(link.id, pending_to_fold);
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
@@ -3562,6 +3578,9 @@ pub async fn update_link(
             }
             Err(_) => {
                 let _ = txn.rollback().await;
+                state
+                    .click_buffer
+                    .add_pending_count(link.id, pending_to_fold);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {

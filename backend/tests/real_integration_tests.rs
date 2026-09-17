@@ -224,6 +224,63 @@ async fn bulk_update_skips_soft_deleted_links() {
     );
 }
 
+/// Uncapped clicks sit in the in-memory buffer. Adding max_clicks later must
+/// count those pending clicks against the new cap, or consume_capped_click
+/// will hand out extra redirects and flush will overshoot.
+#[tokio::test]
+async fn adding_click_cap_counts_unflushed_buffer_clicks() {
+    let (server, db) = common::spawn_real_app().await;
+
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+    let (link_id, code) = create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://iana.org/cap-overshoot" }),
+    )
+    .await;
+
+    for i in 0..3 {
+        let res = server.get(&format!("/{code}")).await;
+        assert_eq!(
+            res.status_code(),
+            307,
+            "uncapped click {i} must redirect: {}",
+            res.text()
+        );
+    }
+
+    let res = server
+        .put(&format!("/links/{link_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "max_clicks": 5 }))
+        .await;
+    assert_eq!(res.status_code(), 200, "set max_clicks: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(
+        body["click_count"], 3,
+        "pending buffer clicks must fold into click_count when a cap is added: {body}"
+    );
+    assert_eq!(body["max_clicks"], 5);
+
+    let mut extra_redirects = 0u32;
+    let mut gone = 0u32;
+    for i in 0..10 {
+        let res = server.get(&format!("/{code}")).await;
+        match res.status_code().as_u16() {
+            307 => extra_redirects += 1,
+            410 => gone += 1,
+            other => panic!("click {i} after cap: {other} {}", res.text()),
+        }
+    }
+
+    assert_eq!(
+        extra_redirects, 2,
+        "3 buffered + 2 new = cap 5; extra redirects were {extra_redirects} (gone={gone})"
+    );
+    assert_eq!(gone, 8, "remaining clicks after the cap must be 410");
+}
+
 /// Regression (account takeover, fixed in 5240b6a): passkey enrollment must
 /// require authentication — knowing a victim's email must not be enough to
 /// start registering an authenticator onto their account.
