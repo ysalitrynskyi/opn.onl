@@ -225,6 +225,7 @@ use crate::handlers::{
             organizations::OrgResponse,
             organizations::OrgMemberResponse,
             organizations::AuditLogResponse,
+            organizations::AuditQuery,
 
             // Folder schemas
             folders::CreateFolderRequest,
