@@ -204,7 +204,6 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENABLE_CUSTOM_ALIASES` | true | Allow users to create custom aliases |
-| `ALLOW_DELETED_SLUG_REUSE` | false | Allow reusing slugs from deleted links |
 | `MIN_ALIAS_LENGTH` | 5 | Minimum custom alias length |
 | `MAX_ALIAS_LENGTH` | 25 | Maximum custom alias length |
 | `ENABLE_URL_SANITIZATION` | true | Sanitize URLs for security |

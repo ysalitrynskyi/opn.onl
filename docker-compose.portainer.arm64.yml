@@ -102,7 +102,6 @@ services:
       MAX_ALIAS_LENGTH: ${MAX_ALIAS_LENGTH:-25}
       # Per-user link cap. Empty or 0 means unlimited (the default).
       MAX_LINKS_PER_USER: ${MAX_LINKS_PER_USER:-}
-      ALLOW_DELETED_SLUG_REUSE: ${ALLOW_DELETED_SLUG_REUSE:-false}
       ENABLE_URL_SANITIZATION: ${ENABLE_URL_SANITIZATION:-true}
       # Branded QR codes (brand colour / centre logo / SVG). Kill-switch, default on.
       ENABLE_QR_BRANDING: ${ENABLE_QR_BRANDING:-true}
