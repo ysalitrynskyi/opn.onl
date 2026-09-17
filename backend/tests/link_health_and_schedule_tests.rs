@@ -146,3 +146,46 @@ async fn health_check_requires_auth_and_rejects_invalid_urls() {
         );
     }
 }
+
+/// starts_at in the past + expires_at in the future + max_clicks under the cap
+/// must still 307. Each constraint is covered alone; this pins the conjunction
+/// the scheduling theatre claimed to test.
+#[tokio::test]
+async fn combined_schedule_window_and_cap_is_live() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let dest = format!("https://iana.org/window-{}", unique_code());
+    let starts = (Utc::now() - Duration::hours(1)).to_rfc3339();
+    let expires = (Utc::now() + Duration::hours(1)).to_rfc3339();
+    let res = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "original_url": dest,
+            "starts_at": starts,
+            "expires_at": expires,
+            "max_clicks": 50
+        }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create: {}", res.text());
+    let body: Value = res.json();
+    let code = body["code"].as_str().unwrap();
+    assert_eq!(body["max_clicks"], 50);
+
+    let redirect = server.get(&format!("/{code}")).await;
+    assert_eq!(
+        redirect.status_code(),
+        307,
+        "in-window capped link must redirect: {}",
+        redirect.text()
+    );
+    assert_eq!(
+        redirect
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        dest
+    );
+}
