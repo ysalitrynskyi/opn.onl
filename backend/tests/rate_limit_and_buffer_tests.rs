@@ -185,3 +185,33 @@ async fn click_buffer_inserts_past_postgres_bind_limit_in_chunks() {
         "every buffered click must persist across insert chunks"
     );
 }
+
+#[tokio::test]
+async fn click_buffer_flush_error_does_not_busy_loop() {
+    let mut opts = sea_orm::ConnectOptions::new(
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+    );
+    opts.acquire_timeout(std::time::Duration::from_millis(50));
+    opts.connect_timeout(std::time::Duration::from_secs(2));
+    let fail_db = sea_orm::Database::connect(opts).await.expect("connect");
+    fail_db.close_by_ref().await.expect("close pool");
+
+    let buffer = std::sync::Arc::new(ClickBuffer::with_limits(1, 20, 60));
+    for _ in 0..5 {
+        buffer.add_click(click(1));
+    }
+    let handle = buffer.clone().start_flush_task(fail_db);
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let attempts = buffer.flush_attempt_count();
+    handle.abort();
+    let _ = handle.await;
+    assert!(
+        attempts <= 2,
+        "flush failure must back off rather than notify-spin, got {attempts}"
+    );
+    assert_eq!(
+        buffer.queued_event_count(),
+        5,
+        "failed flush must requeue rather than drop"
+    );
+}
