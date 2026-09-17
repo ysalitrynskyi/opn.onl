@@ -584,3 +584,80 @@ async fn invite_member_looks_up_normalized_email() {
         invitee_id
     );
 }
+
+#[tokio::test]
+async fn invite_member_rejects_deleted_or_disabled_users() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let (admin_token, admin_id) = register_verified(&server, &db).await;
+    make_admin(&db, admin_id).await;
+    let org_id = create_org(&server, &owner_token).await;
+
+    let (_, deleted_id) = register_verified(&server, &db).await;
+    let deleted_email = users::Entity::find_by_id(deleted_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .email;
+    let res = server
+        .delete(&format!("/admin/users/{deleted_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "soft-delete invitee: {}", res.text());
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "email": deleted_email, "role": "viewer" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        404,
+        "deleted user must not be invitable: {}",
+        res.text()
+    );
+    assert!(
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(deleted_id))
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "must not insert membership for a deleted user"
+    );
+
+    let (_, disabled_id) = register_verified(&server, &db).await;
+    let disabled = users::Entity::find_by_id(disabled_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let disabled_email = disabled.email.clone();
+    let mut active: users::ActiveModel = disabled.into();
+    active.disabled_at = Set(Some(chrono::Utc::now().naive_utc()));
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "email": disabled_email, "role": "viewer" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        404,
+        "disabled user must not be invitable: {}",
+        res.text()
+    );
+    assert!(
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(disabled_id))
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "must not insert membership for a disabled user"
+    );
+}

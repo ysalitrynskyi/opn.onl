@@ -795,6 +795,8 @@ pub async fn invite_member(
     let email = normalize_email(&payload.email);
     let invite_user = users::Entity::find()
         .filter(users::Column::Email.eq(&email))
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {
