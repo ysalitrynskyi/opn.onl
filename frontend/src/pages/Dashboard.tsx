@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
     Copy, Plus, Trash2, BarChart2,
@@ -78,6 +78,7 @@ export default function Dashboard() {
     const [bulkImporting, setBulkImporting] = useState(false);
     const [clipboardUrl, setClipboardUrl] = useState<string | null>(null);
     const navigate = useNavigate();
+    const linksFetchId = useRef(0);
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -263,17 +264,23 @@ export default function Dashboard() {
     }, [totalPages, currentPage]);
 
     const fetchLinks = async () => {
+        const requestId = ++linksFetchId.current;
         try {
             const res = await authFetch(API_ENDPOINTS.links);
+            if (requestId !== linksFetchId.current) return;
             if (res.ok) {
                 const data = await res.json();
+                if (requestId !== linksFetchId.current) return;
                 setLinks(data);
             }
         } catch (error) {
+            if (requestId !== linksFetchId.current) return;
             logger.error('Failed to fetch links', error);
             setError('Failed to load links. Please try again.');
         } finally {
-            setLoading(false);
+            if (requestId === linksFetchId.current) {
+                setLoading(false);
+            }
         }
     };
 
@@ -386,7 +393,10 @@ export default function Dashboard() {
                 method: 'DELETE',
             });
             if (res.ok) {
-                setLinks(links.filter(l => l.id !== id));
+                // Drop any in-flight fetchLinks so it cannot write a snapshot
+                // that still contains this id over the optimistic list.
+                linksFetchId.current += 1;
+                setLinks(prev => prev.filter(l => l.id !== id));
             } else {
                 setError('Failed to delete link');
             }
@@ -448,7 +458,8 @@ export default function Dashboard() {
             });
             if (res.ok) {
                 const data = await res.json();
-                setLinks(links.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
+                linksFetchId.current += 1;
+                setLinks(prev => prev.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
                 toast(data.message, 'success');
             } else {
                 toast('Failed to update pin status', 'error');

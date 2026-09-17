@@ -181,4 +181,162 @@ describe('Dashboard Page', () => {
       expect(screen.getAllByText('Update rejected').length).toBeGreaterThan(0);
     });
   });
+
+  const linkA = {
+    ...mockLink,
+    id: 1,
+    code: 'aaa111',
+    is_active: true,
+    is_pinned: false,
+  };
+  const linkB = {
+    ...mockLink,
+    id: 2,
+    code: 'bbb222',
+    original_url: 'https://example.com/other',
+    short_url: 'http://localhost:3000/bbb222',
+    is_active: true,
+    is_pinned: false,
+  };
+
+  function mockDashboardFetch(handler: (url: string, options?: RequestInit) => Promise<unknown> | unknown) {
+    vi.mocked(global.fetch).mockImplementation((url, options) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/auth/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 50,
+        }) as any;
+      }
+      if (requestUrl.includes('/links/sparklines')) {
+        return mockFetchResponse({ sparklines: [] }) as any;
+      }
+      return handler(requestUrl, options as RequestInit) as any;
+    });
+  }
+
+  it('keeps both links removed when two deletes finish out of order', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const deleteResolvers: Array<() => void> = [];
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'DELETE') {
+        return new Promise((resolve) => {
+          deleteResolvers.push(() =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve({}),
+            }),
+          );
+        });
+      }
+      return mockFetchResponse([linkA, linkB]);
+    });
+
+    const { user } = render(<Dashboard />);
+    expect((await screen.findAllByText(/aaa111/i)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/bbb222/i).length).toBeGreaterThan(0);
+
+    const deleteBtns = screen.getAllByRole('button', { name: /delete link/i });
+    await user.click(deleteBtns[0]);
+    await user.click(deleteBtns[1]);
+    expect(deleteResolvers.length).toBe(2);
+    deleteResolvers.forEach((resolve) => resolve());
+
+    await waitFor(() => {
+      expect(screen.queryAllByText(/aaa111/i)).toHaveLength(0);
+      expect(screen.queryAllByText(/bbb222/i)).toHaveLength(0);
+    });
+  });
+
+  it('does not resurrect a deleted link when a slower fetchLinks resolves', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let resolveSecondFetch: (value: unknown) => void = () => {};
+    const secondFetch = new Promise((resolve) => {
+      resolveSecondFetch = resolve;
+    });
+    let linksGets = 0;
+    let staleResponseDelivered = false;
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.endsWith('/links')) {
+        return mockFetchResponse({ ...linkB, id: 3, code: 'ccc333' });
+      }
+      if (options?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        });
+      }
+      if (requestUrl.endsWith('/links') && options?.method !== 'POST') {
+        linksGets += 1;
+        if (linksGets === 1) {
+          return mockFetchResponse([linkA, linkB]);
+        }
+        return secondFetch.then(() => {
+          staleResponseDelivered = true;
+          return {
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve([linkA, linkB, { ...linkA, id: 3, code: 'ccc333' }]),
+          };
+        });
+      }
+      return mockFetchResponse([linkA, linkB]);
+    });
+
+    const { user } = render(<Dashboard />);
+    expect((await screen.findAllByText(/aaa111/i)).length).toBeGreaterThan(0);
+
+    await user.type(screen.getByPlaceholderText(/example.com/i), 'https://created.example');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() => {
+      expect(linksGets).toBe(2);
+    });
+
+    await user.click(screen.getAllByRole('button', { name: /delete link/i })[0]);
+    await waitFor(() => {
+      expect(screen.queryAllByText(/aaa111/i)).toHaveLength(0);
+    });
+
+    resolveSecondFetch(undefined);
+
+    await waitFor(() => {
+      expect(staleResponseDelivered).toBe(true);
+    });
+    expect(screen.queryAllByText(/aaa111/i)).toHaveLength(0);
+    expect(screen.getAllByText(/bbb222/i).length).toBeGreaterThan(0);
+  });
+
+  it('keeps both pin updates when two pins finish out of order', async () => {
+    const pinResolvers: Array<() => void> = [];
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.includes('/pin')) {
+        return new Promise((resolve) => {
+          pinResolvers.push(() =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve({ is_pinned: true, message: 'Pinned' }),
+            }),
+          );
+        });
+      }
+      return mockFetchResponse([linkA, linkB]);
+    });
+
+    const { user } = render(<Dashboard />);
+    const pinBtns = await screen.findAllByRole('button', { name: /^pin$/i });
+    expect(pinBtns.length).toBe(2);
+    await user.click(pinBtns[0]);
+    await user.click(pinBtns[1]);
+    expect(pinResolvers.length).toBe(2);
+    pinResolvers.forEach((resolve) => resolve());
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: /^unpin$/i }).length).toBe(2);
+    });
+  });
 });
