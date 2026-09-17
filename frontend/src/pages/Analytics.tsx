@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -158,7 +158,7 @@ export default function Analytics() {
     const [error, setError] = useState('');
     const [days, setDays] = useState(30);
 
-    const fetchStats = async () => {
+    const fetchStats = useCallback(async () => {
         try {
             setLoading(true);
             const res = await authFetch(`${API_ENDPOINTS.linkStats(Number(id))}?days=${days}`);
@@ -179,7 +179,7 @@ export default function Analytics() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [id, days]);
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -188,7 +188,7 @@ export default function Analytics() {
             return;
         }
         fetchStats();
-    }, [id, navigate, days]);
+    }, [navigate, fetchStats]);
 
     if (loading && !stats) {
         return <Skeleton />;
