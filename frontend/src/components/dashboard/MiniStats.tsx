@@ -1,10 +1,12 @@
+import { useState } from 'react';
 import { TrendingUp, Calendar } from 'lucide-react';
 import type { LinkData } from './types';
 
 // Compact per-link metadata row: average clicks/day, created date, and tags.
 export default function MiniStats({ link }: { link: LinkData }) {
     const createdDate = new Date(link.created_at);
-    const daysSinceCreation = Math.max(1, Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24)));
+    const [now] = useState(() => Date.now());
+    const daysSinceCreation = Math.max(1, Math.floor((now - createdDate.getTime()) / (1000 * 60 * 60 * 24)));
     const avgClicksPerDay = (link.click_count / daysSinceCreation).toFixed(1);
 
     return (
