@@ -112,21 +112,34 @@ impl BackupService {
             .as_ref()
             .ok_or("Backup service not configured")?;
 
-        let response = client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix("backup_")
-            .send()
-            .await
-            .map_err(|e| format!("Failed to list backups: {}", e))?;
-
-        let backups: Vec<String> = response
-            .contents()
-            .iter()
-            .filter_map(|obj| obj.key().map(|k| k.to_string()))
-            .collect();
-
-        Ok(backups)
+        let client = client.clone();
+        let bucket = self.bucket.clone();
+        collect_backup_keys(move |token| {
+            let client = client.clone();
+            let bucket = bucket.clone();
+            async move {
+                let mut req = client.list_objects_v2().bucket(bucket).prefix("backup_");
+                if let Some(token) = token {
+                    req = req.continuation_token(token);
+                }
+                let response = req
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to list backups: {}", e))?;
+                Ok(ObjectListPage {
+                    keys: response
+                        .contents()
+                        .iter()
+                        .filter_map(|obj| obj.key().map(|k| k.to_string()))
+                        .collect(),
+                    is_truncated: response.is_truncated() == Some(true),
+                    next_continuation_token: response
+                        .next_continuation_token()
+                        .map(str::to_string),
+                })
+            }
+        })
+        .await
     }
 
     /// Delete old backups (keep last N)
@@ -311,6 +324,35 @@ async fn stream_pg_dump_to_gzip_file(database_url: &str, dest: &Path) -> Result<
     .map_err(|e| format!("Backup task failed: {e}"))?
 }
 
+struct ObjectListPage {
+    keys: Vec<String>,
+    is_truncated: bool,
+    next_continuation_token: Option<String>,
+}
+
+/// Walk `list_objects_v2` pages until S3 reports the listing is complete.
+async fn collect_backup_keys<F, Fut>(mut fetch_page: F) -> Result<Vec<String>, String>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<ObjectListPage, String>>,
+{
+    let mut backups = Vec::new();
+    let mut continuation = None;
+    loop {
+        let page = fetch_page(continuation).await?;
+        backups.extend(page.keys);
+        continuation = if page.is_truncated {
+            page.next_continuation_token
+        } else {
+            None
+        };
+        if continuation.is_none() {
+            break;
+        }
+    }
+    Ok(backups)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +448,36 @@ mod tests {
 
         drop(tx);
         handle.join().expect("gzip thread").expect("gzip copy");
+    }
+
+    #[tokio::test]
+    async fn lists_backups_across_s3_pages() {
+        let keys = collect_backup_keys(|token| async move {
+            Ok(match token.as_deref() {
+                None => ObjectListPage {
+                    keys: (0..1000).map(|i| format!("backup_old_{i:04}")).collect(),
+                    is_truncated: true,
+                    next_continuation_token: Some("page2".into()),
+                },
+                Some("page2") => ObjectListPage {
+                    keys: (0..500).map(|i| format!("backup_new_{i:04}")).collect(),
+                    is_truncated: false,
+                    next_continuation_token: None,
+                },
+                other => panic!("unexpected continuation token {other:?}"),
+            })
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            keys.len(),
+            1500,
+            "must walk every list_objects_v2 page, not stop at 1000"
+        );
+        assert!(
+            keys.iter().any(|k| k.starts_with("backup_new_")),
+            "newest keys live on the second page and must be listed"
+        );
     }
 }
