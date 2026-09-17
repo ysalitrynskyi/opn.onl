@@ -69,19 +69,54 @@ struct PendingPasskeyAuthentication {
 
 static AUTH_STATE: Lazy<ExpiringMap<PendingPasskeyAuthentication>> = Lazy::new(ExpiringMap::new);
 
+/// Resolve the WebAuthn RP ID from an optional `WEBAUTHN_RP_ID` and the frontend origin.
+///
+/// A non-empty value (after trim) wins; empty or whitespace is treated as unset
+/// and the origin host is used. The RP ID must equal the origin host or be a
+/// DNS parent of it (`opn.onl` is valid for `https://app.opn.onl`; `other.com`
+/// is not). A passkey registered under the wrong RP ID is unusable, so a
+/// mismatch is an error rather than a silent substitution.
+pub(crate) fn effective_webauthn_rp_id(
+    rp_id_env: Option<&str>,
+    origin: &Url,
+) -> Result<String, String> {
+    let origin_host = origin.host_str().unwrap_or("localhost");
+    let rp_id = match rp_id_env {
+        Some(raw) if !raw.trim().is_empty() => raw.trim(),
+        _ => origin_host,
+    };
+    if !rp_id_is_parent_or_equal(rp_id, origin_host) {
+        return Err(format!(
+            "WEBAUTHN_RP_ID '{rp_id}' is not the origin host '{origin_host}' or a DNS parent of it. \
+             The RP ID must be the frontend host or a parent domain (e.g. opn.onl is valid for \
+             https://app.opn.onl; other.com is not). A passkey registered under the wrong RP ID is unusable."
+        ));
+    }
+    Ok(rp_id.to_string())
+}
+
+fn rp_id_is_parent_or_equal(rp_id: &str, origin_host: &str) -> bool {
+    let rp = rp_id.trim_end_matches('.').to_ascii_lowercase();
+    let host = origin_host.trim_end_matches('.').to_ascii_lowercase();
+    !rp.is_empty() && (host == rp || host.ends_with(&format!(".{rp}")))
+}
+
+/// Fail fast at process start if `WEBAUTHN_RP_ID` cannot be used with `FRONTEND_URL`.
+pub fn validate_webauthn_rp_id() {
+    let rp_origin =
+        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let origin_url = match Url::parse(&rp_origin) {
+        Ok(url) => url,
+        Err(e) => panic!("Invalid FRONTEND_URL for WebAuthn: {e}"),
+    };
+    let rp_id_env = std::env::var("WEBAUTHN_RP_ID").ok();
+    if let Err(e) = effective_webauthn_rp_id(rp_id_env.as_deref(), &origin_url) {
+        panic!("{e}");
+    }
+}
+
 // Helper to get Webauthn instance
 fn get_webauthn() -> Webauthn {
-    let rp_id = std::env::var("WEBAUTHN_RP_ID").unwrap_or_else(|_| {
-        std::env::var("FRONTEND_URL")
-            .unwrap_or_else(|_| "localhost".to_string())
-            .replace("https://", "")
-            .replace("http://", "")
-            .split('/')
-            .next()
-            .unwrap_or("localhost")
-            .to_string()
-    });
-
     let rp_origin =
         std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
 
@@ -93,10 +128,11 @@ fn get_webauthn() -> Webauthn {
         Url::parse("http://localhost:5173").expect("Hardcoded URL should always parse")
     });
 
-    // Extract just the host for rp_id (e.g., "opn.onl" from "https://opn.onl")
-    let effective_rp_id = origin_url.host_str().unwrap_or(&rp_id);
+    let rp_id_env = std::env::var("WEBAUTHN_RP_ID").ok();
+    let effective_rp_id = effective_webauthn_rp_id(rp_id_env.as_deref(), &origin_url)
+        .unwrap_or_else(|e| panic!("{e}"));
 
-    WebauthnBuilder::new(effective_rp_id, &origin_url)
+    WebauthnBuilder::new(&effective_rp_id, &origin_url)
         .map_err(|e| {
             tracing::error!("Failed to create WebAuthn builder: {:?}", e);
             e
@@ -889,5 +925,55 @@ pub async fn rename_passkey(
             Json(serde_json::json!({"error": "Passkey not found"})),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod webauthn_rp_id_tests {
+    use super::effective_webauthn_rp_id;
+    use url::Url;
+
+    fn origin(s: &str) -> Url {
+        Url::parse(s).expect("test origin must parse")
+    }
+
+    #[test]
+    fn non_empty_webauthn_rp_id_wins_when_it_is_a_parent_of_the_origin() {
+        let got = effective_webauthn_rp_id(Some("opn.onl"), &origin("https://app.opn.onl"))
+            .expect("parent RP ID must be accepted");
+        assert_eq!(got, "opn.onl");
+    }
+
+    #[test]
+    fn empty_or_whitespace_webauthn_rp_id_falls_back_to_origin_host() {
+        let origin = origin("https://app.opn.onl");
+        assert_eq!(
+            effective_webauthn_rp_id(None, &origin).unwrap(),
+            "app.opn.onl"
+        );
+        assert_eq!(
+            effective_webauthn_rp_id(Some(""), &origin).unwrap(),
+            "app.opn.onl"
+        );
+        assert_eq!(
+            effective_webauthn_rp_id(Some("   \t"), &origin).unwrap(),
+            "app.opn.onl"
+        );
+    }
+
+    #[test]
+    fn webauthn_rp_id_equal_to_origin_host_is_accepted() {
+        assert_eq!(
+            effective_webauthn_rp_id(Some("app.opn.onl"), &origin("https://app.opn.onl")).unwrap(),
+            "app.opn.onl"
+        );
+    }
+
+    #[test]
+    fn webauthn_rp_id_that_is_not_a_parent_of_the_origin_is_rejected() {
+        let err = effective_webauthn_rp_id(Some("other.com"), &origin("https://app.opn.onl"))
+            .expect_err("unrelated RP ID must be rejected");
+        assert!(err.contains("other.com"), "{err}");
+        assert!(err.contains("app.opn.onl"), "{err}");
     }
 }
