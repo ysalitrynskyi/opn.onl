@@ -116,6 +116,15 @@ jobs:
           container_id=$(docker run --detach --publish 127.0.0.1:8080:80 opn-frontend-csp-smoke)
           trap 'docker rm --force "$container_id"' EXIT
 
+          # csp-config ships nginx + conf only (no Vite dist). Placeholder files
+          # let the cache-policy split be asserted without a full frontend build.
+          docker exec "$container_id" sh -c '
+            mkdir -p /usr/share/nginx/html/assets
+            printf "ok\n" > /usr/share/nginx/html/assets/app-deadbeef.js
+            printf "ok\n" > /usr/share/nginx/html/favicon-32x32.png
+            printf "{}\n" > /usr/share/nginx/html/manifest.json
+          '
+
           for attempt in $(seq 1 20); do
             if headers=$(curl --fail --silent --show-error --head http://127.0.0.1:8080/); then
               break
@@ -136,6 +145,30 @@ jobs:
           # the previous deploy's SPA shell — stale hashed asset names and stale
           # entrypoint-injected runtime config (GA_ID / GA_CONSENT_MODE).
           printf '%s\n' "$headers" | grep -iE "^cache-control: *no-cache"
+
+          # Hashed Vite output under /assets/ is content-addressed and may be
+          # cached forever. The location repeats security headers because nginx
+          # drops inherited add_header when the inner scope sets Cache-Control.
+          asset_headers=$(curl --fail --silent --show-error --head http://127.0.0.1:8080/assets/app-deadbeef.js)
+          printf '%s\n' "$asset_headers" | grep -iE "^cache-control:.*\bpublic\b.*\bimmutable\b"
+          printf '%s\n' "$asset_headers" | grep -iF "x-frame-options: SAMEORIGIN"
+          printf '%s\n' "$asset_headers" | grep -iF "x-content-type-options: nosniff"
+          printf '%s\n' "$asset_headers" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
+          printf '%s\n' "$asset_headers" | grep -iF "content-security-policy:"
+          printf '%s\n' "$asset_headers" | grep -iF "img-src 'self' data: blob: https:;"
+
+          # Unhashed files from public/ keep stable URLs across deploys, so they
+          # must not be immutable. A new logo / favicon / manifest.json would
+          # otherwise stay stale in returning browsers (and any CDN honoring
+          # immutable) for up to a year.
+          for public_path in /favicon-32x32.png /manifest.json; do
+            public_headers=$(curl --fail --silent --show-error --head "http://127.0.0.1:8080${public_path}")
+            printf '%s\n' "$public_headers" | grep -iE "^cache-control: *no-cache"
+            ! printf '%s\n' "$public_headers" | grep -iE "cache-control:.*\bimmutable\b"
+            printf '%s\n' "$public_headers" | grep -iF "x-frame-options: SAMEORIGIN"
+            printf '%s\n' "$public_headers" | grep -iF "content-security-policy:"
+          done
+
           ! printf '%s\n' "$headers" | grep -Fq '__API_CONNECT_SRC__'
           ! docker exec "$container_id" grep -Rq '__API_CONNECT_SRC__' /etc/nginx/conf.d
           ! grep -R "fonts.googleapis.com" frontend/src
