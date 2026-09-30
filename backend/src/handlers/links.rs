@@ -430,10 +430,14 @@ async fn resolve_and_validate(url: &str) -> Result<ValidatedTarget, String> {
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             (vec![std::net::SocketAddr::new(ip, port)], true)
         } else {
-            let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
-                .await
-                .map_err(|_| "Could not resolve host".to_string())?
-                .collect();
+            let resolved: Vec<std::net::SocketAddr> = tokio::time::timeout(
+                DESTINATION_DNS_TIMEOUT,
+                tokio::net::lookup_host((host, port)),
+            )
+            .await
+            .map_err(|_| "Could not resolve host".to_string())?
+            .map_err(|_| "Could not resolve host".to_string())?
+            .collect();
             (resolved, false)
         };
 
@@ -462,12 +466,48 @@ async fn resolve_and_validate(url: &str) -> Result<ValidatedTarget, String> {
 /// one error, and refusing both would reject not-yet-published hostnames and
 /// make every create depend on DNS being up. The click redirect is not a
 /// server-side fetch and is not re-resolved.
+///
+/// The lookup is bounded by `DESTINATION_DNS_TIMEOUT`, so a slow resolver
+/// delays a write by at most that long instead of hanging it.
 async fn ensure_public_destination(url: &str) -> Result<(), String> {
-    match resolve_and_validate(url).await {
-        Ok(_) => Ok(()),
-        Err(e) if e == "Could not resolve host" || e == "Host did not resolve" => Ok(()),
-        Err(e) => Err(e),
+    match destination_host(url) {
+        Some((host, port)) if host_resolves_private(&host, port).await == Some(true) => {
+            Err(PRIVATE_DESTINATION.to_string())
+        }
+        _ => Ok(()),
     }
+}
+
+/// How long a destination check waits for DNS before letting the write through.
+const DESTINATION_DNS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+const PRIVATE_DESTINATION: &str = "URL resolves to a disallowed (internal/private) address";
+
+/// The DNS name and port a destination connects to. `None` for a URL without a
+/// host or with a literal IP, which `validate_url` already checks.
+fn destination_host(url: &str) -> Option<(String, u16)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let port = parsed.port_or_known_default()?;
+    match parsed.host()? {
+        url::Host::Domain(domain) => Some((domain.to_string(), port)),
+        url::Host::Ipv4(_) | url::Host::Ipv6(_) => None,
+    }
+}
+
+/// Whether any address `host` resolves to is private or internal. `None` when
+/// the lookup fails, returns nothing, or takes longer than
+/// `DESTINATION_DNS_TIMEOUT`.
+async fn host_resolves_private(host: &str, port: u16) -> Option<bool> {
+    let lookup = tokio::time::timeout(
+        DESTINATION_DNS_TIMEOUT,
+        tokio::net::lookup_host((host, port)),
+    )
+    .await;
+    let addrs: Vec<std::net::SocketAddr> = lookup.ok()?.ok()?.collect();
+    if addrs.is_empty() {
+        return None;
+    }
+    Some(addrs.iter().any(|sa| is_disallowed_ip(&sa.ip())))
 }
 
 /// Build a reqwest client that connects **only** to the validated addresses for
@@ -3916,6 +3956,27 @@ pub async fn bulk_create_links(
         remaining_budget = Some(cap.saturating_sub(existing));
     }
 
+    // Resolve each distinct destination host once, a few at a time, instead of
+    // one lookup per URL in sequence: 500 URLs at the DNS timeout each would
+    // hold the request for minutes.
+    let private_hosts: std::collections::HashSet<(String, u16)> = {
+        use futures::StreamExt;
+        let hosts: std::collections::HashSet<(String, u16)> = payload
+            .urls
+            .iter()
+            .filter_map(|url| destination_host(url))
+            .collect();
+        futures::stream::iter(hosts)
+            .map(|(host, port)| async move {
+                let private = host_resolves_private(&host, port).await == Some(true);
+                private.then_some((host, port))
+            })
+            .buffer_unordered(16)
+            .filter_map(std::future::ready)
+            .collect()
+            .await
+    };
+
     for url in payload.urls {
         // Charge the per-IP create budget per link. A bulk request is not a
         // discount: once the hourly create budget is spent, the remaining URLs
@@ -3941,8 +4002,8 @@ pub async fn bulk_create_links(
             errors.push(format!("{}: {}", url, e));
             continue;
         }
-        if let Err(e) = ensure_public_destination(&url).await {
-            errors.push(format!("{}: {}", url, e));
+        if destination_host(&url).is_some_and(|host| private_hosts.contains(&host)) {
+            errors.push(format!("{}: {}", url, PRIVATE_DESTINATION));
             continue;
         }
 
