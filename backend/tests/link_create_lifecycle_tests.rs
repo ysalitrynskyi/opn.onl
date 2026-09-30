@@ -294,6 +294,64 @@ async fn password_protected_link_wrong_and_right() {
     );
 }
 
+/// A non-ASCII link password cannot travel in the `x-link-password` header,
+/// so it must work through the JSON unlock flow the password page uses: the
+/// wrong password is refused, the right one yields an unlock URL that
+/// redirects to the destination.
+#[tokio::test]
+async fn password_protected_link_accepts_non_ascii_password() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let dest = format!("https://iana.org/unicode-secret-{}", unique_code());
+    let password = "ключ-🔑-Schlüssel";
+    let body = create_link(
+        &server,
+        &token,
+        json!({ "original_url": dest, "password": password }),
+    )
+    .await;
+    let code = body["code"].as_str().unwrap().to_string();
+
+    let wrong = server
+        .post(&format!("/{code}/verify"))
+        .json(&json!({ "password": "ключ-🔑-schlüssel" }))
+        .await;
+    assert_eq!(wrong.status_code(), 401, "wrong password: {}", wrong.text());
+
+    let ok = server
+        .post(&format!("/{code}/verify"))
+        .json(&json!({ "password": password }))
+        .await;
+    assert_eq!(ok.status_code(), 200, "correct password: {}", ok.text());
+    let unlock_url = ok.json::<Value>()["redirect_url"]
+        .as_str()
+        .expect("redirect_url")
+        .to_string();
+    let unlock_url = url::Url::parse(&unlock_url).expect("absolute unlock URL");
+    let unlocked = server
+        .get(&format!(
+            "{}?{}",
+            unlock_url.path(),
+            unlock_url.query().expect("unlock query")
+        ))
+        .await;
+    assert_eq!(
+        unlocked.status_code(),
+        307,
+        "unlock URL must redirect: {}",
+        unlocked.text()
+    );
+    assert_eq!(
+        unlocked
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        dest
+    );
+}
+
 #[tokio::test]
 async fn export_links_csv_for_owner_only() {
     let (server, db) = spawn_real_app().await;
