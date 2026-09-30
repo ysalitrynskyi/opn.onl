@@ -7,6 +7,7 @@ import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
+import { safeLocalStorage } from '../utils/storage';
 
 interface DayStats {
     date: string;
@@ -197,7 +198,7 @@ export default function Analytics() {
     }, [id, days]);
 
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (!token) {
             navigate('/login');
             return;

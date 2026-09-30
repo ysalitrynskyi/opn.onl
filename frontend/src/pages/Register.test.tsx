@@ -4,6 +4,7 @@ import Home from './Home';
 import Register from './Register';
 import Dashboard from './Dashboard';
 import { mockFetchResponse, mockFetchError, mockToken } from '../test/test-utils';
+import { blockSiteStorage } from '../test/helpers';
 
 describe('Register Page', () => {
   beforeEach(() => {
@@ -101,6 +102,25 @@ describe('Register Page', () => {
     await waitFor(() => {
       expect(screen.getByText(/email already exists/i)).toBeInTheDocument();
     });
+  });
+
+  it('says why the new account is not signed in when the browser blocks site storage', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      mockFetchResponse({ token: mockToken, email_verified: true }) as any
+    );
+    const unblock = blockSiteStorage();
+    try {
+      const { user } = render(<Register />);
+
+      await user.type(screen.getByLabelText(/email address/i), 'new@example.com');
+      await user.type(screen.getByLabelText(/password/i), 'password123');
+      await user.click(screen.getByRole('button', { name: /create account/i }));
+
+      expect(await screen.findByText(/blocking storage for this site/i)).toBeInTheDocument();
+      expect(window.location.pathname).toBe('/');
+    } finally {
+      unblock();
+    }
   });
 
   it('shows terms and privacy links', () => {

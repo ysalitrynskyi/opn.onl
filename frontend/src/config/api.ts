@@ -1,6 +1,8 @@
 // API Configuration
 // In development, this uses localhost. In production, set VITE_API_URL environment variable.
 
+import { safeLocalStorage } from '../utils/storage';
+
 export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export const API_ENDPOINTS = {
@@ -137,7 +139,7 @@ export const API_ENDPOINTS = {
 
 // Helper to get auth headers
 export const getAuthHeaders = (
-    token: string | null = localStorage.getItem('token')
+    token: string | null = safeLocalStorage.getItem('token')
 ): HeadersInit => {
     return {
         'Content-Type': 'application/json',
@@ -148,10 +150,10 @@ export const getAuthHeaders = (
 // Only log out the session whose token produced this 401. A newer login may
 // have replaced it while the request was in flight.
 const handleUnauthorized = (requestToken: string | null) => {
-    if (!requestToken || localStorage.getItem('token') !== requestToken) return;
+    if (!requestToken || safeLocalStorage.getItem('token') !== requestToken) return;
 
-    localStorage.removeItem('token');
-    localStorage.removeItem('is_admin');
+    safeLocalStorage.removeItem('token');
+    safeLocalStorage.removeItem('is_admin');
     // Redirect to login page
     window.location.href = '/login';
 };
@@ -161,7 +163,7 @@ export async function authFetch(
     url: string,
     options: RequestInit = {}
 ): Promise<Response> {
-    const requestToken = localStorage.getItem('token');
+    const requestToken = safeLocalStorage.getItem('token');
     const response = await fetch(url, {
         ...options,
         headers: {
@@ -185,7 +187,7 @@ export async function apiCall<T>(
     options: RequestInit = {}
 ): Promise<{ data?: T; error?: string }> {
     try {
-        const requestToken = localStorage.getItem('token');
+        const requestToken = safeLocalStorage.getItem('token');
         const response = await fetch(url, {
             ...options,
             headers: {

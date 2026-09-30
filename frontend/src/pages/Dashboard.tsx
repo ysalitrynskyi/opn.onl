@@ -23,6 +23,7 @@ import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
 import { takePendingUrl } from '../utils/pendingUrl';
+import { safeLocalStorage } from '../utils/storage';
 import { localIsoDate } from '../utils/localIsoDate';
 
 interface AppSettings {
@@ -88,7 +89,7 @@ export default function Dashboard() {
     const droppedLinkIds = useRef(new Set<number>());
 
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (!token) {
             navigate('/login');
             return;

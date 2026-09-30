@@ -13,6 +13,7 @@ import {
     Tooltip as ChartTooltip, CartesianGrid, Legend,
 } from 'recharts';
 import { API_ENDPOINTS, authFetch } from '../config/api';
+import { safeLocalStorage } from '../utils/storage';
 
 interface AdminStats {
     total_users: number;
@@ -289,7 +290,7 @@ export default function Admin() {
 
     // Initial load: overview decides whether the visitor is an admin at all.
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (!token) {
             navigate('/login');
             return;

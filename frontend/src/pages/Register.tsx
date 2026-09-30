@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Mail, Lock, Check, CheckCircle, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
+import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
 const passwordRequirements = [
     { label: 'At least 8 characters', test: (p: string) => p.length >= 8 },
@@ -20,7 +21,7 @@ export default function Register() {
 
     // Redirect to dashboard if already logged in
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (token) {
             navigate('/dashboard', { replace: true });
         }
@@ -43,8 +44,8 @@ export default function Register() {
             if (!res.ok) throw new Error(data.error || 'Registration failed');
 
             // Store token but show verification message
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
+            if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
+            safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
             
             // Check if email verification is required
             if (data.email_verified === false) {

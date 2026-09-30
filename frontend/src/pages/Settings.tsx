@@ -10,6 +10,7 @@ import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { isSafeHttpUrl } from '../utils';
+import { safeLocalStorage } from '../utils/storage';
 
 interface Passkey {
     id: number;
@@ -98,7 +99,7 @@ export default function Settings() {
     const [creatingKey, setCreatingKey] = useState(false);
 
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (!token) {
             navigate('/login');
             return;
@@ -300,7 +301,7 @@ export default function Settings() {
             // one). Store the fresh token so we stay logged in instead of 401-ing
             // on the next request and being bounced to /login.
             if (data.token) {
-                localStorage.setItem('token', data.token);
+                safeLocalStorage.setItem('token', data.token);
             }
 
             setSuccess('Password changed successfully');
@@ -336,7 +337,7 @@ export default function Settings() {
                 throw new Error(data.error || 'Failed to delete account');
             }
 
-            localStorage.removeItem('token');
+            safeLocalStorage.removeItem('token');
             navigate('/');
         } catch (err) {
             setError(errorMessage(err));
