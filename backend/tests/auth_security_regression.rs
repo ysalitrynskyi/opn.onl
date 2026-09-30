@@ -11,7 +11,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection,
     EntityTrait, PaginatorTrait, QueryFilter,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) {
     let res = server
@@ -132,8 +132,10 @@ async fn assert_credentials_gone(db: &DatabaseConnection, user_id: i32) {
 
 #[tokio::test]
 async fn credential_creation_requires_a_verified_jwt() {
-    std::env::set_var("ENABLE_API_KEYS", "true");
-    std::env::set_var("ENABLE_PASSKEYS", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_API_KEYS", "true") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_PASSKEYS", "true") };
 
     let (server, db) = spawn_real_app().await;
     let email = unique_email();
@@ -318,7 +320,8 @@ async fn admin_delete_and_restore_revoke_sessions_and_credentials() {
 
 #[tokio::test]
 async fn self_delete_revokes_sessions_and_credentials() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
 
     let (server, db) = spawn_real_app().await;
     let (jwt, user_id) = register(&server, &unique_email()).await;
@@ -474,7 +477,8 @@ async fn password_change_consumes_outstanding_reset_token() {
 
 #[tokio::test]
 async fn a_non_last_admin_can_self_delete() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let lock_db = lock_admin_count().await;
     let (server, db) = spawn_real_app().await;
 
@@ -513,7 +517,8 @@ async fn a_non_last_admin_can_self_delete() {
 
 #[tokio::test]
 async fn last_remaining_admin_cannot_self_delete() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let lock_db = lock_admin_count().await;
     let (server, db) = spawn_real_app().await;
 

@@ -8,7 +8,7 @@ use opn_onl_backend::entity::links;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseConnection, EntityTrait,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register_verified(
     server: &axum_test::TestServer,

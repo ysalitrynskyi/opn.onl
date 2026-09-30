@@ -31,10 +31,13 @@ pub async fn spawn_real_app() -> (axum_test::TestServer, DatabaseConnection) {
     // Pin environment-dependent middleware before dotenvy runs so a developer
     // .env (e.g. FORCE_HTTPS=true) can't change test behavior: dotenvy never
     // overrides variables that are already set.
-    std::env::set_var("FORCE_HTTPS", "false");
-    std::env::set_var("TRUST_PROXY_HEADERS", "false");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("FORCE_HTTPS", "false") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("TRUST_PROXY_HEADERS", "false") };
     if std::env::var("JWT_SECRET").is_err() {
-        std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef") };
     }
 
     let db = setup_test_db().await;
@@ -84,10 +87,13 @@ async fn spawn_real_app_ws_with_state(
     DatabaseConnection,
     std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
 ) {
-    std::env::set_var("FORCE_HTTPS", "false");
-    std::env::set_var("TRUST_PROXY_HEADERS", "false");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("FORCE_HTTPS", "false") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("TRUST_PROXY_HEADERS", "false") };
     if std::env::var("JWT_SECRET").is_err() {
-        std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef") };
     }
 
     let db = setup_test_db().await;
@@ -131,7 +137,7 @@ pub fn unique_email() -> String {
 #[allow(dead_code)]
 pub fn unique_code() -> String {
     use rand::distributions::Alphanumeric;
-    use rand::{thread_rng, Rng};
+    use rand::{Rng, thread_rng};
 
     thread_rng()
         .sample_iter(&Alphanumeric)

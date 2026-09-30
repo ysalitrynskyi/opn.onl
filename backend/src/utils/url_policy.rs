@@ -71,11 +71,7 @@ pub fn host_is_raw_ip(url: &str) -> bool {
 
 pub fn normalize_hostname(host: &str) -> Option<String> {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if h.is_empty() {
-        None
-    } else {
-        Some(h)
-    }
+    if h.is_empty() { None } else { Some(h) }
 }
 
 pub fn normalize_domain_input(input: &str) -> Option<String> {

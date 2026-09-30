@@ -10,7 +10,7 @@ mod common;
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::click_events;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The account-deletion erasure step must null per-visitor identifiers
 /// (ip/user-agent/referer) on the user's link click events while keeping the

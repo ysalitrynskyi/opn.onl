@@ -10,7 +10,7 @@ mod common;
 use common::{spawn_real_app, unique_email};
 use opn_onl_backend::entity::passkeys;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn passkey(user_id: i32, cred_id: &str) -> passkeys::ActiveModel {
     passkeys::ActiveModel {
@@ -60,7 +60,8 @@ fn passkey_login_start_shape(body: &Value) -> (bool, Option<&Vec<Value>>) {
 
 #[tokio::test]
 async fn passkey_login_start_does_not_enumerate_users() {
-    std::env::set_var("ENABLE_PASSKEYS", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_PASSKEYS", "true") };
     let (server, db) = spawn_real_app().await;
 
     let no_passkey_email = unique_email();

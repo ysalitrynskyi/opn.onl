@@ -11,7 +11,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use opn_onl_backend::handlers::websocket::WsState;
 use opn_onl_backend::utils::cache::RedisCache;
 use opn_onl_backend::utils::{self, BackupService, ClickBuffer, EmailService};
-use opn_onl_backend::{build_router, ensure_admin_exists, AppState};
+use opn_onl_backend::{AppState, build_router, ensure_admin_exists};
 
 #[tokio::main]
 async fn main() {

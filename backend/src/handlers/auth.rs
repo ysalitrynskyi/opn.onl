@@ -1,18 +1,18 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use chrono::{Duration, Utc};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
 
+use crate::AppState;
 use crate::entity::{api_keys, passkeys, users};
 use crate::utils::email::generate_token;
 use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
 use crate::utils::jwt::{
-    create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password, PASSWORD_TOO_LONG,
+    PASSWORD_TOO_LONG, create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password,
 };
 use crate::utils::time::utc_rfc3339;
-use crate::AppState;
 use axum::http::HeaderMap;
 
 #[derive(Deserialize, Validate, ToSchema)]
@@ -126,7 +126,7 @@ pub async fn register(
                     error: "Password hashing failed".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -143,7 +143,7 @@ pub async fn register(
                     error: "Database error".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -194,15 +194,13 @@ pub async fn register(
                     .into_response();
             }
             // Send verification email if email service is configured
-            if let Some(email_service) = &state.email_service {
-                if email_service.is_configured() {
-                    if let Err(e) = email_service
-                        .send_verification_email(&email, &verification_token)
-                        .await
-                    {
-                        tracing::error!("Failed to send verification email: {}", e);
-                    }
-                }
+            if let Some(email_service) = &state.email_service
+                && email_service.is_configured()
+                && let Err(e) = email_service
+                    .send_verification_email(&email, &verification_token)
+                    .await
+            {
+                tracing::error!("Failed to send verification email: {}", e);
             }
 
             let token = match create_jwt(user_res.last_insert_id, &email, 0) {
@@ -403,16 +401,16 @@ pub async fn verify_email(
         }
 
         // Check if token is expired
-        if let Some(expires) = user.verification_token_expires {
-            if Utc::now().naive_utc() > expires {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Token expired".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+        if let Some(expires) = user.verification_token_expires
+            && Utc::now().naive_utc() > expires
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Token expired".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Update user as verified
@@ -432,12 +430,11 @@ pub async fn verify_email(
         }
 
         // Send welcome email
-        if let Some(email_service) = &state.email_service {
-            if email_service.is_configured() {
-                if let Err(e) = email_service.send_welcome_email(&user.email).await {
-                    tracing::error!("Failed to send welcome email: {}", e);
-                }
-            }
+        if let Some(email_service) = &state.email_service
+            && email_service.is_configured()
+            && let Err(e) = email_service.send_welcome_email(&user.email).await
+        {
+            tracing::error!("Failed to send welcome email: {}", e);
         }
 
         return (
@@ -494,29 +491,27 @@ pub async fn resend_verification(
 
     // Always the same 200 body, including on verified / unknown / update
     // failure: distinct status codes here enumerate live accounts.
-    if let Some(user) = user {
-        if !user.email_verified {
-            let verification_token = generate_token();
-            let verification_expires = Utc::now() + Duration::hours(24);
+    if let Some(user) = user
+        && !user.email_verified
+    {
+        let verification_token = generate_token();
+        let verification_expires = Utc::now() + Duration::hours(24);
 
-            let mut active_user: users::ActiveModel = user.clone().into();
-            active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
-            active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
+        let mut active_user: users::ActiveModel = user.clone().into();
+        active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
+        active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
-            if active_user.update(&state.db).await.is_ok() {
-                if let Some(email_service) = &state.email_service {
-                    if email_service.is_configured() {
-                        if let Err(e) = email_service
-                            .send_verification_email(&user.email, &verification_token)
-                            .await
-                        {
-                            tracing::error!("Failed to send verification email: {}", e);
-                        }
-                    }
-                }
-            } else {
-                tracing::error!("Failed to generate verification token");
+        if active_user.update(&state.db).await.is_ok() {
+            if let Some(email_service) = &state.email_service
+                && email_service.is_configured()
+                && let Err(e) = email_service
+                    .send_verification_email(&user.email, &verification_token)
+                    .await
+            {
+                tracing::error!("Failed to send verification email: {}", e);
             }
+        } else {
+            tracing::error!("Failed to generate verification token");
         }
     }
 
@@ -583,15 +578,13 @@ pub async fn forgot_password(
         active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
         if active_user.update(&state.db).await.is_ok() {
-            if let Some(email_service) = &state.email_service {
-                if email_service.is_configured() {
-                    if let Err(e) = email_service
-                        .send_password_reset_email(&user.email, &reset_token)
-                        .await
-                    {
-                        tracing::error!("Failed to send password reset email: {}", e);
-                    }
-                }
+            if let Some(email_service) = &state.email_service
+                && email_service.is_configured()
+                && let Err(e) = email_service
+                    .send_password_reset_email(&user.email, &reset_token)
+                    .await
+            {
+                tracing::error!("Failed to send password reset email: {}", e);
             }
         } else {
             tracing::error!("Failed to generate password reset token");
@@ -651,7 +644,7 @@ pub async fn reset_password(
                     error: "Failed to reset password".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
     let user = users::Entity::find()
@@ -679,17 +672,17 @@ pub async fn reset_password(
         }
 
         // Check if token is expired
-        if let Some(expires) = user.password_reset_expires {
-            if Utc::now().naive_utc() > expires {
-                let _ = txn.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Token expired".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+        if let Some(expires) = user.password_reset_expires
+            && Utc::now().naive_utc() > expires
+        {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Token expired".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         let hashed_password = match hash_password(&payload.password).await {
@@ -818,7 +811,7 @@ pub async fn change_password(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -831,7 +824,7 @@ pub async fn change_password(
                     error: "Failed to change password".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
     let user = users::Entity::find_by_id(auth.user_id)
@@ -1012,7 +1005,7 @@ pub async fn delete_account(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
     let user_id = auth.user_id;
@@ -1443,7 +1436,7 @@ pub async fn get_current_user(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1530,7 +1523,7 @@ pub async fn update_profile(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1561,11 +1554,10 @@ pub async fn update_profile(
         }
         if let Some(website) = payload.website {
             // http(s) only — Url::parse alone accepts javascript:/data: (stored XSS).
-            if !website.is_empty() {
-                if let Err(e) = crate::utils::url_policy::validate_http_https_url(&website) {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
-                        .into_response();
-                }
+            if !website.is_empty()
+                && let Err(e) = crate::utils::url_policy::validate_http_https_url(&website)
+            {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
             active_user.website = Set(if website.is_empty() {
                 None
@@ -1575,11 +1567,10 @@ pub async fn update_profile(
         }
         if let Some(avatar) = payload.avatar_url {
             // Same policy as website: only fetchable http(s) public URLs.
-            if !avatar.is_empty() {
-                if let Err(e) = crate::utils::url_policy::validate_http_https_url(&avatar) {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
-                        .into_response();
-                }
+            if !avatar.is_empty()
+                && let Err(e) = crate::utils::url_policy::validate_http_https_url(&avatar)
+            {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
             active_user.avatar_url = Set(if avatar.is_empty() {
                 None

@@ -17,7 +17,7 @@ use common::{
 };
 use futures_util::StreamExt;
 use opn_onl_backend::handlers::websocket::{ClickEvent, WsState};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 /// Register a user and return `(jwt, user_id)`.

@@ -10,7 +10,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
     PaginatorTrait, QueryFilter,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) {
     let res = server
@@ -172,18 +172,22 @@ async fn admin_domain_block_soft_disables_exact_and_subdomain_links_only() {
         404
     );
     assert_eq!(server.get(&format!("/{sub_code}")).await.status_code(), 404);
-    assert!(server
-        .get(&format!("/{lookalike_code}"))
-        .await
-        .status_code()
-        .is_redirection());
+    assert!(
+        server
+            .get(&format!("/{lookalike_code}"))
+            .await
+            .status_code()
+            .is_redirection()
+    );
 }
 
 #[tokio::test]
 async fn email_domain_blocks_reject_registration_and_disable_existing_users_without_deleting_data()
 {
-    std::env::set_var("ENABLE_API_KEYS", "true");
-    std::env::set_var("ENABLE_PASSKEYS", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_API_KEYS", "true") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_PASSKEYS", "true") };
 
     let (server, db) = spawn_real_app().await;
     let (admin_token, admin_id, _) = register_verified(&server, &db).await;

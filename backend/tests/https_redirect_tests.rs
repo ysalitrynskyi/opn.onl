@@ -30,14 +30,19 @@ impl RedirectEnv {
     }
 
     fn apply(&self, force_https: &str, base_url: Option<&str>, frontend_url: Option<&str>) {
-        std::env::set_var("FORCE_HTTPS", force_https);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("FORCE_HTTPS", force_https) };
         match base_url {
-            Some(v) => std::env::set_var("BASE_URL", v),
-            None => std::env::remove_var("BASE_URL"),
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            Some(v) => unsafe { std::env::set_var("BASE_URL", v) },
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var("BASE_URL") },
         }
         match frontend_url {
-            Some(v) => std::env::set_var("FRONTEND_URL", v),
-            None => std::env::remove_var("FRONTEND_URL"),
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            Some(v) => unsafe { std::env::set_var("FRONTEND_URL", v) },
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var("FRONTEND_URL") },
         }
     }
 }
@@ -52,10 +57,13 @@ impl Drop for RedirectEnv {
 
 fn restore(key: &str, previous: Option<&str>, fallback: Option<&str>) {
     match previous {
-        Some(v) => std::env::set_var(key, v),
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        Some(v) => unsafe { std::env::set_var(key, v) },
         None => match fallback {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var(key) },
         },
     }
 }

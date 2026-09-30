@@ -1,4 +1,4 @@
-use maxminddb::{geoip2, Reader};
+use maxminddb::{Reader, geoip2};
 use once_cell::sync::Lazy;
 use std::net::IpAddr;
 use std::path::Path;
@@ -181,8 +181,18 @@ mod tests {
 
     #[test]
     fn test_browser_detection() {
-        assert_eq!(detect_browser("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"), Some("Chrome".to_string()));
-        assert_eq!(detect_browser("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"), Some("Edge".to_string()));
+        assert_eq!(
+            detect_browser(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            Some("Chrome".to_string())
+        );
+        assert_eq!(
+            detect_browser(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+            ),
+            Some("Edge".to_string())
+        );
         assert_eq!(
             detect_browser(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0"

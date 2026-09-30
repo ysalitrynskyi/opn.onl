@@ -6,7 +6,7 @@ mod common;
 use chrono::{Duration, Utc};
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register_verified(
     server: &axum_test::TestServer,

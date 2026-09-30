@@ -1,24 +1,24 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
-    Json,
 };
 use chrono::{DateTime, Utc};
 use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 use validator::Validate;
 
+use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
-use crate::utils::jwt::{decode_jwt, password_exceeds_bcrypt_limit, PASSWORD_TOO_LONG};
+use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::time::utc_rfc3339;
-use crate::AppState;
 
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
 /// hit must never become an unchecked redirect because the blocklist query died.
@@ -248,12 +248,12 @@ fn env_flag_default_on(name: &str) -> bool {
 ///
 /// Runs on every create/update/bulk/routing destination via `validate_url`.
 fn check_url_content_policy(url: &str) -> Result<(), String> {
-    if env_flag_default_on("BLOCK_DANGEROUS_FILE_EXTENSIONS") {
-        if let Some(ext) = crate::utils::url_policy::dangerous_extension(url) {
-            return Err(format!(
-                "Links to .{ext} files are not allowed (potentially executable content)"
-            ));
-        }
+    if env_flag_default_on("BLOCK_DANGEROUS_FILE_EXTENSIONS")
+        && let Some(ext) = crate::utils::url_policy::dangerous_extension(url)
+    {
+        return Err(format!(
+            "Links to .{ext} files are not allowed (potentially executable content)"
+        ));
     }
     if env_flag_default_on("BLOCK_RAW_IP_URLS") && crate::utils::url_policy::host_is_raw_ip(url) {
         return Err("Links to raw IP addresses are not allowed".to_string());
@@ -489,19 +489,18 @@ async fn ssrf_guarded_fetch(
             .await
             .map_err(|e| e.to_string())?;
 
-        if resp.status().is_redirection() {
-            if let Some(location) = resp
+        if resp.status().is_redirection()
+            && let Some(location) = resp
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .and_then(|l| l.to_str().ok())
-            {
-                let base = url::Url::parse(&current).map_err(|_| "Invalid URL".to_string())?;
-                let next = base
-                    .join(location)
-                    .map_err(|_| "Invalid redirect location".to_string())?;
-                current = next.to_string();
-                continue;
-            }
+        {
+            let base = url::Url::parse(&current).map_err(|_| "Invalid URL".to_string())?;
+            let next = base
+                .join(location)
+                .map_err(|_| "Invalid redirect location".to_string())?;
+            current = next.to_string();
+            continue;
         }
         return Ok(resp);
     }
@@ -673,7 +672,7 @@ fn clamp_links_limit(limit: Option<u64>) -> u64 {
 
 #[cfg(test)]
 mod links_limit_tests {
-    use super::{clamp_links_limit, DEFAULT_LINKS_LIMIT, MAX_LINKS_LIMIT};
+    use super::{DEFAULT_LINKS_LIMIT, MAX_LINKS_LIMIT, clamp_links_limit};
 
     #[test]
     fn omitted_or_zero_uses_default() {
@@ -1093,7 +1092,7 @@ pub async fn create_link(
     let validated_url = match validate_url(&payload.original_url) {
         Ok(url) => url,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -1121,16 +1120,16 @@ pub async fn create_link(
             .ok()
             .flatten();
 
-        if let Some(u) = user {
-            if !u.email_verified {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(ErrorResponse {
-                        error: "Please verify your email address before creating links".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+        if let Some(u) = user
+            && !u.email_verified
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Please verify your email address before creating links".to_string(),
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -1138,26 +1137,26 @@ pub async fn create_link(
     // GET /auth/settings; previously it was advertised but never enforced
     // (fail-open). Applies to authenticated users only (anonymous links have no
     // owner to cap). None/0 = unlimited.
-    if let Some(uid) = user_id {
-        if let Some(cap) = get_max_links_per_user() {
-            let existing = links::Entity::find()
-                .filter(links::Column::UserId.eq(uid))
-                .filter(links::Column::DeletedAt.is_null())
-                .count(&state.db)
-                .await
-                .unwrap_or(0);
-            if existing >= cap {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(ErrorResponse {
-                        error: format!(
-                            "You have reached the maximum of {} links for this account",
-                            cap
-                        ),
-                    }),
-                )
-                    .into_response();
-            }
+    if let Some(uid) = user_id
+        && let Some(cap) = get_max_links_per_user()
+    {
+        let existing = links::Entity::find()
+            .filter(links::Column::UserId.eq(uid))
+            .filter(links::Column::DeletedAt.is_null())
+            .count(&state.db)
+            .await
+            .unwrap_or(0);
+        if existing >= cap {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: format!(
+                        "You have reached the maximum of {} links for this account",
+                        cap
+                    ),
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -1270,7 +1269,7 @@ pub async fn create_link(
             Ok(h) => Some(h),
             Err(_) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash password")
-                    .into_response()
+                    .into_response();
             }
         }
     } else {
@@ -1278,27 +1277,27 @@ pub async fn create_link(
     };
 
     // Validate scheduling / limit inputs.
-    if let Some(max) = payload.max_clicks {
-        if max <= 0 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "max_clicks must be greater than 0".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    if let Some(max) = payload.max_clicks
+        && max <= 0
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "max_clicks must be greater than 0".to_string(),
+            }),
+        )
+            .into_response();
     }
-    if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at) {
-        if starts >= expires {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "starts_at must be before expires_at".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at)
+        && starts >= expires
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "starts_at must be before expires_at".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING). A burn link needs a
@@ -1352,7 +1351,7 @@ pub async fn create_link(
                     error: "Database error".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1731,20 +1730,17 @@ pub async fn redirect_link(
 
                             let now = chrono::Utc::now().timestamp();
 
-                            if let Some(starts_at) = cached.starts_at {
-                                if now < starts_at {
-                                    return (
-                                        StatusCode::GONE,
-                                        "Link is scheduled to activate later",
-                                    )
-                                        .into_response();
-                                }
+                            if let Some(starts_at) = cached.starts_at
+                                && now < starts_at
+                            {
+                                return (StatusCode::GONE, "Link is scheduled to activate later")
+                                    .into_response();
                             }
 
-                            if let Some(expires_at) = cached.expires_at {
-                                if now > expires_at {
-                                    return (StatusCode::GONE, "Link has expired").into_response();
-                                }
+                            if let Some(expires_at) = cached.expires_at
+                                && now > expires_at
+                            {
+                                return (StatusCode::GONE, "Link has expired").into_response();
                             }
 
                             // Record click using buffer (synchronous, non-blocking).
@@ -1811,15 +1807,15 @@ pub async fn redirect_link(
         // any click is recorded. The authoritative check is the atomic
         // conditional UPDATE below (consume_capped_click), which runs once the
         // request is actually going to be served a destination.
-        if let Some(max) = link.max_clicks {
-            if link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max) {
-                let msg = if link.burn_after_reading {
-                    "This one-time link has already been opened"
-                } else {
-                    "Link has reached maximum clicks"
-                };
-                return (StatusCode::GONE, msg).into_response();
-            }
+        if let Some(max) = link.max_clicks
+            && link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max)
+        {
+            let msg = if link.burn_after_reading {
+                "This one-time link has already been opened"
+            } else {
+                "Link has reached maximum clicks"
+            };
+            return (StatusCode::GONE, msg).into_response();
         }
 
         let mut active_unlock = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
@@ -1836,73 +1832,73 @@ pub async fn redirect_link(
             _ => None,
         };
 
-        if let Some(password_hash) = link.password_hash.as_deref() {
-            if active_unlock.is_none() {
-                let Some(pwd) = headers
-                    .get("x-link-password")
-                    .and_then(|header| header.to_str().ok())
-                else {
-                    let frontend_url = std::env::var("FRONTEND_URL")
-                        .unwrap_or_else(|_| "http://localhost:5173".to_string());
-                    return Redirect::temporary(&format!("{}/password/{}", frontend_url, code))
+        if let Some(password_hash) = link.password_hash.as_deref()
+            && active_unlock.is_none()
+        {
+            let Some(pwd) = headers
+                .get("x-link-password")
+                .and_then(|header| header.to_str().ok())
+            else {
+                let frontend_url = std::env::var("FRONTEND_URL")
+                    .unwrap_or_else(|_| "http://localhost:5173".to_string());
+                return Redirect::temporary(&format!("{}/password/{}", frontend_url, code))
+                    .into_response();
+            };
+
+            // Header-based password checks bypass the /verify middleware, so
+            // enforce both the per-IP CPU budget and per-IP+code budget here.
+            let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
+                .map(|ip| crate::utils::rate_limiter::rate_limit_bucket(&ip))
+                .unwrap_or_else(|| "unknown".to_string());
+            for (limiter, key) in [
+                (
+                    &state.rate_limiters.password_verify_ip,
+                    format!("pwverify-ip:{ip}"),
+                ),
+                (
+                    &state.rate_limiters.password_verify,
+                    format!("pwverify:{ip}:{code}"),
+                ),
+            ] {
+                if let crate::utils::rate_limiter::RateLimitResult::Limited {
+                    retry_after_secs,
+                    ..
+                } = limiter.check(&key)
+                {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("Retry-After", retry_after_secs.to_string())],
+                        "Too many password attempts. Try again later.",
+                    )
                         .into_response();
-                };
-
-                // Header-based password checks bypass the /verify middleware, so
-                // enforce both the per-IP CPU budget and per-IP+code budget here.
-                let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
-                    .map(|ip| crate::utils::rate_limiter::rate_limit_bucket(&ip))
-                    .unwrap_or_else(|| "unknown".to_string());
-                for (limiter, key) in [
-                    (
-                        &state.rate_limiters.password_verify_ip,
-                        format!("pwverify-ip:{ip}"),
-                    ),
-                    (
-                        &state.rate_limiters.password_verify,
-                        format!("pwverify:{ip}:{code}"),
-                    ),
-                ] {
-                    if let crate::utils::rate_limiter::RateLimitResult::Limited {
-                        retry_after_secs,
-                        ..
-                    } = limiter.check(&key)
-                    {
-                        return (
-                            StatusCode::TOO_MANY_REQUESTS,
-                            [("Retry-After", retry_after_secs.to_string())],
-                            "Too many password attempts. Try again later.",
-                        )
-                            .into_response();
-                    }
                 }
-
-                let pwd = pwd.to_string();
-                let password_hash_owned = password_hash.to_string();
-                let verified = tokio::task::spawn_blocking(move || {
-                    bcrypt::verify(&pwd, &password_hash_owned).unwrap_or(false)
-                })
-                .await
-                .unwrap_or(false);
-                if !verified {
-                    return (StatusCode::UNAUTHORIZED, "Invalid password").into_response();
-                }
-
-                active_unlock = match crate::utils::link_unlock::create_link_unlock_token(
-                    link.id,
-                    &link.code,
-                    password_hash,
-                ) {
-                    Some(token) => Some(token),
-                    None => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Unable to create password unlock",
-                        )
-                            .into_response();
-                    }
-                };
             }
+
+            let pwd = pwd.to_string();
+            let password_hash_owned = password_hash.to_string();
+            let verified = tokio::task::spawn_blocking(move || {
+                bcrypt::verify(&pwd, &password_hash_owned).unwrap_or(false)
+            })
+            .await
+            .unwrap_or(false);
+            if !verified {
+                return (StatusCode::UNAUTHORIZED, "Invalid password").into_response();
+            }
+
+            active_unlock = match crate::utils::link_unlock::create_link_unlock_token(
+                link.id,
+                &link.code,
+                password_hash,
+            ) {
+                Some(token) => Some(token),
+                None => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Unable to create password unlock",
+                    )
+                        .into_response();
+                }
+            };
         }
 
         if link.safe_link_interstitial
@@ -2008,26 +2004,27 @@ pub async fn redirect_link(
 
         // Cache the link for future requests (only plain redirects — no password,
         // click cap, or interstitial, which need the DB path).
-        if link.password_hash.is_none() && link.max_clicks.is_none() && !link.safe_link_interstitial
+        if link.password_hash.is_none()
+            && link.max_clicks.is_none()
+            && !link.safe_link_interstitial
+            && let (Some(cache), Some(generation)) = (&state.redis_cache, cache_generation)
         {
-            if let (Some(cache), Some(generation)) = (&state.redis_cache, cache_generation) {
-                let cached = CachedLink {
-                    id: link.id,
-                    original_url: link.original_url.clone(),
-                    has_password: false,
-                    expires_at: link.expires_at.map(|e| e.and_utc().timestamp()),
-                    starts_at: link.starts_at.map(|s| s.and_utc().timestamp()),
-                    max_clicks: link.max_clicks,
-                    click_count: link.click_count,
-                    user_id: link.user_id,
-                    safe_link_interstitial: link.safe_link_interstitial,
-                };
-                if let Err(error) = cache
-                    .set_link_if_generation(&code, generation, &cached)
-                    .await
-                {
-                    tracing::warn!("Redis cache write failed for {}: {}", code, error);
-                }
+            let cached = CachedLink {
+                id: link.id,
+                original_url: link.original_url.clone(),
+                has_password: false,
+                expires_at: link.expires_at.map(|e| e.and_utc().timestamp()),
+                starts_at: link.starts_at.map(|s| s.and_utc().timestamp()),
+                max_clicks: link.max_clicks,
+                click_count: link.click_count,
+                user_id: link.user_id,
+                safe_link_interstitial: link.safe_link_interstitial,
+            };
+            if let Err(error) = cache
+                .set_link_if_generation(&code, generation, &cached)
+                .await
+            {
+                tracing::warn!("Redis cache write failed for {}: {}", code, error);
             }
         }
 
@@ -2232,21 +2229,21 @@ pub async fn verify_link_password(
             .into_response();
     }
 
-    if let Some(max) = link.max_clicks {
-        if link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max) {
-            let msg = if link.burn_after_reading {
-                "This one-time link has already been opened"
-            } else {
-                "Link has reached maximum clicks"
-            };
-            return (
-                StatusCode::GONE,
-                Json(ErrorResponse {
-                    error: msg.to_string(),
-                }),
-            )
-                .into_response();
-        }
+    if let Some(max) = link.max_clicks
+        && link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max)
+    {
+        let msg = if link.burn_after_reading {
+            "This one-time link has already been opened"
+        } else {
+            "Link has reached maximum clicks"
+        };
+        return (
+            StatusCode::GONE,
+            Json(ErrorResponse {
+                error: msg.to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let Some(password_hash) = link.password_hash.as_deref() else {
@@ -2558,28 +2555,30 @@ fn build_qr_image(url: &str, opts: &QrOptions) -> Option<(Vec<u8>, &'static str)
             .quiet_zone(true)
             .min_dimensions(256, 256)
             .build();
-        if want_logo {
-            if let (Some(uri), Some(dim)) =
+        if want_logo
+            && let (Some(uri), Some(dim)) =
                 (qr_logo_data_uri_tinted(dark), parse_svg_width(&svg_xml))
-            {
-                let logo_sz = ((dim as f32) * 0.22) as u32;
-                let pos = (dim - logo_sz) / 2;
-                let center = dim as f32 / 2.0;
-                // Circular backplate (matches the PNG's 1.22× plate) so the logo
-                // reads cleanly over the modules instead of sitting bare on them.
-                let plate_r = (logo_sz as f32 * 1.22) / 2.0;
-                let backplate = format!(
-                    "<circle cx=\"{c}\" cy=\"{c}\" r=\"{r:.2}\" fill=\"{bg}\"/>",
-                    c = center,
-                    r = plate_r,
-                    bg = bg_hex
-                );
-                let img_tag = format!(
-                    "<image x=\"{x}\" y=\"{y}\" width=\"{s}\" height=\"{s}\" href=\"{href}\" preserveAspectRatio=\"xMidYMid meet\"/>",
-                    x = pos, y = pos, s = logo_sz, href = uri
-                );
-                svg_xml = svg_xml.replace("</svg>", &format!("{}{}</svg>", backplate, img_tag));
-            }
+        {
+            let logo_sz = ((dim as f32) * 0.22) as u32;
+            let pos = (dim - logo_sz) / 2;
+            let center = dim as f32 / 2.0;
+            // Circular backplate (matches the PNG's 1.22× plate) so the logo
+            // reads cleanly over the modules instead of sitting bare on them.
+            let plate_r = (logo_sz as f32 * 1.22) / 2.0;
+            let backplate = format!(
+                "<circle cx=\"{c}\" cy=\"{c}\" r=\"{r:.2}\" fill=\"{bg}\"/>",
+                c = center,
+                r = plate_r,
+                bg = bg_hex
+            );
+            let img_tag = format!(
+                "<image x=\"{x}\" y=\"{y}\" width=\"{s}\" height=\"{s}\" href=\"{href}\" preserveAspectRatio=\"xMidYMid meet\"/>",
+                x = pos,
+                y = pos,
+                s = logo_sz,
+                href = uri
+            );
+            svg_xml = svg_xml.replace("</svg>", &format!("{}{}</svg>", backplate, img_tag));
         }
         return Some((svg_xml.into_bytes(), "image/svg+xml"));
     }
@@ -2632,7 +2631,7 @@ fn parse_svg_width(svg: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod qr_render_tests {
-    use super::{build_qr_image, parse_hex, QrOptions};
+    use super::{QrOptions, build_qr_image, parse_hex};
 
     const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G'];
 
@@ -2776,7 +2775,7 @@ mod api_key_tests {
 
 #[cfg(test)]
 mod ssrf_tests {
-    use super::{build_pinned_client, is_disallowed_ip, resolve_and_validate, ValidatedTarget};
+    use super::{ValidatedTarget, build_pinned_client, is_disallowed_ip, resolve_and_validate};
     use std::net::{IpAddr, SocketAddr};
 
     /// Minimal HTTP/1.1 server that answers every connection with `200 ok`.
@@ -3103,7 +3102,7 @@ pub async fn replace_routing_rules(
                 StatusCode::FORBIDDEN,
                 "You don't have permission to modify this link",
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -3111,16 +3110,15 @@ pub async fn replace_routing_rules(
     // routing destinations only if their role grants edit rights. Viewers can
     // read the rules (get_routing_rules) but must not mutate them — mirrors the
     // member_can_edit gate used by folders.rs / tags.rs.
-    if let Some(org_id) = link.org_id {
-        if link.user_id != Some(user_id)
-            && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
-        {
-            return (
-                StatusCode::FORBIDDEN,
-                "You don't have permission to modify this link",
-            )
-                .into_response();
-        }
+    if let Some(org_id) = link.org_id
+        && link.user_id != Some(user_id)
+        && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            "You don't have permission to modify this link",
+        )
+            .into_response();
     }
 
     if payload.rules.len() > MAX_ROUTING_RULES {
@@ -3231,7 +3229,7 @@ pub async fn get_user_links(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -3353,7 +3351,7 @@ pub async fn delete_link(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -3460,7 +3458,7 @@ pub async fn update_link(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -3486,18 +3484,17 @@ pub async fn update_link(
         // Validate scheduling / limit inputs the same way create_link does, so an
         // update can't leave a link in an invalid state (e.g. max_clicks <= 0
         // bricks the link; starts_at >= expires_at makes it never active).
-        if payload.remove_max_clicks != Some(true) {
-            if let Some(mc) = payload.max_clicks {
-                if mc <= 0 {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "max_clicks must be greater than 0".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-            }
+        if payload.remove_max_clicks != Some(true)
+            && let Some(mc) = payload.max_clicks
+            && mc <= 0
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "max_clicks must be greater than 0".to_string(),
+                }),
+            )
+                .into_response();
         }
         let eff_starts: Option<DateTime<Utc>> = if payload.remove_starts_at == Some(true) {
             None
@@ -3513,16 +3510,16 @@ pub async fn update_link(
                 .expires_at
                 .or_else(|| link.expires_at.map(|d| d.and_utc()))
         };
-        if let (Some(s), Some(e)) = (eff_starts, eff_expires) {
-            if s >= e {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "starts_at must be before expires_at".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+        if let (Some(s), Some(e)) = (eff_starts, eff_expires)
+            && s >= e
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "starts_at must be before expires_at".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         if let Some(ref url) = payload.original_url {
@@ -3531,7 +3528,7 @@ pub async fn update_link(
                 Ok(u) => u,
                 Err(e) => {
                     return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
-                        .into_response()
+                        .into_response();
                 }
             };
             // Check if new URL is blocked
@@ -3570,7 +3567,7 @@ pub async fn update_link(
                             error: "Failed to hash password".to_string(),
                         }),
                     )
-                        .into_response()
+                        .into_response();
                 }
             }
         }
@@ -3603,22 +3600,20 @@ pub async fn update_link(
         let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
             .map(|v| v != "false")
             .unwrap_or(true);
-        if burn_enabled {
-            if let Some(burn) = payload.burn_after_reading {
-                active_link.burn_after_reading = Set(burn);
-                if burn {
-                    // Ensure a burn link has a click cap (default one-time use),
-                    // accounting for any cap change in this same request.
-                    let has_cap = if payload.remove_max_clicks == Some(true) {
-                        false
-                    } else if let Some(mc) = payload.max_clicks {
-                        mc > 0
-                    } else {
-                        link.max_clicks.is_some()
-                    };
-                    if !has_cap {
-                        active_link.max_clicks = Set(Some(1));
-                    }
+        if burn_enabled && let Some(burn) = payload.burn_after_reading {
+            active_link.burn_after_reading = Set(burn);
+            if burn {
+                // Ensure a burn link has a click cap (default one-time use),
+                // accounting for any cap change in this same request.
+                let has_cap = if payload.remove_max_clicks == Some(true) {
+                    false
+                } else if let Some(mc) = payload.max_clicks {
+                    mc > 0
+                } else {
+                    link.max_clicks.is_some()
+                };
+                if !has_cap {
+                    active_link.max_clicks = Set(Some(1));
                 }
             }
         }
@@ -3627,20 +3622,16 @@ pub async fn update_link(
         let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
             .map(|v| v != "false")
             .unwrap_or(true);
-        if interstitial_enabled {
-            if let Some(interstitial) = payload.safe_link_interstitial {
-                active_link.safe_link_interstitial = Set(interstitial);
-            }
+        if interstitial_enabled && let Some(interstitial) = payload.safe_link_interstitial {
+            active_link.safe_link_interstitial = Set(interstitial);
         }
 
         // Link-in-bio visibility (gated by ENABLE_LINK_IN_BIO).
         let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
             .map(|v| v != "false")
             .unwrap_or(true);
-        if link_in_bio_enabled {
-            if let Some(visible) = payload.bio_visible {
-                active_link.bio_visible = Set(visible);
-            }
+        if link_in_bio_enabled && let Some(visible) = payload.bio_visible {
+            active_link.bio_visible = Set(visible);
         }
 
         let txn = match state.db.begin().await {
@@ -3835,19 +3826,19 @@ pub async fn bulk_create_links(
             .ok()
             .flatten();
 
-        if let Some(u) = user {
-            if !u.email_verified {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(BulkCreateLinkResponse {
-                        links: vec![],
-                        errors: vec![
-                            "Please verify your email address before creating links".to_string()
-                        ],
-                    }),
-                )
-                    .into_response();
-            }
+        if let Some(u) = user
+            && !u.email_verified
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(BulkCreateLinkResponse {
+                    links: vec![],
+                    errors: vec![
+                        "Please verify your email address before creating links".to_string(),
+                    ],
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -3998,10 +3989,8 @@ pub async fn bulk_create_links(
                 }
             }
         }
-        if !created {
-            if let Some(msg) = last_duplicate {
-                errors.push(msg);
-            }
+        if !created && let Some(msg) = last_duplicate {
+            errors.push(msg);
         }
     }
 
@@ -4040,7 +4029,7 @@ pub async fn bulk_delete_links(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -4064,17 +4053,18 @@ pub async fn bulk_delete_links(
             .ok()
             .flatten();
 
-        if let Some(link) = link {
-            if link.user_id == Some(user_id) && link.deleted_at.is_none() {
-                // Soft delete instead of hard delete
-                let code = link.code.clone();
-                let mut active_link: links::ActiveModel = link.into();
-                active_link.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
+        if let Some(link) = link
+            && link.user_id == Some(user_id)
+            && link.deleted_at.is_none()
+        {
+            // Soft delete instead of hard delete
+            let code = link.code.clone();
+            let mut active_link: links::ActiveModel = link.into();
+            active_link.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
 
-                if active_link.update(&state.db).await.is_ok() {
-                    deleted += 1;
-                    invalidated.push(code);
-                }
+            if active_link.update(&state.db).await.is_ok() {
+                deleted += 1;
+                invalidated.push(code);
             }
         }
     }
@@ -4122,7 +4112,7 @@ pub async fn bulk_update_links(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -4146,46 +4136,47 @@ pub async fn bulk_update_links(
             .ok()
             .flatten();
 
-        if let Some(link) = link {
-            if link.user_id == Some(user_id) && link.deleted_at.is_none() {
-                let code = link.code.clone();
-                let org_id = link.org_id;
-                let mut active_link: links::ActiveModel = link.into();
+        if let Some(link) = link
+            && link.user_id == Some(user_id)
+            && link.deleted_at.is_none()
+        {
+            let code = link.code.clone();
+            let org_id = link.org_id;
+            let mut active_link: links::ActiveModel = link.into();
 
-                let txn = match state.db.begin().await {
-                    Ok(txn) => txn,
-                    Err(_) => continue,
-                };
-                if let Some(folder_id) = payload.folder_id {
-                    match validate_link_resource_scope(&txn, user_id, org_id, Some(folder_id), &[])
-                        .await
-                    {
-                        Ok(true) => {
-                            active_link.folder_id = Set(Some(folder_id));
-                        }
-                        _ => {
-                            let _ = txn.rollback().await;
-                            continue;
-                        }
+            let txn = match state.db.begin().await {
+                Ok(txn) => txn,
+                Err(_) => continue,
+            };
+            if let Some(folder_id) = payload.folder_id {
+                match validate_link_resource_scope(&txn, user_id, org_id, Some(folder_id), &[])
+                    .await
+                {
+                    Ok(true) => {
+                        active_link.folder_id = Set(Some(folder_id));
                     }
-                }
-
-                if payload.remove_expiration == Some(true) {
-                    active_link.expires_at = Set(None);
-                } else if let Some(expires) = payload.expires_at {
-                    active_link.expires_at = Set(Some(expires.naive_utc()));
-                }
-
-                match active_link.update(&txn).await {
-                    Ok(_) => {
-                        if txn.commit().await.is_ok() {
-                            updated += 1;
-                            invalidated.push(code);
-                        }
-                    }
-                    Err(_) => {
+                    _ => {
                         let _ = txn.rollback().await;
+                        continue;
                     }
+                }
+            }
+
+            if payload.remove_expiration == Some(true) {
+                active_link.expires_at = Set(None);
+            } else if let Some(expires) = payload.expires_at {
+                active_link.expires_at = Set(Some(expires.naive_utc()));
+            }
+
+            match active_link.update(&txn).await {
+                Ok(_) => {
+                    if txn.commit().await.is_ok() {
+                        updated += 1;
+                        invalidated.push(code);
+                    }
+                }
+                Err(_) => {
+                    let _ = txn.rollback().await;
                 }
             }
         }
@@ -4248,7 +4239,9 @@ pub async fn export_links_csv(
         format!("\"{}\"", escaped)
     }
 
-    let mut csv_content = String::from("ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At\n");
+    let mut csv_content = String::from(
+        "ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At\n",
+    );
 
     for link in user_links {
         csv_content.push_str(&format!(
@@ -4332,7 +4325,7 @@ pub async fn clone_link(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -4494,7 +4487,7 @@ pub async fn toggle_pin(
                     error: "Unauthorized".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -4784,35 +4777,35 @@ pub async fn build_utm_url(Json(payload): Json<BuildUtmRequest>) -> impl IntoRes
     {
         let mut query_pairs = parsed.query_pairs_mut();
 
-        if let Some(ref source) = payload.utm_source {
-            if !source.is_empty() {
-                query_pairs.append_pair("utm_source", source);
-                utm_params.insert("utm_source".to_string(), source.clone());
-            }
+        if let Some(ref source) = payload.utm_source
+            && !source.is_empty()
+        {
+            query_pairs.append_pair("utm_source", source);
+            utm_params.insert("utm_source".to_string(), source.clone());
         }
-        if let Some(ref medium) = payload.utm_medium {
-            if !medium.is_empty() {
-                query_pairs.append_pair("utm_medium", medium);
-                utm_params.insert("utm_medium".to_string(), medium.clone());
-            }
+        if let Some(ref medium) = payload.utm_medium
+            && !medium.is_empty()
+        {
+            query_pairs.append_pair("utm_medium", medium);
+            utm_params.insert("utm_medium".to_string(), medium.clone());
         }
-        if let Some(ref campaign) = payload.utm_campaign {
-            if !campaign.is_empty() {
-                query_pairs.append_pair("utm_campaign", campaign);
-                utm_params.insert("utm_campaign".to_string(), campaign.clone());
-            }
+        if let Some(ref campaign) = payload.utm_campaign
+            && !campaign.is_empty()
+        {
+            query_pairs.append_pair("utm_campaign", campaign);
+            utm_params.insert("utm_campaign".to_string(), campaign.clone());
         }
-        if let Some(ref term) = payload.utm_term {
-            if !term.is_empty() {
-                query_pairs.append_pair("utm_term", term);
-                utm_params.insert("utm_term".to_string(), term.clone());
-            }
+        if let Some(ref term) = payload.utm_term
+            && !term.is_empty()
+        {
+            query_pairs.append_pair("utm_term", term);
+            utm_params.insert("utm_term".to_string(), term.clone());
         }
-        if let Some(ref content) = payload.utm_content {
-            if !content.is_empty() {
-                query_pairs.append_pair("utm_content", content);
-                utm_params.insert("utm_content".to_string(), content.clone());
-            }
+        if let Some(ref content) = payload.utm_content
+            && !content.is_empty()
+        {
+            query_pairs.append_pair("utm_content", content);
+            utm_params.insert("utm_content".to_string(), content.clone());
         }
     }
 
@@ -4867,7 +4860,7 @@ pub async fn get_sparklines(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -5119,7 +5112,7 @@ pub async fn get_link_preview_metadata(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "Invalid URL"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -5164,7 +5157,7 @@ pub async fn get_link_preview_metadata(
                     favicon: None,
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -5248,10 +5241,10 @@ fn extract_meta_content(html: &str, property: &str) -> Option<String> {
         r#"<meta[^>]*property=["']{}["'][^>]*content=["']([^"']+)["']"#,
         regex::escape(property)
     );
-    if let Ok(re) = regex::Regex::new(&property_pattern) {
-        if let Some(caps) = re.captures(html) {
-            return caps.get(1).map(|m| html_decode(m.as_str()));
-        }
+    if let Ok(re) = regex::Regex::new(&property_pattern)
+        && let Some(caps) = re.captures(html)
+    {
+        return caps.get(1).map(|m| html_decode(m.as_str()));
     }
 
     // Try content before property
@@ -5259,10 +5252,10 @@ fn extract_meta_content(html: &str, property: &str) -> Option<String> {
         r#"<meta[^>]*content=["']([^"']+)["'][^>]*property=["']{}["']"#,
         regex::escape(property)
     );
-    if let Ok(re) = regex::Regex::new(&property_pattern2) {
-        if let Some(caps) = re.captures(html) {
-            return caps.get(1).map(|m| html_decode(m.as_str()));
-        }
+    if let Ok(re) = regex::Regex::new(&property_pattern2)
+        && let Some(caps) = re.captures(html)
+    {
+        return caps.get(1).map(|m| html_decode(m.as_str()));
     }
 
     // Try name attribute (description, etc.)
@@ -5270,10 +5263,10 @@ fn extract_meta_content(html: &str, property: &str) -> Option<String> {
         r#"<meta[^>]*name=["']{}["'][^>]*content=["']([^"']+)["']"#,
         regex::escape(property)
     );
-    if let Ok(re) = regex::Regex::new(&name_pattern) {
-        if let Some(caps) = re.captures(html) {
-            return caps.get(1).map(|m| html_decode(m.as_str()));
-        }
+    if let Ok(re) = regex::Regex::new(&name_pattern)
+        && let Some(caps) = re.captures(html)
+    {
+        return caps.get(1).map(|m| html_decode(m.as_str()));
     }
 
     // Try content before name
@@ -5281,10 +5274,10 @@ fn extract_meta_content(html: &str, property: &str) -> Option<String> {
         r#"<meta[^>]*content=["']([^"']+)["'][^>]*name=["']{}["']"#,
         regex::escape(property)
     );
-    if let Ok(re) = regex::Regex::new(&name_pattern2) {
-        if let Some(caps) = re.captures(html) {
-            return caps.get(1).map(|m| html_decode(m.as_str()));
-        }
+    if let Ok(re) = regex::Regex::new(&name_pattern2)
+        && let Some(caps) = re.captures(html)
+    {
+        return caps.get(1).map(|m| html_decode(m.as_str()));
     }
 
     None
@@ -5305,10 +5298,10 @@ fn extract_favicon(html: &str) -> Option<String> {
     ];
 
     for pattern in patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            if let Some(caps) = re.captures(html) {
-                return caps.get(1).map(|m| m.as_str().to_string());
-            }
+        if let Ok(re) = regex::Regex::new(pattern)
+            && let Some(caps) = re.captures(html)
+        {
+            return caps.get(1).map(|m| m.as_str().to_string());
         }
     }
     None
@@ -5319,10 +5312,10 @@ fn resolve_url(base: &str, relative: &str) -> String {
         return relative.to_string();
     }
 
-    if let Ok(base_url) = url::Url::parse(base) {
-        if let Ok(resolved) = base_url.join(relative) {
-            return resolved.to_string();
-        }
+    if let Ok(base_url) = url::Url::parse(base)
+        && let Ok(resolved) = base_url.join(relative)
+    {
+        return resolved.to_string();
     }
 
     relative.to_string()

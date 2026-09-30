@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
+use crate::AppState;
 use crate::entity::{
     audit_log, click_events, folders, link_tags, links, org_members, organizations, tags, users,
 };
 use crate::utils::email_domain_policy::normalize_email;
 use crate::utils::time::utc_rfc3339;
-use crate::AppState;
 
 // ============= DTOs =============
 

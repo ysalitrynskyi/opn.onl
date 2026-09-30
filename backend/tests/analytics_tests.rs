@@ -6,7 +6,7 @@ mod tests {
     use chrono::{Duration, Utc};
     use opn_onl_backend::entity::click_events;
     use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     // Real-router check (replaces the old stub that only hit a fake /health):
     // the analytics dashboard requires authentication.
@@ -248,10 +248,12 @@ mod tests {
         let empty_body: Value = empty.json();
         assert_eq!(empty_body["total_clicks"], 0);
         assert_eq!(empty_body["unique_visitors"], 0);
-        assert!(empty_body["clicks_by_country"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            empty_body["clicks_by_country"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         assert!(empty_body["geo_data"].as_array().unwrap().is_empty());
 
         // Two clicks from the same IP on nearby NYC coords (must cluster).

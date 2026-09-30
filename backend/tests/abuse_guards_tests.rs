@@ -8,7 +8,7 @@ use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) {
     let res = server
@@ -284,11 +284,13 @@ async fn admin_bulk_delete_and_restore_links() {
     let (id2, code2) = insert_raw_link(&db, user_id, &format!("https://{host}/b")).await;
 
     // Both redirect before takedown.
-    assert!(server
-        .get(&format!("/{code1}"))
-        .await
-        .status_code()
-        .is_redirection());
+    assert!(
+        server
+            .get(&format!("/{code1}"))
+            .await
+            .status_code()
+            .is_redirection()
+    );
 
     let res = server
         .post("/admin/links/bulk/delete")
@@ -308,11 +310,13 @@ async fn admin_bulk_delete_and_restore_links() {
         .await;
     assert_eq!(res.status_code(), 200, "{}", res.text());
     assert_eq!(res.json::<Value>()["affected"].as_u64(), Some(2));
-    assert!(server
-        .get(&format!("/{code1}"))
-        .await
-        .status_code()
-        .is_redirection());
+    assert!(
+        server
+            .get(&format!("/{code1}"))
+            .await
+            .status_code()
+            .is_redirection()
+    );
 }
 
 #[tokio::test]
@@ -343,11 +347,13 @@ async fn admin_block_domain_from_link_blocks_host_and_deletes_link() {
     let domain = format!("evil-{}.iana.org", unique_code().to_lowercase());
     let url = format!("https://{domain}/malware/page");
     let (link_id, code) = insert_raw_link(&db, user_id, &url).await;
-    assert!(server
-        .get(&format!("/{code}"))
-        .await
-        .status_code()
-        .is_redirection());
+    assert!(
+        server
+            .get(&format!("/{code}"))
+            .await
+            .status_code()
+            .is_redirection()
+    );
 
     let res = server
         .post(&format!("/admin/links/{link_id}/block-domain"))
