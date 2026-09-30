@@ -72,9 +72,12 @@ redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 # Email (SMTP)
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
 
-# S3/R2 Backup (pinned to versions compatible with Rust 1.85)
-aws-sdk-s3 = "=1.65.0"
-aws-config = "=1.5.10"
+# S3/R2 backup. Exact pins existed so the SDK would build on Rust 1.85, and
+# they kept hyper 0.14 / h2 0.3 / rustls-webpki 0.101 in the tree.
+# The SDK feature named `rustls` is the legacy hyper 0.14 client.
+# `default-https-client` is the current rustls + aws-lc client.
+aws-sdk-s3 = { version = "1.150", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-config = "1.12"
 flate2 = "1.0"
 
 # Structured logging
