@@ -13,6 +13,7 @@ use utoipa::ToSchema;
 use crate::entity::{
     audit_log, click_events, folders, link_tags, links, org_members, organizations, tags, users,
 };
+use crate::utils::email_domain_policy::normalize_email;
 use crate::AppState;
 
 // ============= DTOs =============
@@ -151,10 +152,11 @@ pub(crate) async fn member_can_edit(
 }
 
 /// Organizations owned by a user, split by what deleting that user would do
-/// to them. `blocking` orgs still have other members, so the account cannot
-/// be deleted until ownership is transferred (or the org deliberately
-/// deleted). `solo` orgs have no member besides the owner and die with the
-/// account on hard delete.
+/// to them. `blocking` orgs still have other live members, so the account
+/// cannot be deleted until ownership is transferred (or the org deliberately
+/// deleted). Soft-deleted users are ignored: they cannot log in or accept a
+/// transfer. `solo` orgs have no live member besides the owner and die with
+/// the account on hard delete.
 pub(crate) struct OwnedOrgsSplit {
     pub blocking: Vec<organizations::Model>,
     pub solo: Vec<organizations::Model>,
@@ -173,8 +175,10 @@ pub(crate) async fn split_owned_orgs<C: ConnectionTrait>(
     let mut solo = Vec::new();
     for org in owned {
         let other_members = org_members::Entity::find()
+            .inner_join(users::Entity)
             .filter(org_members::Column::OrgId.eq(org.id))
             .filter(org_members::Column::UserId.ne(user_id))
+            .filter(users::Column::DeletedAt.is_null())
             .count(db)
             .await?;
         if other_members > 0 {
@@ -323,7 +327,17 @@ pub async fn create_organization(
         ));
     }
 
-    // Create organization
+    let txn = state.db.begin().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Database error"})),
+        )
+    })?;
+
+    // Create organization and owner membership together. A membership insert
+    // failure used to leave an org row whose slug was taken but which
+    // `check_org_permission` could not see, so the owner could neither list
+    // nor delete it.
     let org = organizations::ActiveModel {
         name: Set(payload.name.clone()),
         slug: Set(payload.slug.clone()),
@@ -331,14 +345,24 @@ pub async fn create_organization(
         ..Default::default()
     };
 
-    let org = org.insert(&state.db).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to create organization"})),
-        )
-    })?;
+    let org = match org.insert(&txn).await {
+        Ok(org) => org,
+        Err(err) if err.to_string().contains("duplicate key value") => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Slug already exists"})),
+            ));
+        }
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to create organization"})),
+            ));
+        }
+    };
 
-    // Add owner as member with owner role
     let member = org_members::ActiveModel {
         org_id: Set(org.id),
         user_id: Set(user_id),
@@ -346,10 +370,18 @@ pub async fn create_organization(
         ..Default::default()
     };
 
-    member.insert(&state.db).await.map_err(|_| {
-        (
+    if member.insert(&txn).await.is_err() {
+        let _ = txn.rollback().await;
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "Failed to add owner as member"})),
+        ));
+    }
+
+    txn.commit().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Failed to create organization"})),
         )
     })?;
 
@@ -441,6 +473,7 @@ pub async fn get_user_organizations(
         // Count links
         let link_count = crate::entity::links::Entity::find()
             .filter(crate::entity::links::Column::OrgId.eq(org.id))
+            .filter(crate::entity::links::Column::DeletedAt.is_null())
             .count(&state.db)
             .await
             .unwrap_or(0) as i64;
@@ -514,6 +547,7 @@ pub async fn get_organization(
 
     let link_count = crate::entity::links::Entity::find()
         .filter(crate::entity::links::Column::OrgId.eq(org.id))
+        .filter(crate::entity::links::Column::DeletedAt.is_null())
         .count(&state.db)
         .await
         .unwrap_or(0) as i64;
@@ -542,6 +576,7 @@ pub async fn get_organization(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
+        (status = 409, description = "Slug already exists"),
     ),
     tag = "Organizations"
 )]
@@ -584,15 +619,41 @@ pub async fn update_organization(
         org.name = Set(name);
     }
     if let Some(slug) = payload.slug {
+        let taken = organizations::Entity::find()
+            .filter(organizations::Column::Slug.eq(&slug))
+            .filter(organizations::Column::Id.ne(org_id))
+            .one(&state.db)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Database error"})),
+                )
+            })?;
+        if taken.is_some() {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Slug already exists"})),
+            ));
+        }
         org.slug = Set(slug);
     }
 
-    let org = org.update(&state.db).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to update organization"})),
-        )
-    })?;
+    let org = match org.update(&state.db).await {
+        Ok(org) => org,
+        Err(err) if err.to_string().contains("duplicate key value") => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Slug already exists"})),
+            ));
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to update organization"})),
+            ));
+        }
+    };
 
     log_audit(
         &state.db,
@@ -614,6 +675,7 @@ pub async fn update_organization(
 
     let link_count = crate::entity::links::Entity::find()
         .filter(crate::entity::links::Column::OrgId.eq(org.id))
+        .filter(crate::entity::links::Column::DeletedAt.is_null())
         .count(&state.db)
         .await
         .unwrap_or(0) as i64;
@@ -728,16 +790,20 @@ pub async fn get_organization_members(
 
     let mut responses = Vec::new();
     for member in members {
-        let user = users::Entity::find_by_id(member.user_id)
+        let Some(user) = users::Entity::find_by_id(member.user_id)
+            .filter(users::Column::DeletedAt.is_null())
             .one(&state.db)
             .await
             .ok()
-            .flatten();
+            .flatten()
+        else {
+            continue;
+        };
 
         responses.push(OrgMemberResponse {
             id: member.id,
             user_id: member.user_id,
-            email: user.map(|u| u.email).unwrap_or_default(),
+            email: user.email,
             role: member.role,
             joined_at: member.joined_at.to_string(),
         });
@@ -789,9 +855,13 @@ pub async fn invite_member(
         ));
     }
 
-    // Find user by email
+    // Find user by email. Registration stores normalize_email (trimmed, domain
+    // lowercased), so the invite lookup must use the same form or a real user 404s.
+    let email = normalize_email(&payload.email);
     let invite_user = users::Entity::find()
-        .filter(users::Column::Email.eq(&payload.email))
+        .filter(users::Column::Email.eq(&email))
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -1111,9 +1181,10 @@ pub async fn transfer_ownership(
             )
         })?;
 
-    // Target must be an existing, non-deleted user...
+    // Target must be an existing, non-deleted, non-disabled user...
     let new_owner = users::Entity::find_by_id(payload.new_owner_user_id)
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -1230,6 +1301,7 @@ pub async fn transfer_ownership(
 
     let link_count = links::Entity::find()
         .filter(links::Column::OrgId.eq(org.id))
+        .filter(links::Column::DeletedAt.is_null())
         .count(&state.db)
         .await
         .unwrap_or(0) as i64;

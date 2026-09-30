@@ -277,6 +277,9 @@ async fn disable_users_for_email_domain<C: ConnectionTrait>(
         .await?
         .into_iter()
         .filter(|user| user_matches_email_domain(user, domain))
+        // Admins must remain able to unblock the domain. The caller is also
+        // refused earlier in `block_email_domain` if their own address matches.
+        .filter(|user| !user.is_admin)
         .collect::<Vec<_>>();
 
     if matching.is_empty() {
@@ -650,10 +653,30 @@ pub async fn hard_delete_user(
             crate::handlers::organizations::purge_organization(&txn, org.id).await?;
         }
 
-        // Delete all user's links and associated data
-        // (cascade delete handles click_events and link_tags)
+        // Organization links belong to the team, not their original creator.
+        // `fk-link-user_id` is ON DELETE CASCADE, so the creator FK must
+        // leave this user before the row is removed or those org links (and
+        // their click history) die with the account. Reassign to the org
+        // owner rather than NULL: list/update/delete/clone/pin all key off
+        // `user_id == caller`, and an org always has an owner. Remaining
+        // rows here cannot be in orgs this user owns (solo orgs were purged
+        // above; orgs with other members blocked the delete).
+        links::Entity::update_many()
+            .col_expr(
+                links::Column::UserId,
+                Expr::cust(
+                    "(SELECT owner_id FROM organizations WHERE organizations.id = links.org_id)",
+                ),
+            )
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_not_null())
+            .exec(&txn)
+            .await?;
+
+        // Personal links (and their click_events / link_tags via cascade).
         links::Entity::delete_many()
             .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_null())
             .exec(&txn)
             .await?;
 
@@ -721,6 +744,7 @@ pub async fn hard_delete_user(
     ),
     responses(
         (status = 200, description = "User restored successfully", body = AdminResponse),
+        (status = 400, description = "User is not deleted"),
         (status = 403, description = "Admin access required"),
         (status = 404, description = "User not found"),
     ),
@@ -1031,6 +1055,7 @@ pub async fn enable_user(
     responses(
         (status = 200, description = "Backup created successfully", body = BackupResponse),
         (status = 403, description = "Admin access required"),
+        (status = 503, description = "Backup service not configured"),
         (status = 500, description = "Backup failed"),
     ),
     tag = "Admin",
@@ -1082,6 +1107,7 @@ pub async fn create_backup(State(state): State<AppState>, headers: HeaderMap) ->
     responses(
         (status = 200, description = "List of backups", body = BackupListResponse),
         (status = 403, description = "Admin access required"),
+        (status = 503, description = "Backup service not configured"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -1125,6 +1151,7 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
     responses(
         (status = 200, description = "Old backups cleaned up", body = AdminResponse),
         (status = 403, description = "Admin access required"),
+        (status = 503, description = "Backup service not configured"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -1997,7 +2024,7 @@ pub async fn unblock_domain(
     request_body = BlockEmailDomainRequest,
     responses(
         (status = 201, description = "Email domain blocked", body = BlockedEmailDomainResponse),
-        (status = 400, description = "Invalid email domain"),
+        (status = 400, description = "Invalid email domain, or block would disable the acting admin"),
         (status = 403, description = "Admin access required"),
         (status = 409, description = "Email domain already blocked"),
     ),
@@ -2031,6 +2058,33 @@ pub async fn block_email_domain(
             Json(AdminResponse {
                 success: false,
                 message: "Email domain is already blocked by reserved-domain policy".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let admin_user = match users::Entity::find_by_id(admin_id).one(&state.db).await {
+        Ok(Some(user)) => user,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to block email domain".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if user_matches_email_domain(&admin_user, &domain) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: format!(
+                    "Blocking this domain would disable the acting admin account {}",
+                    admin_user.email
+                ),
             }),
         )
             .into_response();

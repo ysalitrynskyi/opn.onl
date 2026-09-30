@@ -11,6 +11,7 @@
 
 mod common;
 
+use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 /// Register a user through the real handler; returns (token, user_id).
@@ -174,6 +175,214 @@ async fn deleted_link_cannot_be_updated() {
     );
 }
 
+/// bulk_delete_links skips rows with deleted_at set. bulk_update_links must
+/// do the same: mutating a soft-deleted row would survive a later restore.
+#[tokio::test]
+async fn bulk_update_skips_soft_deleted_links() {
+    let (server, db) = common::spawn_real_app().await;
+
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+    let (link_id, _code) = create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://iana.org/bulk-update-deleted" }),
+    )
+    .await;
+
+    let res = server
+        .delete(&format!("/links/{link_id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(res.status_code(), 200, "delete link: {}", res.text());
+
+    let expires = (Utc::now() + Duration::hours(2)).to_rfc3339();
+    let res = server
+        .post("/links/bulk/update")
+        .authorization_bearer(&token)
+        .json(&json!({ "ids": [link_id], "expires_at": expires }))
+        .await;
+    assert_eq!(res.status_code(), 200, "bulk update: {}", res.text());
+    assert_eq!(
+        res.json::<Value>()["updated"],
+        0,
+        "soft-deleted link must not be bulk-updated"
+    );
+
+    use opn_onl_backend::entity::links;
+    use sea_orm::EntityTrait;
+    let stored = links::Entity::find_by_id(link_id as i32)
+        .one(&db)
+        .await
+        .expect("db")
+        .expect("link row");
+    assert!(stored.deleted_at.is_some(), "row must stay soft-deleted");
+    assert!(
+        stored.expires_at.is_none(),
+        "deleted row expiry must be unchanged: {:?}",
+        stored.expires_at
+    );
+}
+
+/// Uncapped clicks sit in the in-memory buffer. Adding max_clicks later must
+/// count those pending clicks against the new cap, or consume_capped_click
+/// will hand out extra redirects and flush will overshoot.
+#[tokio::test]
+async fn adding_click_cap_counts_unflushed_buffer_clicks() {
+    let (server, db) = common::spawn_real_app().await;
+
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+    let (link_id, code) = create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://iana.org/cap-overshoot" }),
+    )
+    .await;
+
+    for i in 0..3 {
+        let res = server.get(&format!("/{code}")).await;
+        assert_eq!(
+            res.status_code(),
+            307,
+            "uncapped click {i} must redirect: {}",
+            res.text()
+        );
+    }
+
+    let res = server
+        .put(&format!("/links/{link_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "max_clicks": 5 }))
+        .await;
+    assert_eq!(res.status_code(), 200, "set max_clicks: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(
+        body["click_count"], 3,
+        "pending buffer clicks must fold into click_count when a cap is added: {body}"
+    );
+    assert_eq!(body["max_clicks"], 5);
+
+    let mut extra_redirects = 0u32;
+    let mut gone = 0u32;
+    for i in 0..10 {
+        let res = server.get(&format!("/{code}")).await;
+        match res.status_code().as_u16() {
+            307 => extra_redirects += 1,
+            410 => gone += 1,
+            other => panic!("click {i} after cap: {other} {}", res.text()),
+        }
+    }
+
+    assert_eq!(
+        extra_redirects, 2,
+        "3 buffered + 2 new = cap 5; extra redirects were {extra_redirects} (gone={gone})"
+    );
+    assert_eq!(gone, 8, "remaining clicks after the cap must be 410");
+}
+
+/// Two creates can both pass the pre-insert alias lookup. The unique index
+/// still rejects the loser; that must be 409 "Alias already taken", not 500.
+#[tokio::test]
+async fn custom_alias_unique_violation_is_conflict() {
+    let (server, db) = common::spawn_real_app().await;
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+
+    let alias = common::unique_code();
+
+    use opn_onl_backend::entity::links;
+    use sea_orm::{ActiveModelTrait, Set, TransactionTrait};
+
+    // Hold an uncommitted row with this code so the handler's existence check
+    // (READ COMMITTED) misses it and the INSERT waits on the unique index.
+    let txn = db.begin().await.expect("begin");
+    links::ActiveModel {
+        original_url: Set("https://iana.org/held-alias".to_string()),
+        code: Set(alias.clone()),
+        user_id: Set(Some(user_id)),
+        ..Default::default()
+    }
+    .insert(&txn)
+    .await
+    .expect("hold unique code");
+
+    let create_fut = server.post("/links").authorization_bearer(&token).json(
+        &json!({ "original_url": "https://iana.org/racer-alias", "custom_alias": alias }),
+    );
+    let commit_fut = async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        txn.commit().await.expect("commit held alias");
+    };
+    let (res, _) = tokio::join!(create_fut, commit_fut);
+
+    assert_eq!(
+        res.status_code(),
+        409,
+        "unique alias race must be 409, got {}: {}",
+        res.status_code(),
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"],
+        "Alias already taken",
+        "loser must get the documented alias conflict: {}",
+        res.text()
+    );
+}
+
+/// Bulk create used to mint one 6-character code with no existence check.
+/// Occupying that code (active or soft-deleted) made the insert fail with a
+/// unique-index error instead of allocating a free code like create_link does.
+#[tokio::test]
+async fn bulk_create_retries_when_generated_code_is_taken() {
+    let (server, db) = common::spawn_real_app().await;
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+
+    let taken = common::unique_code();
+    create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": "https://iana.org/taken-bulk-code",
+            "custom_alias": taken,
+        }),
+    )
+    .await;
+
+    let res = server
+        .post("/links/bulk")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "urls": [
+                "https://iana.org/bulk-retry-a",
+                "https://iana.org/bulk-retry-b",
+            ]
+        }))
+        .await;
+    assert_eq!(res.status_code(), 200, "bulk create: {}", res.text());
+    let body: Value = res.json();
+    let links = body["links"].as_array().cloned().unwrap_or_default();
+    let errors = body["errors"].as_array().cloned().unwrap_or_default();
+    assert!(
+        errors.iter().all(|e| !e.as_str().unwrap_or("").contains("duplicate key")),
+        "bulk create must not surface a unique-index error: {errors:?}"
+    );
+    assert_eq!(
+        links.len(),
+        2,
+        "both URLs must be created even when a 6-char code is already taken: {body}"
+    );
+    for link in &links {
+        assert_ne!(
+            link["code"].as_str().unwrap_or(""),
+            taken,
+            "bulk must not reuse the occupied code"
+        );
+    }
+}
+
 /// Regression (account takeover, fixed in 5240b6a): passkey enrollment must
 /// require authentication — knowing a victim's email must not be enough to
 /// start registering an authenticator onto their account.
@@ -230,6 +439,57 @@ async fn preview_hides_password_protected_destination() {
     let res = server.get(&format!("/{plain_code}/preview")).await;
     assert_eq!(res.status_code(), 200);
     assert_eq!(res.json::<Value>()["original_url"], plain_destination);
+}
+
+/// A not-yet-live scheduled link 410s on redirect; the public preview must
+/// not leak the embargoed destination in the meantime.
+#[tokio::test]
+async fn preview_hides_scheduled_link_destination() {
+    let (server, db) = common::spawn_real_app().await;
+
+    let (token, user_id) = register(&server, &common::unique_email()).await;
+    common::mark_email_verified(&db, user_id).await;
+
+    let secret_destination = "https://iana.org/embargoed-destination";
+    let starts_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+    let (_, code) = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": secret_destination,
+            "starts_at": starts_at,
+        }),
+    )
+    .await;
+
+    let redirect = server.get(&format!("/{code}")).await;
+    assert_eq!(
+        redirect.status_code(),
+        410,
+        "scheduled redirect must be 410: {}",
+        redirect.text()
+    );
+    assert!(
+        redirect.text().contains("scheduled to activate later"),
+        "redirect body should explain the schedule: {}",
+        redirect.text()
+    );
+
+    let res = server.get(&format!("/{code}/preview")).await;
+    assert_eq!(res.status_code(), 200, "preview: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(
+        body["original_url"], "",
+        "scheduled preview must not leak the destination: {body}"
+    );
+    assert_eq!(
+        body["domain"], "",
+        "scheduled preview must not leak the destination host: {body}"
+    );
+    assert_eq!(
+        body["is_active"], false,
+        "scheduled preview must surface that the link is not yet active: {body}"
+    );
 }
 
 /// The real /health endpoint reports a healthy database through the real
