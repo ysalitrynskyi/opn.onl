@@ -223,6 +223,39 @@ describe('Dashboard Page', () => {
     });
   });
 
+  it('counts one link and one click in the singular', async () => {
+    mockDashboardFetch((requestUrl) => {
+      if (requestUrl.endsWith('/links')) {
+        return mockFetchResponse([{ ...mockLink, click_count: 1 }]);
+      }
+      return mockFetchResponse([]);
+    });
+
+    render(<Dashboard />);
+
+    expect(await screen.findByText('1 link')).toBeInTheDocument();
+    expect(screen.getByText('1 click')).toBeInTheDocument();
+    expect(screen.queryByText('1 links')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 clicks')).not.toBeInTheDocument();
+  });
+
+  it('counts a single valid URL and a single imported link in the singular', async () => {
+    mockDashboardFetch((requestUrl, options) => {
+      if (options?.method === 'POST' && requestUrl.includes('/links/bulk')) {
+        return mockFetchResponse({ links: [mockLink], errors: ['ftp://example.com: invalid URL'] });
+      }
+      return mockFetchResponse([]);
+    });
+
+    const { user } = render(<Dashboard />);
+    await user.click(await screen.findByRole('button', { name: /bulk import/i }));
+    await user.type(screen.getByPlaceholderText(/page1/i), 'https://example.com/a');
+    expect(screen.getByText('1 valid URL')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /import all/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Created 1 link\. 1 failed/);
+  });
+
   it('keeps the edit modal open when the update endpoint rejects the save', async () => {
     vi.mocked(global.fetch).mockImplementation((url, options) => {
       const requestUrl = String(url);

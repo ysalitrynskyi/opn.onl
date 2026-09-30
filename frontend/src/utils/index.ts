@@ -2,6 +2,8 @@
  * Utility exports
  */
 
+import { safeLocalStorage } from './storage';
+
 export { logger, default as loggerDefault } from './logger';
 
 // Format date for display
@@ -127,22 +129,22 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
 // Check if user is authenticated
 export function isAuthenticated(): boolean {
-    return !!localStorage.getItem('token');
+    return !!safeLocalStorage.getItem('token');
 }
 
 // Get stored token
 export function getToken(): string | null {
-    return localStorage.getItem('token');
+    return safeLocalStorage.getItem('token');
 }
 
 // Set token
 export function setToken(token: string): void {
-    localStorage.setItem('token', token);
+    safeLocalStorage.setItem('token', token);
 }
 
 // Remove token
 export function removeToken(): void {
-    localStorage.removeItem('token');
+    safeLocalStorage.removeItem('token');
 }
 
 

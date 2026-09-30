@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '../test/test-utils';
+import { blockSiteStorage } from '../test/helpers';
+import ErrorBoundary from './ErrorBoundary';
 import Layout from './Layout';
 
 // Mock the Outlet component from react-router-dom
@@ -242,6 +244,30 @@ describe('Layout auth and menus', () => {
         fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }));
 
         expect(screen.queryByRole('link', { name: /admin panel/i })).not.toBeInTheDocument();
+    });
+});
+
+describe('Layout with site storage blocked by the browser', () => {
+    let unblock: () => void;
+    beforeEach(() => {
+        unblock = blockSiteStorage();
+    });
+    afterEach(() => unblock());
+
+    // Layout reads the session during render on every route, public pages
+    // included, so a throwing storage read here used to replace the whole site
+    // with the error screen.
+    it('renders the signed-out header instead of the error screen', () => {
+        render(
+            <ErrorBoundary>
+                <Layout />
+            </ErrorBoundary>,
+        );
+
+        expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument();
+        expect(screen.getByTestId('outlet')).toBeInTheDocument();
+        expect(screen.getAllByRole('link', { name: /log in/i }).length).toBeGreaterThan(0);
+        expect(screen.queryByRole('button', { name: /account menu/i })).not.toBeInTheDocument();
     });
 });
 
