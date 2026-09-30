@@ -93,29 +93,24 @@ export default function Home() {
                             {/* min-w-0: let grid columns shrink below content width on small
                                 screens so the mock-URL truncation can actually engage */}
                             <div className="min-w-0 lg:col-span-7">
-                                <motion.p
-                                    initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease }}
-                                    className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600"
-                                >
+                                {/* No entrance animation on the hero text: it is the largest
+                                    paint on a phone. main.tsx renders over the prerendered
+                                    markup, and an opacity-0 start hid the text again until
+                                    the JS bundle had loaded and the fade had run. */}
+                                <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600">
                                     Open source · self-hostable · AGPL-3.0
-                                </motion.p>
+                                </p>
 
-                                <motion.h1
-                                    initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease, delay: 0.05 }}
-                                    className="mt-5 font-display font-extrabold text-ink tracking-tightest leading-[0.98] text-[clamp(2.6rem,6vw,4.75rem)]"
-                                >
+                                <h1 className="mt-5 font-display font-extrabold text-ink tracking-tightest leading-[0.98] text-[clamp(2.6rem,6vw,4.75rem)]">
                                     Short links that
                                     <br />
                                     answer to <span className="text-primary-600">you.</span>
-                                </motion.h1>
+                                </h1>
 
-                                <motion.p
-                                    initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease, delay: 0.12 }}
-                                    className="mt-6 text-lg sm:text-xl text-muted leading-relaxed max-w-[52ch]"
-                                >
+                                <p className="mt-6 text-lg sm:text-xl text-muted leading-relaxed max-w-[52ch]">
                                     A privacy-first URL shortener you actually own. Shorten, protect and
                                     measure every link — on your own server, with no one watching over your shoulder.
-                                </motion.p>
+                                </p>
 
                                 {/* Shortener instrument */}
                                 <motion.div
