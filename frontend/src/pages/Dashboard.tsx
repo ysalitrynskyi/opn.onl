@@ -1001,7 +1001,7 @@ export default function Dashboard() {
                                                 onClick={() => handleCopy(link)}
                                                 className="rounded p-1 text-faint transition-colors hover:bg-primary-50 hover:text-primary-600"
                                                 title="Copy short URL"
-                                                aria-label="Copy short URL"
+                                                aria-label={`Copy short URL for ${link.code}`}
                                             >
                                                 {copiedId === link.id ? (
                                                     <Check className="h-4 w-4 text-success" />
@@ -1023,7 +1023,7 @@ export default function Dashboard() {
                                                 onClick={() => handleCopySource(link)}
                                                 className="rounded p-1 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Copy source URL"
-                                                aria-label="Copy source URL"
+                                                aria-label={`Copy source URL for ${link.code}`}
                                             >
                                                 {copiedSourceId === link.id ? (
                                                     <Check className="h-4 w-4 text-success" />
@@ -1071,6 +1071,7 @@ export default function Dashboard() {
                                         )}
                                         <Link
                                             to={`/analytics/${link.id}`}
+                                            aria-label={`${link.click_count.toLocaleString()} ${pluralize(link.click_count, 'click')}, analytics for ${link.code}`}
                                             className="inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary-600"
                                         >
                                             <BarChart2 className="h-4 w-4" />
@@ -1081,7 +1082,7 @@ export default function Dashboard() {
                                                 onClick={() => setPreviewLink(link)}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Preview destination"
-                                                aria-label="Preview destination"
+                                                aria-label={`Preview destination for ${link.code}`}
                                             >
                                                 <Eye className="h-4 w-4" />
                                             </button>
@@ -1089,7 +1090,7 @@ export default function Dashboard() {
                                                 onClick={() => handlePin(link)}
                                                 className={`rounded-md p-2 transition-colors hover:bg-line ${link.is_pinned ? 'text-primary-600' : 'text-faint hover:text-ink'}`}
                                                 title={link.is_pinned ? 'Unpin' : 'Pin'}
-                                                aria-label={link.is_pinned ? 'Unpin' : 'Pin'}
+                                                aria-label={`${link.is_pinned ? 'Unpin' : 'Pin'} link ${link.code}`}
                                             >
                                                 <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
                                             </button>
@@ -1097,7 +1098,7 @@ export default function Dashboard() {
                                                 onClick={() => handleClone(link)}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Clone"
-                                                aria-label="Clone link"
+                                                aria-label={`Clone link ${link.code}`}
                                             >
                                                 <CopyPlus className="h-4 w-4" />
                                             </button>
@@ -1105,7 +1106,7 @@ export default function Dashboard() {
                                                 onClick={() => handleShare(link)}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Share"
-                                                aria-label="Share link"
+                                                aria-label={`Share link ${link.code}`}
                                             >
                                                 <Share2 className="h-4 w-4" />
                                             </button>
@@ -1113,7 +1114,7 @@ export default function Dashboard() {
                                                 onClick={() => setQrLink(link)}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="QR Code"
-                                                aria-label="Show QR code"
+                                                aria-label={`Show QR code for ${link.code}`}
                                             >
                                                 <QrCode className="h-4 w-4" />
                                             </button>
@@ -1122,7 +1123,7 @@ export default function Dashboard() {
                                                 data-edit-link={link.id}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Edit"
-                                                aria-label="Edit link"
+                                                aria-label={`Edit link ${link.code}`}
                                             >
                                                 <Edit2 className="h-4 w-4" />
                                             </button>
@@ -1130,7 +1131,7 @@ export default function Dashboard() {
                                                 onClick={() => handleDelete(link.id)}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-danger/5 hover:text-danger"
                                                 title="Delete"
-                                                aria-label="Delete link"
+                                                aria-label={`Delete link ${link.code}`}
                                             >
                                                 <Trash2 className="h-4 w-4" />
                                             </button>

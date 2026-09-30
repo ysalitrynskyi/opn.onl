@@ -320,6 +320,30 @@ describe('Dashboard Page', () => {
     });
   }
 
+  it('names every row control after its link, so each one is unique', async () => {
+    mockDashboardFetch(() => mockFetchResponse([linkA, linkB]));
+
+    render(<Dashboard />);
+    await screen.findByRole('button', { name: 'Delete link aaa111' });
+
+    for (const code of ['aaa111', 'bbb222']) {
+      for (const name of [
+        `Copy short URL for ${code}`,
+        `Copy source URL for ${code}`,
+        `Preview destination for ${code}`,
+        `Pin link ${code}`,
+        `Clone link ${code}`,
+        `Share link ${code}`,
+        `Show QR code for ${code}`,
+        `Edit link ${code}`,
+        `Delete link ${code}`,
+      ]) {
+        expect(screen.getByRole('button', { name })).toBeInTheDocument();
+      }
+      expect(screen.getByRole('link', { name: `42 clicks, analytics for ${code}` })).toBeInTheDocument();
+    }
+  });
+
   it('keeps both links removed when two deletes finish out of order', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const deleteResolvers: Array<() => void> = [];
@@ -499,7 +523,7 @@ describe('Dashboard Page', () => {
     });
     const svgCountAfterLoad = sparkSvgs().length;
 
-    await user.click(screen.getAllByRole('button', { name: /^pin$/i })[0]);
+    await user.click(screen.getAllByRole('button', { name: /^pin link /i })[0]);
     await waitFor(() => {
       expect(sparkCalls).toBeGreaterThan(2);
     });
@@ -580,7 +604,7 @@ describe('Dashboard Page', () => {
     });
 
     const { user } = render(<Dashboard />);
-    const pinBtns = await screen.findAllByRole('button', { name: /^pin$/i });
+    const pinBtns = await screen.findAllByRole('button', { name: /^pin link /i });
     expect(pinBtns.length).toBe(2);
     await user.click(pinBtns[0]);
     await user.click(pinBtns[1]);
@@ -588,7 +612,7 @@ describe('Dashboard Page', () => {
     pinResolvers.forEach((resolve) => resolve());
 
     await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^unpin$/i }).length).toBe(2);
+      expect(screen.getAllByRole('button', { name: /^unpin link /i }).length).toBe(2);
     });
   });
 
@@ -658,7 +682,7 @@ describe('Dashboard Page', () => {
     });
 
     const { user } = render(<Dashboard />);
-    await user.click(await screen.findByRole('button', { name: /^unpin$/i }));
+    await user.click(await screen.findByRole('button', { name: /^unpin link /i }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
@@ -666,7 +690,7 @@ describe('Dashboard Page', () => {
         expect.objectContaining({ method: 'POST' }),
       );
     });
-    expect(await screen.findByRole('button', { name: /^pin$/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^pin link /i })).toBeInTheDocument();
   });
 
   it('lists pinned links before unpinned links even when the pinned one is older', async () => {
@@ -687,7 +711,7 @@ describe('Dashboard Page', () => {
     mockDashboardFetch(() => mockFetchResponse([newerUnpinned, olderPinned]));
 
     render(<Dashboard />);
-    await screen.findByRole('button', { name: /^unpin$/i });
+    await screen.findByRole('button', { name: /^unpin link /i });
 
     const hrefs = screen.getAllByRole('link')
       .map((el) => el.getAttribute('href') || '')
@@ -715,7 +739,7 @@ describe('Dashboard Page', () => {
     mockDashboardFetch(() => mockFetchResponse([pinOld, pinNew]));
 
     render(<Dashboard />);
-    expect((await screen.findAllByRole('button', { name: /^unpin$/i })).length).toBe(2);
+    expect((await screen.findAllByRole('button', { name: /^unpin link /i })).length).toBe(2);
 
     const hrefs = screen.getAllByRole('link')
       .map((el) => el.getAttribute('href') || '')
