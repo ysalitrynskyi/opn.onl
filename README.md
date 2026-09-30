@@ -4,7 +4,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue)](docker-compose.yml)
-[![Rust](https://img.shields.io/badge/Rust-1.85+-orange)](backend/)
+[![Rust](https://img.shields.io/badge/Rust-1.98.1-orange)](backend/)
 [![React](https://img.shields.io/badge/React-19-blue)](frontend/)
 
 ## Features
@@ -71,7 +71,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 
 ### Prerequisites
 - Docker & Docker Compose
-- Rust 1.85+ (for local development)
+- Rust 1.98.1 (pinned by `backend/rust-toolchain.toml` for local development)
 - Node.js 20+ (for local development)
 
 ### Development Setup

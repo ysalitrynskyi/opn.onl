@@ -93,13 +93,15 @@ Backend and frontend share one version number. Bumping it means editing exactly 
 
 Deliberately **not** a place to edit: the OpenAPI `info.version` (reads `CARGO_PKG_VERSION`, see the Backend notes), image tags and release-notes versions (CI derives both from the git tag).
 
-**What PR CI does not see.** PR CI builds the backend with stable Rust and never runs the production
-frontend build. The release images build the backend with the Rust version pinned in
-`backend/Dockerfile` and run `npm run build`, which prerenders the marketing pages. So before
-pushing `release`:
+**What PR CI does not see.** The backend toolchain is pinned to 1.98.1 in
+`backend/rust-toolchain.toml`, in every CI job that installs Rust, and in the release image
+(`rust:1.98.1-alpine3.21`, same Alpine release as the runtime stage). PR CI still never builds
+`backend/Dockerfile` and never runs the production frontend build. The release images build that
+Dockerfile (musl, cargo-chef, Alpine packages) and run `npm run build`, which prerenders the
+marketing pages. So before pushing `release`:
 
-- `cargo +<Dockerfile Rust version> check --locked --all-features` from `backend/`. A dependency or
-  std API newer than that toolchain passes every PR check and then fails the release build.
+- `docker build -f backend/Dockerfile backend`. A crate that compiles on the CI glibc runner can
+  still fail the musl image.
 - `npm run build` from `frontend/`, with `PUPPETEER_EXECUTABLE_PATH` pointing at Playwright's
   Chromium as the Dockerfile does. It must end with `verify-prerender: OK`.
 - Migrations run at backend start, before it serves anything, so a migration that rewrites a large
