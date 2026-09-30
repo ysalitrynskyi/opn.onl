@@ -1050,7 +1050,7 @@ export default function Settings() {
                             </form>
                             <p className="text-xs text-faint">
                                 Use with the{' '}
-                                <a href="https://github.com/ysalitrynskyi/opn-mcp" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">opn.onl MCP server</a>{' '}
+                                <a href="https://github.com/ysalitrynskyi/opn-mcp" target="_blank" rel="noreferrer" className="text-primary-600 underline decoration-primary-300 underline-offset-2 hover:decoration-primary-600">opn.onl MCP server</a>{' '}
                                 or any API client: <code className="font-mono">Authorization: Bearer opn_…</code>
                             </p>
                         </div>

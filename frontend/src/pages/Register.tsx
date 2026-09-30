@@ -163,7 +163,7 @@ export default function Register() {
                     <h1 className="mt-3 font-display text-3xl font-extrabold tracking-tight text-ink">Create your account</h1>
                     <p className="mt-2 text-sm text-muted">
                         Already have one?{' '}
-                        <Link to="/login" className="font-medium text-primary-600 hover:text-primary-700">Log in</Link>
+                        <Link to="/login" className="font-medium text-primary-600 underline decoration-primary-300 underline-offset-2 hover:decoration-primary-600 hover:text-primary-700">Log in</Link>
                     </p>
                 </div>
 

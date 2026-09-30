@@ -241,7 +241,7 @@ export default function Login() {
                     <h1 className="mt-3 font-display text-3xl font-extrabold tracking-tight text-ink">Sign in to opn.onl</h1>
                     <p className="mt-2 text-sm text-muted">
                         New here?{' '}
-                        <Link to="/register" className="font-medium text-primary-600 hover:text-primary-700">Create an account</Link>
+                        <Link to="/register" className="font-medium text-primary-600 underline decoration-primary-300 underline-offset-2 hover:decoration-primary-600 hover:text-primary-700">Create an account</Link>
                     </p>
                 </div>
 

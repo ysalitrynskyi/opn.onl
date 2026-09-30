@@ -1051,7 +1051,7 @@ export default function Dashboard() {
                                         </div>
                                         {/* API URL */}
                                         <p className="font-mono text-xs text-faint">
-                                            API: <a href={apiUrl} target="_blank" rel="noreferrer" className="hover:text-muted hover:underline">{apiUrl}</a>
+                                            API: <a href={apiUrl} target="_blank" rel="noreferrer" className="underline decoration-line2 underline-offset-2 hover:text-muted hover:decoration-current">{apiUrl}</a>
                                         </p>
                                         {/* Mini stats */}
                                         <MiniStats link={link} />
