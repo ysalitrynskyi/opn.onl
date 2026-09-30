@@ -95,18 +95,15 @@ Deliberately **not** a place to edit: the OpenAPI `info.version` (reads `CARGO_P
 
 **What PR CI does not see.** The backend toolchain is pinned to 1.98.1 in
 `backend/rust-toolchain.toml`, in every CI job that installs Rust, and in the release image
-(`rust:1.98.1-alpine3.21`, same Alpine release as the runtime stage). PR CI still never builds
-`backend/Dockerfile` and never runs the production frontend build. The release images build that
-Dockerfile (musl, cargo-chef, Alpine packages) and run `npm run build`, which prerenders the
-marketing pages. So before pushing `release`:
-
-- `docker build -f backend/Dockerfile backend`. A crate that compiles on the CI glibc runner can
-  still fail the musl image.
-- `npm run build` from `frontend/`, with `PUPPETEER_EXECUTABLE_PATH` pointing at Playwright's
-  Chromium as the Dockerfile does. It must end with `verify-prerender: OK`.
-- Migrations run at backend start, before it serves anything, so a migration that rewrites a large
-  table (a column type change on `click_events`, say) is downtime. Check the table size and say so
-  in the release notes.
+(`rust:1.98.1-alpine3.21`, same Alpine release as the runtime stage). PR CI builds
+`backend/Dockerfile` for linux/amd64 only, does not push it, and skips that build when the diff
+does not touch `backend/` or `.github/workflows/`. It does not build linux/arm64, so a musl
+failure that exists only on that architecture still waits for the release workflow. The frontend
+job runs `npm run build` (typecheck, Vite, prerender, and `verify-prerender: OK`). It does not
+build the frontend image; the headers job builds only the nginx config stage. Migrations run at
+backend start, before it serves anything, so a migration that rewrites a large table (a column
+type change on `click_events`, say) is downtime. Check the table size and say so in the release
+notes.
 
 Release flow, in order:
 

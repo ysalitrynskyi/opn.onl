@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   backend-test:
-    name: Backend (cargo test + clippy)
+    name: Backend (fmt + clippy + test)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -65,9 +65,15 @@ jobs:
         with:
           workspaces: backend
 
+      - name: Format
+        working-directory: backend
+        run: cargo fmt --check
+
+      # Warnings fail the build, matching the local gate. --all-features is
+      # included so a warning that only the default features hide cannot pass.
       - name: Clippy
         working-directory: backend
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
         working-directory: backend
@@ -88,6 +94,10 @@ jobs:
 
       - name: Install deps
         working-directory: frontend
+        env:
+          # The prerender step uses Playwright's Chromium, same as the image.
+          # Skip Puppeteer's own browser download.
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
         run: npm ci --legacy-peer-deps
 
       - name: Lint
@@ -98,11 +108,28 @@ jobs:
         working-directory: frontend
         run: npm run test -- --run
 
-      # Typecheck (blocking). The full prerender build (which needs Chromium/
-      # Puppeteer) is exercised by the Docker image workflow, not this fast gate.
-      - name: Typecheck
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright Chromium
         working-directory: frontend
-        run: npx tsc -b
+        run: npx playwright install --with-deps chromium
+
+      # tsc -b alone used to be the whole "build". The release image is what
+      # actually prerenders, so a broken Puppeteer launch or a missing
+      # dist/index.html waited until that image. npm run build is tsc, Vite,
+      # prerender, and verify-prerender.
+      - name: Production build
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          export PUPPETEER_EXECUTABLE_PATH="$(find "$HOME/.cache/ms-playwright" -name chrome -type f | head -1)"
+          test -n "$PUPPETEER_EXECUTABLE_PATH"
+          test -x "$PUPPETEER_EXECUTABLE_PATH"
+          npm run build
 
       # Runtime env injection (GA_ID / GA_CONSENT_MODE) happens in the container
       # entrypoint, so nothing above would notice it breaking. Substituting the
@@ -297,3 +324,60 @@ jobs:
             frontend/playwright-report
             frontend/test-results
           retention-days: 7
+
+  # The release workflow is the only place that used to compile
+  # backend/Dockerfile, and it runs on `release`, not on pull requests. A
+  # musl or cargo-chef failure therefore landed after merge. This job builds
+  # linux/amd64 and does not push. linux/arm64 stays on the release workflow.
+  backend-image:
+    name: Backend image (linux/amd64, no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether to build the backend image
+        id: filter
+        run: |
+          set -euo pipefail
+          event="${{ github.event_name }}"
+          if [ "$event" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$event" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$base"
+          fi
+          if git diff --name-only "$base" HEAD | grep -Eq '^(backend/|\.github/workflows/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "backend image: build"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "backend image: skip (no changes under backend/ or .github/workflows/)"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.filter.outputs.run == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        if: steps.filter.outputs.run == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/amd64
+          push: false
+          provenance: false
+          sbom: false
+          tags: opn-backend:ci
+          cache-from: type=gha,scope=ci-backend-amd64
+          cache-to: type=gha,mode=max,scope=ci-backend-amd64
