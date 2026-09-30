@@ -278,8 +278,11 @@ async fn click_buffer_flush_error_does_not_busy_loop() {
     let mut opts = sea_orm::ConnectOptions::new(
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
     );
-    opts.acquire_timeout(std::time::Duration::from_millis(50));
-    opts.connect_timeout(std::time::Duration::from_secs(2));
+    // One slot, not sqlx's default 10. Connect must succeed so we can
+    // close_by_ref; flush then fails against a dead pool.
+    opts.max_connections(1);
+    opts.acquire_timeout(std::time::Duration::from_secs(5));
+    opts.connect_timeout(std::time::Duration::from_secs(5));
     let fail_db = sea_orm::Database::connect(opts).await.expect("connect");
     fail_db.close_by_ref().await.expect("close pool");
 

@@ -19,8 +19,7 @@ pub struct BackupService {
 
 impl BackupService {
     pub async fn new() -> Self {
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/opn_onl".to_string());
+        let database_url = crate::utils::database_url::resolve_database_url();
 
         let bucket = std::env::var("BACKUP_S3_BUCKET").unwrap_or_default();
         let endpoint = std::env::var("BACKUP_S3_ENDPOINT").ok();

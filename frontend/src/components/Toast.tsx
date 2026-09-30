@@ -1,21 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Check, X, AlertCircle, Info } from 'lucide-react';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
+const MAX_TOASTS = 5;
+
 interface ToastProps {
+    id: number;
     message: string;
     type?: ToastType;
     duration?: number;
-    onClose: () => void;
+    onClose: (id: number) => void;
 }
 
-export function Toast({ message, type = 'success', duration = 3000, onClose }: ToastProps) {
+export function Toast({ id, message, type = 'success', duration = 3000, onClose }: ToastProps) {
     useEffect(() => {
-        const timer = setTimeout(onClose, duration);
+        const timer = setTimeout(() => onClose(id), duration);
         return () => clearTimeout(timer);
-    }, [duration, onClose]);
+    }, [duration, onClose, id]);
 
     const icons = {
         success: <Check className="h-5 w-5" />,
@@ -36,12 +39,13 @@ export function Toast({ message, type = 'success', duration = 3000, onClose }: T
             initial={{ opacity: 0, y: 50, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className={`fixed bottom-4 right-4 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg ${styles[type]}`}
+            className={`flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg ${styles[type]}`}
+            // Positioned by ToastContainer; `fixed` here pins every toast to the same corner.
         >
             {icons[type]}
             <span className="font-medium">{message}</span>
             <button 
-                onClick={onClose} 
+                onClick={() => onClose(id)} 
                 className="ml-2 hover:opacity-80 transition-opacity"
                 aria-label="Close notification"
             >
@@ -67,14 +71,14 @@ export function ToastContainer() {
     useEffect(() => {
         addToastFn = (message: string, type: ToastType = 'success') => {
             const id = ++toastId;
-            setToasts(prev => [...prev, { id, message, type }]);
+            setToasts(prev => [...prev, { id, message, type }].slice(-MAX_TOASTS));
         };
         return () => { addToastFn = null; };
     }, []);
 
-    const removeToast = (id: number) => {
+    const removeToast = useCallback((id: number) => {
         setToasts(prev => prev.filter(t => t.id !== id));
-    };
+    }, []);
 
     return (
         <AnimatePresence>
@@ -85,9 +89,10 @@ export function ToastContainer() {
                     className="fixed right-4 z-50"
                 >
                     <Toast
+                        id={toast.id}
                         message={toast.message}
                         type={toast.type}
-                        onClose={() => removeToast(toast.id)}
+                        onClose={removeToast}
                     />
                 </motion.div>
             ))}

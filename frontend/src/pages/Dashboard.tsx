@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
     Copy, Plus, Trash2, BarChart2,
@@ -22,6 +22,8 @@ import QRModal from '../components/dashboard/QRModal';
 import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
+import { takePendingUrl } from '../utils/pendingUrl';
+import { localIsoDate } from '../utils/localIsoDate';
 
 interface AppSettings {
     custom_aliases_enabled: boolean;
@@ -35,6 +37,7 @@ interface AppSettings {
 }
 
 const LINKS_PER_PAGE = 20;
+const SPARKLINE_BATCH_SIZE = 80;
 
 const ease = [0.16, 1, 0.3, 1] as const;
 
@@ -78,6 +81,11 @@ export default function Dashboard() {
     const [bulkImporting, setBulkImporting] = useState(false);
     const [clipboardUrl, setClipboardUrl] = useState<string | null>(null);
     const navigate = useNavigate();
+    const linksFetchId = useRef(0);
+    const sparklineFetchId = useRef(0);
+    // IDs removed locally while a fetchLinks was in flight. Stale responses
+    // must not fold these back in when they merge newly created rows.
+    const droppedLinkIds = useRef(new Set<number>());
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -85,6 +93,8 @@ export default function Dashboard() {
             navigate('/login');
             return;
         }
+        const pending = takePendingUrl();
+        if (pending) setNewUrl(pending);
         fetchLinks();
         fetchSettings();
     }, [navigate]);
@@ -154,9 +164,12 @@ export default function Dashboard() {
         {
             key: 'Escape',
             handler: () => {
-                setEditingLink(null);
-                setQrLink(null);
-                setShareLink(null);
+                if (editingLink || qrLink || shareLink) {
+                    setEditingLink(null);
+                    setQrLink(null);
+                    setShareLink(null);
+                    return;
+                }
                 setSearchQuery('');
             },
             description: 'Close modal / Clear search',
@@ -192,7 +205,10 @@ export default function Dashboard() {
                 }
             } else {
                 const data = await res.json();
-                setError(data.error || 'Failed to import links');
+                const fromList = Array.isArray(data.errors) && data.errors.length > 0
+                    ? data.errors.join(', ')
+                    : null;
+                setError(fromList || data.error || 'Failed to import links');
             }
         } catch {
             setError('Network error during import');
@@ -263,34 +279,68 @@ export default function Dashboard() {
     }, [totalPages, currentPage]);
 
     const fetchLinks = async () => {
+        const requestId = ++linksFetchId.current;
         try {
             const res = await authFetch(API_ENDPOINTS.links);
             if (res.ok) {
-                const data = await res.json();
+                const data: LinkData[] = await res.json();
+                if (requestId !== linksFetchId.current) {
+                    // Delete/pin bumped the generation so this snapshot must
+                    // not replace the optimistic list (that would resurrect a
+                    // deleted row). Still fold in ids we do not have, or a
+                    // create that raced the mutation never appears.
+                    setLinks(prev => {
+                        const have = new Set(prev.map(l => l.id));
+                        const extras = data.filter(
+                            l => !have.has(l.id) && !droppedLinkIds.current.has(l.id),
+                        );
+                        return extras.length === 0 ? prev : [...extras, ...prev];
+                    });
+                    return;
+                }
                 setLinks(data);
+            } else {
+                const data = await res.json().catch(() => null) as { error?: string } | null;
+                if (requestId !== linksFetchId.current) return;
+                setError(data?.error || 'Failed to load links. Please try again.');
             }
         } catch (error) {
+            if (requestId !== linksFetchId.current) return;
             logger.error('Failed to fetch links', error);
             setError('Failed to load links. Please try again.');
         } finally {
-            setLoading(false);
+            if (requestId === linksFetchId.current) {
+                setLoading(false);
+            }
         }
     };
 
-    // Fetch sparkline data for all links
+    // Fetch sparkline data for all links. Batch ids so a large account cannot
+    // blow typical request-line limits (~8KB) with one query string.
     const fetchSparklines = useCallback(async (linkIds: number[]) => {
         if (linkIds.length === 0) return;
+        const requestId = ++sparklineFetchId.current;
+        const merged: Record<number, { data: number[]; labels: string[] }> = {};
         try {
-            const res = await authFetch(`${API_ENDPOINTS.sparklines}?ids=${linkIds.join(',')}`);
-            if (res.ok) {
-                const data = await res.json();
-                const sparklines: Record<number, { data: number[]; labels: string[] }> = {};
-                for (const item of data.sparklines) {
-                    sparklines[item.link_id] = { data: item.data, labels: item.labels };
+            for (let i = 0; i < linkIds.length; i += SPARKLINE_BATCH_SIZE) {
+                if (requestId !== sparklineFetchId.current) return;
+                const batch = linkIds.slice(i, i + SPARKLINE_BATCH_SIZE);
+                const res = await authFetch(`${API_ENDPOINTS.sparklines}?ids=${batch.join(',')}`);
+                if (requestId !== sparklineFetchId.current) return;
+                if (res.ok) {
+                    const data = await res.json();
+                    for (const item of data.sparklines) {
+                        merged[item.link_id] = { data: item.data, labels: item.labels };
+                    }
                 }
-                setSparklineData(sparklines);
             }
+            if (requestId !== sparklineFetchId.current) return;
+            // A failed batch is skipped above, so `merged` can be a subset.
+            // Fold into the previous cache instead of replacing it, or a
+            // later batch failure wipes sparklines we already had.
+            setSparklineData(prev => ({ ...prev, ...merged }));
         } catch (error) {
+            if (requestId !== sparklineFetchId.current) return;
             logger.error('Failed to fetch sparklines', error);
         }
     }, []);
@@ -386,7 +436,11 @@ export default function Dashboard() {
                 method: 'DELETE',
             });
             if (res.ok) {
-                setLinks(links.filter(l => l.id !== id));
+                // Drop any in-flight fetchLinks so it cannot write a snapshot
+                // that still contains this id over the optimistic list.
+                droppedLinkIds.current.add(id);
+                linksFetchId.current += 1;
+                setLinks(prev => prev.filter(l => l.id !== id));
             } else {
                 setError('Failed to delete link');
             }
@@ -448,7 +502,8 @@ export default function Dashboard() {
             });
             if (res.ok) {
                 const data = await res.json();
-                setLinks(links.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
+                linksFetchId.current += 1;
+                setLinks(prev => prev.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
                 toast(data.message, 'success');
             } else {
                 toast('Failed to update pin status', 'error');
@@ -851,7 +906,7 @@ export default function Dashboard() {
                                                     className="flex-1 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                                                     value={expiresAt}
                                                     onChange={(e) => setExpiresAt(e.target.value)}
-                                                    min={new Date().toISOString().split('T')[0]}
+                                                    min={localIsoDate()}
                                                 />
                                                 <input
                                                     type="time"
@@ -1111,6 +1166,7 @@ export default function Dashboard() {
                                             </button>
                                             <button
                                                 onClick={() => setEditingLink(link)}
+                                                data-edit-link={link.id}
                                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
                                                 title="Edit"
                                                 aria-label="Edit link"
@@ -1169,7 +1225,7 @@ export default function Dashboard() {
                     </div>
                 )}
 
-                {links.length === 0 && (
+                {links.length === 0 && !error && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}

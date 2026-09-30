@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '../test/test-utils';
 import ShareModal from './ShareModal';
@@ -187,6 +188,46 @@ describe('ShareModal Component', () => {
             
             const closeButtons = screen.getAllByRole('button');
             expect(closeButtons.length).toBeGreaterThan(0);
+        });
+
+        it('focuses the first control, traps Tab, and restores focus on close', async () => {
+            function Harness() {
+                const [open, setOpen] = useState(false);
+                return (
+                    <>
+                        <button type="button" onClick={() => setOpen(true)}>Open share</button>
+                        {open && (
+                            <ShareModal
+                                {...defaultProps}
+                                onClose={() => setOpen(false)}
+                            />
+                        )}
+                    </>
+                );
+            }
+
+            const { user } = render(<Harness />);
+            const opener = screen.getByRole('button', { name: 'Open share' });
+            await user.click(opener);
+
+            const dialog = screen.getByRole('dialog');
+            expect(dialog).toHaveAttribute('aria-modal', 'true');
+            expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+
+            for (let i = 0; i < 16; i++) {
+                await user.tab();
+                expect(dialog.contains(document.activeElement)).toBe(true);
+                expect(opener).not.toHaveFocus();
+            }
+
+            screen.getByRole('button', { name: 'Close' }).focus();
+            await user.tab({ shift: true });
+            expect(dialog.contains(document.activeElement)).toBe(true);
+            expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Close' }));
+
+            await user.click(screen.getByRole('button', { name: 'Close' }));
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(opener).toHaveFocus();
         });
     });
 });

@@ -174,6 +174,14 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 **Images:** `ghcr.io/ysalitrynskyi/opn-backend:latest`, `ghcr.io/ysalitrynskyi/opn-frontend:latest`  
 **Platforms:** multi-arch `linux/amd64` + `linux/arm64` (built from `release` / version tags)
 
+The published frontend image bakes `VITE_API_URL` at image-build time
+(GitHub Actions defaults it to `https://l.opn.onl`). Unlike `GA_ID`, that
+origin is not substituted when the container starts, so setting
+`VITE_API_URL` in `.env` has no effect on `ghcr.io/ysalitrynskyi/opn-frontend`.
+Those images are for the opn.onl deployment. For any other API host, build
+the frontend yourself (`docker compose up -d --build` from Option 1, or
+`docker build --build-arg VITE_API_URL=https://api.example.com frontend`).
+
 ## Environment Variables
 
 ### Required
@@ -204,7 +212,6 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENABLE_CUSTOM_ALIASES` | true | Allow users to create custom aliases |
-| `ALLOW_DELETED_SLUG_REUSE` | false | Allow reusing slugs from deleted links |
 | `MIN_ALIAS_LENGTH` | 5 | Minimum custom alias length |
 | `MAX_ALIAS_LENGTH` | 25 | Maximum custom alias length |
 | `ENABLE_URL_SANITIZATION` | true | Sanitize URLs for security |
