@@ -570,3 +570,64 @@ async fn link_password_over_72_bytes_is_refused() {
     assert_eq!(res.status_code(), 400, "update: {}", res.text());
     assert!(res.text().contains("at most 72 bytes"), "{}", res.text());
 }
+
+/// `data:` is refused only where a destination's redirect parameter would
+/// treat it as a URL. A path that merely contains the letters, like Wikidata's
+/// own namespace or the Commons `Data:` namespace, is an ordinary link.
+#[tokio::test]
+async fn data_in_an_ordinary_url_is_allowed_but_not_as_a_nested_url() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    for ok in [
+        "https://www.wikidata.org/wiki/Wikidata:Main_Page",
+        "https://commons.wikimedia.org/wiki/Data:Sandbox/Example.tab",
+    ] {
+        let body = create_link(&server, &token, json!({ "original_url": ok })).await;
+        assert_eq!(body["original_url"], json!(ok));
+    }
+
+    for nested in [
+        "https://iana.org/go?next=data:text/html,hi",
+        "https://iana.org/go#data:text/html,hi",
+        "https://iana.org/go?a=1&data:text/html,hi",
+    ] {
+        let res = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": nested }))
+            .await;
+        assert_eq!(res.status_code(), 400, "{nested} accepted: {}", res.text());
+        assert!(res.text().contains("Data URLs"), "{nested}: {}", res.text());
+    }
+}
+
+/// Creating a link whose expiry has already passed is allowed, but the
+/// response must say it is inactive, as GET /links and the redirect do.
+#[tokio::test]
+async fn create_reports_an_already_expired_link_as_inactive() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    let expired = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": format!("https://iana.org/expired-{}", unique_code()),
+            "expires_at": (Utc::now() - Duration::hours(1)).to_rfc3339(),
+        }),
+    )
+    .await;
+    assert_eq!(expired["is_active"], json!(false), "created: {expired}");
+    let code = expired["code"].as_str().unwrap();
+    let redirect = server.get(&format!("/{code}")).await;
+    assert_eq!(redirect.status_code(), 410, "{}", redirect.text());
+
+    let live = create_link(
+        &server,
+        &token,
+        json!({ "original_url": format!("https://iana.org/live-{}", unique_code()) }),
+    )
+    .await;
+    assert_eq!(live["is_active"], json!(true), "created: {live}");
+}

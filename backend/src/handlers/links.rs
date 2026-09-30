@@ -262,6 +262,15 @@ fn check_url_content_policy(url: &str) -> Result<(), String> {
 
 // ============= URL Validation =============
 
+/// `data:` right after a query or fragment delimiter, where a destination's
+/// redirect parameter would treat it as a URL. Not `Wikidata:` or a `/Data:`
+/// wiki namespace in a path.
+fn contains_nested_data_url(url_lower: &str) -> bool {
+    url_lower
+        .match_indices("data:")
+        .any(|(i, _)| i > 0 && matches!(url_lower.as_bytes()[i - 1], b'=' | b'?' | b'&' | b'#'))
+}
+
 /// Validate URL is http/https only and sanitize if enabled
 fn validate_url(url: &str) -> Result<String, String> {
     // Must be a valid URL
@@ -289,8 +298,11 @@ fn validate_url(url: &str) -> Result<String, String> {
             return Err("URL contains potentially malicious content".to_string());
         }
 
-        // Block data: URLs (can contain malicious payloads)
-        if url_lower.contains("data:") {
+        // Block a data: URL nested where a redirector would follow it
+        // (`?next=data:…`, `#data:…`). A top-level data: URL already failed the
+        // scheme check above; matching the bare substring also refused ordinary
+        // pages such as https://www.wikidata.org/wiki/Wikidata:Main_Page.
+        if contains_nested_data_url(&url_lower) {
             return Err("Data URLs are not allowed".to_string());
         }
 
@@ -1438,6 +1450,14 @@ pub async fn create_link(
     }
 
     let tags = get_link_tags(&state.db, link_id).await;
+    // Report what the row actually is: a link created with an expiry already
+    // past, or a start still ahead, is not active, and the redirect agrees.
+    let is_active = links::Entity::find_by_id(link_id)
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .is_none_or(|link| link.is_active());
     let base_url = get_base_url();
     let api_url = get_api_url();
     (
@@ -1462,7 +1482,7 @@ pub async fn create_link(
             burned_at: None,
             safe_link_interstitial,
             bio_visible: false,
-            is_active: true,
+            is_active,
             is_pinned: false,
             tags,
         }),
@@ -1638,7 +1658,7 @@ pub struct RedirectQuery {
         ("code" = String, Path, description = "Short link code")
     ),
     responses(
-        (status = 302, description = "Redirect to original URL"),
+        (status = 307, description = "Redirect to original URL"),
         (status = 401, description = "Password required"),
         (status = 404, description = "Link not found"),
         (status = 410, description = "Link expired or inactive"),
