@@ -82,18 +82,58 @@ pub async fn https_redirect(req: Request<Body>, next: axum::middleware::Next) ->
     if is_https {
         next.run(req).await
     } else {
-        // Get host from headers
-        let host = req
-            .headers()
-            .get("host")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("localhost");
-
-        let uri = req.uri();
-        let redirect_url = format!("https://{}{}", host, uri);
+        let request_host = req.headers().get("host").and_then(|h| h.to_str().ok());
+        let host = https_redirect_host(
+            std::env::var("BASE_URL").ok().as_deref(),
+            std::env::var("FRONTEND_URL").ok().as_deref(),
+            request_host,
+        );
+        let path = req
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/");
+        let redirect_url = format!("https://{host}{path}");
 
         Redirect::permanent(&redirect_url).into_response()
     }
+}
+
+/// Host for a FORCE_HTTPS `Location`. Prefer `BASE_URL`, then `FRONTEND_URL`,
+/// so a client-supplied Host cannot mint `https://evil.example/...`. Fall back
+/// to the request Host only when neither public URL is set, so a self-hoster
+/// with neither configured still gets a working redirect.
+pub fn https_redirect_host(
+    base_url: Option<&str>,
+    frontend_url: Option<&str>,
+    request_host: Option<&str>,
+) -> String {
+    for candidate in [base_url, frontend_url].into_iter().flatten() {
+        if let Some(host) = host_from_public_url(candidate) {
+            return host;
+        }
+    }
+    request_host
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .unwrap_or("localhost")
+        .to_string()
+}
+
+fn host_from_public_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    with_scheme
+        .parse::<axum::http::Uri>()
+        .ok()
+        .and_then(|u| u.authority().map(|a| a.as_str().to_string()))
 }
 
 /// Ensure at least one admin exists in the system
@@ -560,5 +600,58 @@ pub fn build_router(app_state: AppState) -> Router {
         // CORS (origins restricted to FRONTEND_URL/BASE_URL when configured)
         .layer(build_cors())
         // Tracing
-        .layer(TraceLayer::new_for_http())
+        .layer(http_trace_layer())
+}
+
+fn http_trace_layer() -> TraceLayer<
+    tower_http::classify::SharedClassifier<tower_http::classify::ServerErrorsAsFailures>,
+    RedactingMakeSpan,
+> {
+    TraceLayer::new_for_http().make_span_with(RedactingMakeSpan)
+}
+
+/// Subscriber auth for `/ws` and `/sse` is `?token=<jwt>`. The default HTTP
+/// trace span logs `request.uri()`, so the raw JWT would land in
+/// `logs/opn-onl.log` at `tower_http=debug`. Redact it before the span is
+/// created. Browser WebSocket clients cannot set `Authorization`, so the
+/// query param itself stays supported.
+#[derive(Clone, Copy, Debug)]
+struct RedactingMakeSpan;
+
+impl<B> tower_http::trace::MakeSpan<B> for RedactingMakeSpan {
+    fn make_span(&mut self, request: &Request<B>) -> tracing::Span {
+        tracing::debug_span!(
+            "request",
+            method = %request.method(),
+            uri = %redact_request_uri(&request.uri().to_string()),
+            version = ?request.version(),
+        )
+    }
+}
+
+/// Replace `token=` query values so a trace/log line cannot replay a session.
+pub fn redact_request_uri(uri: &str) -> String {
+    let parsed = match uri.parse::<axum::http::Uri>() {
+        Ok(parsed) => parsed,
+        Err(_) => return uri.to_string(),
+    };
+    let Some(query) = parsed.query() else {
+        return uri.to_string();
+    };
+    let redacted = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if key.eq_ignore_ascii_case("token") => {
+                format!("{key}=REDACTED")
+            }
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    match (parsed.scheme_str(), parsed.authority()) {
+        (Some(scheme), Some(auth)) => {
+            format!("{scheme}://{auth}{}?{redacted}", parsed.path())
+        }
+        _ => format!("{}?{redacted}", parsed.path()),
+    }
 }

@@ -1,12 +1,6 @@
 //! Rate limiter tests
 
-use std::time::Duration;
-
-// Import the rate limiter module
-#[path = "../src/utils/rate_limiter.rs"]
-mod rate_limiter;
-
-use rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
+use opn_onl_backend::utils::rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
 
 #[test]
 fn test_rate_limiter_allows_within_limit() {

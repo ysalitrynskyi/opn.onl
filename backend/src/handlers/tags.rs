@@ -500,13 +500,13 @@ pub async fn delete_tag(
 /// Add tags to a link
 #[utoipa::path(
     post,
-    path = "/links/{link_id}/tags",
+    path = "/links/{id}/tags",
     params(
-        ("link_id" = i32, Path, description = "Link ID")
+        ("id" = i32, Path, description = "Link ID")
     ),
     request_body = AddTagsToLinkRequest,
     responses(
-        (status = 200, description = "Tags added", body = serde_json::Value),
+        (status = 200, description = "Tags added (`{\"added\": N}`)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
@@ -593,13 +593,13 @@ pub async fn add_tags_to_link(
 /// Remove tags from a link
 #[utoipa::path(
     delete,
-    path = "/links/{link_id}/tags",
+    path = "/links/{id}/tags",
     params(
-        ("link_id" = i32, Path, description = "Link ID")
+        ("id" = i32, Path, description = "Link ID")
     ),
     request_body = RemoveTagsFromLinkRequest,
     responses(
-        (status = 200, description = "Tags removed", body = serde_json::Value),
+        (status = 200, description = "Tags removed (`{\"removed\": N}`)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
@@ -684,7 +684,7 @@ pub async fn remove_tags_from_link(
         ("tag_id" = i32, Path, description = "Tag ID")
     ),
     responses(
-        (status = 200, description = "Links with tag"),
+        (status = 200, description = "Non-deleted links with this tag"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Tag not found"),

@@ -95,6 +95,65 @@ async fn clone_creates_new_code_and_resets_state() {
     );
 }
 
+/// Clone is an insert, so it must honour MAX_LINKS_PER_USER the same way
+/// POST /links does. Without that check, a user at the advertised cap can
+/// still mint an extra active row via POST /links/{id}/clone.
+#[tokio::test]
+async fn clone_enforces_max_links_per_user() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    let original = create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://iana.org/clone-cap-src" }),
+    )
+    .await;
+    let original_id = original["id"].as_i64().unwrap();
+    create_link(
+        &server,
+        &token,
+        json!({ "original_url": "https://iana.org/clone-cap-pad" }),
+    )
+    .await;
+
+    let prev = std::env::var("MAX_LINKS_PER_USER").ok();
+    std::env::set_var("MAX_LINKS_PER_USER", "2");
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("MAX_LINKS_PER_USER", v),
+                None => std::env::remove_var("MAX_LINKS_PER_USER"),
+            }
+        }
+    }
+    let _restore = Restore(prev);
+
+    let create_over = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/clone-cap-over" }))
+        .await;
+    assert_eq!(
+        create_over.status_code(),
+        403,
+        "POST /links at cap must be 403: {}",
+        create_over.text()
+    );
+
+    let clone = server
+        .post(&format!("/links/{original_id}/clone"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(
+        clone.status_code(),
+        403,
+        "clone at cap must be 403: {}",
+        clone.text()
+    );
+}
+
 #[tokio::test]
 async fn toggle_pin_flips_state() {
     let (server, db) = spawn_real_app().await;

@@ -3,6 +3,10 @@ mod common;
 #[cfg(test)]
 mod tests {
     use super::common;
+    use chrono::{Duration, Utc};
+    use opn_onl_backend::entity::click_events;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection};
+    use serde_json::{json, Value};
 
     // Real-router check (replaces the old stub that only hit a fake /health):
     // the analytics dashboard requires authentication.
@@ -16,6 +20,141 @@ mod tests {
             401,
             "unauthenticated /analytics/dashboard must be rejected: {}",
             response.text()
+        );
+    }
+
+    async fn register_and_link(
+        server: &axum_test::TestServer,
+        db: &DatabaseConnection,
+    ) -> (String, i32) {
+        let res = server
+            .post("/auth/register")
+            .json(&json!({
+                "email": common::unique_email(),
+                "password": "password123"
+            }))
+            .await;
+        assert_eq!(res.status_code(), 201, "register: {}", res.text());
+        let body: Value = res.json();
+        let token = body["token"].as_str().unwrap().to_string();
+        let user_id = body["user_id"].as_i64().unwrap() as i32;
+        common::mark_email_verified(db, user_id).await;
+
+        let link = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": "https://iana.org/stats-window" }))
+            .await;
+        assert_eq!(link.status_code(), 201, "create link: {}", link.text());
+        let link_id = link.json::<Value>()["id"].as_i64().unwrap() as i32;
+        (token, link_id)
+    }
+
+    async fn insert_click(db: &DatabaseConnection, link_id: i32, days_ago: i64, country: &str) {
+        click_events::ActiveModel {
+            link_id: Set(link_id),
+            created_at: Set(Utc::now().naive_utc() - Duration::days(days_ago)),
+            country: Set(Some(country.to_string())),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .expect("insert click event");
+    }
+
+    async fn stats_clicks(
+        server: &axum_test::TestServer,
+        token: &str,
+        link_id: i32,
+        days: Option<&str>,
+    ) -> (u16, i64) {
+        let mut req = server
+            .get(&format!("/links/{link_id}/stats"))
+            .authorization_bearer(token);
+        if let Some(days) = days {
+            req = req.add_query_param("days", days);
+        }
+        let res = req.await;
+        let status = res.status_code().as_u16();
+        let total = res
+            .json::<Value>()
+            .get("total_clicks")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
+        (status, total)
+    }
+
+    /// `TimeDelta::days` panics on values outside roughly ±1.06e14. The stats
+    /// handler used to pass the raw query param through, so one authenticated
+    /// request could kill the worker. Out-of-range input must be clamped.
+    #[tokio::test]
+    async fn link_stats_clamps_out_of_range_days_instead_of_panicking() {
+        let (server, db) = common::spawn_real_app().await;
+        let (token, link_id) = register_and_link(&server, &db).await;
+
+        insert_click(&db, link_id, 0, "NOW").await;
+        insert_click(&db, link_id, 10, "D10").await;
+        insert_click(&db, link_id, 80, "D80").await;
+        insert_click(&db, link_id, 400, "D400").await;
+
+        // Dashboard "Last 90 days" must keep working.
+        let (status, total) = stats_clicks(&server, &token, link_id, Some("90")).await;
+        assert_eq!(status, 200, "days=90 must succeed");
+        assert_eq!(total, 3, "days=90 includes 0/10/80-day events, not 400");
+
+        // Default window is 30 days.
+        let (status, total) = stats_clicks(&server, &token, link_id, None).await;
+        assert_eq!(status, 200, "omitted days must succeed");
+        assert_eq!(total, 2, "default 30 days includes 0/10-day events, not 80");
+
+        // Just-out-of-bounds for TimeDelta::days: used to panic.
+        let (status, total) =
+            stats_clicks(&server, &token, link_id, Some("106751991167301")).await;
+        assert_eq!(status, 200, "huge days must be clamped, not panic");
+        assert_eq!(
+            total, 3,
+            "clamped window is 366 days: 400-day-old event stays out"
+        );
+
+        // i64::MIN: also panics inside TimeDelta::days without a clamp.
+        let (status, _) =
+            stats_clicks(&server, &token, link_id, Some("-9223372036854775808")).await;
+        assert_eq!(status, 200, "i64::MIN days must be clamped, not panic");
+    }
+
+    /// `total_clicks` must be the window `COUNT(*)`, not the length of the
+    /// capped breakdown sample. A link with more clicks than the row cap
+    /// used to report the slice size as the total.
+    #[tokio::test]
+    async fn link_stats_total_clicks_is_window_count_not_truncated_slice() {
+        use sea_orm::ConnectionTrait;
+
+        let (server, db) = common::spawn_real_app().await;
+        let (token, link_id) = register_and_link(&server, &db).await;
+
+        const OVER_CAP: i64 = 50_001;
+        db.execute_unprepared(&format!(
+            "INSERT INTO click_events (link_id, created_at) \
+             SELECT {link_id}, NOW() FROM generate_series(1, {OVER_CAP})"
+        ))
+        .await
+        .expect("insert clicks over the stats row cap");
+
+        let res = server
+            .get(&format!("/links/{link_id}/stats"))
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(res.status_code(), 200, "stats: {}", res.text());
+        let body: Value = res.json();
+        assert_eq!(
+            body["total_clicks"].as_i64(),
+            Some(OVER_CAP),
+            "total_clicks must be the window count, not the 50000-row sample: {body}"
+        );
+        assert_eq!(
+            body["truncated"].as_bool(),
+            Some(true),
+            "window larger than the row cap must set truncated: {body}"
         );
     }
 }
