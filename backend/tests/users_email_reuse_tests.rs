@@ -78,13 +78,20 @@ async fn soft_deleted_email_can_be_registered_again() {
         .count(&db)
         .await
         .unwrap();
-    assert_eq!(all_rows, 2, "deleted row must remain alongside the new live one");
+    assert_eq!(
+        all_rows, 2,
+        "deleted row must remain alongside the new live one"
+    );
 
     let login = server
         .post("/auth/login")
         .json(&json!({ "email": email, "password": "password123" }))
         .await;
-    assert_eq!(login.status_code(), 200, "new account must be able to log in");
+    assert_eq!(
+        login.status_code(),
+        200,
+        "new account must be able to log in"
+    );
     let login_body: Value = login.json();
     assert_eq!(login_body["user_id"].as_i64().unwrap() as i32, new_id);
 

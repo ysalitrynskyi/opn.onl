@@ -100,7 +100,11 @@ async fn list_returns_each_link_with_exactly_its_tags() {
     attach_tag(&db, shared, alpha).await;
     attach_tag(&db, other_link, foreign_tag).await;
 
-    let listed: Value = server.get("/links").authorization_bearer(&token).await.json();
+    let listed: Value = server
+        .get("/links")
+        .authorization_bearer(&token)
+        .await
+        .json();
     let links = listed.as_array().expect("array");
     let ids: Vec<i64> = links.iter().filter_map(|l| l["id"].as_i64()).collect();
     assert_eq!(
@@ -108,7 +112,11 @@ async fn list_returns_each_link_with_exactly_its_tags() {
         3,
         "must list only this user's three live links, got {ids:?}"
     );
-    assert!(ids.contains(&(tagged as i64)) && ids.contains(&(untagged as i64)) && ids.contains(&(shared as i64)));
+    assert!(
+        ids.contains(&(tagged as i64))
+            && ids.contains(&(untagged as i64))
+            && ids.contains(&(shared as i64))
+    );
     assert!(!ids.contains(&(other_link as i64)));
 
     assert_eq!(
@@ -138,7 +146,11 @@ async fn list_excludes_soft_deleted_links_and_their_tags() {
         .await;
     assert_eq!(del.status_code(), 200, "delete: {}", del.text());
 
-    let listed: Value = server.get("/links").authorization_bearer(&token).await.json();
+    let listed: Value = server
+        .get("/links")
+        .authorization_bearer(&token)
+        .await
+        .json();
     let links = listed.as_array().expect("array");
     let ids: Vec<i64> = links.iter().filter_map(|l| l["id"].as_i64()).collect();
     assert_eq!(ids, vec![live as i64], "soft-deleted link must not appear");

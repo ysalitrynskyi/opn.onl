@@ -30,7 +30,12 @@ async fn folder_and_link(
         .authorization_bearer(token)
         .json(&json!({ "name": "to-delete" }))
         .await;
-    assert_eq!(folder.status_code(), 201, "create folder: {}", folder.text());
+    assert_eq!(
+        folder.status_code(),
+        201,
+        "create folder: {}",
+        folder.text()
+    );
     let folder_id = folder.json::<Value>()["id"].as_i64().unwrap() as i32;
 
     let link = server
@@ -48,7 +53,11 @@ async fn folder_and_link(
         .await
         .expect("db")
         .expect("link");
-    assert_eq!(stored.folder_id, Some(folder_id), "create must file the link");
+    assert_eq!(
+        stored.folder_id,
+        Some(folder_id),
+        "create must file the link"
+    );
     (folder_id, link_id)
 }
 
