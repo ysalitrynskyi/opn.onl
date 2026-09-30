@@ -32,6 +32,13 @@ describe('Preview page', () => {
         vi.unstubAllEnvs();
     });
 
+    it('gives the icon-only destination link an accessible name', async () => {
+        render(<Preview />);
+
+        const link = await screen.findByRole('link', { name: 'Open example.com in a new tab' });
+        expect(link).toHaveAttribute('href', 'https://example.com/landing');
+    });
+
     it("names the short link with the instance's own host, not a hard-coded opn.onl", async () => {
         vi.stubEnv('VITE_FRONTEND_URL', 'https://links.example.org');
         render(<Preview />);
