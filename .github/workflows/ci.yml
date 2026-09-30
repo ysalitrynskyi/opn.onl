@@ -226,6 +226,9 @@ jobs:
       BASE_URL: http://localhost:3000
       HOST: 0.0.0.0
       PORT: '3000'
+      # e2e/support/api.ts gives each fixture request its own CF-Connecting-IP
+      # so account setup never spends the auth rate-limit bucket under test.
+      TRUST_PROXY_HEADERS: 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -318,6 +321,9 @@ jobs:
       BASE_URL: http://localhost:3000
       HOST: 0.0.0.0
       PORT: '3000'
+      # e2e/support/api.ts gives each fixture request its own CF-Connecting-IP
+      # so account setup never spends the auth rate-limit bucket under test.
+      TRUST_PROXY_HEADERS: 'true'
     steps:
       - uses: actions/checkout@v4
 
