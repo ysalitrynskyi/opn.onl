@@ -156,11 +156,17 @@ describe('Layout Component', () => {
     });
 
     describe('Accessibility', () => {
-        it('has skip to content link', () => {
-            render(<Layout />);
-            
-            // Skip link might be visually hidden
-            const skipLink = screen.queryByText(/skip to/i);
+        it('makes "Skip to content" the first tab stop, pointing at the main region', async () => {
+            const { user } = render(<Layout />);
+
+            await user.tab();
+
+            const skipLink = screen.getByRole('link', { name: 'Skip to content' });
+            expect(skipLink).toHaveFocus();
+            const target = document.getElementById(skipLink.getAttribute('href')!.slice(1));
+            expect(target?.tagName).toBe('MAIN');
+            // Focusable from the link, but not a tab stop of its own.
+            expect(target).toHaveAttribute('tabindex', '-1');
         });
 
         it('header has proper landmark role', () => {

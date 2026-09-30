@@ -42,6 +42,13 @@ export default function Layout() {
 
     return (
         <div className="min-h-screen flex flex-col bg-paper" onClick={handleLayoutClick}>
+            {/* First stop for keyboard users: past the header and its nav. */}
+            <a
+                href="#main-content"
+                className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-[60] focus:rounded-lg focus:bg-surface focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-ink focus:shadow-lift"
+            >
+                Skip to content
+            </a>
             <header className="sticky top-0 z-50 border-b border-line bg-surface/85 backdrop-blur-md">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="h-16 flex items-center justify-between">
@@ -183,7 +190,9 @@ export default function Layout() {
                 )}
             </header>
 
-            <main className="flex-grow">
+            {/* tabIndex -1 so the skip link moves focus here, not just the scroll
+                position; no focus ring on the whole page region. */}
+            <main id="main-content" tabIndex={-1} className="flex-grow focus:outline-none focus-visible:shadow-none">
                 <Outlet />
             </main>
 
