@@ -235,7 +235,7 @@ export default function Features() {
                             <h3 className="text-lg font-bold mb-6">opn.onl</h3>
                             <ul className="space-y-4">
                                 {[
-                                    'Privacy-first. Optional analytics is disclosed',
+                                    'Privacy-first, first-party analytics',
                                     'Your data stays yours forever',
                                     'All features free, no limits',
                                     'Open source and transparent',

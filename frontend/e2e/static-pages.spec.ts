@@ -44,7 +44,7 @@ test.describe('Static pages', () => {
 
         test('shows the comparison section', async ({ page }) => {
             await expect(page.getByRole('heading', { level: 2, name: 'Why choose opn.onl?' })).toBeVisible();
-            await expect(page.getByText('Privacy-first. Optional analytics is disclosed')).toBeVisible();
+            await expect(page.getByText('Privacy-first, first-party analytics')).toBeVisible();
         });
 
         test('sends the call to action to sign up', async ({ page }) => {
