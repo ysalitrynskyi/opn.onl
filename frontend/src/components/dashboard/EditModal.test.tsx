@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '../../test/test-utils';
 import EditModal from './EditModal';
@@ -80,7 +81,36 @@ describe('EditModal', () => {
         await user.click(screen.getByRole('button', { name: /save changes/i }));
 
         await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
-        expect(onSave.mock.calls[0][1].expires_at).toBe('2031-06-20T00:00:00.000Z');
+        // Date-only expiry is end of that local day, matching the create
+        // form's 23:59 default. `new Date('YYYY-MM-DD')` is UTC midnight,
+        // which is already yesterday west of UTC.
+        expect(onSave.mock.calls[0][1].expires_at).toBe(
+            new Date('2031-06-20T23:59:00').toISOString(),
+        );
+    });
+
+    it('uses the local calendar date as the expiration minimum, not UTC', () => {
+        const year = vi.spyOn(Date.prototype, 'getFullYear').mockReturnValue(2026);
+        const month = vi.spyOn(Date.prototype, 'getMonth').mockReturnValue(8);
+        const day = vi.spyOn(Date.prototype, 'getDate').mockReturnValue(17);
+        const iso = vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-09-18T03:00:00.000Z');
+
+        try {
+            render(
+                <EditModal
+                    link={baseLink}
+                    onClose={vi.fn()}
+                    onSave={vi.fn()}
+                />
+            );
+
+            expect(screen.getByLabelText(/^expiration date$/i)).toHaveAttribute('min', '2026-09-17');
+        } finally {
+            year.mockRestore();
+            month.mockRestore();
+            day.mockRestore();
+            iso.mockRestore();
+        }
     });
 
     it('keeps the modal open and skips routing when the link save fails', async () => {
@@ -130,5 +160,84 @@ describe('EditModal', () => {
         expect(await screen.findByRole('alert')).toHaveTextContent('Routing update rejected');
         expect(onSave).toHaveBeenCalledOnce();
         expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('focuses the first control, traps Tab, and restores focus on close', async () => {
+        function Harness() {
+            const [open, setOpen] = useState(false);
+            return (
+                <>
+                    <button type="button" onClick={() => setOpen(true)}>Open editor</button>
+                    {open && (
+                        <EditModal
+                            link={baseLink}
+                            onClose={() => setOpen(false)}
+                            onSave={vi.fn()}
+                        />
+                    )}
+                </>
+            );
+        }
+
+        const { user } = render(<Harness />);
+        const opener = screen.getByRole('button', { name: 'Open editor' });
+        await user.click(opener);
+
+        const dialog = screen.getByRole('dialog');
+        expect(dialog).toHaveAttribute('aria-modal', 'true');
+        expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+
+        for (let i = 0; i < 12; i++) {
+            await user.tab();
+            expect(dialog.contains(document.activeElement)).toBe(true);
+            expect(opener).not.toHaveFocus();
+        }
+
+        screen.getByRole('button', { name: 'Close' }).focus();
+        await user.tab({ shift: true });
+        expect(dialog.contains(document.activeElement)).toBe(true);
+        expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Close' }));
+
+        await user.click(screen.getByRole('button', { name: 'Close' }));
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        expect(opener).toHaveFocus();
+    });
+
+    it('does not restore focus to an opener that save replaced', async () => {
+        function Harness() {
+            const [open, setOpen] = useState(false);
+            const [version, setVersion] = useState(0);
+            return (
+                <>
+                    <button
+                        key={version}
+                        type="button"
+                        data-edit-link={baseLink.id}
+                        onClick={() => setOpen(true)}
+                    >
+                        Open editor
+                    </button>
+                    {open && (
+                        <EditModal
+                            link={baseLink}
+                            onClose={() => setOpen(false)}
+                            onSave={async () => {
+                                setVersion(v => v + 1);
+                            }}
+                        />
+                    )}
+                </>
+            );
+        }
+
+        const { user } = render(<Harness />);
+        await user.click(screen.getByRole('button', { name: 'Open editor' }));
+        await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+        await waitFor(() => {
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Open editor' })).toHaveFocus();
+        });
+        expect(document.activeElement).not.toBe(document.body);
     });
 });

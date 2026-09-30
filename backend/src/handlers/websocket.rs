@@ -58,7 +58,7 @@ pub struct ClickEvent {
     pub link_id: i32,
     pub link_code: String,
     pub user_id: Option<i32>,
-    pub click_count: i32,
+    pub click_count: i64,
     pub country: Option<String>,
     pub city: Option<String>,
     pub device: Option<String>,

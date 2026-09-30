@@ -9,6 +9,12 @@ on:
       - main
       - release
       - security-audit-fixes
+  # Full Playwright suite is too slow/stale to gate every PR. The e2e-full job
+  # runs on demand and once a week; the e2e job on every PR is the chromium
+  # subset documented in frontend/e2e/README.md.
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
 
 # Cancel in-progress runs on the same ref
 concurrency:
@@ -126,6 +132,35 @@ jobs:
           container_id=$(docker run --detach --publish 127.0.0.1:8080:80 opn-frontend-csp-smoke)
           trap 'docker rm --force "$container_id"' EXIT
 
+          # csp-config ships nginx + conf only (no Vite dist). Placeholder files
+          # let the cache-policy split be asserted without a full frontend build.
+          docker exec "$container_id" sh -c '
+            mkdir -p /usr/share/nginx/html/assets
+            printf "ok\n" > /usr/share/nginx/html/assets/app-deadbeef.js
+            printf "ok\n" > /usr/share/nginx/html/favicon-32x32.png
+            printf "{}\n" > /usr/share/nginx/html/manifest.json
+            printf "ok\n" > /usr/share/nginx/html/bg-contours.avif
+            printf "ok\n" > /usr/share/nginx/html/bg-network.webp
+            printf "ok\n" > /usr/share/nginx/html/robots.txt
+            printf "{}\n" > /usr/share/nginx/html/sitemap.xml
+          '
+
+          # nginx drops inherited add_header when a location sets any of its
+          # own, so every class that sets Cache-Control must repeat the full
+          # security set. One helper so HTML /assets/ and public/ cannot drift.
+          # blob: is required by the QR modal, which fetches the code with an auth
+          # header and renders it through URL.createObjectURL. Dropping it blocks
+          # the image and the modal renders empty.
+          assert_security_headers() {
+            printf '%s\n' "$1" | grep -iF "x-frame-options: SAMEORIGIN"
+            printf '%s\n' "$1" | grep -iF "x-content-type-options: nosniff"
+            printf '%s\n' "$1" | grep -iF "x-xss-protection: 1; mode=block"
+            printf '%s\n' "$1" | grep -iF "referrer-policy: strict-origin-when-cross-origin"
+            printf '%s\n' "$1" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
+            printf '%s\n' "$1" | grep -iF "content-security-policy:"
+            printf '%s\n' "$1" | grep -iF "img-src 'self' data: blob: https:;"
+          }
+
           for attempt in $(seq 1 20); do
             if headers=$(curl --fail --silent --show-error --head http://127.0.0.1:8080/); then
               break
@@ -134,18 +169,216 @@ jobs:
           done
 
           test -n "${headers:-}"
-          printf '%s\n' "$headers" | grep -iF "content-security-policy:"
+          assert_security_headers "$headers"
           printf '%s\n' "$headers" | grep -iF "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://static.cloudflareinsights.com;"
           printf '%s\n' "$headers" | grep -iF "connect-src 'self' https://api.smoke.test wss://api.smoke.test https://www.google-analytics.com https://region1.google-analytics.com https://www.google.com https://cloudflareinsights.com;"
-          # blob: is required by the QR modal, which fetches the code with an auth
-          # header and renders it through URL.createObjectURL. Dropping it blocks
-          # the image and the modal renders empty.
-          printf '%s\n' "$headers" | grep -iF "img-src 'self' data: blob: https:;"
-          printf '%s\n' "$headers" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
           # HTML must be revalidated on every load. Without this a browser keeps
           # the previous deploy's SPA shell — stale hashed asset names and stale
           # entrypoint-injected runtime config (GA_ID / GA_CONSENT_MODE).
           printf '%s\n' "$headers" | grep -iE "^cache-control: *no-cache"
+
+          # Hashed Vite output under /assets/ is content-addressed and may be
+          # cached forever. The location repeats security headers because nginx
+          # drops inherited add_header when the inner scope sets Cache-Control.
+          asset_headers=$(curl --fail --silent --show-error --head http://127.0.0.1:8080/assets/app-deadbeef.js)
+          printf '%s\n' "$asset_headers" | grep -iE "^cache-control:.*\bpublic\b.*\bimmutable\b"
+          assert_security_headers "$asset_headers"
+
+          # Unhashed files from public/ keep stable URLs across deploys, so they
+          # must not be immutable. A new logo / favicon / manifest.json / hero
+          # background / sitemap would otherwise stay stale in returning
+          # browsers (and any CDN honoring immutable) for up to a year.
+          for public_path in /favicon-32x32.png /manifest.json /bg-contours.avif /bg-network.webp /robots.txt /sitemap.xml; do
+            public_headers=$(curl --fail --silent --show-error --head "http://127.0.0.1:8080${public_path}")
+            printf '%s\n' "$public_headers" | grep -iE "^cache-control: *no-cache"
+            ! printf '%s\n' "$public_headers" | grep -iE "cache-control:.*\bimmutable\b"
+            assert_security_headers "$public_headers"
+          done
+
           ! printf '%s\n' "$headers" | grep -Fq '__API_CONNECT_SRC__'
           ! docker exec "$container_id" grep -Rq '__API_CONNECT_SRC__' /etc/nginx/conf.d
           ! grep -R "fonts.googleapis.com" frontend/src
+
+  e2e:
+    name: E2E (Playwright gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: opn_onl_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/opn_onl_test
+      # CI-only secret; must be >= 32 bytes to satisfy the new startup validation.
+      JWT_SECRET: ci-test-jwt-secret-please-change-in-production-0123456789
+      RUST_LOG: warn
+      FRONTEND_URL: http://localhost:5173
+      BASE_URL: http://localhost:3000
+      HOST: 0.0.0.0
+      PORT: '3000'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Build backend
+        working-directory: backend
+        run: cargo build
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start backend
+        working-directory: backend
+        run: |
+          nohup ./target/debug/opn_onl_backend > /tmp/opn-backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null; then
+              echo "backend is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend failed to start"
+          cat /tmp/opn-backend.log
+          exit 1
+
+      - name: Run Playwright gate
+        working-directory: frontend
+        run: npm run test:e2e:gate
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-gate
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
+
+  e2e-full:
+    name: E2E (Playwright full suite)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: opn_onl_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/opn_onl_test
+      JWT_SECRET: ci-test-jwt-secret-please-change-in-production-0123456789
+      RUST_LOG: warn
+      FRONTEND_URL: http://localhost:5173
+      BASE_URL: http://localhost:3000
+      HOST: 0.0.0.0
+      PORT: '3000'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Build backend
+        working-directory: backend
+        run: cargo build
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start backend
+        working-directory: backend
+        run: |
+          nohup ./target/debug/opn_onl_backend > /tmp/opn-backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null; then
+              echo "backend is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend failed to start"
+          cat /tmp/opn-backend.log
+          exit 1
+
+      - name: Run Playwright full suite
+        working-directory: frontend
+        run: npm run test:e2e:full
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-full
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7

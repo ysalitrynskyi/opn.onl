@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, Flame, ShieldCheck, Route, ChevronDown, LayoutList } from 'lucide-react';
 import { API_ENDPOINTS, authFetch } from '../../config/api';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { localIsoDate } from '../../utils/localIsoDate';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
 import RoutingRulesEditor from './RoutingRulesEditor';
 
@@ -39,6 +41,8 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     const [showRouting, setShowRouting] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState('');
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useFocusTrap(dialogRef);
 
     useEffect(() => {
         if (!routingEnabled) return;
@@ -75,7 +79,8 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             bio_visible: bioEnabled ? bioVisible : undefined,
         };
         if (expirationChanged && expiresAt && !shouldRemoveExpiration) {
-            payload.expires_at = new Date(expiresAt).toISOString();
+            // Date-only value: end of that local day, matching the create form.
+            payload.expires_at = new Date(`${expiresAt}T23:59:00`).toISOString();
         }
 
         try {
@@ -93,6 +98,10 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             }
 
             onClose();
+            const editId = link.id;
+            requestAnimationFrame(() => {
+                document.querySelector<HTMLElement>(`[data-edit-link="${editId}"]`)?.focus();
+            });
         } catch (error) {
             setSaveError(error instanceof Error ? error.message : 'Failed to update link');
         } finally {
@@ -109,6 +118,9 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             onClick={onClose}
         >
             <motion.div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
                 initial={{ scale: 0.97, opacity: 0, y: 8 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 8 }}
@@ -175,7 +187,7 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                             value={expiresAt}
                             onChange={(e) => setExpiresAt(e.target.value)}
                             className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
-                            min={new Date().toISOString().split('T')[0]}
+                            min={localIsoDate()}
                         />
                         {link.expires_at && (
                             <label className="flex items-center gap-2 mt-2 text-sm text-muted">

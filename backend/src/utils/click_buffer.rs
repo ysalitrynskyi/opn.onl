@@ -39,7 +39,7 @@ pub struct ClickData {
 
 /// Buffered click counter for aggregating click count updates
 struct ClickCounter {
-    count: i32,
+    count: i64,
 }
 
 /// Click buffer for batching database writes
@@ -178,7 +178,7 @@ impl ClickBuffer {
 
     /// Number of clicks buffered (not yet flushed to the DB) for a link.
     /// Used so click limits account for in-flight clicks, not just the DB count.
-    pub fn pending_count(&self, link_id: i32) -> i32 {
+    pub fn pending_count(&self, link_id: i32) -> i64 {
         self.counters
             .read()
             .get(&link_id)
@@ -192,7 +192,7 @@ impl ClickBuffer {
     ///
     /// Takes `flush_lock` so this cannot run in the gap after flush has
     /// `mem::take`n the counters but before it commits `click_count`.
-    pub async fn take_pending_count(&self, link_id: i32) -> i32 {
+    pub async fn take_pending_count(&self, link_id: i32) -> i64 {
         let _guard = self.flush_lock.lock().await;
         self.counters
             .write()
@@ -202,7 +202,7 @@ impl ClickBuffer {
     }
 
     /// Put clicks back into the buffer when folding them into click_count failed.
-    pub async fn add_pending_count(&self, link_id: i32, n: i32) {
+    pub async fn add_pending_count(&self, link_id: i32, n: i64) {
         if n <= 0 {
             return;
         }
@@ -260,7 +260,7 @@ impl ClickBuffer {
         for event in events {
             events_by_link.entry(event.link_id).or_default().push(event);
         }
-        let mut counts: HashMap<i32, i32> = counters
+        let mut counts: HashMap<i32, i64> = counters
             .into_iter()
             .map(|(link_id, counter)| (link_id, counter.count))
             .collect();
@@ -271,7 +271,7 @@ impl ClickBuffer {
             .collect();
 
         let mut retry_events = Vec::new();
-        let mut retry_counts: HashMap<i32, i32> = HashMap::new();
+        let mut retry_counts: HashMap<i32, i64> = HashMap::new();
 
         for link_id in link_ids {
             let link_events = events_by_link.remove(&link_id).unwrap_or_default();
@@ -344,9 +344,9 @@ impl ClickBuffer {
                             device: Set(e.device),
                             browser: Set(e.browser),
                             os: Set(e.os),
-                            created_at: Set(e.created_at.unwrap_or_else(|| {
-                                chrono::Utc::now().naive_utc()
-                            })),
+                            created_at: Set(e
+                                .created_at
+                                .unwrap_or_else(|| chrono::Utc::now().naive_utc())),
                             ..Default::default()
                         })
                         .collect();
@@ -393,7 +393,7 @@ impl ClickBuffer {
         // loop after their parent link has been hard-deleted.
         let had_retry = !retry_events.is_empty() || !retry_counts.is_empty();
         if !retry_events.is_empty() {
-            let mut dropped_per_link: HashMap<i32, i32> = HashMap::new();
+            let mut dropped_per_link: HashMap<i32, i64> = HashMap::new();
             {
                 let mut buffer = self.events.write();
                 retry_events.append(&mut *buffer);
@@ -449,7 +449,10 @@ impl ClickBuffer {
     }
 
     /// Start the background flush task
-    pub fn start_flush_task(self: Arc<Self>, db: DatabaseConnection) -> tokio::task::JoinHandle<()> {
+    pub fn start_flush_task(
+        self: Arc<Self>,
+        db: DatabaseConnection,
+    ) -> tokio::task::JoinHandle<()> {
         let interval_secs = self.flush_interval_secs.max(1);
 
         tokio::spawn(async move {
@@ -509,5 +512,47 @@ impl Clone for ClickBuffer {
             flush_lock: self.flush_lock.clone(),
             flush_attempts: self.flush_attempts.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn click(link_id: i32) -> ClickData {
+        ClickData {
+            link_id,
+            ip_address: None,
+            user_agent: None,
+            referer: None,
+            country: None,
+            city: None,
+            region: None,
+            latitude: None,
+            longitude: None,
+            device: None,
+            browser: None,
+            os: None,
+            created_at: None,
+        }
+    }
+
+    /// `add_click` must account every event once in the queue and once against
+    /// its own link. Asserted through the queue and per-link counters rather
+    /// than through `should_flush`, which had no production caller left after
+    /// the flush-backoff change and was removed.
+    #[test]
+    fn add_click_accounts_events_in_queue_and_per_link() {
+        let buf = ClickBuffer::with_limits(3, 10, 60);
+        assert_eq!(buf.queued_event_count(), 0);
+        buf.add_click(click(1));
+        buf.add_click(click(1));
+        assert_eq!(buf.queued_event_count(), 2);
+        assert_eq!(buf.pending_count(1), 2);
+
+        buf.add_click(click(2));
+        assert_eq!(buf.queued_event_count(), 3);
+        assert_eq!(buf.pending_count(2), 1);
+        assert_eq!(buf.pending_count(1), 2);
     }
 }

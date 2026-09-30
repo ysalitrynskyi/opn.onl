@@ -1,15 +1,21 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '../test/test-utils';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, within } from '../test/test-utils';
 import Analytics from './Analytics';
+import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
 import { mockToken } from '../test/test-utils';
+
+const { mockParams, mockNavigate } = vi.hoisted(() => ({
+    mockParams: { id: '1' },
+    mockNavigate: vi.fn(),
+}));
 
 // Mock the react-router-dom hooks
 vi.mock('react-router-dom', async () => {
     const actual = await vi.importActual('react-router-dom');
     return {
         ...actual,
-        useParams: () => ({ id: '1' }),
-        useNavigate: () => vi.fn(),
+        useParams: () => ({ id: mockParams.id }),
+        useNavigate: () => mockNavigate,
     };
 });
 
@@ -71,6 +77,7 @@ describe('Analytics Page', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        mockParams.id = '1';
         localStorage.setItem('token', mockToken);
         
         // Mock successful API response
@@ -142,6 +149,52 @@ describe('Analytics Page', () => {
                              document.querySelector('[class*="chart"]');
             });
         });
+
+        it('labels a UTC date-only bucket as that calendar day, not the previous local date', () => {
+            expect(formatDayBucketLabel('2026-09-17')).toBe('Sep 17');
+            expect(formatDayBucketLabel('2026-01-05')).toBe('Jan 5');
+        });
+    });
+
+    describe('This Week', () => {
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it('includes a UTC day from seven days ago even when it is afternoon', () => {
+            const now = new Date('2026-09-17T18:00:00.000Z');
+            expect(sumClicksInUtcWindow([
+                { date: '2026-09-10', count: 5 },
+                { date: '2026-09-17', count: 10 },
+            ], 7, now)).toBe(15);
+        });
+
+        it('shows the UTC-week total on the This Week card', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-09-17T18:00:00.000Z'));
+
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    total_clicks: 99,
+                    clicks_by_day: [
+                        { date: '2026-09-10', count: 5 },
+                        { date: '2026-09-17', count: 10 },
+                    ],
+                }),
+            });
+
+            render(<Analytics />);
+
+            await waitFor(() => {
+                expect(screen.getByText('This Week')).toBeInTheDocument();
+            });
+            const card = screen.getByText('This Week').closest('.bg-surface');
+            expect(card).not.toBeNull();
+            expect(within(card as HTMLElement).getByText('15')).toBeInTheDocument();
+        });
     });
 
     describe('Data Tables', () => {
@@ -206,6 +259,115 @@ describe('Analytics Page', () => {
                                 screen.queryByText(/7 days|30 days/i);
             });
         });
+
+        it('refetches with the new range when the selector changes', async () => {
+            const { user } = render(<Analytics />);
+
+            await screen.findByLabelText('Time range');
+            expect(String(vi.mocked(global.fetch).mock.calls[0][0])).toContain('days=30');
+
+            await user.selectOptions(screen.getByLabelText('Time range'), '7');
+
+            await waitFor(() => {
+                const urls = vi.mocked(global.fetch).mock.calls.map(call => String(call[0]));
+                expect(urls.some(url => url.includes('days=7'))).toBe(true);
+            });
+        });
+
+        it('refetches when the link id changes', async () => {
+            const { rerender } = render(<Analytics />);
+
+            await waitFor(() => {
+                expect(String(vi.mocked(global.fetch).mock.calls[0][0])).toContain('/links/1/stats');
+            });
+
+            mockParams.id = '2';
+            rerender(<Analytics />);
+
+            await waitFor(() => {
+                const urls = vi.mocked(global.fetch).mock.calls.map(call => String(call[0]));
+                expect(urls.some(url => url.includes('/links/2/stats'))).toBe(true);
+            });
+        });
+
+        it('ignores a slower response for a previous time range', async () => {
+            let releaseSeven: () => void = () => {};
+            const sevenGate = new Promise<void>(resolve => {
+                releaseSeven = resolve;
+            });
+
+            global.fetch = vi.fn().mockImplementation((url: string) => {
+                const href = String(url);
+                if (href.includes('days=7')) {
+                    return sevenGate.then(() => ({
+                        ok: true,
+                        status: 200,
+                        json: () => Promise.resolve({ ...mockLinkStats, code: 'seven-day' }),
+                    }));
+                }
+                if (href.includes('days=90')) {
+                    return Promise.resolve({
+                        ok: true,
+                        status: 200,
+                        json: () => Promise.resolve({ ...mockLinkStats, code: 'ninety-day' }),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve({ ...mockLinkStats, code: 'thirty-day' }),
+                });
+            });
+
+            const { user } = render(<Analytics />);
+            await screen.findByText('thirty-day');
+
+            await user.selectOptions(screen.getByLabelText('Time range'), '7');
+            await user.selectOptions(screen.getByLabelText('Time range'), '90');
+            await screen.findByText('ninety-day');
+
+            releaseSeven();
+
+            await waitFor(() => {
+                expect(screen.getByText('ninety-day')).toBeInTheDocument();
+            });
+            expect(screen.queryByText('seven-day')).not.toBeInTheDocument();
+        });
+
+        it('does not keep showing the previous link while a new id loads', async () => {
+            let releaseTwo: () => void = () => {};
+            const twoGate = new Promise<void>(resolve => {
+                releaseTwo = resolve;
+            });
+
+            global.fetch = vi.fn().mockImplementation((url: string) => {
+                if (String(url).includes('/links/2/stats')) {
+                    return twoGate.then(() => ({
+                        ok: true,
+                        status: 200,
+                        json: () => Promise.resolve({ ...mockLinkStats, link_id: 2, code: 'second' }),
+                    }));
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(mockLinkStats),
+                });
+            });
+
+            const { rerender } = render(<Analytics />);
+            await screen.findByText(/abc123/);
+
+            mockParams.id = '2';
+            rerender(<Analytics />);
+
+            await waitFor(() => {
+                expect(screen.queryByText(/abc123/)).not.toBeInTheDocument();
+            });
+
+            releaseTwo();
+            await screen.findByText(/second/);
+        });
     });
 
     describe('Navigation', () => {
@@ -229,10 +391,32 @@ describe('Analytics Page', () => {
             });
 
             render(<Analytics />);
-            
-            await waitFor(() => {
-                const error = screen.queryByText(/error|not found/i);
-            });
+
+            expect(await screen.findByText('Link not found.')).toBeInTheDocument();
+        });
+
+        it('clears a previous error when a later fetch succeeds', async () => {
+            global.fetch = vi.fn()
+                .mockResolvedValueOnce({
+                    ok: false,
+                    status: 404,
+                    json: () => Promise.resolve({ error: 'Link not found' }),
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(mockLinkStats),
+                });
+
+            mockParams.id = '999';
+            const { rerender } = render(<Analytics />);
+            expect(await screen.findByText('Link not found.')).toBeInTheDocument();
+
+            mockParams.id = '1';
+            rerender(<Analytics />);
+
+            await screen.findByText(/abc123/);
+            expect(screen.queryByText('Link not found.')).not.toBeInTheDocument();
         });
 
         it('redirects to login on 401', async () => {

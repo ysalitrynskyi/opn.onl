@@ -55,12 +55,21 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-opn_onl}
+      # Discrete Postgres pieces. The backend percent-encodes userinfo when
+      # assembling DATABASE_URL, so a password containing `@`, `:`, or `/`
+      # still parses. Do not interpolate POSTGRES_PASSWORD into a URL here.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-opn_onl}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       HOST: 0.0.0.0
       PORT: 3000
       BASE_URL: ${BASE_URL:-https://opn.onl}
       FRONTEND_URL: ${FRONTEND_URL:-https://opn.onl}
+      # WebAuthn RP ID. Empty: derived from FRONTEND_URL. Set to override.
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       REAL_IP_HEADER: ${REAL_IP_HEADER:-cf-connecting-ip}
@@ -91,8 +100,12 @@ services:
       ENABLE_CUSTOM_ALIASES: ${ENABLE_CUSTOM_ALIASES:-true}
       MIN_ALIAS_LENGTH: ${MIN_ALIAS_LENGTH:-5}
       MAX_ALIAS_LENGTH: ${MAX_ALIAS_LENGTH:-25}
-      ALLOW_DELETED_SLUG_REUSE: ${ALLOW_DELETED_SLUG_REUSE:-false}
+      # Per-user link cap. Empty or 0 means unlimited (the default).
+      MAX_LINKS_PER_USER: ${MAX_LINKS_PER_USER:-}
       ENABLE_URL_SANITIZATION: ${ENABLE_URL_SANITIZATION:-true}
+      # Abuse guards on link destinations (both default on).
+      BLOCK_DANGEROUS_FILE_EXTENSIONS: ${BLOCK_DANGEROUS_FILE_EXTENSIONS:-true}
+      BLOCK_RAW_IP_URLS: ${BLOCK_RAW_IP_URLS:-true}
       # Branded QR codes (brand colour / centre logo / SVG). Kill-switch, default on.
       ENABLE_QR_BRANDING: ${ENABLE_QR_BRANDING:-true}
       # Burn-after-reading (one-time / self-destruct links). Opt-in, default off.
@@ -105,6 +118,8 @@ services:
       ENABLE_LINK_IN_BIO: ${ENABLE_LINK_IN_BIO:-true}
       # API keys (personal access tokens for the MCP server / API clients). Default on.
       ENABLE_API_KEYS: ${ENABLE_API_KEYS:-true}
+      # Passkeys (WebAuthn enroll/login). Kill-switch, default on.
+      ENABLE_PASSKEYS: ${ENABLE_PASSKEYS:-true}
       # Account settings
       ENABLE_ACCOUNT_DELETION: ${ENABLE_ACCOUNT_DELETION:-false}
       # Days before per-visitor click identifiers are anonymized (0 disables)
@@ -154,7 +169,11 @@ services:
     networks:
       - opn-network
 
-  # Optional: Database admin UI.
+  # Optional: Database admin UI. Off unless you enable the `pgadmin` profile
+  # (`docker compose --profile pgadmin up`, or enable the profile in Portainer).
+  # Interpolation of ${PGADMIN_PASSWORD:?} is evaluated for every service when
+  # Compose parses the file, so a required-password check here aborted the
+  # whole stack even when pgAdmin was not wanted.
   # SECURITY: this is a full Postgres admin console. If exposed (e.g. tunneled to
   # db.opn.onl) it must require login — SERVER_MODE=True forces the login screen,
   # MASTER_PASSWORD_REQUIRED=True protects saved server credentials. Prefer gating
@@ -162,10 +181,11 @@ services:
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: opn_onl_pgadmin
+    profiles: ["pgadmin"]
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@opn.onl}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?PGADMIN_PASSWORD must be set to run pgAdmin}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-}
       PGADMIN_CONFIG_SERVER_MODE: "True"
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "True"
     volumes:
