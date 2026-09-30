@@ -93,10 +93,18 @@ async fn tag_list_counts_live_links_per_tag_including_orphans() {
         .await;
     assert_eq!(del.status_code(), 200, "delete: {}", del.text());
 
-    let listed: Value = server.get("/tags").authorization_bearer(&token).await.json();
+    let listed: Value = server
+        .get("/tags")
+        .authorization_bearer(&token)
+        .await
+        .json();
     assert_eq!(count_for(&listed, shared), 2, "got {listed}");
     assert_eq!(count_for(&listed, solo), 1, "got {listed}");
-    assert_eq!(count_for(&listed, orphan), 0, "orphan must stay at 0, got {listed}");
+    assert_eq!(
+        count_for(&listed, orphan),
+        0,
+        "orphan must stay at 0, got {listed}"
+    );
 }
 
 #[tokio::test]
@@ -124,7 +132,11 @@ async fn attach_tags_inserts_only_new_in_scope_ids() {
         "only the new in-scope tag is added, got {body}"
     );
 
-    let listed: Value = server.get("/links").authorization_bearer(&token).await.json();
+    let listed: Value = server
+        .get("/links")
+        .authorization_bearer(&token)
+        .await
+        .json();
     let tags = listed.as_array().unwrap()[0]["tags"].as_array().unwrap();
     let mut ids: Vec<i64> = tags.iter().map(|t| t["id"].as_i64().unwrap()).collect();
     ids.sort();

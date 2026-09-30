@@ -62,9 +62,17 @@ async fn public_bio_omits_per_link_click_counts() {
             "bio_visible": true,
         }))
         .await;
-    assert_eq!(created.status_code(), 201, "create link: {}", created.text());
+    assert_eq!(
+        created.status_code(),
+        201,
+        "create link: {}",
+        created.text()
+    );
     let link_id = created.json::<Value>()["id"].as_i64().unwrap() as i32;
-    let code = created.json::<Value>()["code"].as_str().unwrap().to_string();
+    let code = created.json::<Value>()["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Some create paths ignore bio_visible; force it on the stored row either way.
     let make_visible = server

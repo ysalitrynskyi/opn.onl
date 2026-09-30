@@ -108,7 +108,13 @@ async fn force_https_falls_back_to_request_host_when_no_public_url() {
         .add_header(HOST, "selfhost.example:3000")
         .await;
 
-    assert_eq!(res.status_code(), 308, "got {}: {}", res.status_code(), res.text());
+    assert_eq!(
+        res.status_code(),
+        308,
+        "got {}: {}",
+        res.status_code(),
+        res.text()
+    );
     let location = res
         .headers()
         .get(LOCATION)

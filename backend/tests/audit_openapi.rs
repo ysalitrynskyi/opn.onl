@@ -237,7 +237,9 @@ fn operations_from_openapi(spec: &Value) -> BTreeSet<(String, String)> {
         return ops;
     };
     for (path, item) in paths {
-        let Some(item) = item.as_object() else { continue };
+        let Some(item) = item.as_object() else {
+            continue;
+        };
         for method in ["get", "post", "put", "delete", "patch"] {
             if item.get(method).is_some() {
                 ops.insert((method.to_ascii_uppercase(), path.clone()));
@@ -338,7 +340,9 @@ async fn openapi_schema_refs_resolve() {
 
     let mut empty = Vec::new();
     for (name, schema) in schemas {
-        let Some(obj) = schema.as_object() else { continue };
+        let Some(obj) = schema.as_object() else {
+            continue;
+        };
         let is_object = obj.get("type").and_then(|t| t.as_str()) == Some("object");
         let no_props = obj
             .get("properties")

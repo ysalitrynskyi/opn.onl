@@ -145,7 +145,11 @@ async fn dashboard_aggregates_window_geo_and_browser_without_loading_every_row()
     assert_eq!(country_count(&body, "DE"), 1);
     assert_eq!(country_count(&body, "US"), 1);
     assert_eq!(country_count(&body, "Unknown"), 1);
-    assert_eq!(country_count(&body, "FR"), 0, "40-day-old click must drop out");
+    assert_eq!(
+        country_count(&body, "FR"),
+        0,
+        "40-day-old click must drop out"
+    );
 
     assert_eq!(browser_count(&body, "Firefox"), 1);
     assert_eq!(browser_count(&body, "Chrome"), 1);

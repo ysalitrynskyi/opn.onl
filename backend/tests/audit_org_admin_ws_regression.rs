@@ -5,7 +5,8 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{
-    api_keys, click_events, folders, link_tags, links, org_members, organizations, passkeys, tags, users,
+    api_keys, click_events, folders, link_tags, links, org_members, organizations, passkeys, tags,
+    users,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -727,7 +728,12 @@ async fn org_link_count_excludes_soft_deleted_links() {
         .delete(&format!("/links/{deleted_id}"))
         .authorization_bearer(&owner_token)
         .await;
-    assert_eq!(del.status_code(), 200, "soft-delete org link: {}", del.text());
+    assert_eq!(
+        del.status_code(),
+        200,
+        "soft-delete org link: {}",
+        del.text()
+    );
 
     let list: Value = server
         .get("/orgs")
@@ -837,7 +843,12 @@ async fn invite_member_rejects_deleted_or_disabled_users() {
         .delete(&format!("/admin/users/{deleted_id}"))
         .authorization_bearer(&admin_token)
         .await;
-    assert_eq!(res.status_code(), 200, "soft-delete invitee: {}", res.text());
+    assert_eq!(
+        res.status_code(),
+        200,
+        "soft-delete invitee: {}",
+        res.text()
+    );
 
     let res = server
         .post(&format!("/orgs/{org_id}/members"))
@@ -953,10 +964,7 @@ async fn create_organization_duplicate_slug_returns_409() {
         .await;
     assert_eq!(res.status_code(), 201, "first create: {}", res.text());
 
-    let listed = server
-        .get("/orgs")
-        .authorization_bearer(&token_a)
-        .await;
+    let listed = server.get("/orgs").authorization_bearer(&token_a).await;
     assert_eq!(listed.status_code(), 200);
     assert_eq!(
         listed.json::<Value>().as_array().unwrap().len(),
@@ -980,10 +988,7 @@ async fn create_organization_duplicate_slug_returns_409() {
         Some("Slug already exists")
     );
 
-    let listed_b = server
-        .get("/orgs")
-        .authorization_bearer(&token_b)
-        .await;
+    let listed_b = server.get("/orgs").authorization_bearer(&token_b).await;
     assert_eq!(listed_b.status_code(), 200);
     assert!(
         listed_b.json::<Value>().as_array().unwrap().is_empty(),
@@ -1059,7 +1064,12 @@ async fn deleted_members_are_omitted_and_do_not_block_owner_deletion() {
         .get(&format!("/orgs/{org_id}/members"))
         .authorization_bearer(&owner_token)
         .await;
-    assert_eq!(members.status_code(), 200, "list members: {}", members.text());
+    assert_eq!(
+        members.status_code(),
+        200,
+        "list members: {}",
+        members.text()
+    );
     let member_ids: Vec<i32> = members
         .json::<Value>()
         .as_array()

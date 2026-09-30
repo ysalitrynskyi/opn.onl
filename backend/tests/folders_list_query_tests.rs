@@ -138,7 +138,8 @@ async fn folder_links_return_each_link_with_exactly_its_tags() {
     let folder_id = folder.json::<Value>()["id"].as_i64().unwrap() as i32;
 
     let tagged = insert_link_in_folder(&db, user_id, folder_id, "https://iana.org/tagged").await;
-    let untagged = insert_link_in_folder(&db, user_id, folder_id, "https://iana.org/untagged").await;
+    let untagged =
+        insert_link_in_folder(&db, user_id, folder_id, "https://iana.org/untagged").await;
     let gone = insert_link_in_folder(&db, user_id, folder_id, "https://iana.org/gone").await;
     let outside = insert_link(&db, user_id, "https://iana.org/outside").await;
 

@@ -640,7 +640,10 @@ async fn verification_and_reset_tokens_are_stored_hashed() {
     active.verification_token_expires = Set(Some(
         (chrono::Utc::now() + chrono::Duration::hours(24)).naive_utc(),
     ));
-    active.update(&db).await.expect("seed hashed verification token");
+    active
+        .update(&db)
+        .await
+        .expect("seed hashed verification token");
 
     let stored_hash = users::Entity::find_by_id(user_id)
         .one(&db)
@@ -664,7 +667,12 @@ async fn verification_and_reset_tokens_are_stored_hashed() {
         .post("/auth/verify-email")
         .json(&json!({ "token": raw_verify }))
         .await;
-    assert_eq!(ok.status_code(), 200, "raw token must verify: {}", ok.text());
+    assert_eq!(
+        ok.status_code(),
+        200,
+        "raw token must verify: {}",
+        ok.text()
+    );
     let verified = users::Entity::find_by_id(user_id)
         .one(&db)
         .await
