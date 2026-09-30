@@ -34,7 +34,7 @@ function rows(page: Page): Locator {
 }
 
 function searchBox(page: Page): Locator {
-    return page.getByPlaceholder('Search links, notes, tags...');
+    return page.getByRole('searchbox', { name: 'Search links' });
 }
 
 async function openDashboard(page: Page, user: TestUser): Promise<void> {

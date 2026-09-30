@@ -922,7 +922,8 @@ export default function Dashboard() {
                     <div className="relative flex-1">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-faint" />
                         <input
-                            type="text"
+                            type="search"
+                            aria-label="Search links"
                             placeholder="Search links, titles, notes, tags..."
                             className="w-full rounded-lg border border-line2 bg-surface pl-10 pr-4 py-2.5 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                             value={searchQuery}

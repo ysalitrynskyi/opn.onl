@@ -286,7 +286,7 @@ test.describe('Dashboard Page', () => {
 
         await signIn(page, owner);
         await openDashboard(page);
-        const search = page.getByPlaceholder('Search links, notes, tags...');
+        const search = page.getByRole('searchbox', { name: 'Search links' });
         await search.fill(`alpha${tag}`);
         await expect(page.getByRole('link', { name: shortText(alpha.code), exact: true })).toBeVisible();
         await expect(page.getByRole('link', { name: shortText(bravo.code), exact: true })).toHaveCount(0);
@@ -309,7 +309,7 @@ test.describe('Dashboard Page', () => {
 
         await signIn(page, owner);
         await openDashboard(page);
-        const search = page.getByPlaceholder('Search links, notes, tags...');
+        const search = page.getByRole('searchbox', { name: 'Search links' });
         await search.fill(`alpha${tag}`);
         await expect(page.getByRole('link', { name: shortText(bravo.code), exact: true })).toHaveCount(0);
 
