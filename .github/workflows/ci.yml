@@ -9,12 +9,7 @@ on:
       - main
       - release
       - security-audit-fixes
-  # Full Playwright suite is too slow/stale to gate every PR. The e2e-full job
-  # runs on demand and once a week; the e2e job on every PR is the chromium
-  # subset documented in frontend/e2e/README.md.
   workflow_dispatch:
-  schedule:
-    - cron: '17 6 * * 1'
 
 # Cancel in-progress runs on the same ref
 concurrency:
@@ -200,9 +195,9 @@ jobs:
           ! grep -R "fonts.googleapis.com" frontend/src
 
   e2e:
-    name: E2E (Playwright gate)
+    name: E2E (Playwright, Chromium)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:15-alpine
@@ -225,6 +220,9 @@ jobs:
       FRONTEND_URL: http://localhost:5173
       BASE_URL: http://localhost:3000
       HOST: 0.0.0.0
+      # e2e/support/api.ts gives each fixture request its own CF-Connecting-IP
+      # so account setup never spends the auth rate-limit bucket under test.
+      TRUST_PROXY_HEADERS: 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -282,108 +280,13 @@ jobs:
 
       - name: Run Playwright gate
         working-directory: frontend
-        run: npm run test:e2e:gate
+        run: npm run test:e2e:ci
 
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report-gate
-          path: |
-            frontend/playwright-report
-            frontend/test-results
-          retention-days: 7
-
-  e2e-full:
-    name: E2E (Playwright full suite)
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: opn_onl_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/opn_onl_test
-      JWT_SECRET: ci-test-jwt-secret-please-change-in-production-0123456789
-      RUST_LOG: warn
-      FRONTEND_URL: http://localhost:5173
-      BASE_URL: http://localhost:3000
-      HOST: 0.0.0.0
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: backend
-
-      - name: Build backend
-        working-directory: backend
-        run: cargo build
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install deps
-        working-directory: frontend
-        run: npm ci --legacy-peer-deps
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
-
-      - name: Install Playwright Chromium
-        working-directory: frontend
-        run: npx playwright install --with-deps chromium
-
-      - name: Start backend
-        working-directory: backend
-        # PORT is scoped to this step: Vite also honours PORT, and a job-wide
-        # PORT=3000 sent the dev server to 3001 while Playwright waited on 5173.
-        env:
-          PORT: '3000'
-        run: |
-          nohup ./target/debug/opn_onl_backend > /tmp/opn-backend.log 2>&1 &
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3000/health >/dev/null; then
-              echo "backend is up"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "backend failed to start"
-          cat /tmp/opn-backend.log
-          exit 1
-
-      - name: Run Playwright full suite
-        working-directory: frontend
-        run: npm run test:e2e:full
-
-      - name: Upload Playwright report
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report-full
           path: |
             frontend/playwright-report
             frontend/test-results

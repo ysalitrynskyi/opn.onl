@@ -1,432 +1,171 @@
-import { test, expect, Page } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { adminToken, api, clientIpHeader, createLink, createUser, signIn, type TestUser } from './support/api';
 
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5173';
+/**
+ * Organizations as the product shows them.
+ *
+ * The SPA has no organization management screens: organizations, members
+ * (owner / admin / editor / viewer) and ownership transfers are driven through
+ * the API (/orgs/*). Where organizations do surface in the browser is the admin
+ * panel: the Organizations tab, the "org" marker on links, the Orgs column on
+ * users, and the refusal to delete a user who still owns an organization with
+ * other members. These tests build the organizations through the real API with
+ * real roles and check what the admin panel makes of them.
+ */
 
-async function mockApiResponse(page: Page, url: string, response: any, status = 200) {
-    await page.route(url, async route => {
-        await route.fulfill({
-            status,
-            contentType: 'application/json',
-            body: JSON.stringify(response),
-        });
-    });
+// The backend trusts CF-Connecting-IP in e2e (TRUST_PROXY_HEADERS=true). Give
+// every page its own client address so this file's browser traffic does not
+// spend 127.0.0.1's per-IP buckets that the rest of the suite shares.
+test.beforeEach(async ({ page }) => {
+    await page.setExtraHTTPHeaders(clientIpHeader());
+});
+
+interface Org {
+    id: number;
+    name: string;
+    slug: string;
+    owner_id: number;
 }
 
-// ============= Organizations Tests =============
+async function createOrg(request: APIRequestContext, owner: TestUser): Promise<Org> {
+    const suffix = randomUUID().slice(0, 8);
+    const res = await api(request, 'post', '/orgs', owner.token, { name: `Acme ${suffix}`, slug: `acme-${suffix}` });
+    expect(res.status(), await res.text()).toBe(201);
+    return res.json();
+}
 
-test.describe('Organizations', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.addInitScript(() => {
-            localStorage.setItem('token', 'mock-jwt-token');
-        });
+async function addMember(
+    request: APIRequestContext,
+    org: Org,
+    by: TestUser,
+    member: TestUser,
+    role: 'admin' | 'editor' | 'viewer',
+): Promise<void> {
+    const res = await api(request, 'post', `/orgs/${org.id}/members`, by.token, { email: member.email, role });
+    expect(res.status(), await res.text()).toBe(201);
+    expect((await res.json()).role).toBe(role);
+}
 
-        // Mock organizations API
-        await mockApiResponse(page, '**/orgs', [
-            {
-                id: 1,
-                name: 'Acme Corp',
-                slug: 'acme-corp',
-                owner_id: 1,
-                created_at: '2024-01-15T10:00:00Z',
-                member_count: 5,
-                link_count: 50,
-            },
-            {
-                id: 2,
-                name: 'Test Organization',
-                slug: 'test-org',
-                owner_id: 1,
-                created_at: '2024-01-10T10:00:00Z',
-                member_count: 3,
-                link_count: 25,
-            },
+type AdminTab = 'Users' | 'Links' | 'Organizations';
+
+async function switchAdminTab(page: Page, tab: AdminTab): Promise<void> {
+    await page.getByRole('button', { name: tab, exact: true }).click();
+}
+
+/** Open the admin panel as the suite's admin (see global-setup) on `tab`. */
+async function openAdminTab(page: Page, tab: AdminTab): Promise<void> {
+    await signIn(page, { token: adminToken(), isAdmin: true });
+    await page.goto('/admin');
+    await expect(page.getByRole('heading', { name: 'Admin Dashboard' })).toBeVisible({ timeout: 15_000 });
+    await switchAdminTab(page, tab);
+}
+
+/** The cell of `row` under the column headed `column` (headers are shown upper-cased by CSS). */
+async function cell(page: Page, row: Locator, column: string): Promise<Locator> {
+    await expect(row).toHaveCount(1);
+    const headers = await page.getByRole('columnheader').allTextContents();
+    const index = headers.findIndex((h) => h.trim().toLowerCase() === column.toLowerCase());
+    expect(index, `column "${column}" in ${JSON.stringify(headers)}`).toBeGreaterThanOrEqual(0);
+    return row.getByRole('cell').nth(index);
+}
+
+test.describe('Organizations in the admin panel', () => {
+    test('an organization is listed with its owner, members and links until it is deleted', async ({ page, request }) => {
+        const [owner, orgAdmin, editor, viewer] = await Promise.all([
+            createUser(request),
+            createUser(request),
+            createUser(request),
+            createUser(request),
         ]);
-    });
-
-    test('should display organizations list', async ({ page }) => {
-        await page.goto(`${BASE_URL}/settings`);
-        
-        // Look for organizations section
-        const orgsSection = page.locator('text=Acme Corp, text=Organizations, [data-testid="organizations"]');
-        if (await orgsSection.first().isVisible()) {
-            await expect(orgsSection.first()).toBeVisible();
-        }
-    });
-
-    test('should create a new organization', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs', {
-            id: 3,
-            name: 'New Organization',
-            slug: 'new-org',
-            owner_id: 1,
-            created_at: new Date().toISOString(),
-            member_count: 1,
-            link_count: 0,
+        const org = await createOrg(request, owner);
+        await addMember(request, org, owner, orgAdmin, 'admin');
+        await addMember(request, org, orgAdmin, editor, 'editor'); // org admins can invite too
+        await addMember(request, org, owner, viewer, 'viewer');
+        // Editors may create organization links.
+        const orgLink = await createLink(request, editor.token, {
+            original_url: 'https://www.iana.org/domains',
+            org_id: org.id,
         });
+        expect(orgLink.org_id).toBe(org.id);
 
-        await page.goto(`${BASE_URL}/settings`);
-        
-        // Look for create organization button
-        const createOrgButton = page.locator('button:has-text("Create Organization"), button:has-text("New Organization")');
-        if (await createOrgButton.isVisible()) {
-            await createOrgButton.click();
-            
-            // Fill organization form
-            const nameInput = page.locator('input[name="org-name"], input[placeholder*="Organization"]');
-            if (await nameInput.isVisible()) {
-                await nameInput.fill('New Organization');
-                await page.locator('button:has-text("Create"), button:has-text("Save")').first().click();
-            }
-        }
+        await openAdminTab(page, 'Organizations');
+        await page.getByPlaceholder('Search name or slug…').fill(org.slug);
+        const row = page.getByRole('row').filter({ hasText: org.slug });
+        await expect(row).toHaveCount(1);
+        await expect(page.getByText('1 organization', { exact: true })).toBeVisible();
+        const name = await cell(page, row, 'Name');
+        await expect(name.getByText(org.name, { exact: true })).toBeVisible();
+        await expect(name.getByText(org.slug, { exact: true })).toBeVisible();
+        await expect(await cell(page, row, 'Owner')).toHaveText(owner.email);
+        await expect(await cell(page, row, 'Members')).toHaveText('4');
+        await expect(await cell(page, row, 'Links')).toHaveText('1');
+
+        // In the Links tab the link is listed under its creator and marked as an organization link.
+        await switchAdminTab(page, 'Links');
+        await page.getByPlaceholder('Search code, URL, title, or owner email…').fill(orgLink.code);
+        const linkRow = page.getByRole('row').filter({ hasText: `/${orgLink.code}` });
+        await expect(linkRow).toHaveCount(1);
+        const linkOwner = await cell(page, linkRow, 'Owner');
+        await expect(linkOwner).toContainText(editor.email);
+        await expect(linkOwner.getByText('org', { exact: true })).toBeVisible();
+
+        const deleted = await api(request, 'delete', `/orgs/${org.id}`, owner.token);
+        expect(deleted.status()).toBe(204);
+        await page.reload();
+        await expect(page.getByRole('heading', { name: 'Admin Dashboard' })).toBeVisible({ timeout: 15_000 });
+        await switchAdminTab(page, 'Organizations');
+        await page.getByPlaceholder('Search name or slug…').fill(org.slug);
+        await expect(page.getByText('No organizations found.')).toBeVisible();
+        await expect(page.getByText('0 organizations', { exact: true })).toBeVisible();
+    });
+
+    test('an owner cannot be deleted while the organization has other members, until ownership is transferred', async ({ page, request }) => {
+        const [owner, member] = await Promise.all([createUser(request), createUser(request)]);
+        const org = await createOrg(request, owner);
+        await addMember(request, org, owner, member, 'admin');
+        page.on('dialog', (dialog) => void dialog.accept()); // the panel confirms deletes
+
+        await openAdminTab(page, 'Users');
+        await page.getByPlaceholder('Search email, name, or bio username…').fill(owner.email);
+        const ownerRow = page.getByRole('row').filter({ hasText: owner.email });
+        await expect(ownerRow).toHaveCount(1);
+        await expect(await cell(page, ownerRow, 'Orgs')).toHaveText('1');
+
+        await ownerRow.getByRole('button', { name: 'Delete', exact: true }).click();
+        await expect(
+            page.getByText(
+                `User ${owner.userId} still owns organizations with other members: ${org.slug}. ` +
+                    'Transfer ownership or delete them first.',
+            ),
+        ).toBeVisible();
+        await expect(ownerRow.getByText('Deleted', { exact: true })).toHaveCount(0);
+
+        // The owner hands the organization to the member; the old owner stays on as an admin.
+        const transfer = await api(request, 'post', `/orgs/${org.id}/transfer-ownership`, owner.token, {
+            new_owner_user_id: member.userId,
+        });
+        expect(transfer.status(), await transfer.text()).toBe(200);
+        expect((await transfer.json()).owner_id).toBe(member.userId);
+        const members = await (await api(request, 'get', `/orgs/${org.id}/members`, member.token)).json();
+        expect(members.map((m: { user_id: number; role: string }) => [m.user_id, m.role]).sort()).toEqual(
+            [
+                [owner.userId, 'admin'],
+                [member.userId, 'owner'],
+            ].sort(),
+        );
+
+        await switchAdminTab(page, 'Organizations');
+        await page.getByPlaceholder('Search name or slug…').fill(org.slug);
+        const orgRow = page.getByRole('row').filter({ hasText: org.slug });
+        await expect(await cell(page, orgRow, 'Owner')).toHaveText(member.email);
+        await expect(await cell(page, orgRow, 'Members')).toHaveText('2');
+
+        await switchAdminTab(page, 'Users');
+        await expect(ownerRow).toHaveCount(1);
+        await expect(await cell(page, ownerRow, 'Orgs')).toHaveText('0');
+        await ownerRow.getByRole('button', { name: 'Delete', exact: true }).click();
+        await expect(page.getByText(`User ${owner.userId} soft deleted`)).toBeVisible();
+        await expect(ownerRow.getByText('Deleted', { exact: true })).toBeVisible();
     });
 });
-
-// ============= Organization Members Tests =============
-
-test.describe('Organization Members', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.addInitScript(() => {
-            localStorage.setItem('token', 'mock-jwt-token');
-        });
-
-        // Mock organization
-        await mockApiResponse(page, '**/orgs/1', {
-            id: 1,
-            name: 'Acme Corp',
-            slug: 'acme-corp',
-            owner_id: 1,
-            created_at: '2024-01-15T10:00:00Z',
-            member_count: 3,
-            link_count: 50,
-        });
-
-        // Mock members
-        await mockApiResponse(page, '**/orgs/1/members', [
-            {
-                id: 1,
-                user_id: 1,
-                email: 'owner@example.com',
-                role: 'owner',
-                joined_at: '2024-01-15T10:00:00Z',
-            },
-            {
-                id: 2,
-                user_id: 2,
-                email: 'admin@example.com',
-                role: 'admin',
-                joined_at: '2024-01-16T10:00:00Z',
-            },
-            {
-                id: 3,
-                user_id: 3,
-                email: 'member@example.com',
-                role: 'member',
-                joined_at: '2024-01-17T10:00:00Z',
-            },
-        ]);
-    });
-
-    test('should display organization members', async ({ page }) => {
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for members list
-        const membersList = page.locator('text=owner@example.com, text=Members, [data-testid="members"]');
-        if (await membersList.first().isVisible()) {
-            await expect(membersList.first()).toBeVisible();
-        }
-    });
-
-    test('should show member roles', async ({ page }) => {
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for role badges
-        const roleBadge = page.locator('text=owner, text=admin, text=member');
-        if (await roleBadge.first().isVisible()) {
-            await expect(roleBadge.first()).toBeVisible();
-        }
-    });
-
-    test('should invite new member', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs/1/members', {
-            id: 4,
-            user_id: 4,
-            email: 'new@example.com',
-            role: 'member',
-            joined_at: new Date().toISOString(),
-        });
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for invite button
-        const inviteButton = page.locator('button:has-text("Invite"), button:has-text("Add Member")');
-        if (await inviteButton.isVisible()) {
-            await inviteButton.click();
-            
-            // Fill invite form
-            const emailInput = page.locator('input[type="email"], input[placeholder*="email"]');
-            if (await emailInput.isVisible()) {
-                await emailInput.fill('new@example.com');
-                await page.locator('button:has-text("Send"), button:has-text("Invite")').first().click();
-            }
-        }
-    });
-
-    test('should change member role', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs/1/members/3', {
-            id: 3,
-            user_id: 3,
-            email: 'member@example.com',
-            role: 'admin',
-            joined_at: '2024-01-17T10:00:00Z',
-        });
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for role dropdown or edit button
-        const roleSelect = page.locator('select[name*="role"], [data-testid="role-select"]');
-        if (await roleSelect.first().isVisible()) {
-            await roleSelect.first().selectOption({ value: 'admin' });
-        }
-    });
-
-    test('should remove member', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs/1/members/3', { message: 'Removed' });
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for remove button
-        const removeButton = page.locator('button:has-text("Remove"), button[aria-label*="remove"]').first();
-        if (await removeButton.isVisible()) {
-            await removeButton.click();
-        }
-    });
-});
-
-// ============= Organization Audit Log Tests =============
-
-test.describe('Organization Audit Log', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.addInitScript(() => {
-            localStorage.setItem('token', 'mock-jwt-token');
-        });
-
-        // Mock audit log
-        await mockApiResponse(page, '**/orgs/1/audit', {
-            audit_logs: [
-                {
-                    id: 1,
-                    user_id: 1,
-                    user_email: 'owner@example.com',
-                    action: 'link_created',
-                    resource_type: 'link',
-                    resource_id: 1,
-                    details: { code: 'abc123' },
-                    ip_address: '192.168.1.1',
-                    created_at: '2024-01-15T10:00:00Z',
-                },
-                {
-                    id: 2,
-                    user_id: 2,
-                    user_email: 'admin@example.com',
-                    action: 'member_added',
-                    resource_type: 'organization',
-                    resource_id: 1,
-                    details: { email: 'new@example.com' },
-                    ip_address: '192.168.1.2',
-                    created_at: '2024-01-16T10:00:00Z',
-                },
-            ],
-            total: 2,
-            page: 1,
-            per_page: 20,
-        });
-    });
-
-    test('should display audit log entries', async ({ page }) => {
-        await page.goto(`${BASE_URL}/settings/organizations/1/audit`);
-        
-        // Look for audit log entries
-        const auditEntry = page.locator('text=link_created, text=member_added, [data-testid="audit-log"]');
-        if (await auditEntry.first().isVisible()) {
-            await expect(auditEntry.first()).toBeVisible();
-        }
-    });
-
-    test('should show action details', async ({ page }) => {
-        await page.goto(`${BASE_URL}/settings/organizations/1/audit`);
-        
-        // Look for action details
-        const actionDetails = page.locator('text=abc123, text=owner@example.com');
-        if (await actionDetails.first().isVisible()) {
-            await expect(actionDetails.first()).toBeVisible();
-        }
-    });
-
-    test('should filter audit log by action', async ({ page }) => {
-        await page.goto(`${BASE_URL}/settings/organizations/1/audit`);
-        
-        // Look for filter dropdown
-        const actionFilter = page.locator('select[name*="action"], [data-testid="action-filter"]');
-        if (await actionFilter.isVisible()) {
-            await actionFilter.selectOption({ label: 'Link Created' });
-        }
-    });
-});
-
-// ============= Organization Settings Tests =============
-
-test.describe('Organization Settings', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.addInitScript(() => {
-            localStorage.setItem('token', 'mock-jwt-token');
-        });
-
-        await mockApiResponse(page, '**/orgs/1', {
-            id: 1,
-            name: 'Acme Corp',
-            slug: 'acme-corp',
-            owner_id: 1,
-            created_at: '2024-01-15T10:00:00Z',
-            member_count: 5,
-            link_count: 50,
-        });
-    });
-
-    test('should update organization name', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs/1', {
-            id: 1,
-            name: 'Updated Corp',
-            slug: 'updated-corp',
-            owner_id: 1,
-            created_at: '2024-01-15T10:00:00Z',
-            member_count: 5,
-            link_count: 50,
-        });
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for edit name input
-        const nameInput = page.locator('input[name="org-name"], input[value="Acme Corp"]');
-        if (await nameInput.isVisible()) {
-            await nameInput.clear();
-            await nameInput.fill('Updated Corp');
-            await page.locator('button:has-text("Save"), button:has-text("Update")').first().click();
-        }
-    });
-
-    test('should delete organization', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs/1', { message: 'Deleted' });
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for delete button
-        const deleteButton = page.locator('button:has-text("Delete Organization"), button:has-text("Delete Org")');
-        if (await deleteButton.isVisible()) {
-            await deleteButton.click();
-            
-            // Confirm deletion
-            const confirmButton = page.locator('button:has-text("Confirm"), button:has-text("Yes")');
-            if (await confirmButton.isVisible()) {
-                await confirmButton.click();
-            }
-        }
-    });
-
-    test('should transfer ownership', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs/1/transfer', { message: 'Transferred' });
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Look for transfer ownership option
-        const transferButton = page.locator('button:has-text("Transfer"), text=Transfer Ownership');
-        if (await transferButton.first().isVisible()) {
-            await transferButton.first().click();
-            
-            // Select new owner
-            const ownerSelect = page.locator('select[name*="owner"], [data-testid="owner-select"]');
-            if (await ownerSelect.isVisible()) {
-                await ownerSelect.selectOption({ index: 1 });
-            }
-        }
-    });
-});
-
-// ============= Organization Permissions Tests =============
-
-test.describe('Organization Permissions', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.addInitScript(() => {
-            localStorage.setItem('token', 'mock-jwt-token');
-        });
-    });
-
-    test('should prevent non-admin from accessing admin features', async ({ page }) => {
-        // Mock as regular member
-        await mockApiResponse(page, '**/orgs/1', {
-            id: 1,
-            name: 'Acme Corp',
-            slug: 'acme-corp',
-            owner_id: 99,  // Different owner
-            created_at: '2024-01-15T10:00:00Z',
-            member_count: 5,
-            link_count: 50,
-        });
-
-        await mockApiResponse(page, '**/orgs/1/members', [
-            {
-                id: 1,
-                user_id: 1,
-                email: 'member@example.com',
-                role: 'member',  // Regular member, not admin
-                joined_at: '2024-01-17T10:00:00Z',
-            },
-        ]);
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Admin features should be hidden or disabled
-        const adminButton = page.locator('button:has-text("Delete Organization"), button:has-text("Invite")');
-        if (await adminButton.isVisible()) {
-            // Should be disabled for regular members
-            const isDisabled = await adminButton.isDisabled();
-            if (isDisabled) {
-                expect(isDisabled).toBeTruthy();
-            }
-        }
-    });
-
-    test('should show admin features for organization owner', async ({ page }) => {
-        await mockApiResponse(page, '**/orgs/1', {
-            id: 1,
-            name: 'Acme Corp',
-            slug: 'acme-corp',
-            owner_id: 1,  // Current user is owner
-            created_at: '2024-01-15T10:00:00Z',
-            member_count: 5,
-            link_count: 50,
-        });
-
-        await mockApiResponse(page, '**/orgs/1/members', [
-            {
-                id: 1,
-                user_id: 1,
-                email: 'owner@example.com',
-                role: 'owner',
-                joined_at: '2024-01-15T10:00:00Z',
-            },
-        ]);
-
-        await page.goto(`${BASE_URL}/settings/organizations/1`);
-        
-        // Admin features should be visible and enabled for owner
-        const adminButton = page.locator('button:has-text("Delete Organization"), button:has-text("Settings")');
-        if (await adminButton.first().isVisible()) {
-            await expect(adminButton.first()).toBeEnabled();
-        }
-    });
-});
-
-
-
-
-
