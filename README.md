@@ -153,7 +153,7 @@ docker-compose logs -f
 
 ```bash
 curl https://api.opn.onl/health
-# {"status":"healthy","database":"connected","redis":"connected",...}
+# {"status":"healthy","version":"1.4.0","database":"connected","redis":"connected",...}
 ```
 
 ### Option 2: Portainer (Pre-built Images)
@@ -207,8 +207,9 @@ the frontend yourself (`docker compose up -d --build` from Option 1, or
 | `SMTP_FROM_NAME` | opn.onl | From display name |
 | `ADMIN_EMAIL` | admin@opn.onl | Admin email for contact form |
 
-Without SMTP, verification and password-reset emails are not sent, and the contact form answers
-`503` ("not delivered") instead of accepting a message it has nowhere to send.
+Without SMTP, verification, password-reset and password-changed emails are not sent, and the
+contact form answers `503` ("not delivered") instead of accepting a message it has nowhere to send.
+Every email carries a plain-text part alongside the HTML.
 
 ### Link Management
 
@@ -281,7 +282,10 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 
 Full API documentation available at `/swagger-ui/` when backend is running.
 
-Timestamps in responses are RFC 3339 in UTC, for example `2026-11-15T04:59:00Z`.
+Timestamps in responses are RFC 3339 in UTC, for example `2026-11-15T04:59:00Z`. Errors are JSON,
+`{"error": "..."}`, on every endpoint except the short-link redirect itself: `GET /{code}` answers a
+missing or dead link with a small HTML page when the client accepts `text/html`, and with the plain
+reason otherwise.
 
 ### Authentication
 
@@ -414,7 +418,7 @@ the organization is deleted — one person leaving can't wipe a shared team.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
+| GET | `/health` | Health check, including the running `version` |
 | POST | `/contact` | Contact form |
 | GET | `/analytics/dashboard` | User analytics dashboard |
 
@@ -557,7 +561,9 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
 - JWT tokens with expiration
 - Soft-delete for links and users (data preserved)
 - Email verification required before creating links
-- HTTPS enforced in production
+- The account owner is emailed when their password is changed or reset
+- HTTPS enforced in production; the API sends `X-Content-Type-Options`, `X-Frame-Options`, and HSTS
+  behind an HTTPS proxy
 - URL sanitization and blocking
 - Visitor IPs truncated before storage (IPv4 /24, IPv6 /48); remaining
   click identifiers anonymized after a configurable retention window
