@@ -10,7 +10,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::org_members;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection};
 use serde_json::{json, Value};
 
 async fn register_verified(
