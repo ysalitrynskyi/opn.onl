@@ -13,6 +13,7 @@ import {
     Tooltip as ChartTooltip, CartesianGrid, Legend,
 } from 'recharts';
 import { API_ENDPOINTS, authFetch, shortLinkBase } from '../config/api';
+import SEO from '../components/SEO';
 import { safeLocalStorage } from '../utils/storage';
 import { pluralize } from '../utils/plural';
 
@@ -585,6 +586,7 @@ export default function Admin() {
     if (loading) {
         return (
             <div className="flex items-center justify-center min-h-[60vh]">
+                <SEO title="Admin" noIndex />
                 <RefreshCw className="h-8 w-8 animate-spin text-primary-600" />
             </div>
         );
@@ -600,6 +602,7 @@ export default function Admin() {
 
     return (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <SEO title="Admin" noIndex />
             {/* Header */}
             <motion.div
                 initial={{ opacity: 0, y: -20 }}

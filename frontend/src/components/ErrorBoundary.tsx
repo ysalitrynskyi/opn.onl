@@ -47,6 +47,9 @@ class ErrorBoundary extends Component<Props, State> {
 
       return (
         <div className="flex min-h-screen items-center justify-center bg-paper p-4">
+          {/* React hoists these into <head>; the failed page's own tags are gone. */}
+          <title>Something went wrong - opn.onl</title>
+          <meta name="robots" content="noindex, nofollow" />
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}

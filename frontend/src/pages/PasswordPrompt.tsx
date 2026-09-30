@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Lock, Loader2, ArrowRight, ShieldAlert } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
+import SEO from '../components/SEO';
 import logger from '../utils/logger';
 
 export default function PasswordPrompt() {
@@ -53,6 +54,7 @@ export default function PasswordPrompt() {
 
     return (
         <div className="min-h-[80vh] flex items-center justify-center px-4">
+            <SEO title="Password required" description="This short link is password protected." noIndex />
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}

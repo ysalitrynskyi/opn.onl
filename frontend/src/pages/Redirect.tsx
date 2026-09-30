@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams, Link as RouterLink } from 'react-router-dom';
 import { ExternalLink, ShieldCheck, ShieldAlert, ShieldQuestion, ArrowRight } from 'lucide-react';
 import { API_ENDPOINTS } from '../config/api';
+import SEO from '../components/SEO';
 
 interface Interstitial {
     domain: string;
@@ -91,6 +92,7 @@ export default function Redirect() {
     if (error) {
         return (
             <div className="min-h-[60vh] flex items-center justify-center">
+                <SEO title="Link unavailable" noIndex />
                 <div className="text-center">
                     <h1 className="text-2xl font-bold text-slate-800 mb-2">Link Unavailable</h1>
                     <p className="text-slate-600">{error}</p>
@@ -120,6 +122,7 @@ export default function Redirect() {
 
         return (
             <div className="min-h-[60vh] flex items-center justify-center px-4 py-12">
+                <SEO title="Before you continue" noIndex />
                 <div className="max-w-lg w-full">
                     <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
                         <div className="bg-gradient-to-r from-primary-600 to-primary-700 px-6 py-5">
@@ -173,6 +176,7 @@ export default function Redirect() {
     if (checking) {
         return (
             <div className="min-h-[60vh] flex items-center justify-center">
+                <SEO title="Redirecting" noIndex />
                 <div className="flex flex-col items-center gap-4">
                     <div className="w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
                     <p className="text-slate-500 text-sm">Redirecting...</p>
