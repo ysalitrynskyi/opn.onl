@@ -4,7 +4,6 @@ use axum::{
     response::{IntoResponse, Redirect},
     Json,
 };
-use bcrypt::{hash, DEFAULT_COST};
 use chrono::{DateTime, Utc};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -1254,7 +1253,7 @@ pub async fn create_link(
     };
 
     let password_hash = if let Some(password) = link_password {
-        match hash(password, DEFAULT_COST) {
+        match crate::utils::jwt::hash_password(password).await {
             Ok(h) => Some(h),
             Err(_) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash password")
@@ -3541,7 +3540,7 @@ pub async fn update_link(
                 )
                     .into_response();
             }
-            match hash(password, DEFAULT_COST) {
+            match crate::utils::jwt::hash_password(&password).await {
                 Ok(h) => active_link.password_hash = Set(Some(h)),
                 Err(_) => {
                     return (

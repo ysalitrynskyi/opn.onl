@@ -226,7 +226,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut active: users::ActiveModel = user.into();
-        active.password_hash = Set(opn_onl_backend::utils::jwt::hash_password(&long).unwrap());
+        active.password_hash = Set(opn_onl_backend::utils::jwt::hash_password(&long)
+            .await
+            .unwrap());
         active.update(&db).await.unwrap();
         let login = server
             .post("/auth/login")

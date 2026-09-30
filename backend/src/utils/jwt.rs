@@ -22,12 +22,26 @@ pub struct Claims {
     pub token_version: i32,
 }
 
-pub fn hash_password(password: &str) -> Result<String, bcrypt::BcryptError> {
-    hash(password, DEFAULT_COST)
+/// bcrypt at `DEFAULT_COST` is a few hundred milliseconds of CPU by design. On a
+/// Tokio worker that stalls every other request scheduled there, redirects
+/// included, so a burst of sign-ins from many addresses could make the whole
+/// service unresponsive. Both helpers run bcrypt on the blocking pool instead.
+pub async fn hash_password(password: &str) -> Result<String, bcrypt::BcryptError> {
+    let password = password.to_owned();
+    run_blocking(move || hash(password, DEFAULT_COST)).await
 }
 
-pub fn verify_password(password: &str, hash: &str) -> Result<bool, bcrypt::BcryptError> {
-    verify(password, hash)
+pub async fn verify_password(password: &str, hash: &str) -> Result<bool, bcrypt::BcryptError> {
+    let (password, hash) = (password.to_owned(), hash.to_owned());
+    run_blocking(move || verify(password, &hash)).await
+}
+
+async fn run_blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(value) => value,
+        // A panic inside bcrypt resurfaces here exactly as it would have inline.
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
+    }
 }
 
 /// bcrypt hashes only the first 72 bytes of its input and ignores the rest,
@@ -195,10 +209,37 @@ mod tests {
         std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");
     }
 
-    #[test]
-    fn password_hash_roundtrips_and_rejects_mismatch() {
-        let hashed = hash_password("p@ss word").unwrap();
-        assert!(verify_password("p@ss word", &hashed).unwrap());
-        assert!(!verify_password("p@ss Word", &hashed).unwrap());
+    /// On a single-threaded runtime, awaiting bcrypt must let other tasks run:
+    /// the hash happens on the blocking pool, not on the thread that serves
+    /// requests. Run inline, neither spawned task would get a turn first.
+    #[tokio::test(flavor = "current_thread")]
+    async fn bcrypt_runs_off_the_async_worker() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let hashed_first = Arc::new(AtomicBool::new(false));
+        let flag = hashed_first.clone();
+        tokio::spawn(async move { flag.store(true, Ordering::SeqCst) });
+        let hashed = hash_password("p@ss word").await.unwrap();
+        assert!(
+            hashed_first.load(Ordering::SeqCst),
+            "hash_password ran bcrypt on the async worker"
+        );
+
+        let verified_first = Arc::new(AtomicBool::new(false));
+        let flag = verified_first.clone();
+        tokio::spawn(async move { flag.store(true, Ordering::SeqCst) });
+        assert!(verify_password("p@ss word", &hashed).await.unwrap());
+        assert!(
+            verified_first.load(Ordering::SeqCst),
+            "verify_password ran bcrypt on the async worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn password_hash_roundtrips_and_rejects_mismatch() {
+        let hashed = hash_password("p@ss word").await.unwrap();
+        assert!(verify_password("p@ss word", &hashed).await.unwrap());
+        assert!(!verify_password("p@ss Word", &hashed).await.unwrap());
     }
 }
