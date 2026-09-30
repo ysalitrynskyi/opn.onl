@@ -52,10 +52,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same version as backend/rust-toolchain.toml and the release image.
+      # @stable floated ahead of the image and let a newer crate pass CI,
+      # then fail the release build.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -226,8 +229,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same version as backend/rust-toolchain.toml and the release image.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy, rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

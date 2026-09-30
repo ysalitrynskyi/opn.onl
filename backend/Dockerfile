@@ -1,10 +1,13 @@
 # Stage 1: Chef - prepare recipe
-FROM rust:1.85-alpine AS chef
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl
-# Pin cargo-chef and use its locked deps. Newer cargo-chef releases pull in
-# transitive crates whose MSRV exceeds this base image's Rust, which breaks
-# `cargo install cargo-chef` (compile error). Pinning keeps the build reproducible.
-RUN cargo install cargo-chef --version 0.1.71 --locked
+# Pin the Alpine release to the runtime stage (alpine:3.21 below).
+# rust:1.98.1-alpine with no version is Alpine 3.24, which would split them.
+FROM rust:1.98.1-alpine3.21 AS chef
+# cmake, clang, and linux-headers are for aws-lc-rs. The S3 client's default
+# HTTPS stack builds that C library from source; Alpine has no prebuilt copy.
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl cmake clang make linux-headers perl
+# 0.1.71 was the last cargo-chef that built on the old Rust 1.85 image.
+# 1.98.1 can build the current release; keep the pin so the layer stays reproducible.
+RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /app
 
 # Stage 2: Planner - create recipe.json

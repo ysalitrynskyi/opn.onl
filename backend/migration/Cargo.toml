@@ -2,6 +2,7 @@
 name = "migration"
 version = "1.0.1"
 edition = "2021"
+rust-version = "1.98.1"
 publish = false
 
 [lib]
@@ -9,5 +10,7 @@ name = "migration"
 path = "src/lib.rs"
 
 [dependencies]
-sea-orm-migration = "1.0"
-async-std = { version = "1", features = ["attributes", "tokio1"] }
+# default features include the CLI, and that builds the MySQL driver, which
+# pulls rsa (RUSTSEC-2023-0071, no fix). This crate only runs Postgres
+# migrations inside the server.
+sea-orm-migration = { version = "1.0", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
