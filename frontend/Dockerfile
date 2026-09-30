@@ -23,9 +23,10 @@ RUN if [ -n "$VITE_API_URL" ]; then \
 # Build stage - use full Node image for Puppeteer/Chromium support
 FROM node:22-slim AS builder
 
-# Don't let puppeteer download its own Chrome (Chrome for Testing has no
-# linux/arm64 builds); we use Playwright's Chromium below instead.
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# Don't let puppeteer download its own browsers (Chrome for Testing has no
+# linux/arm64 builds); we use Playwright's Chromium below instead. Puppeteer
+# 22+ reads PUPPETEER_SKIP_DOWNLOAD and ignores PUPPETEER_SKIP_CHROMIUM_DOWNLOAD.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 WORKDIR /app
 

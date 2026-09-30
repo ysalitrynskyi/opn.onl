@@ -96,8 +96,9 @@ jobs:
         working-directory: frontend
         env:
           # The prerender step uses Playwright's Chromium, same as the image.
-          # Skip Puppeteer's own browser download.
-          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+          # Skip Puppeteer's own browser downloads. Puppeteer 22+ reads
+          # PUPPETEER_SKIP_DOWNLOAD; the old ..._CHROMIUM_DOWNLOAD name is ignored.
+          PUPPETEER_SKIP_DOWNLOAD: "true"
         run: npm ci --legacy-peer-deps
 
       - name: Lint
@@ -280,6 +281,9 @@ jobs:
 
       - name: Install deps
         working-directory: frontend
+        env:
+          # Playwright drives its own Chromium here; Puppeteer's is never used.
+          PUPPETEER_SKIP_DOWNLOAD: "true"
         run: npm ci --legacy-peer-deps
 
       - name: Cache Playwright browsers
