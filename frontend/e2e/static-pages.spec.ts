@@ -179,22 +179,25 @@ test.describe('Static pages', () => {
             await expect(page.getByRole('button', { name: 'Send Message' })).toBeEnabled();
         });
 
-        test('sends a message through the backend', async ({ page }) => {
+        test('says the message was not delivered when the instance cannot send email', async ({ page }) => {
+            // The e2e backend has no SMTP, like a self-hosted instance without it.
+            // The message has nowhere to go, so the page must not claim it was sent.
+            const message = `Checking the contact form end to end (${randomUUID()}).`;
             await page.getByLabel('Your Name').fill('E2E Visitor');
             await page.getByLabel('Email Address').fill(uniqueEmail('contact'));
             await page.getByLabel('Subject').selectOption('feedback');
-            await page.getByLabel('Message').fill(`Checking the contact form end to end (${randomUUID()}).`);
+            await page.getByLabel('Message').fill(message);
 
             const sent = page.waitForResponse((r) => r.url() === `${API_URL}/contact`);
             await page.getByRole('button', { name: 'Send Message' }).click();
             const response = await sent;
-            expect(response.status()).toBe(200);
-            expect((await response.json()).success).toBe(true);
+            expect(response.status()).toBe(503);
+            expect((await response.json()).success).toBe(false);
 
-            await expect(page.getByRole('heading', { name: 'Message Sent!' })).toBeVisible();
-            await page.getByRole('button', { name: 'Send another message' }).click();
-            await expect(page.getByLabel('Your Name')).toHaveValue('');
-            await expect(page.getByLabel('Message')).toHaveValue('');
+            await expect(page.getByRole('alert')).toContainText('not delivered');
+            await expect(page.getByRole('heading', { name: 'Message Sent!' })).toHaveCount(0);
+            // What the visitor wrote is still there to send another way.
+            await expect(page.getByLabel('Message')).toHaveValue(message);
         });
     });
 

@@ -6,7 +6,7 @@ import {
     type Page,
     type PlaywrightWorkerArgs,
 } from '@playwright/test';
-import { API_URL, api, clientIpHeader, createLink, createUser, signIn, type TestUser } from './support/api';
+import { API_URL, api, clientIpHeader, createLink, createUser, signIn, type TestUser, WEB_URL } from './support/api';
 
 /**
  * The link analytics page (/analytics/:id) against the real backend.
@@ -193,7 +193,7 @@ test.describe('Analytics Page', () => {
     });
 
     test('should display page title', async ({ page, clicked: { link } }) => {
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText(`opn.onl/${link.code}`);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText(`${new URL(WEB_URL).host}/${link.code}`);
         await expect(page.getByText(link.original_url, { exact: true })).toBeVisible();
         await expect(page).toHaveTitle(`Analytics — /${link.code} | opn.onl`);
     });
@@ -289,11 +289,6 @@ test.describe('Analytics Page', () => {
         test.use({ timezoneId: 'Asia/Tokyo' });
 
         test('should show when each click happened in local time', async ({ page, clicked: { stats } }) => {
-            test.fail(
-                true,
-                'BUG: recent_clicks[].timestamp is UTC written without a zone ("2026-09-30 10:45:55.707433") ' +
-                    'and Analytics.tsx parses it as local time, so the Time column is off by the UTC offset',
-            );
             const newest = stats.recent_clicks[0];
             const local = await page.evaluate((instant) => new Date(instant).toLocaleString(), utcInstant(newest.timestamp));
             await expect(page.getByRole('table').locator('tbody tr').first().getByRole('cell').first()).toHaveText(local);
@@ -328,7 +323,7 @@ test.describe('Analytics Page - Empty State', () => {
         const link: CreatedLink = await createLink(request, owner.token);
         await signIn(page, owner);
         await openAnalytics(page, link.id);
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText(`opn.onl/${link.code}`);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText(`${new URL(WEB_URL).host}/${link.code}`);
     });
 
     test('should show zero clicks', async ({ page }) => {

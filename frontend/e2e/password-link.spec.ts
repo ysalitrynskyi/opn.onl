@@ -166,11 +166,6 @@ test.describe('Password-protected link against the real backend', () => {
     });
 
     test('tells a locked-out visitor the wait the server asks for', async ({ page, request, owner }) => {
-        test.fail(
-            true,
-            'BUG: Retry-After is not exposed cross-origin (no Access-Control-Expose-Headers), so the prompt ' +
-                'cannot read it and always says 60 seconds',
-        );
         const link = await createLink(request, owner.token, {
             original_url: unreachableDestination(),
             password: LINK_PASSWORD,

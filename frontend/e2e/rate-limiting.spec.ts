@@ -156,10 +156,6 @@ test.describe('sign-in budget', () => {
     });
 
     test('ordinary page loads do not use up the sign-in budget', async ({ request }) => {
-        test.fail(
-            true,
-            'BUG: GET /auth/settings and /auth/me count against the 10/min sign-in bucket, so ten dashboard loads (or three Settings visits) lock the user out of sign-in',
-        );
         const user = await createUser(request);
         const ip = freshClientIp();
 
@@ -208,20 +204,12 @@ test.describe('per-second gate', () => {
     });
 
     test('a refused burst tells the client to wait before retrying', async ({ request }) => {
-        test.fail(
-            true,
-            'BUG: Retry-After is the remaining window truncated to whole seconds, so every per-second 429 says "Retry-After: 0"',
-        );
         const { refused } = await burst(request, freshClientIp());
         expect(refused).toHaveLength(1);
         expect(Number(refused[0].headers()['retry-after'])).toBeGreaterThanOrEqual(1);
     });
 
     test('the web app can read Retry-After on a cross-origin 429', async ({ request }) => {
-        test.fail(
-            true,
-            'BUG: CORS sends no Access-Control-Expose-Headers, so the browser hides Retry-After and PasswordPrompt always says "60 seconds"',
-        );
         // PasswordPrompt.tsx (and apiCall in config/api.ts) read Retry-After from
         // a fetch to the API origin, which is a different origin from the app.
         const { refused } = await burst(request, freshClientIp(), { Origin: WEB_URL });

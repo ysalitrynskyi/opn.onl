@@ -220,11 +220,6 @@ test.describe('Dashboard Page', () => {
         test.use({ timezoneId: 'America/New_York' });
 
         test('should show the expiry date the user picked', async ({ page, owner }) => {
-            test.fail(
-                true,
-                'BUG: GET /links returns expires_at as UTC written without a zone ("2026-11-15 04:59:00") and the ' +
-                    'dashboard parses it as local time, so west of UTC the badge shows the day after the one picked',
-            );
             await signIn(page, owner);
             await openDashboard(page);
 
@@ -421,7 +416,7 @@ test.describe('Dashboard - Link Actions', () => {
     test('should navigate to analytics', async ({ page }) => {
         await page.locator(`a[href="/analytics/${link.id}"]`).click();
         await expect(page).toHaveURL(new RegExp(`/analytics/${link.id}$`));
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText(`opn.onl/${link.code}`);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText(`${new URL(WEB_URL).host}/${link.code}`);
     });
 
     test('should open QR code modal', async ({ page }) => {

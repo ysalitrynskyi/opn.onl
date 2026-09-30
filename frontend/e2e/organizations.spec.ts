@@ -93,7 +93,7 @@ test.describe('Organizations in the admin panel', () => {
         await page.getByPlaceholder('Search name or slug…').fill(org.slug);
         const row = page.getByRole('row').filter({ hasText: org.slug });
         await expect(row).toHaveCount(1);
-        await expect(page.getByText('1 organizations', { exact: true })).toBeVisible();
+        await expect(page.getByText('1 organization', { exact: true })).toBeVisible();
         const name = await cell(page, row, 'Name');
         await expect(name.getByText(org.name, { exact: true })).toBeVisible();
         await expect(name.getByText(org.slug, { exact: true })).toBeVisible();

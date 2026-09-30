@@ -224,15 +224,15 @@ test.describe('Settings page', () => {
     });
 
     test('keeps working when the user opens it a few times in a minute', async ({ page, account }) => {
-        test.fail(
-            true,
-            'BUG: /auth/* reads (me, settings, passkeys, api-keys) count against the 10/min/IP sign-in ' +
-                'limit; Settings spends 4 per load, so by the third or fourth visit in a minute it gets 429s ' +
-                'and fails to load',
-        );
         await openSettings(page, account);
 
         for (let visit = 2; visit <= 4; visit++) {
+            // A person reopening the page, not a burst. The separate 10-per-second
+            // gate exists to refuse bursts, and a dev-mode load already makes eight
+            // /auth reads (Strict Mode runs the load effect twice). Four paced
+            // visits are still 32 reads in well under a minute, which the old
+            // 10-per-minute sign-in bucket refused.
+            await page.waitForTimeout(1_100);
             await page.reload();
             await expect(page.getByText(account.email, { exact: true })).toBeVisible();
             await expect(page.getByRole('heading', { level: 2, name: 'Passkeys' })).toBeVisible();

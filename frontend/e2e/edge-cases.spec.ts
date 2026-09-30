@@ -168,7 +168,7 @@ test.describe('Create form input', () => {
         await urlInput(page).fill(longUrl);
         await createButton(page).click();
 
-        await expect(page.getByText('1 links', { exact: true })).toBeVisible();
+        await expect(page.getByText('1 link', { exact: true })).toBeVisible();
         const [link] = await linksOf(page, user);
         expect(link.original_url).toBe(longUrl);
 
@@ -188,7 +188,7 @@ test.describe('Create form input', () => {
         await urlInput(page).fill(url);
         await createButton(page).click();
 
-        await expect(page.getByText('1 links', { exact: true })).toBeVisible();
+        await expect(page.getByText('1 link', { exact: true })).toBeVisible();
         const [link] = await linksOf(page, user);
         expect(link.original_url).toBe(url);
         const destination = linkRow(page, String(link.code)).getByTitle(url, { exact: true });
@@ -203,7 +203,7 @@ test.describe('Create form input', () => {
         await urlInput(page).fill(url);
         await createButton(page).click();
 
-        await expect(page.getByText('1 links', { exact: true })).toBeVisible();
+        await expect(page.getByText('1 link', { exact: true })).toBeVisible();
         const [link] = await linksOf(page, user);
         expect(link.original_url).toBe(url);
         const destination = linkRow(page, String(link.code)).getByTitle(url, { exact: true });
@@ -400,10 +400,6 @@ test.describe('Expiry and schedule', () => {
         test.use({ timezoneId: 'America/New_York' });
 
         test('the expiry date on the row is the local date picked in the form', async ({ page, request }) => {
-            test.fail(
-                true,
-                'BUG: GET /links returns expires_at as a zone-less UTC string ("2030-01-16 04:59:00") and the dashboard parses it as local time, so west of UTC the badge shows the next day',
-            );
             const user = await createUser(request);
             const sent = recordCreateRequests(page);
             await openDashboard(page, user);
@@ -414,7 +410,7 @@ test.describe('Expiry and schedule', () => {
             // The form states the expiry in the user's zone (time defaults to 23:59)...
             await expect(page.getByText(/→ Expires: 1\/15\/2030, 11:59:00\sPM/)).toBeVisible();
             await createButton(page).click();
-            await expect(page.getByText('1 links', { exact: true })).toBeVisible();
+            await expect(page.getByText('1 link', { exact: true })).toBeVisible();
             // ...and sends the matching instant.
             expect(JSON.parse(sent[0]).expires_at).toBe('2030-01-16T04:59:00.000Z');
 
@@ -585,7 +581,7 @@ test.describe('Create form state', () => {
         await expect(createButton(page)).toBeDisabled();
         release();
 
-        await expect(page.getByText('1 links', { exact: true })).toBeVisible();
+        await expect(page.getByText('1 link', { exact: true })).toBeVisible();
         expect(posts).toBe(1);
         expect(await linksOf(page, user)).toHaveLength(1);
     });
@@ -717,10 +713,6 @@ test.describe('Missing browser capabilities', () => {
     });
 
     test('with site storage blocked the public home page still renders', async ({ page }) => {
-        test.fail(
-            true,
-            'BUG: Layout reads localStorage during render without a guard, so when storage access throws (site data blocked) every page, including the public home page, is replaced by the error boundary',
-        );
         // What Chrome does when the visitor blocks site data for the origin.
         await page.addInitScript(() => {
             Object.defineProperty(window, 'localStorage', {
