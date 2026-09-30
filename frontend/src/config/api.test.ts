@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { 
-    API_BASE_URL, 
-    API_ENDPOINTS, 
-    getAuthHeaders, 
+import {
+    API_BASE_URL,
+    API_ENDPOINTS,
+    getAuthHeaders,
     apiCall,
     authFetch,
     shortLinkBase,
     shortLinkHost,
+    responseError,
 } from './api';
 
 describe('API Configuration', () => {
@@ -308,5 +309,18 @@ describe('apiCall', () => {
         const callArgs = mockFetch.mock.calls[0];
         expect(callArgs[1].method).toBe('POST');
         expect(callArgs[1].body).toBe(JSON.stringify({ test: 'data' }));
+    });
+});
+
+describe('responseError', () => {
+    it('reads the API error field and never returns a raw body', async () => {
+        const json = (body: unknown) => new Response(JSON.stringify(body), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
+        expect(await responseError(json({ error: 'That username is taken' }), 'Failed')).toBe('That username is taken');
+        expect(await responseError(json({ message: 'Try later' }), 'Failed')).toBe('Try later');
+        expect(await responseError(json({}), 'Failed')).toBe('Failed');
+        expect(await responseError(new Response('plain text', { status: 500 }), 'Failed')).toBe('Failed');
     });
 });

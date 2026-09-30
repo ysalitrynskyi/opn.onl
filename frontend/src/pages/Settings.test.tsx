@@ -519,7 +519,7 @@ describe('Settings Page', () => {
                     return Promise.resolve({
                         ok: false,
                         status: 400,
-                        text: () => Promise.resolve('Too many keys'),
+                        json: () => Promise.resolve({ error: 'Too many keys' }),
                     });
                 }
                 if (url.includes('/auth/api-keys')) {
