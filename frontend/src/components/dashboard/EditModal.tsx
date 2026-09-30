@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, Flame, ShieldCheck, Route, ChevronDown, LayoutList } from 'lucide-react';
-import { API_ENDPOINTS, authFetch } from '../../config/api';
+import { API_ENDPOINTS, authFetch, responseError } from '../../config/api';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { localIsoDate } from '../../utils/localIsoDate';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
@@ -26,11 +26,6 @@ function expiryDateInputValue(value: string | null): string {
     if (!value) return '';
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? '' : localIsoDate(date);
-}
-
-async function responseError(response: Response, fallback: string): Promise<string> {
-    const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
-    return body?.error || body?.message || fallback;
 }
 
 export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false, routingEnabled = false, bioEnabled = false }: EditModalProps) {

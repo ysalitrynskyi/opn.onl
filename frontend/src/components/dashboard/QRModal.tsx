@@ -105,6 +105,7 @@ export default function QRModal({
                 ref={dialogRef}
                 role="dialog"
                 aria-modal="true"
+                aria-labelledby="qr-dialog-title"
                 initial={{ scale: 0.97, opacity: 0, y: 8 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 8 }}
@@ -112,7 +113,7 @@ export default function QRModal({
                 className="bg-surface rounded-2xl border border-line2 shadow-lift max-w-md w-full p-6 text-center"
                 onClick={e => e.stopPropagation()}
             >
-                <h3 className="font-display text-xl font-bold text-ink tracking-tight mb-4">QR code</h3>
+                <h3 id="qr-dialog-title" className="font-display text-xl font-bold text-ink tracking-tight mb-4">QR code</h3>
                 <div className="inline-block rounded-xl border border-line bg-white p-4 mb-4">
                     {loading ? (
                         <div className="w-48 h-48 flex items-center justify-center">

@@ -1,14 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Lock, CheckCircle, XCircle, Eye, EyeOff } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 import { API_ENDPOINTS } from '../config/api';
+import { stripQueryFromAddressBar } from '../utils/addressBar';
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const token = searchParams.get('token');
+  // Read once: the query is cleared from the address bar below, and the
+  // submit handler must still have the token (StrictMode runs effects twice).
+  const [token] = useState(() => searchParams.get('token'));
+
+  // The token is a credential: keep it out of the address bar, history,
+  // bookmarks and anything that copies the URL. The path stays.
+  useEffect(() => {
+    if (token) stripQueryFromAddressBar();
+  }, [token]);
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');

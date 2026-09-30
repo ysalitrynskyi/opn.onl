@@ -174,7 +174,7 @@ export default function Terms() {
                             <li>We do not control, endorse, or verify the content accessible through shortened links</li>
                             <li>Users are solely responsible for the content they link to</li>
                             <li>We actively work to remove malicious links when reported, but cannot guarantee detection of all harmful content</li>
-                            <li>If you encounter a malicious link, please report it to <a href="mailto:abuse@opn.onl" className="text-primary-600 hover:underline">abuse@opn.onl</a></li>
+                            <li>If you encounter a malicious link, please report it to <a href="mailto:abuse@opn.onl" className="text-primary-600 underline decoration-primary-300 underline-offset-2 hover:decoration-primary-600">abuse@opn.onl</a></li>
                             <li>We reserve the right to disable any link that violates our policies without notice</li>
                             <li>We maintain blocklists of known malicious URLs and domains to protect users</li>
                         </ul>

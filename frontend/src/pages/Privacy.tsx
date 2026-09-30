@@ -29,7 +29,7 @@ export default function Privacy() {
         <div className="pb-24">
             <SEO
                 title="Privacy Policy"
-                description="How opn.onl handles your data — privacy-first, no cross-site tracking, no third-party pixels."
+                description="How opn.onl handles your data — first-party click analytics, no sale of your data."
                 url="/privacy"
             />
             {/* Hero */}
@@ -219,6 +219,9 @@ export default function Privacy() {
                                 <li><strong>MaxMind GeoLite2</strong> — the IP-to-city database used for geographic analytics; lookups run entirely on our own servers, so your IP is never transmitted to MaxMind</li>
                                 <li><strong>Email delivery provider</strong> — sends transactional email only (verification, password reset, security notices) to the address you registered</li>
                                 <li><strong>Object storage (S3-compatible)</strong> — stores encrypted database backups</li>
+                                {analytics.enabled && (
+                                    <li><strong>Google</strong> — Google Analytics measures page traffic on this deployment. IP anonymization is on and advertising features are off. See Cookies above for when the tag loads.</li>
+                                )}
                             </ul>
                         </PolicySection>
 

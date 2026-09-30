@@ -4,14 +4,23 @@ import { motion } from 'framer-motion';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 import { API_ENDPOINTS } from '../config/api';
+import { stripQueryFromAddressBar } from '../utils/addressBar';
 
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams();
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('');
-  const token = searchParams.get('token');
+  // Read once: the query is cleared from the address bar below, and nothing
+  // may read it again (StrictMode runs the effects twice in development).
+  const [token] = useState(() => searchParams.get('token'));
   const viewStatus = token ? status : 'error';
   const viewMessage = token ? message : 'Invalid verification link. No token provided.';
+
+  // The token is a credential: keep it out of the address bar, history,
+  // bookmarks and anything that copies the URL. The path stays.
+  useEffect(() => {
+    if (token) stripQueryFromAddressBar();
+  }, [token]);
 
   useEffect(() => {
     if (!token) {

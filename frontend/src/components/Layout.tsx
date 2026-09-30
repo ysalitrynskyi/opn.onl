@@ -42,6 +42,13 @@ export default function Layout() {
 
     return (
         <div className="min-h-screen flex flex-col bg-paper" onClick={handleLayoutClick}>
+            {/* First stop for keyboard users: past the header and its nav. */}
+            <a
+                href="#main-content"
+                className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-[60] focus:rounded-lg focus:bg-surface focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-ink focus:shadow-lift"
+            >
+                Skip to content
+            </a>
             <header className="sticky top-0 z-50 border-b border-line bg-surface/85 backdrop-blur-md">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="h-16 flex items-center justify-between">
@@ -183,7 +190,9 @@ export default function Layout() {
                 )}
             </header>
 
-            <main className="flex-grow">
+            {/* tabIndex -1 so the skip link moves focus here, not just the scroll
+                position; no focus ring on the whole page region. */}
+            <main id="main-content" tabIndex={-1} className="flex-grow focus:outline-none focus-visible:shadow-none">
                 <Outlet />
             </main>
 
@@ -216,7 +225,7 @@ export default function Layout() {
                     <div className="mt-12 pt-8 border-t border-line flex flex-col sm:flex-row items-center justify-between gap-4">
                         <p className="font-mono text-xs text-faint">© {new Date().getFullYear()} opn.onl — AGPL-3.0</p>
                         <div className="flex items-center gap-6">
-                            <a href="https://github.com/sponsors/ysalitrynskyi" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-500 hover:text-rose-600">
+                            <a href="https://github.com/sponsors/ysalitrynskyi" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-600 hover:text-rose-700">
                                 <svg className="h-4 w-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                                     <path fillRule="evenodd" d="M4.25 2.5c-1.336 0-2.75 1.164-2.75 3 0 2.15 1.58 4.144 3.365 5.682A20.565 20.565 0 008 13.393a20.561 20.561 0 003.135-2.211C12.92 9.644 14.5 7.65 14.5 5.5c0-1.836-1.414-3-2.75-3-1.373 0-2.609.986-3.029 2.456a.75.75 0 01-1.442 0C6.859 3.486 5.623 2.5 4.25 2.5z" />
                                 </svg>

@@ -184,10 +184,8 @@ async fn admin_domain_block_soft_disables_exact_and_subdomain_links_only() {
 #[tokio::test]
 async fn email_domain_blocks_reject_registration_and_disable_existing_users_without_deleting_data()
 {
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("ENABLE_API_KEYS", "true") };
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("ENABLE_PASSKEYS", "true") };
+    common::set_env("ENABLE_API_KEYS", "true");
+    common::set_env("ENABLE_PASSKEYS", "true");
 
     let (server, db) = spawn_real_app().await;
     let (admin_token, admin_id, _) = register_verified(&server, &db).await;

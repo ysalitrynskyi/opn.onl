@@ -432,7 +432,7 @@ test.describe('Unusual data', () => {
         await expect(page.getByText('0 links', { exact: true })).toBeVisible();
         await expect(page.getByText('0 clicks', { exact: true })).toBeVisible();
         // Search and sort only appear once there is something to search.
-        await expect(page.getByPlaceholder('Search links, notes, tags...')).toHaveCount(0);
+        await expect(page.getByRole('searchbox', { name: 'Search links' })).toHaveCount(0);
 
         await page.getByRole('button', { name: 'Start shortening' }).click();
         await expect(urlInput(page)).toBeFocused();
@@ -548,7 +548,7 @@ test.describe('Unusual data', () => {
         await expect(row.getByText(tagName, { exact: true })).toBeVisible();
         // Notes are not shown on the row, but search matches them: the markup
         // in them is held as plain data and matched as text.
-        await page.getByPlaceholder('Search links, notes, tags...').fill('"quotes"');
+        await page.getByRole('searchbox', { name: 'Search links' }).fill('"quotes"');
         await expect(row).toBeVisible();
 
         await expect(page.locator('img[src="x"]')).toHaveCount(0);

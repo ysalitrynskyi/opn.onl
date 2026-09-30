@@ -13,6 +13,7 @@ use crate::utils::jwt::{
     PASSWORD_TOO_LONG, create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password,
 };
 use crate::utils::time::utc_rfc3339;
+use crate::utils::validation::validation_error_message;
 use axum::http::HeaderMap;
 
 #[derive(Deserialize, Validate, ToSchema)]
@@ -90,7 +91,7 @@ pub async fn register(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: validation_error_message(&e),
             }),
         )
             .into_response();
@@ -619,7 +620,7 @@ pub async fn reset_password(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: validation_error_message(&e),
             }),
         )
             .into_response();
@@ -710,6 +711,7 @@ pub async fn reset_password(
             )
                 .into_response();
         };
+        let account_email = user.email.clone();
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
         active_user.password_reset_token = Set(None);
@@ -736,6 +738,8 @@ pub async fn reset_password(
                 .into_response();
         }
 
+        notify_password_changed(&state, account_email);
+
         return (
             StatusCode::OK,
             Json(MessageResponse {
@@ -753,6 +757,20 @@ pub async fn reset_password(
         }),
     )
         .into_response()
+}
+
+/// Email the account owner that their password changed, without holding the
+/// response on SMTP. Skipped when email is not configured.
+fn notify_password_changed(state: &AppState, email: String) {
+    if let Some(service) = state.email_service.clone()
+        && service.is_configured()
+    {
+        tokio::spawn(async move {
+            if let Err(e) = service.send_password_changed_email(&email).await {
+                tracing::error!("Failed to send password-changed email: {}", e);
+            }
+        });
+    }
 }
 
 #[derive(Deserialize, Validate, ToSchema)]
@@ -786,7 +804,7 @@ pub async fn change_password(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: validation_error_message(&e),
             }),
         )
             .into_response();
@@ -871,6 +889,19 @@ pub async fn change_password(
             }
         }
 
+        // Checked after the current password verifies, so a wrong password
+        // still says so, and a no-op change does not revoke existing sessions.
+        if payload.new_password == payload.current_password {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "New password must be different from the current password".to_string(),
+                }),
+            )
+                .into_response();
+        }
+
         // Hash new password
         let hashed_password = match hash_password(&payload.new_password).await {
             Ok(h) => h,
@@ -924,6 +955,8 @@ pub async fn change_password(
             )
                 .into_response();
         }
+
+        notify_password_changed(&state, token_email.clone());
 
         // Return a fresh token carrying the new version so the current session
         // stays valid; the bump just revoked the client's existing token, and
@@ -1421,7 +1454,7 @@ pub struct UpdateProfileRequest {
         (status = 404, description = "User not found"),
     ),
     tag = "Authentication",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_current_user(
     State(state): State<AppState>,
@@ -1507,7 +1540,7 @@ pub async fn get_current_user(
         (status = 404, description = "User not found"),
     ),
     tag = "Authentication",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_profile(
     State(state): State<AppState>,

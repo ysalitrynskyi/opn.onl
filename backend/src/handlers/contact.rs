@@ -4,6 +4,8 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::AppState;
+use crate::utils::html_escape;
+use crate::utils::validation::validation_error_message;
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ContactRequest {
@@ -46,7 +48,7 @@ pub async fn send_contact_message(
             StatusCode::BAD_REQUEST,
             Json(ContactResponse {
                 success: false,
-                message: format!("Validation error: {}", e),
+                message: validation_error_message(&e),
             }),
         )
             .into_response();
@@ -99,9 +101,17 @@ pub async fn send_contact_message(
         html_escape(&payload.message),
     );
 
+    let text_body = format!(
+        "New contact form submission\n\nFrom: {} <{}>\nSubject: {}\n\n{}\n\n\
+         This message was sent via the opn.onl contact form.\n\
+         Reply directly to this email to respond to the sender.\n",
+        payload.name, payload.email, payload.subject, payload.message,
+    );
+    let body = crate::utils::email::EmailBody::from_parts(html_body, text_body);
+
     // Send email to admin
     match email_service
-        .send_email_with_reply_to(&admin_email, &subject, &html_body, &payload.email)
+        .send_email_with_reply_to(&admin_email, &subject, &body, &payload.email)
         .await
     {
         Ok(_) => {
@@ -130,13 +140,4 @@ pub async fn send_contact_message(
                 .into_response()
         }
     }
-}
-
-/// Simple HTML escape for security
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }

@@ -1,16 +1,84 @@
-use utoipa::OpenApi;
+use utoipa::{OpenApi, ToResponse, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
     admin, analytics, api_keys, auth, bio, contact, folders, links, organizations, passkeys, tags,
 };
 
+/// `info.description` of the served document (Markdown), set in [`api_doc`].
+///
+/// The rate-limit table mirrors `RateLimiters::default()` and the routing in
+/// `rate_limit_middleware`. `tests/audit_openapi.rs` fails if the numbers drift.
+const API_DESCRIPTION: &str = "\
+A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.
+
+## Authentication
+
+Protected operations take `Authorization: Bearer <token>`. Each operation lists the kinds of \
+token it accepts:
+
+- `bearer_auth`: the session JWT returned by `POST /auth/register`, `POST /auth/login`, and \
+`POST /auth/passkey/login/finish`. Every protected operation accepts it.
+- `api_key`: a personal API key (`opn_...`) created with `POST /auth/api-keys`. Links, folders, \
+tags, organizations, analytics, and the profile accept it. Account security (password, account \
+deletion, passkeys, API keys) and `/admin` require the session JWT.
+
+Operations without a security requirement are public. `POST /links` also works without a token \
+and then creates an anonymous link.
+
+## Rate limits
+
+Limits are counted per client IP address (per /64 for IPv6). A response that passed the limiter \
+carries `X-RateLimit-Limit` and `X-RateLimit-Remaining` for the budget it was charged to. Over a \
+limit, the answer is `429 Too Many Requests` with `Retry-After` (seconds, rounded up), the same \
+two headers, and a `RateLimitResponse` body.
+
+| Budget | Limit | Requests it covers |
+|---|---|---|
+| Burst | 10 per second | Every request except short-link visits (`/{code}`, `/{code}/preview`, \
+`/{code}/verify`), counted in addition to the request's own budget below |
+| Sign-in | 10 per minute | Every `POST` under `/auth/` |
+| Link creation | 100 per hour | `POST /links` and `POST /links/{id}/clone`. `POST /links/bulk` \
+spends one per URL and lists the URLs past the budget in `errors` instead of answering 429 |
+| Contact | 10 per hour | `POST /contact` |
+| Link password | 5 per minute per link, 20 per minute in total | `POST /{code}/verify`, and \
+`GET /{code}` with an `X-Link-Password` header |
+| Redirects | 100 per second | `GET /{code}` and `GET /{code}/preview` |
+| General | 100 per minute | Every other request, including `GET`, `PUT`, and `DELETE` under \
+`/auth/` |
+";
+
+// Only the document uses this type: `rate_limit_middleware` builds the body
+// with `json!`, and tests/audit_openapi.rs checks that the two agree.
+/// Body of a `429 Too Many Requests` answer from the rate limiter.
+#[derive(ToSchema)]
+pub struct RateLimitResponse {
+    /// Always `Too many requests`.
+    pub error: String,
+    /// Seconds until the budget refills, the same value as `Retry-After`.
+    pub retry_after: u64,
+    /// Human-readable explanation.
+    pub message: String,
+}
+
+/// The rate limiter's answer when a budget is spent.
+#[derive(ToResponse)]
+#[response(
+    description = "Rate limit exceeded. Retry after the number of seconds in `Retry-After`. \
+                   The budgets are listed under Rate limits in the API description.",
+    headers(
+        ("Retry-After" = u64, description = "Seconds until the budget refills, rounded up"),
+        ("X-RateLimit-Limit" = u32, description = "Size of the budget that ran out"),
+        ("X-RateLimit-Remaining" = u32, description = "Requests left in that budget (0)")
+    )
+)]
+pub struct TooManyRequests(pub RateLimitResponse);
+
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "opn.onl URL Shortener API",
-        // No `version` here on purpose — see `api_doc()`.
-        description = "A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.",
+        // No `version` or `description` here on purpose — see `api_doc()`.
         license(
             name = "AGPL-3.0-only",
             url = "https://www.gnu.org/licenses/agpl-3.0.html"
@@ -23,7 +91,7 @@ use crate::handlers::{
     ),
     servers(
         (url = "http://localhost:3000", description = "Local development server"),
-        (url = "https://api.opn.onl", description = "Production server")
+        (url = "https://l.opn.onl", description = "Hosted opn.onl API")
     ),
     tags(
         (name = "Authentication", description = "User registration, login, and passkey management"),
@@ -310,25 +378,76 @@ use crate::handlers::{
             admin::BlockedEmailDomainResponse,
             admin::BackupResponse,
             admin::BackupListResponse,
-        )
+
+            // Rate limiting
+            RateLimitResponse,
+        ),
+        responses(TooManyRequests)
     ),
-    modifiers(&SecurityAddon)
+    modifiers(&SecurityAddon, &RateLimitAddon)
 )]
 pub struct ApiDoc;
 
+/// Handlers authenticate themselves by reading `Authorization: Bearer ...`.
+/// Operations name the schemes they accept in `security(...)`: `bearer_auth`
+/// alone where the handler insists on a session JWT, `("bearer_auth" = []),
+/// ("api_key" = [])` where an `opn_` API key works too, and a leading `()`
+/// where credentials are optional.
 struct SecurityAddon;
 
 impl utoipa::Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
         if let Some(components) = openapi.components.as_mut() {
             components.add_security_scheme(
                 "bearer_auth",
-                utoipa::openapi::security::SecurityScheme::Http(
-                    utoipa::openapi::security::Http::new(
-                        utoipa::openapi::security::HttpAuthScheme::Bearer,
-                    ),
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .description(Some(
+                            "Session JWT from `POST /auth/register`, `POST /auth/login`, or \
+                             `POST /auth/passkey/login/finish`.",
+                        ))
+                        .build(),
                 ),
             );
+            components.add_security_scheme(
+                "api_key",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("opn_ API key")
+                        .description(Some(
+                            "Personal API key from `POST /auth/api-keys`, sent as \
+                             `Authorization: Bearer opn_...`.",
+                        ))
+                        .build(),
+                ),
+            );
+        }
+    }
+}
+
+/// Every route sits behind `rate_limit_middleware`, so any operation can be
+/// answered 429. Add the shared response to each operation that does not
+/// describe a 429 of its own.
+struct RateLimitAddon;
+
+impl utoipa::Modify for RateLimitAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::{Ref, RefOr};
+
+        let (name, _) = TooManyRequests::response();
+        for item in openapi.paths.paths.values_mut() {
+            for operation in item.operations.values_mut() {
+                operation
+                    .responses
+                    .responses
+                    .entry("429".to_string())
+                    .or_insert_with(|| RefOr::Ref(Ref::from_response_name(name)));
+            }
         }
     }
 }
@@ -339,10 +458,12 @@ impl utoipa::Modify for SecurityAddon {
 /// attribute because utoipa only accepts a string literal there, and the literal
 /// that used to live in it went stale: after the 1.3.0 release the published spec
 /// still advertised 1.2.1. Reading `CARGO_PKG_VERSION` keeps the served document
-/// in step with Cargo.toml on its own.
+/// in step with Cargo.toml on its own. The description is set here too, because
+/// the attribute cannot hold a Markdown document legibly.
 pub fn api_doc() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
     doc.info.version = env!("CARGO_PKG_VERSION").to_string();
+    doc.info.description = Some(API_DESCRIPTION.to_string());
     doc
 }
 

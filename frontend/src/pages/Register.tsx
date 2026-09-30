@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Mail, Lock, Check, CheckCircle, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
+import SEO from '../components/SEO';
 import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
 const passwordRequirements = [
@@ -93,6 +94,11 @@ export default function Register() {
     if (registrationComplete) {
         return (
             <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+                <SEO
+                    title="Sign up"
+                    description="Create a free opn.onl account: short links with custom aliases, branded QR codes, smart routing and first-party analytics."
+                    url="/register"
+                />
                 <motion.div
                     initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -141,6 +147,11 @@ export default function Register() {
 
     return (
         <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+            <SEO
+                title="Sign up"
+                description="Create a free opn.onl account: short links with custom aliases, branded QR codes, smart routing and first-party analytics."
+                url="/register"
+            />
             <motion.div
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -152,7 +163,7 @@ export default function Register() {
                     <h1 className="mt-3 font-display text-3xl font-extrabold tracking-tight text-ink">Create your account</h1>
                     <p className="mt-2 text-sm text-muted">
                         Already have one?{' '}
-                        <Link to="/login" className="font-medium text-primary-600 hover:text-primary-700">Log in</Link>
+                        <Link to="/login" className="font-medium text-primary-600 underline decoration-primary-300 underline-offset-2 hover:decoration-primary-600 hover:text-primary-700">Log in</Link>
                     </p>
                 </div>
 

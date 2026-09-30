@@ -1,5 +1,5 @@
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::header::ContentType,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::MultiPart,
     transport::smtp::authentication::Credentials,
 };
 use parking_lot::Mutex;
@@ -228,18 +228,18 @@ impl EmailService {
         self.mailer.is_some()
     }
 
-    async fn send_email(&self, to: &str, subject: &str, html_body: &str) -> Result<(), String> {
-        self.send_email_internal(to, subject, html_body, None).await
+    async fn send_email(&self, to: &str, subject: &str, body: &EmailBody) -> Result<(), String> {
+        self.send_email_internal(to, subject, body, None).await
     }
 
     pub async fn send_email_with_reply_to(
         &self,
         to: &str,
         subject: &str,
-        html_body: &str,
+        body: &EmailBody,
         reply_to: &str,
     ) -> Result<(), String> {
-        self.send_email_internal(to, subject, html_body, Some(reply_to))
+        self.send_email_internal(to, subject, body, Some(reply_to))
             .await
     }
 
@@ -247,7 +247,7 @@ impl EmailService {
         &self,
         to: &str,
         subject: &str,
-        html_body: &str,
+        body: &EmailBody,
         reply_to: Option<&str>,
     ) -> Result<(), String> {
         let mailer = self.mailer.as_ref().ok_or("Email service not configured")?;
@@ -258,6 +258,25 @@ impl EmailService {
         let (used, limit) = EMAIL_RATE_LIMITER.stats();
         info!("Sending email to {} ({}/{} this hour)", to, used, limit);
 
+        let email = self.build_message(to, subject, body, reply_to)?;
+
+        mailer
+            .send(email)
+            .await
+            .map_err(|e| format!("Failed to send email: {}", e))?;
+        Ok(())
+    }
+
+    /// A multipart/alternative message: the plain-text part first, the HTML
+    /// part second, so clients that do not render HTML (and spam filters that
+    /// score HTML-only mail) get readable text.
+    fn build_message(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &EmailBody,
+        reply_to: Option<&str>,
+    ) -> Result<Message, String> {
         let mut builder = Message::builder()
             .from(
                 format!("{} <{}>", self.from_name, self.from_email)
@@ -277,118 +296,172 @@ impl EmailService {
             );
         }
 
-        let email = builder
-            .header(ContentType::TEXT_HTML)
-            .body(html_body.to_string())
-            .map_err(|e| format!("Failed to build email: {}", e))?;
+        builder
+            .multipart(MultiPart::alternative_plain_html(
+                body.text.clone(),
+                body.html.clone(),
+            ))
+            .map_err(|e| format!("Failed to build email: {}", e))
+    }
 
-        mailer
-            .send(email)
-            .await
-            .map_err(|e| format!("Failed to send email: {}", e))?;
-        Ok(())
+    fn verification_email(&self, token: &str) -> EmailBody {
+        let url = format!("{}/verify-email?token={}", self.frontend_url, token);
+        EmailBody::new(
+            "Verify your email",
+            &[
+                "Thanks for signing up for opn.onl! Please verify your email address by clicking the button below:",
+            ],
+            Some(("Verify Email", &url)),
+            &["This link expires in 24 hours."],
+            "If you didn't create an account on opn.onl, you can safely ignore this email.",
+        )
+    }
+
+    fn password_reset_email(&self, token: &str) -> EmailBody {
+        let url = format!("{}/reset-password?token={}", self.frontend_url, token);
+        EmailBody::new(
+            "Reset your password",
+            &[
+                "We received a request to reset your password. Click the button below to choose a new password:",
+            ],
+            Some(("Reset Password", &url)),
+            &["This link expires in 1 hour."],
+            "If you didn't request a password reset, you can safely ignore this email.",
+        )
+    }
+
+    fn welcome_email(&self) -> EmailBody {
+        let url = format!("{}/dashboard", self.frontend_url);
+        EmailBody::new(
+            "Welcome to opn.onl!",
+            &[
+                "Your email has been verified and your account is now active.",
+                "You can now create short links, track analytics, and more.",
+            ],
+            Some(("Go to Dashboard", &url)),
+            &[],
+            "",
+        )
+    }
+
+    fn password_changed_email(&self, changed_at: &str) -> EmailBody {
+        let url = format!("{}/forgot-password", self.frontend_url);
+        let when = format!("The password for your opn.onl account was changed on {changed_at}.");
+        EmailBody::new(
+            "Your password was changed",
+            &[
+                &when,
+                "Sessions signed in with the old password have been signed out.",
+                "If you made this change, you don't need to do anything. If you didn't, reset your password now:",
+            ],
+            Some(("Reset Password", &url)),
+            &[],
+            "You get this email whenever the password on your account changes.",
+        )
     }
 
     pub async fn send_verification_email(&self, to: &str, token: &str) -> Result<(), String> {
-        let verification_url = format!("{}/verify-email?token={}", self.frontend_url, token);
-
-        let html = format!(
-            r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .button {{ display: inline-block; padding: 12px 24px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; }}
-        .footer {{ margin-top: 40px; font-size: 12px; color: #666; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Verify your email</h1>
-        <p>Thanks for signing up for opn.onl! Please verify your email address by clicking the button below:</p>
-        <p><a href="{}" class="button">Verify Email</a></p>
-        <p>Or copy and paste this link into your browser:</p>
-        <p><a href="{}">{}</a></p>
-        <p>This link expires in 24 hours.</p>
-        <div class="footer">
-            <p>If you didn't create an account on opn.onl, you can safely ignore this email.</p>
-        </div>
-    </div>
-</body>
-</html>
-"#,
-            verification_url, verification_url, verification_url
-        );
-
-        self.send_email(to, "Verify your email - opn.onl", &html)
-            .await
+        self.send_email(
+            to,
+            "Verify your email - opn.onl",
+            &self.verification_email(token),
+        )
+        .await
     }
 
     pub async fn send_password_reset_email(&self, to: &str, token: &str) -> Result<(), String> {
-        let reset_url = format!("{}/reset-password?token={}", self.frontend_url, token);
-
-        let html = format!(
-            r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .button {{ display: inline-block; padding: 12px 24px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; }}
-        .footer {{ margin-top: 40px; font-size: 12px; color: #666; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Reset your password</h1>
-        <p>We received a request to reset your password. Click the button below to choose a new password:</p>
-        <p><a href="{}" class="button">Reset Password</a></p>
-        <p>Or copy and paste this link into your browser:</p>
-        <p><a href="{}">{}</a></p>
-        <p>This link expires in 1 hour.</p>
-        <div class="footer">
-            <p>If you didn't request a password reset, you can safely ignore this email.</p>
-        </div>
-    </div>
-</body>
-</html>
-"#,
-            reset_url, reset_url, reset_url
-        );
-
-        self.send_email(to, "Reset your password - opn.onl", &html)
-            .await
+        self.send_email(
+            to,
+            "Reset your password - opn.onl",
+            &self.password_reset_email(token),
+        )
+        .await
     }
 
     pub async fn send_welcome_email(&self, to: &str) -> Result<(), String> {
-        let html = format!(
-            r#"
-<!DOCTYPE html>
+        self.send_email(to, "Welcome to opn.onl!", &self.welcome_email())
+            .await
+    }
+
+    /// Security notice after a password change or reset. If the owner did not
+    /// make the change, this is how they find out.
+    pub async fn send_password_changed_email(&self, to: &str) -> Result<(), String> {
+        let changed_at = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+        self.send_email(
+            to,
+            "Your password was changed - opn.onl",
+            &self.password_changed_email(&changed_at),
+        )
+        .await
+    }
+}
+
+/// The two renderings of one transactional email.
+pub struct EmailBody {
+    pub html: String,
+    pub text: String,
+}
+
+impl EmailBody {
+    /// Contact-form mail and other one-off messages that bring their own
+    /// markup and text.
+    pub fn from_parts(html: String, text: String) -> Self {
+        Self { html, text }
+    }
+
+    /// The layout every account email shares: a heading, paragraphs, an
+    /// optional button (its URL repeated as a plain link), more paragraphs,
+    /// and a small footer. Only fixed copy and URLs we built go in here, so
+    /// nothing needs HTML escaping.
+    fn new(
+        heading: &str,
+        before: &[&str],
+        button: Option<(&str, &str)>,
+        after: &[&str],
+        footer: &str,
+    ) -> Self {
+        let mut html = String::from(
+            r#"<!DOCTYPE html>
 <html>
 <head>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .button {{ display: inline-block; padding: 12px 24px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; }}
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .button { display: inline-block; padding: 12px 24px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; }
+        .footer { margin-top: 40px; font-size: 12px; color: #666; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Welcome to opn.onl!</h1>
-        <p>Your email has been verified and your account is now active.</p>
-        <p>You can now create short links, track analytics, and more.</p>
-        <p><a href="{}/dashboard" class="button">Go to Dashboard</a></p>
-    </div>
-</body>
-</html>
 "#,
-            self.frontend_url
         );
-
-        self.send_email(to, "Welcome to opn.onl!", &html).await
+        let mut text = format!("{heading}\n\n");
+        html.push_str(&format!("        <h1>{heading}</h1>\n"));
+        for paragraph in before {
+            html.push_str(&format!("        <p>{paragraph}</p>\n"));
+            text.push_str(&format!("{paragraph}\n\n"));
+        }
+        if let Some((label, url)) = button {
+            html.push_str(&format!(
+                "        <p><a href=\"{url}\" class=\"button\">{label}</a></p>\n        <p>Or copy and paste this link into your browser:</p>\n        <p><a href=\"{url}\">{url}</a></p>\n"
+            ));
+            text.push_str(&format!("{url}\n\n"));
+        }
+        for paragraph in after {
+            html.push_str(&format!("        <p>{paragraph}</p>\n"));
+            text.push_str(&format!("{paragraph}\n\n"));
+        }
+        if !footer.is_empty() {
+            html.push_str(&format!(
+                "        <div class=\"footer\">\n            <p>{footer}</p>\n        </div>\n"
+            ));
+            text.push_str(&format!("{footer}\n"));
+        }
+        html.push_str("    </div>\n</body>\n</html>\n");
+        Self {
+            html,
+            text: text.trim_end().to_string() + "\n",
+        }
     }
 }
 
@@ -412,7 +485,64 @@ pub fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::generate_token;
+    use super::{EmailService, generate_token};
+
+    fn service() -> EmailService {
+        EmailService {
+            mailer: None,
+            from_email: "noreply@opn.example".to_string(),
+            from_name: "opn.onl".to_string(),
+            frontend_url: "https://opn.example".to_string(),
+        }
+    }
+
+    /// Every account email carries a text/plain part next to the HTML, and
+    /// the text part has the link a reader needs.
+    #[test]
+    fn account_emails_are_multipart_with_a_usable_text_part() {
+        let svc = service();
+        let bodies = [
+            (
+                svc.verification_email("tok123"),
+                "https://opn.example/verify-email?token=tok123",
+            ),
+            (
+                svc.password_reset_email("tok456"),
+                "https://opn.example/reset-password?token=tok456",
+            ),
+            (svc.welcome_email(), "https://opn.example/dashboard"),
+            (
+                svc.password_changed_email("2026-09-30 12:00 UTC"),
+                "https://opn.example/forgot-password",
+            ),
+        ];
+        for (body, link) in &bodies {
+            assert!(
+                body.text.contains(link),
+                "text part lacks {link}: {}",
+                body.text
+            );
+            assert!(
+                !body.text.contains('<'),
+                "text part has markup: {}",
+                body.text
+            );
+            assert!(
+                body.html.contains(&format!("href=\"{link}\"")),
+                "{}",
+                body.html
+            );
+
+            let message = svc
+                .build_message("user@opn.example", "Subject", body, None)
+                .expect("message builds");
+            let raw = String::from_utf8(message.formatted()).expect("utf-8");
+            assert!(raw.contains("multipart/alternative"), "{raw}");
+            assert!(raw.contains("text/plain"), "{raw}");
+            assert!(raw.contains("text/html"), "{raw}");
+        }
+        assert!(bodies[3].0.text.contains("2026-09-30 12:00 UTC"));
+    }
 
     #[test]
     fn generate_token_is_64_alnum_and_unique() {

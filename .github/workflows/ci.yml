@@ -96,8 +96,9 @@ jobs:
         working-directory: frontend
         env:
           # The prerender step uses Playwright's Chromium, same as the image.
-          # Skip Puppeteer's own browser download.
-          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+          # Skip Puppeteer's own browser downloads. Puppeteer 22+ reads
+          # PUPPETEER_SKIP_DOWNLOAD; the old ..._CHROMIUM_DOWNLOAD name is ignored.
+          PUPPETEER_SKIP_DOWNLOAD: "true"
         run: npm ci --legacy-peer-deps
 
       - name: Lint
@@ -184,6 +185,7 @@ jobs:
             printf '%s\n' "$1" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
             printf '%s\n' "$1" | grep -iF "content-security-policy:"
             printf '%s\n' "$1" | grep -iF "img-src 'self' data: blob: https:;"
+            printf '%s\n' "$1" | grep -iF "permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()"
           }
 
           for attempt in $(seq 1 20); do
@@ -195,7 +197,8 @@ jobs:
 
           test -n "${headers:-}"
           assert_security_headers "$headers"
-          printf '%s\n' "$headers" | grep -iF "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://static.cloudflareinsights.com;"
+          printf '%s\n' "$headers" | grep -iF "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://static.cloudflareinsights.com;"
+          ! printf '%s\n' "$headers" | grep -iF "unsafe-eval"
           printf '%s\n' "$headers" | grep -iF "connect-src 'self' https://api.smoke.test wss://api.smoke.test https://www.google-analytics.com https://region1.google-analytics.com https://www.google.com https://cloudflareinsights.com;"
           # HTML must be revalidated on every load. Without this a browser keeps
           # the previous deploy's SPA shell — stale hashed asset names and stale
@@ -280,6 +283,9 @@ jobs:
 
       - name: Install deps
         working-directory: frontend
+        env:
+          # Playwright drives its own Chromium here; Puppeteer's is never used.
+          PUPPETEER_SKIP_DOWNLOAD: "true"
         run: npm ci --legacy-peer-deps
 
       - name: Cache Playwright browsers

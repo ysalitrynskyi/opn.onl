@@ -136,9 +136,10 @@ export default function Preview() {
                                     href={preview.original_url}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="text-slate-400 hover:text-slate-600"
+                                    aria-label={`Open ${preview.domain} in a new tab`}
+                                    className="text-slate-500 hover:text-slate-700"
                                 >
-                                    <ExternalLink className="h-4 w-4" />
+                                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
                                 </a>
                             </div>
                         </div>

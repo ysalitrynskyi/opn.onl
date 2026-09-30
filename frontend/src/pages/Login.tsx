@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Fingerprint, Mail, Send, CheckCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
+import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
@@ -179,6 +180,11 @@ export default function Login() {
     if (needsVerification) {
         return (
             <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+                <SEO
+                    title="Log in"
+                    description="Log in to opn.onl to manage your short links, branded QR codes and click analytics."
+                    url="/login"
+                />
                 <motion.div
                     initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -219,6 +225,11 @@ export default function Login() {
 
     return (
         <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+            <SEO
+                title="Log in"
+                description="Log in to opn.onl to manage your short links, branded QR codes and click analytics."
+                url="/login"
+            />
             <motion.div
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -230,7 +241,7 @@ export default function Login() {
                     <h1 className="mt-3 font-display text-3xl font-extrabold tracking-tight text-ink">Sign in to opn.onl</h1>
                     <p className="mt-2 text-sm text-muted">
                         New here?{' '}
-                        <Link to="/register" className="font-medium text-primary-600 hover:text-primary-700">Create an account</Link>
+                        <Link to="/register" className="font-medium text-primary-600 underline decoration-primary-300 underline-offset-2 hover:decoration-primary-600 hover:text-primary-700">Create an account</Link>
                     </p>
                 </div>
 

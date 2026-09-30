@@ -119,24 +119,38 @@ export default defineConfig(({ mode }) => {
     build: {
       rollupOptions: {
         output: {
-          manualChunks(id) {
-            // Vendor chunks - split large libraries
-            if (
-              id.includes('/node_modules/react/') ||
-              id.includes('/node_modules/react-dom/') ||
-              id.includes('/node_modules/react-router-dom/')
-            ) {
-              return 'vendor-react'
-            }
-            if (id.includes('/node_modules/recharts/')) {
-              return 'vendor-charts'
-            }
-            if (id.includes('/node_modules/framer-motion/')) {
-              return 'vendor-motion'
-            }
-            if (id.includes('/node_modules/lucide-react/')) {
-              return 'vendor-icons'
-            }
+          // Vendor chunks - split large libraries. Rolldown turns every group
+          // into a chunk that also takes the group's dependencies, and a module
+          // goes to the highest-priority group that wants it. Under the old
+          // manualChunks function (one priority for all names) recharts got
+          // React first: React landed in vendor-charts, so every page,
+          // including the prerendered marketing pages, preloaded ~340 KB of
+          // charting code. vendor-react now claims React before anything else,
+          // and vendor-charts is only reached from the pages that draw charts
+          // (Analytics, Admin).
+          codeSplitting: {
+            groups: [
+              {
+                name: 'vendor-react',
+                test: /[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/,
+                priority: 40,
+              },
+              {
+                name: 'vendor-motion',
+                test: /[\\/]node_modules[\\/](framer-motion|motion-dom|motion-utils)[\\/]/,
+                priority: 30,
+              },
+              {
+                name: 'vendor-icons',
+                test: /[\\/]node_modules[\\/]lucide-react[\\/]/,
+                priority: 20,
+              },
+              {
+                name: 'vendor-charts',
+                test: /[\\/]node_modules[\\/]recharts[\\/]/,
+                priority: 10,
+              },
+            ],
           },
         },
       },

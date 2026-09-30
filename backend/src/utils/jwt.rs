@@ -143,14 +143,14 @@ pub fn decode_jwt(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_env::set_env;
 
     // Single test (no parallel writes to the shared JWT_SECRET env var) covering
     // both the startup guard (B1) and a normal sign/verify round-trip.
     #[test]
     fn jwt_secret_enforced_and_roundtrips() {
         // A too-short / weak secret must be rejected rather than silently accepted.
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("JWT_SECRET", "short") };
+        set_env("JWT_SECRET", "short");
         let weak = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
         assert!(
             weak.is_err(),
@@ -164,13 +164,10 @@ mod tests {
                 "known placeholder must be rejected: {placeholder}"
             );
         }
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe {
-            std::env::set_var(
-                "JWT_SECRET",
-                "your-super-secret-jwt-key-minimum-32-characters-long",
-            )
-        };
+        set_env(
+            "JWT_SECRET",
+            "your-super-secret-jwt-key-minimum-32-characters-long",
+        );
         let placeholder = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
         assert!(
             placeholder.is_err(),
@@ -178,8 +175,7 @@ mod tests {
         );
 
         // A strong secret round-trips and preserves the claims.
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789") };
+        set_env("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");
         let token = create_jwt(42, "x@y.z", 0).expect("valid secret should sign");
         let claims = decode_jwt(&token).expect("token should decode");
         assert_eq!(claims.user_id, 42);
@@ -206,14 +202,12 @@ mod tests {
             "expired token must not decode"
         );
 
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("JWT_SECRET", "a-different-long-test-secret-0123456789ab") };
+        set_env("JWT_SECRET", "a-different-long-test-secret-0123456789ab");
         assert!(
             decode_jwt(&token).is_err(),
             "token signed with another secret must not decode"
         );
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789") };
+        set_env("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");
     }
 
     /// On a single-threaded runtime, awaiting bcrypt must let other tasks run:

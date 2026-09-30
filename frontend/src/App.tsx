@@ -1,4 +1,4 @@
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { Routes, Route, useLocation, useParams } from 'react-router-dom';
 import { HelmetProvider } from 'react-helmet-async';
 import { Suspense, lazy, useEffect } from 'react';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -45,6 +45,15 @@ const Admin = lazy(() => import('./pages/Admin'));
 const Redirect = lazy(() => import('./pages/Redirect'));
 const Bio = lazy(() => import('./pages/Bio'));
 
+// `compilePath` only treats `/:` as a param, so `@:username` matched the
+// literal path "/@:username" and /@someone fell through to the short-link
+// route. A code cannot contain '@', so this split is unambiguous.
+function ShortLinkRoute() {
+  const { code } = useParams();
+  if (code?.startsWith('@')) return <Bio />;
+  return <Redirect />;
+}
+
 // Loading fallback component
 function PageLoader() {
   return (
@@ -87,7 +96,6 @@ function App() {
               <Route path="forgot-password" element={<ForgotPassword />} />
               <Route path="reset-password" element={<ResetPassword />} />
               <Route path="admin" element={<Admin />} />
-              <Route path="@:username" element={<Bio />} />
               {/* Safe-link interstitial: the backend 302s opted-in links here so
                   the SPA can show the "you're leaving" screen before continuing. */}
               <Route path="r/:code" element={<Redirect />} />
@@ -95,7 +103,7 @@ function App() {
               {/* Explicit /404 so Redirect's navigate('/404') renders NotFound
                   cleanly instead of leaving a fake /404 in the URL bar. */}
               <Route path="404" element={<NotFound />} />
-              <Route path=":code" element={<Redirect />} />
+              <Route path=":code" element={<ShortLinkRoute />} />
               <Route path="*" element={<NotFound />} />
             </Route>
           </Routes>

@@ -36,8 +36,10 @@ input, textarea, select {
   background-color: white !important;
   color: oklch(0.235 0.021 266) !important;
 }
+/* Placeholders are text too: the faint token, which reaches 4.5:1 on the
+   white field background above. */
 input::placeholder, textarea::placeholder {
-  color: oklch(0.66 0.012 266) !important;
+  color: oklch(0.546 0.014 266) !important;
 }
 input:-webkit-autofill,
 input:-webkit-autofill:hover,

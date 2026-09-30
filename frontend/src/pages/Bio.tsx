@@ -24,7 +24,9 @@ interface BioProfile {
 }
 
 export default function Bio() {
-    const { username } = useParams<{ username: string }>();
+    const params = useParams<{ username?: string; code?: string }>();
+    const raw = params.username ?? params.code ?? '';
+    const username = raw.startsWith('@') ? raw.slice(1) : raw;
     const [profile, setProfile] = useState<BioProfile | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
@@ -152,7 +154,7 @@ export default function Bio() {
 
                 {/* Footer */}
                 <div className="mt-10 text-center">
-                    <RouterLink to="/" className="text-xs text-slate-400 hover:text-slate-600">
+                    <RouterLink to="/" className="text-xs text-slate-500 hover:text-slate-700">
                         Powered by opn.onl
                     </RouterLink>
                 </div>

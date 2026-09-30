@@ -14,6 +14,7 @@ use webauthn_rs::prelude::*;
 
 use crate::AppState;
 use crate::entity::{passkeys, users};
+use crate::handlers::json_error;
 use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
 use crate::utils::jwt::create_jwt;
 use crate::utils::time::utc_rfc3339;
@@ -218,11 +219,12 @@ pub struct PasskeyAuthResponse {
 
 /// Begin passkey enrollment for the authenticated caller. Returns a WebAuthn
 /// `CreationChallengeResponse` to pass to the browser's credential API. The
-/// request/response bodies are standard WebAuthn ceremony objects and are not
-/// expanded into the schema.
+/// response is a standard WebAuthn ceremony object and is not expanded into
+/// the schema.
 #[utoipa::path(
     post,
     path = "/auth/passkey/register/start",
+    request_body = RegisterStartRequest,
     responses(
         (status = 200, description = "WebAuthn creation challenge"),
         (status = 401, description = "Unauthorized"),
@@ -238,11 +240,10 @@ pub async fn register_start(
     Json(_payload): Json<RegisterStartRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "Passkeys are disabled on this instance",
-        )
-            .into_response();
+        );
     }
     // Passkey enrollment MUST be authenticated: a passkey may only be added to
     // the caller's own account. We derive the target account from the caller's
@@ -251,7 +252,7 @@ pub async fn register_start(
     // could enroll their own authenticator onto the victim's account.
     let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
     let user = match users::Entity::find_by_id(auth.user_id)
@@ -261,14 +262,13 @@ pub async fn register_start(
         .await
     {
         Ok(Some(u)) => u,
-        _ => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        _ => return json_error(StatusCode::NOT_FOUND, "User not found"),
     };
     if !user.email_verified {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "Verify your email before registering a passkey",
-        )
-            .into_response();
+        );
     }
 
     // Deterministic UUID from ID for demo purposes
@@ -287,11 +287,10 @@ pub async fn register_start(
     ) {
         Ok(res) => res,
         Err(_) => {
-            return (
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to start registration",
-            )
-                .into_response();
+            );
         }
     };
 
@@ -307,8 +306,9 @@ pub async fn register_start(
 #[utoipa::path(
     post,
     path = "/auth/passkey/register/finish",
+    request_body = RegisterFinishRequest,
     responses(
-        (status = 200, description = "Passkey registered"),
+        (status = 200, description = "Passkey registered", body = MessageResponse),
         (status = 400, description = "Invalid or expired registration ceremony"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Passkeys are disabled on this instance"),
@@ -324,41 +324,39 @@ pub async fn register_finish(
     Json(payload): Json<RegisterFinishRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "Passkeys are disabled on this instance",
-        )
-            .into_response();
+        );
     }
     // Same authenticated-identity rule as register_start: the credential is bound
     // to the CALLER's account, never to a client-supplied username. The pending
     // challenge is looked up by the authenticated user id.
     let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
     let reg_state = match REG_STATE.remove(&auth.user_id.to_string()) {
         Some(s) => s,
-        None => return (StatusCode::BAD_REQUEST, "Registration state not found").into_response(),
+        None => return json_error(StatusCode::BAD_REQUEST, "Registration state not found"),
     };
 
     let webauthn = get_webauthn();
     let passkey = match webauthn.finish_passkey_registration(&payload.credential, &reg_state) {
         Ok(p) => p,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response();
+            return json_error(StatusCode::BAD_REQUEST, "Failed to finish registration");
         }
     };
 
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to register passkey",
-            )
-                .into_response();
+            );
         }
     };
 
@@ -372,15 +370,14 @@ pub async fn register_finish(
         Ok(Some(user)) if user.token_version == auth.token_version && user.email_verified => user,
         Ok(Some(_)) => {
             let _ = txn.rollback().await;
-            return (
+            return json_error(
                 StatusCode::FORBIDDEN,
                 "Verify your email and start registration again",
-            )
-                .into_response();
+            );
         }
         _ => {
             let _ = txn.rollback().await;
-            return (StatusCode::NOT_FOUND, "User not found").into_response();
+            return json_error(StatusCode::NOT_FOUND, "User not found");
         }
     };
 
@@ -402,7 +399,7 @@ pub async fn register_finish(
         .is_some();
     if already_registered {
         let _ = txn.rollback().await;
-        return (StatusCode::CONFLICT, "This passkey is already registered").into_response();
+        return json_error(StatusCode::CONFLICT, "This passkey is already registered");
     }
 
     let passkey_model = passkeys::ActiveModel {
@@ -419,20 +416,22 @@ pub async fn register_finish(
         .is_err()
     {
         let _ = txn.rollback().await;
-        return (
+        return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to register passkey",
-        )
-            .into_response();
+        );
     }
     if txn.commit().await.is_err() {
-        return (
+        return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to register passkey",
-        )
-            .into_response();
+        );
     }
-    (StatusCode::OK, "Passkey registered").into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "message": "Passkey registered" })),
+    )
+        .into_response()
 }
 
 /// HMAC-SHA256 used to mint a deterministic decoy credential id so unknown
@@ -513,6 +512,7 @@ fn decoy_login_start(username: &str) -> axum::response::Response {
 #[utoipa::path(
     post,
     path = "/auth/passkey/login/start",
+    request_body = LoginStartRequest,
     responses(
         (status = 200, description = "WebAuthn assertion challenge"),
         (status = 403, description = "Passkeys are disabled on this instance"),
@@ -524,11 +524,10 @@ pub async fn login_start(
     Json(payload): Json<LoginStartRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "Passkeys are disabled on this instance",
-        )
-            .into_response();
+        );
     }
     let username = normalize_email(&payload.username);
     if ensure_email_domain_allowed(&state.db, &username)
@@ -569,11 +568,10 @@ pub async fn login_start(
     let (rcr, auth_state) = match webauthn.start_passkey_authentication(&allow_credentials) {
         Ok(res) => res,
         Err(_) => {
-            return (
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to start authentication",
-            )
-                .into_response();
+            );
         }
     };
 
@@ -593,6 +591,7 @@ pub async fn login_start(
 #[utoipa::path(
     post,
     path = "/auth/passkey/login/finish",
+    request_body = LoginFinishRequest,
     responses(
         (status = 200, description = "Authenticated; JWT issued", body = PasskeyAuthResponse),
         (status = 400, description = "Invalid or expired assertion"),
@@ -607,23 +606,22 @@ pub async fn login_finish(
     Json(payload): Json<LoginFinishRequest>,
 ) -> impl IntoResponse {
     if !passkeys_enabled() {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "Passkeys are disabled on this instance",
-        )
-            .into_response();
+        );
     }
     let username = normalize_email(&payload.username);
     let pending = match AUTH_STATE.remove(&username) {
         Some(s) => s,
-        None => return (StatusCode::BAD_REQUEST, "Authentication state not found").into_response(),
+        None => return json_error(StatusCode::BAD_REQUEST, "Authentication state not found"),
     };
 
     let webauthn = get_webauthn();
     let auth_result =
         match webauthn.finish_passkey_authentication(&payload.credential, &pending.state) {
             Ok(res) => res,
-            Err(_) => return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response(),
+            Err(_) => return json_error(StatusCode::UNAUTHORIZED, "Authentication failed"),
         };
 
     let cred_id_str = format!("{:?}", auth_result.cred_id());
@@ -636,7 +634,7 @@ pub async fn login_finish(
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate");
         }
     };
 
@@ -650,7 +648,7 @@ pub async fn login_finish(
         Ok(Some(user)) if user.token_version == pending.token_version => user,
         _ => {
             let _ = txn.rollback().await;
-            return (StatusCode::UNAUTHORIZED, "Authentication state was revoked").into_response();
+            return json_error(StatusCode::UNAUTHORIZED, "Authentication state was revoked");
         }
     };
 
@@ -664,11 +662,10 @@ pub async fn login_finish(
         Ok(Some(passkey)) => passkey,
         _ => {
             let _ = txn.rollback().await;
-            return (
+            return json_error(
                 StatusCode::UNAUTHORIZED,
                 "Authentication factor was revoked",
-            )
-                .into_response();
+            );
         }
     };
 
@@ -678,7 +675,7 @@ pub async fn login_finish(
         Ok(passkey) => passkey,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate");
         }
     };
     stored_passkey.update_credential(&auth_result);
@@ -686,7 +683,7 @@ pub async fn login_finish(
         Ok(blob) => blob,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate");
         }
     };
 
@@ -696,19 +693,19 @@ pub async fn login_finish(
     active_pk.last_used = Set(Some(Utc::now().naive_utc()));
     if active_pk.update(&txn).await.is_err() {
         let _ = txn.rollback().await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate");
     };
 
     let token = match create_jwt(user.id, &user.email, user.token_version) {
         Ok(t) => t,
         Err(_) => {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token").into_response();
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create token");
         }
     };
 
     if txn.commit().await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate");
     }
 
     (
@@ -796,6 +793,7 @@ pub struct DeletePasskeyRequest {
 #[utoipa::path(
     post,
     path = "/auth/passkey/delete",
+    request_body = DeletePasskeyRequest,
     responses(
         (status = 200, description = "Passkey deleted"),
         (status = 400, description = "Cannot delete the account's only login method"),
@@ -937,6 +935,7 @@ pub struct RenamePasskeyRequest {
 #[utoipa::path(
     post,
     path = "/auth/passkey/rename",
+    request_body = RenamePasskeyRequest,
     responses(
         (status = 200, description = "Passkey renamed"),
         (status = 401, description = "Unauthorized"),

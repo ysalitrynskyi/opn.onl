@@ -27,7 +27,7 @@ export const Sparkline = ({
     if (!data || data.length === 0) {
         return (
             <div 
-                className="flex items-center justify-center text-slate-400 text-xs"
+                className="flex items-center justify-center text-slate-500 text-xs"
                 style={{ width, height }}
             >
                 No data

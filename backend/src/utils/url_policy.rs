@@ -146,6 +146,9 @@ pub fn validate_http_https_url(url: &str) -> Result<(), String> {
     let Some(host) = parsed.host_str() else {
         return Err("URL must have a valid host".to_string());
     };
+    if is_reserved_hostname(host) {
+        return Err("Links to reserved example domains are not allowed".to_string());
+    }
     if is_disallowed_hostname(host) {
         return Err("Links to local/internal hosts are not allowed".to_string());
     }

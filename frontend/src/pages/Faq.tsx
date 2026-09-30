@@ -72,7 +72,7 @@ const faqs = [
             },
             {
                 q: "Do you track users who click my links?",
-                a: "We collect basic analytics data (clicks, devices, referrers, city-level location) to provide you with insights. Visitor IP addresses are truncated before storage and anonymized entirely after 13 months. We do NOT track users across websites, sell data to advertisers, or use any third-party tracking scripts."
+                a: "We collect basic analytics data (clicks, devices, referrers, city-level location) to provide you with insights. Visitor IP addresses are truncated before storage and anonymized entirely after 13 months. We do not follow visitors across other websites or sell data to advertisers. If the operator enables Google Analytics, the privacy page says so and says when the tag runs: depending on the deployment, either only after you accept on the cookie banner, or from your first visit until you decline there. A Global Privacy Control signal keeps it off in both cases."
             },
             {
                 q: "What is passkey authentication?",
@@ -214,6 +214,8 @@ export default function Faq() {
                                                 className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden"
                                             >
                                                 <button
+                                                    type="button"
+                                                    aria-expanded={isOpen}
                                                     onClick={() => toggleItem(itemId)}
                                                     className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-slate-50 transition-colors"
                                                 >

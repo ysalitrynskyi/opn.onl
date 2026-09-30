@@ -35,6 +35,7 @@ export default function ForgotPassword() {
       <Helmet>
         <title>Forgot Password - opn.onl</title>
         <meta name="description" content="Reset your opn.onl password" />
+        <meta name="robots" content="noindex, nofollow" />
       </Helmet>
 
       <div className="min-h-[80vh] flex items-center justify-center py-12 px-4">

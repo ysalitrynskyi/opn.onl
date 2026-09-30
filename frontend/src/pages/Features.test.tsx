@@ -101,6 +101,12 @@ describe('Features Page', () => {
             expect(screen.getByRole('heading', { name: /privacy first/i })).toBeInTheDocument();
         });
 
+        it('sums up privacy in the comparison list without the old wording', () => {
+            render(<Features />);
+            expect(screen.getByText('Privacy-first, first-party analytics')).toBeInTheDocument();
+            expect(screen.queryByText(/optional analytics is disclosed/i)).not.toBeInTheDocument();
+        });
+
         it('displays data export feature', () => {
             render(<Features />);
             expect(screen.getByText(/export your data to csv/i)).toBeInTheDocument();

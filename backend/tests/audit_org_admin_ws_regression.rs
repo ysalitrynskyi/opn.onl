@@ -486,8 +486,7 @@ async fn admin_restore_only_reverses_its_personal_link_cascade() {
 
 #[tokio::test]
 async fn self_delete_revokes_credentials_and_preserves_org_links() {
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
+    common::set_env("ENABLE_ACCOUNT_DELETION", "true");
     let (setup_server, db) = spawn_real_app().await;
     let (owner_token, _) = register_verified(&setup_server, &db).await;
     let (target_token, target_id) = register_verified(&setup_server, &db).await;
@@ -1052,8 +1051,7 @@ async fn update_organization_duplicate_slug_returns_409() {
 
 #[tokio::test]
 async fn deleted_members_are_omitted_and_do_not_block_owner_deletion() {
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
+    common::set_env("ENABLE_ACCOUNT_DELETION", "true");
     let (server, db) = spawn_real_app().await;
     let (owner_token, owner_id) = register_verified(&server, &db).await;
     let (admin_token, admin_id) = register_verified(&server, &db).await;

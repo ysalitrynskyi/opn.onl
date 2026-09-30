@@ -516,6 +516,7 @@ pub async fn rate_limit_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_env::set_env;
 
     #[test]
     fn redirect_classifier_separates_codes_from_api_routes() {
@@ -881,8 +882,7 @@ mod tests {
             // Matches the production deployment: proxy headers are trusted.
             // REAL_IP_HEADER is left unset so the cf-connecting-ip default
             // applies.
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            unsafe { std::env::set_var("TRUST_PROXY_HEADERS", "true") };
+            set_env("TRUST_PROXY_HEADERS", "true");
 
             let limiters = Arc::new(RateLimiters {
                 per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),

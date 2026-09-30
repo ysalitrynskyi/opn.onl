@@ -30,19 +30,14 @@ impl RedirectEnv {
     }
 
     fn apply(&self, force_https: &str, base_url: Option<&str>, frontend_url: Option<&str>) {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("FORCE_HTTPS", force_https) };
+        common::set_env("FORCE_HTTPS", force_https);
         match base_url {
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            Some(v) => unsafe { std::env::set_var("BASE_URL", v) },
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            None => unsafe { std::env::remove_var("BASE_URL") },
+            Some(v) => common::set_env("BASE_URL", v),
+            None => common::remove_env("BASE_URL"),
         }
         match frontend_url {
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            Some(v) => unsafe { std::env::set_var("FRONTEND_URL", v) },
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            None => unsafe { std::env::remove_var("FRONTEND_URL") },
+            Some(v) => common::set_env("FRONTEND_URL", v),
+            None => common::remove_env("FRONTEND_URL"),
         }
     }
 }
@@ -57,13 +52,10 @@ impl Drop for RedirectEnv {
 
 fn restore(key: &str, previous: Option<&str>, fallback: Option<&str>) {
     match previous {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        Some(v) => unsafe { std::env::set_var(key, v) },
+        Some(v) => common::set_env(key, v),
         None => match fallback {
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            Some(v) => unsafe { std::env::set_var(key, v) },
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            None => unsafe { std::env::remove_var(key) },
+            Some(v) => common::set_env(key, v),
+            None => common::remove_env(key),
         },
     }
 }

@@ -70,6 +70,19 @@ describe('ErrorBoundary Component', () => {
                    screen.getByText(/oops/i)).toBeInTheDocument();
         });
 
+        it('titles the error screen and keeps it out of search results', () => {
+            render(
+                <ErrorBoundary>
+                    <ThrowError shouldThrow={true} />
+                </ErrorBoundary>
+            );
+
+            // main.tsx drops the failed page's prerendered head tags, so the
+            // fallback has to name itself.
+            expect(document.title).toBe('Something went wrong - opn.onl');
+            expect(document.head.querySelector('meta[name="robots"]')).toHaveAttribute('content', 'noindex, nofollow');
+        });
+
         it('displays error message in fallback', () => {
             render(
                 <ErrorBoundary>

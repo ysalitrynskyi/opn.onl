@@ -57,7 +57,7 @@ export default function Home() {
 
     const features = [
         { icon: Zap, title: 'Rust-fast redirects', desc: 'An Axum + Redis core resolves links in microseconds, built to index billions of rows.' },
-        { icon: Shield, title: 'Privacy by default', desc: 'No cross-site tracking, no third-party pixels. The data your links generate stays yours.' },
+        { icon: Shield, title: 'Privacy by default', desc: 'Click data stays on your instance. We don\'t sell it or follow visitors across other sites.' },
         { icon: BarChart2, title: 'Honest analytics', desc: 'Clicks, geography, devices and referrers — first-party, in real time, no sampling.' },
         { icon: QrCode, title: 'Branded QR codes', desc: 'Every link ships with a QR — add your brand colour and logo, export PNG or SVG.' },
         { icon: Lock, title: 'Password & limits', desc: 'Gate sensitive links behind a password, cap total clicks, or schedule a window.' },
@@ -75,7 +75,7 @@ export default function Home() {
     return (
         <>
             <SEO />
-            <main>
+            <div>
                 {/* ===== Hero ===== */}
                 <section className="relative border-b border-line overflow-hidden">
                     <div className="absolute inset-0 bg-grid-pattern [mask-image:radial-gradient(120%_90%_at_50%_0%,black,transparent)]" />
@@ -93,29 +93,24 @@ export default function Home() {
                             {/* min-w-0: let grid columns shrink below content width on small
                                 screens so the mock-URL truncation can actually engage */}
                             <div className="min-w-0 lg:col-span-7">
-                                <motion.p
-                                    initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease }}
-                                    className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600"
-                                >
+                                {/* No entrance animation on the hero text: it is the largest
+                                    paint on a phone. main.tsx renders over the prerendered
+                                    markup, and an opacity-0 start hid the text again until
+                                    the JS bundle had loaded and the fade had run. */}
+                                <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600">
                                     Open source · self-hostable · AGPL-3.0
-                                </motion.p>
+                                </p>
 
-                                <motion.h1
-                                    initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease, delay: 0.05 }}
-                                    className="mt-5 font-display font-extrabold text-ink tracking-tightest leading-[0.98] text-[clamp(2.6rem,6vw,4.75rem)]"
-                                >
+                                <h1 className="mt-5 font-display font-extrabold text-ink tracking-tightest leading-[0.98] text-[clamp(2.6rem,6vw,4.75rem)]">
                                     Short links that
                                     <br />
                                     answer to <span className="text-primary-600">you.</span>
-                                </motion.h1>
+                                </h1>
 
-                                <motion.p
-                                    initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease, delay: 0.12 }}
-                                    className="mt-6 text-lg sm:text-xl text-muted leading-relaxed max-w-[52ch]"
-                                >
+                                <p className="mt-6 text-lg sm:text-xl text-muted leading-relaxed max-w-[52ch]">
                                     A privacy-first URL shortener you actually own. Shorten, protect and
                                     measure every link — on your own server, with no one watching over your shoulder.
-                                </motion.p>
+                                </p>
 
                                 {/* Shortener instrument */}
                                 <motion.div
@@ -231,7 +226,7 @@ export default function Home() {
                             <span>React 19</span><span className="text-line2">/</span>
                             <span>PostgreSQL</span><span className="text-line2">/</span>
                             <span>Self-hosted</span><span className="text-line2">/</span>
-                            <span>No tracking</span>
+                            <span>No ads</span>
                         </div>
                     </div>
                 </section>
@@ -295,11 +290,11 @@ export default function Home() {
                             </div>
                             <div className="border-t lg:border-t-0 lg:border-l border-white/10 p-8 sm:p-12 lg:p-14 flex items-center">
                                 <pre className="w-full font-mono text-sm leading-7 text-white/90 overflow-x-auto">
-<span className="text-white/40"># clone & launch</span>{'\n'}
+<span className="text-white/60"># clone & launch</span>{'\n'}
 <span className="text-primary-300">git</span> clone https://github.com/ysalitrynskyi/opn.onl{'\n'}
 <span className="text-primary-300">cd</span> opn.onl{'\n'}
 <span className="text-primary-300">docker</span> compose up -d{'\n\n'}
-<span className="text-success">✓</span> <span className="text-white/50">api, web, postgres, redis — live</span>
+<span className="text-emerald-400">✓</span> <span className="text-white/60">api, web, postgres, redis — live</span>
                                 </pre>
                             </div>
                         </div>
@@ -364,8 +359,8 @@ export default function Home() {
                                     <pre className="overflow-x-auto font-mono text-[13px] leading-7 text-ink">
 <span className="text-faint"># shorten from anywhere</span>{'\n'}
 <span className="text-primary-600">curl</span> -X POST l.opn.onl/links \{'\n'}
-{'  '}-H <span className="text-emerald-600">"Authorization: Bearer opn_•••"</span> \{'\n'}
-{'  '}-d <span className="text-emerald-600">{'\'{"original_url":"https://…"}\''}</span>
+{'  '}-H <span className="text-emerald-700">"Authorization: Bearer opn_•••"</span> \{'\n'}
+{'  '}-d <span className="text-emerald-700">{'\'{"original_url":"https://…"}\''}</span>
                                     </pre>
                                     <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-4 font-mono text-[11px]">
                                         <span className="text-faint">mcp tools:</span>
@@ -411,7 +406,7 @@ export default function Home() {
                         <Link to="/terms" className="ml-1 underline decoration-line2 underline-offset-2 hover:text-muted">Terms apply</Link>.
                     </p>
                 </section>
-            </main>
+            </div>
         </>
     );
 }

@@ -14,6 +14,7 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::{link_tags, links, org_members, tags};
 use crate::utils::time::utc_rfc3339;
+use crate::utils::validation::{check_name, check_optional_color};
 
 // ============= DTOs =============
 
@@ -147,7 +148,8 @@ async fn count_active_tagged_links(db: &sea_orm::DatabaseConnection, tag_id: i32
         (status = 400, description = "Invalid request"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn create_tag(
     State(state): State<AppState>,
@@ -175,9 +177,18 @@ pub async fn create_tag(
         ));
     }
 
+    if let Err(e) = check_name("Tag name", &payload.name)
+        .and_then(|()| check_optional_color(payload.color.as_deref()))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
+
     let tag = tags::ActiveModel {
         name: Set(payload.name.clone()),
-        color: Set(payload.color.clone()),
+        color: Set(payload.color.clone().filter(|c| !c.is_empty())),
         user_id: Set(if payload.org_id.is_some() {
             None
         } else {
@@ -217,7 +228,8 @@ pub async fn create_tag(
         (status = 200, description = "List of tags", body = Vec<TagResponse>),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_tags(
     State(state): State<AppState>,
@@ -317,7 +329,8 @@ pub async fn get_tags(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_tag(
     State(state): State<AppState>,
@@ -383,7 +396,8 @@ pub async fn get_tag(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_tag(
     State(state): State<AppState>,
@@ -423,13 +437,25 @@ pub async fn update_tag(
         ));
     }
 
+    if let Err(e) = payload
+        .name
+        .as_deref()
+        .map_or(Ok(()), |name| check_name("Tag name", name))
+        .and_then(|()| check_optional_color(payload.color.as_deref()))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
+
     let mut tag: tags::ActiveModel = tag.into();
 
     if let Some(name) = payload.name {
         tag.name = Set(name);
     }
     if let Some(color) = payload.color {
-        tag.color = Set(Some(color));
+        tag.color = Set(Some(color).filter(|c| !c.is_empty()));
     }
 
     let tag = tag.update(&state.db).await.map_err(|_| {
@@ -465,7 +491,8 @@ pub async fn update_tag(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn delete_tag(
     State(state): State<AppState>,
@@ -531,7 +558,8 @@ pub async fn delete_tag(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn add_tags_to_link(
     State(state): State<AppState>,
@@ -643,7 +671,8 @@ pub async fn add_tags_to_link(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn remove_tags_from_link(
     State(state): State<AppState>,
@@ -728,7 +757,8 @@ pub async fn remove_tags_from_link(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Tag not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_links_by_tag(
     State(state): State<AppState>,

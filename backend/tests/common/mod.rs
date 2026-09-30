@@ -22,6 +22,26 @@ pub async fn setup_test_db() -> DatabaseConnection {
     db
 }
 
+/// Set a process environment variable from a test.
+///
+/// `set_var` and `remove_var` are `unsafe` since edition 2024 because another
+/// thread may read the environment through libc (`getenv`) while it changes.
+/// The app reads its settings through `std::env`, which serialises with these
+/// calls. What is left is a libc read on another test thread, a DNS lookup for
+/// instance. The suite accepts that, as it did before the edition change.
+#[allow(dead_code)]
+pub fn set_env<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+    // SAFETY: test-only; see the function comment.
+    unsafe { env::set_var(key, value) };
+}
+
+/// Remove a process environment variable from a test. See [`set_env`].
+#[allow(dead_code)]
+pub fn remove_env<K: AsRef<std::ffi::OsStr>>(key: K) {
+    // SAFETY: test-only; see [`set_env`].
+    unsafe { env::remove_var(key) };
+}
+
 /// Spawn the REAL application router (all routes, all middleware) backed by
 /// the Postgres database from `DATABASE_URL`, plus a handle to that database
 /// for test fixtures. This is what integration tests should use — never a
@@ -31,13 +51,10 @@ pub async fn spawn_real_app() -> (axum_test::TestServer, DatabaseConnection) {
     // Pin environment-dependent middleware before dotenvy runs so a developer
     // .env (e.g. FORCE_HTTPS=true) can't change test behavior: dotenvy never
     // overrides variables that are already set.
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("FORCE_HTTPS", "false") };
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("TRUST_PROXY_HEADERS", "false") };
+    set_env("FORCE_HTTPS", "false");
+    set_env("TRUST_PROXY_HEADERS", "false");
     if std::env::var("JWT_SECRET").is_err() {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef") };
+        set_env("JWT_SECRET", "integration-test-secret-0123456789abcdef");
     }
 
     let db = setup_test_db().await;
@@ -87,13 +104,10 @@ async fn spawn_real_app_ws_with_state(
     DatabaseConnection,
     std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
 ) {
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("FORCE_HTTPS", "false") };
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("TRUST_PROXY_HEADERS", "false") };
+    set_env("FORCE_HTTPS", "false");
+    set_env("TRUST_PROXY_HEADERS", "false");
     if std::env::var("JWT_SECRET").is_err() {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("JWT_SECRET", "integration-test-secret-0123456789abcdef") };
+        set_env("JWT_SECRET", "integration-test-secret-0123456789abcdef");
     }
 
     let db = setup_test_db().await;

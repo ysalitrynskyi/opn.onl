@@ -6,7 +6,7 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, shortLinkHost } from '../config/api';
+import { API_ENDPOINTS, authFetch, responseError, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { isSafeHttpUrl } from '../utils';
@@ -443,8 +443,7 @@ export default function Settings() {
                 }),
             });
             if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(txt || 'Failed to save bio settings');
+                throw new Error(await responseError(res, 'Failed to save bio settings'));
             }
             const data = await res.json();
             setBioUsername(data.bio_username || '');
@@ -468,8 +467,7 @@ export default function Settings() {
                 body: JSON.stringify({ name: newKeyName || undefined }),
             });
             if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(txt || 'Failed to create API key');
+                throw new Error(await responseError(res, 'Failed to create API key'));
             }
             const data = await res.json();
             setCreatedApiKey(data.key);
@@ -501,8 +499,7 @@ export default function Settings() {
         try {
             const res = await authFetch(API_ENDPOINTS.apiKey(id), { method: 'DELETE' });
             if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(txt || 'Failed to revoke API key');
+                throw new Error(await responseError(res, 'Failed to revoke API key'));
             }
             setApiKeys(prev => prev.filter(k => k.id !== id));
             setSuccess('API key revoked');
@@ -1053,7 +1050,7 @@ export default function Settings() {
                             </form>
                             <p className="text-xs text-faint">
                                 Use with the{' '}
-                                <a href="https://github.com/ysalitrynskyi/opn-mcp" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">opn.onl MCP server</a>{' '}
+                                <a href="https://github.com/ysalitrynskyi/opn-mcp" target="_blank" rel="noreferrer" className="text-primary-600 underline decoration-primary-300 underline-offset-2 hover:decoration-primary-600">opn.onl MCP server</a>{' '}
                                 or any API client: <code className="font-mono">Authorization: Bearer opn_…</code>
                             </p>
                         </div>
@@ -1140,7 +1137,7 @@ export default function Settings() {
                                 </div>
                                 <div>
                                     <h2 className="font-display text-lg font-bold text-danger tracking-tight">Danger Zone</h2>
-                                    <p className="text-sm text-danger/80">Irreversible actions</p>
+                                    <p className="text-sm text-danger">Irreversible actions</p>
                                 </div>
                             </div>
                         </div>
@@ -1160,7 +1157,7 @@ export default function Settings() {
                                 <form onSubmit={handleDeleteAccount} className="space-y-4">
                                     <div className="rounded-xl border border-danger/30 bg-danger/5 p-4">
                                         <p className="text-sm font-medium text-danger">This action cannot be undone!</p>
-                                        <p className="text-sm text-danger/80">All your links and data will be permanently deleted.</p>
+                                        <p className="text-sm text-danger">All your links and data will be permanently deleted.</p>
                                     </div>
                                     <input
                                         type="password"

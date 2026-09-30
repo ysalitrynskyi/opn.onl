@@ -15,6 +15,7 @@ use validator::Validate;
 
 use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
+use crate::handlers::json_error;
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
@@ -272,8 +273,33 @@ fn contains_nested_data_url(url_lower: &str) -> bool {
         .any(|(i, _)| i > 0 && matches!(url_lower.as_bytes()[i - 1], b'=' | b'?' | b'&' | b'#'))
 }
 
+/// Longest title and notes a link may carry. Both were unbounded, so one
+/// request could store megabytes of text per link.
+const MAX_TITLE_CHARS: usize = 500;
+const MAX_NOTES_CHARS: usize = 5000;
+
+fn check_link_text(title: Option<&str>, notes: Option<&str>) -> Result<(), String> {
+    if title.is_some_and(|t| t.chars().count() > MAX_TITLE_CHARS) {
+        return Err(format!(
+            "Title must be at most {MAX_TITLE_CHARS} characters"
+        ));
+    }
+    if notes.is_some_and(|n| n.chars().count() > MAX_NOTES_CHARS) {
+        return Err(format!(
+            "Notes must be at most {MAX_NOTES_CHARS} characters"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate URL is http/https only and sanitize if enabled
 fn validate_url(url: &str) -> Result<String, String> {
+    // Raw CR/LF (and other controls) survive `Url::parse` and then break the
+    // redirect response, so one visit can be retried into several clicks.
+    if url.chars().any(|c| c.is_ascii_control()) {
+        return Err("URL contains control characters".to_string());
+    }
+
     // Must be a valid URL
     let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
 
@@ -286,6 +312,9 @@ fn validate_url(url: &str) -> Result<String, String> {
     let Some(host) = parsed.host_str() else {
         return Err("URL must have a valid host".to_string());
     };
+    if crate::utils::url_policy::is_reserved_hostname(host) {
+        return Err("Links to reserved example domains are not allowed".to_string());
+    }
     if crate::utils::url_policy::is_disallowed_hostname(host) {
         return Err("Links to local/internal hosts are not allowed".to_string());
     }
@@ -421,10 +450,14 @@ async fn resolve_and_validate(url: &str) -> Result<ValidatedTarget, String> {
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             (vec![std::net::SocketAddr::new(ip, port)], true)
         } else {
-            let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
-                .await
-                .map_err(|_| "Could not resolve host".to_string())?
-                .collect();
+            let resolved: Vec<std::net::SocketAddr> = tokio::time::timeout(
+                DESTINATION_DNS_TIMEOUT,
+                tokio::net::lookup_host((host, port)),
+            )
+            .await
+            .map_err(|_| "Could not resolve host".to_string())?
+            .map_err(|_| "Could not resolve host".to_string())?
+            .collect();
             (resolved, false)
         };
 
@@ -442,6 +475,59 @@ async fn resolve_and_validate(url: &str) -> Result<ValidatedTarget, String> {
         addrs,
         is_literal_ip,
     })
+}
+
+/// Same address check as `/links/health-check`, applied when a destination is
+/// stored (create, update, bulk, clone, routing rules). Literal private IPs
+/// are already refused by `validate_url`. A name that resolves to any private
+/// or internal address is refused too (`127.0.0.1.nip.io` and friends).
+///
+/// A lookup that fails is not a refusal. NXDOMAIN and a resolver blip share
+/// one error, and refusing both would reject not-yet-published hostnames and
+/// make every create depend on DNS being up. The click redirect is not a
+/// server-side fetch and is not re-resolved.
+///
+/// The lookup is bounded by `DESTINATION_DNS_TIMEOUT`, so a slow resolver
+/// delays a write by at most that long instead of hanging it.
+async fn ensure_public_destination(url: &str) -> Result<(), String> {
+    match destination_host(url) {
+        Some((host, port)) if host_resolves_private(&host, port).await == Some(true) => {
+            Err(PRIVATE_DESTINATION.to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// How long a destination check waits for DNS before letting the write through.
+const DESTINATION_DNS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+const PRIVATE_DESTINATION: &str = "URL resolves to a disallowed (internal/private) address";
+
+/// The DNS name and port a destination connects to. `None` for a URL without a
+/// host or with a literal IP, which `validate_url` already checks.
+fn destination_host(url: &str) -> Option<(String, u16)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let port = parsed.port_or_known_default()?;
+    match parsed.host()? {
+        url::Host::Domain(domain) => Some((domain.to_string(), port)),
+        url::Host::Ipv4(_) | url::Host::Ipv6(_) => None,
+    }
+}
+
+/// Whether any address `host` resolves to is private or internal. `None` when
+/// the lookup fails, returns nothing, or takes longer than
+/// `DESTINATION_DNS_TIMEOUT`.
+async fn host_resolves_private(host: &str, port: u16) -> Option<bool> {
+    let lookup = tokio::time::timeout(
+        DESTINATION_DNS_TIMEOUT,
+        tokio::net::lookup_host((host, port)),
+    )
+    .await;
+    let addrs: Vec<std::net::SocketAddr> = lookup.ok()?.ok()?.collect();
+    if addrs.is_empty() {
+        return None;
+    }
+    Some(addrs.iter().any(|sa| is_disallowed_ip(&sa.ip())))
 }
 
 /// Build a reqwest client that connects **only** to the validated addresses for
@@ -627,6 +713,9 @@ pub struct UpdateLinkRequest {
     pub remove_password: Option<bool>,
     pub remove_expiration: Option<bool>,
     pub notes: Option<String>,
+    /// Accepted so a client that echoes the current code is not ignored
+    /// silently. A different value is rejected: the code is not editable.
+    pub custom_alias: Option<String>,
     pub folder_id: Option<i32>,
     pub starts_at: Option<DateTime<Utc>>,
     pub max_clicks: Option<i32>,
@@ -1070,6 +1159,11 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 // ============= Handlers =============
 
 /// Create a new shortened link
+///
+/// Credentials are optional. Without them the link is anonymous and cannot be
+/// put in a folder, tagged, or owned by an organization. An account can shorten
+/// the same URL at most 10 times in 10 minutes; the next request is answered
+/// 429 with only an `error` field and no `Retry-After`.
 #[utoipa::path(
     post,
     path = "/links",
@@ -1079,9 +1173,9 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
         (status = 400, description = "Invalid request"),
         (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
-        (status = 429, description = "Same URL shortened too many times"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security((), ("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn create_link(
     State(state): State<AppState>,
@@ -1095,6 +1189,9 @@ pub async fn create_link(
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
+    if let Err(e) = ensure_public_destination(&validated_url).await {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
 
     // An empty password is no password. The unlock form will not submit an
     // empty field, so a link "protected" by "" could never be opened from the
@@ -1287,6 +1384,9 @@ pub async fn create_link(
             }),
         )
             .into_response();
+    }
+    if let Err(e) = check_link_text(payload.title.as_deref(), payload.notes.as_deref()) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
     if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at)
         && starts >= expires
@@ -1651,6 +1751,90 @@ pub struct RedirectQuery {
 }
 
 /// Redirect to original URL
+/// The answer for a short code that will not redirect: missing (404) or no
+/// longer live (410). A browser gets a small branded page instead of a bare
+/// line of text; anything that does not ask for HTML (API clients, link
+/// unfurlers, curl) still gets the plain reason. Not cached, since a
+/// scheduled link becomes live later.
+fn dead_link(headers: &HeaderMap, status: StatusCode, reason: &str) -> axum::response::Response {
+    use axum::http::header;
+
+    let wants_html = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
+    if !wants_html {
+        return (
+            status,
+            [(header::CACHE_CONTROL, "no-store")],
+            reason.to_string(),
+        )
+            .into_response();
+    }
+
+    let home = std::env::var("FRONTEND_URL")
+        .ok()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+        .unwrap_or_else(|| "/".to_string());
+    let site = url::Url::parse(&home)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "opn.onl".to_string());
+    let title = if status == StatusCode::NOT_FOUND {
+        "Link not found"
+    } else {
+        "Link unavailable"
+    };
+    let message = if status == StatusCode::NOT_FOUND {
+        "There is no short link at this address. Check it for typos, or ask whoever shared it."
+            .to_string()
+    } else {
+        format!("{}.", reason.trim_end_matches('.'))
+    };
+    let html = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{title} · {site}</title>
+<style>
+body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7fb; color: #1d2330; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+main {{ box-sizing: border-box; width: calc(100% - 2rem); max-width: 28rem; padding: 2rem; background: #fff; border: 1px solid #e2e5ee; border-radius: 1rem; text-align: center; }}
+.brand {{ font-weight: 700; color: #2d58cc; text-decoration: none; }}
+h1 {{ font-size: 1.5rem; line-height: 1.25; margin: 1.25rem 0 .5rem; }}
+p {{ margin: 0 0 1.5rem; color: #4a5160; }}
+.home {{ display: inline-block; padding: .625rem 1.25rem; border-radius: .5rem; background: #2d58cc; color: #fff; text-decoration: none; font-weight: 600; }}
+</style>
+</head>
+<body>
+<main>
+<a class="brand" href="{home}">{site}</a>
+<h1>{title}</h1>
+<p>{message}</p>
+<a class="home" href="{home}">Go to the home page</a>
+</main>
+</body>
+</html>
+"#,
+        title = title,
+        site = crate::utils::html_escape(&site),
+        home = crate::utils::html_escape(&home),
+        message = crate::utils::html_escape(&message),
+    );
+    (
+        status,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        html,
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/{code}",
@@ -1724,8 +1908,11 @@ pub async fn redirect_link(
                                         error
                                     );
                                 }
-                                return (StatusCode::GONE, "This link has been disabled")
-                                    .into_response();
+                                return dead_link(
+                                    &headers,
+                                    StatusCode::GONE,
+                                    "This link has been disabled",
+                                );
                             }
 
                             let now = chrono::Utc::now().timestamp();
@@ -1733,14 +1920,17 @@ pub async fn redirect_link(
                             if let Some(starts_at) = cached.starts_at
                                 && now < starts_at
                             {
-                                return (StatusCode::GONE, "Link is scheduled to activate later")
-                                    .into_response();
+                                return dead_link(
+                                    &headers,
+                                    StatusCode::GONE,
+                                    "Link is scheduled to activate later",
+                                );
                             }
 
                             if let Some(expires_at) = cached.expires_at
                                 && now > expires_at
                             {
-                                return (StatusCode::GONE, "Link has expired").into_response();
+                                return dead_link(&headers, StatusCode::GONE, "Link has expired");
                             }
 
                             // Record click using buffer (synchronous, non-blocking).
@@ -1790,14 +1980,14 @@ pub async fn redirect_link(
         // Check if link is active
         if !link.is_active() {
             let reason = link.inactive_reason().unwrap_or("Link is inactive");
-            return (StatusCode::GONE, reason).into_response();
+            return dead_link(&headers, StatusCode::GONE, reason);
         }
 
         // Enforce content blocking at redirect time so a block applied after the
         // link was created is retroactive. Runs before the caching block below, so
         // a blocked link is never (re)written to the cache.
         if check_blocked(&state.db, &link.original_url).await.is_err() {
-            return (StatusCode::GONE, "This link has been disabled").into_response();
+            return dead_link(&headers, StatusCode::GONE, "This link has been disabled");
         }
 
         // Advisory fast-fail for capped links, e.g. so an exhausted link 410s
@@ -1815,7 +2005,7 @@ pub async fn redirect_link(
             } else {
                 "Link has reached maximum clicks"
             };
-            return (StatusCode::GONE, msg).into_response();
+            return dead_link(&headers, StatusCode::GONE, msg);
         }
 
         let mut active_unlock = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
@@ -1949,7 +2139,7 @@ pub async fn redirect_link(
 
             // A routing rule must not be able to bypass the blocklist.
             if check_blocked(&state.db, &destination).await.is_err() {
-                return (StatusCode::GONE, "This link has been disabled").into_response();
+                return dead_link(&headers, StatusCode::GONE, "This link has been disabled");
             }
             Some(destination)
         } else {
@@ -1975,7 +2165,7 @@ pub async fn redirect_link(
                     } else {
                         "Link has reached maximum clicks"
                     };
-                    return (StatusCode::GONE, msg).into_response();
+                    return dead_link(&headers, StatusCode::GONE, msg);
                 }
                 // Fail closed: a capped (possibly burn) link must never
                 // redirect without its click being counted.
@@ -2044,7 +2234,7 @@ pub async fn redirect_link(
 
         destination_redirect(&link.original_url)
     } else {
-        (StatusCode::NOT_FOUND, "Link not found").into_response()
+        dead_link(&headers, StatusCode::NOT_FOUND, "Link not found")
     }
 }
 
@@ -2318,7 +2508,8 @@ pub async fn verify_link_password(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_qr_code(
     State(state): State<AppState>,
@@ -2329,7 +2520,7 @@ pub async fn get_qr_code(
     // Verify authentication
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
     let link = links::Entity::find_by_id(id)
@@ -2357,11 +2548,10 @@ pub async fn get_qr_code(
         };
 
         if !has_access {
-            return (
+            return json_error(
                 StatusCode::FORBIDDEN,
                 "You don't have permission to access this link",
-            )
-                .into_response();
+            );
         }
 
         let url = format!("{}/{}", get_base_url(), link.code);
@@ -2385,14 +2575,13 @@ pub async fn get_qr_code(
                 bytes,
             )
                 .into_response(),
-            None => (
+            None => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to generate QR code",
-            )
-                .into_response(),
+            ),
         }
     } else {
-        (StatusCode::NOT_FOUND, "Link not found").into_response()
+        json_error(StatusCode::NOT_FOUND, "Link not found")
     }
 }
 
@@ -3030,7 +3219,7 @@ async fn link_for_owner(db: &DatabaseConnection, id: i32, user_id: i32) -> Optio
         (status = 403, description = "Forbidden"),
     ),
     tag = "Links",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_routing_rules(
     State(state): State<AppState>,
@@ -3039,14 +3228,13 @@ pub async fn get_routing_rules(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
     if link_for_owner(&state.db, id, user_id).await.is_none() {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "You don't have permission to access this link",
-        )
-            .into_response();
+        );
     }
     let rules = crate::entity::routing_rules::Entity::find()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
@@ -3083,7 +3271,7 @@ pub async fn get_routing_rules(
         (status = 403, description = "Forbidden"),
     ),
     tag = "Links",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn replace_routing_rules(
     State(state): State<AppState>,
@@ -3093,16 +3281,15 @@ pub async fn replace_routing_rules(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
     let link = match link_for_owner(&state.db, id, user_id).await {
         Some(l) => l,
         None => {
-            return (
+            return json_error(
                 StatusCode::FORBIDDEN,
                 "You don't have permission to modify this link",
-            )
-                .into_response();
+            );
         }
     };
 
@@ -3114,22 +3301,20 @@ pub async fn replace_routing_rules(
         && link.user_id != Some(user_id)
         && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
     {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "You don't have permission to modify this link",
-        )
-            .into_response();
+        );
     }
 
     if payload.rules.len() > MAX_ROUTING_RULES {
-        return (
+        return json_error(
             StatusCode::BAD_REQUEST,
             format!(
                 "A link can have at most {} routing rules",
                 MAX_ROUTING_RULES
             ),
-        )
-            .into_response();
+        );
     }
 
     // Validate every destination (format + blocklist) before persisting anything.
@@ -3137,21 +3322,23 @@ pub async fn replace_routing_rules(
     for rule in &payload.rules {
         let url = match validate_url(&rule.destination_url) {
             Ok(u) => u,
-            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+            Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
         };
+        if let Err(e) = ensure_public_destination(&url).await {
+            return json_error(StatusCode::BAD_REQUEST, e);
+        }
         if check_blocked(&state.db, &url).await.is_err() {
-            return (
+            return json_error(
                 StatusCode::BAD_REQUEST,
                 "A destination URL is blocked".to_string(),
-            )
-                .into_response();
+            );
         }
         validated.push((url, rule));
     }
 
     let txn = match state.db.begin().await {
         Ok(t) => t,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response(),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
     if crate::entity::routing_rules::Entity::delete_many()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
@@ -3160,7 +3347,7 @@ pub async fn replace_routing_rules(
         .is_err()
     {
         let _ = txn.rollback().await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
     }
     for (url, rule) in &validated {
         let am = crate::entity::routing_rules::ActiveModel {
@@ -3176,11 +3363,11 @@ pub async fn replace_routing_rules(
         };
         if am.insert(&txn).await.is_err() {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
         }
     }
     if txn.commit().await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
     }
 
     // A stale fast-path entry would bypass the newly saved routing rules.
@@ -3188,11 +3375,10 @@ pub async fn replace_routing_rules(
         .await
         .is_err()
     {
-        return (
+        return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Routing rules saved, but cache invalidation failed",
-        )
-            .into_response();
+        );
     }
 
     (
@@ -3213,7 +3399,8 @@ pub async fn replace_routing_rules(
         (status = 200, description = "The caller's non-deleted links (limit defaults to 1000, maximum 1000)", body = Vec<LinkResponse>),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_user_links(
     State(state): State<AppState>,
@@ -3247,7 +3434,7 @@ pub async fn get_user_links(
         link_query = link_query.filter(links::Column::OrgId.eq(org_id));
     }
 
-    // Search by URL or code. `contains` becomes LIKE '%…%' / ILIKE, which
+    // Search by URL, code, title, or notes. `contains` becomes LIKE '%…%' / ILIKE, which
     // cannot use btree idx_links_original_url (or any btree). A pg_trgm GIN
     // index is the real answer if this filter becomes hot; do not add another
     // btree expecting it to serve a leading wildcard.
@@ -3256,6 +3443,7 @@ pub async fn get_user_links(
             Condition::any()
                 .add(links::Column::OriginalUrl.contains(&search))
                 .add(links::Column::Code.contains(&search))
+                .add(links::Column::Title.contains(&search))
                 .add(links::Column::Notes.contains(&search)),
         );
     }
@@ -3335,7 +3523,8 @@ pub async fn get_user_links(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn delete_link(
     State(state): State<AppState>,
@@ -3441,7 +3630,8 @@ pub async fn delete_link(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_link(
     State(state): State<AppState>,
@@ -3522,6 +3712,10 @@ pub async fn update_link(
                 .into_response();
         }
 
+        if let Err(e) = check_link_text(payload.title.as_deref(), payload.notes.as_deref()) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+
         if let Some(ref url) = payload.original_url {
             // Validate URL format and sanitize
             let validated_url = match validate_url(url) {
@@ -3535,7 +3729,22 @@ pub async fn update_link(
             if let Err(e) = check_blocked(&state.db, &validated_url).await {
                 return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
             }
+            if let Err(e) = ensure_public_destination(&validated_url).await {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            }
             active_link.original_url = Set(validated_url);
+        }
+
+        if let Some(alias) = payload.custom_alias.as_deref().filter(|a| !a.is_empty())
+            && alias != link.code
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "The short code cannot be changed".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         if payload.remove_expiration == Some(true) {
@@ -3783,7 +3992,8 @@ pub async fn update_link(
         (status = 400, description = "Batch too large"),
         (status = 401, description = "Authentication required"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn bulk_create_links(
     State(state): State<AppState>,
@@ -3865,6 +4075,27 @@ pub async fn bulk_create_links(
         remaining_budget = Some(cap.saturating_sub(existing));
     }
 
+    // Resolve each distinct destination host once, a few at a time, instead of
+    // one lookup per URL in sequence: 500 URLs at the DNS timeout each would
+    // hold the request for minutes.
+    let private_hosts: std::collections::HashSet<(String, u16)> = {
+        use futures::StreamExt;
+        let hosts: std::collections::HashSet<(String, u16)> = payload
+            .urls
+            .iter()
+            .filter_map(|url| destination_host(url))
+            .collect();
+        futures::stream::iter(hosts)
+            .map(|(host, port)| async move {
+                let private = host_resolves_private(&host, port).await == Some(true);
+                private.then_some((host, port))
+            })
+            .buffer_unordered(16)
+            .filter_map(std::future::ready)
+            .collect()
+            .await
+    };
+
     for url in payload.urls {
         // Charge the per-IP create budget per link. A bulk request is not a
         // discount: once the hourly create budget is spent, the remaining URLs
@@ -3888,6 +4119,10 @@ pub async fn bulk_create_links(
         // message, so a bulk upload tells the user which links were rejected why.
         if let Err(e) = validate_url(&url) {
             errors.push(format!("{}: {}", url, e));
+            continue;
+        }
+        if destination_host(&url).is_some_and(|host| private_hosts.contains(&host)) {
+            errors.push(format!("{}: {}", url, PRIVATE_DESTINATION));
             continue;
         }
 
@@ -4013,7 +4248,8 @@ pub async fn bulk_create_links(
         (status = 200, description = "Links deleted", body = BulkDeleteResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn bulk_delete_links(
     State(state): State<AppState>,
@@ -4096,7 +4332,8 @@ pub async fn bulk_delete_links(
         (status = 200, description = "Links updated", body = BulkUpdateResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn bulk_update_links(
     State(state): State<AppState>,
@@ -4208,7 +4445,8 @@ pub async fn bulk_update_links(
         (status = 200, description = "CSV file", content_type = "text/csv"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn export_links_csv(
     State(state): State<AppState>,
@@ -4216,7 +4454,7 @@ pub async fn export_links_csv(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
     let user_links = links::Entity::find()
@@ -4309,7 +4547,8 @@ pub struct CloneLinkResponse {
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn clone_link(
     State(state): State<AppState>,
@@ -4345,6 +4584,15 @@ pub async fn clone_link(
                 }),
             )
                 .into_response();
+        }
+
+        // Re-check the destination. A link stored before this rule, or written
+        // straight into the database, must not be cloned into a fresh code.
+        if let Err(e) = validate_url(&link.original_url) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+        if let Err(e) = ensure_public_destination(&link.original_url).await {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
 
         // Clone inserts a new row, so it must honour the same per-user cap as
@@ -4471,7 +4719,8 @@ pub struct PinResponse {
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn toggle_pin(
     State(state): State<AppState>,
@@ -4645,7 +4894,8 @@ pub struct UrlHealthResponse {
         (status = 400, description = "Invalid URL"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn check_url_health(
     State(state): State<AppState>,
@@ -4667,8 +4917,9 @@ pub async fn check_url_health(
             .into_response();
     }
 
-    // Validate URL first
-    if validate_url(&payload.url).is_err() {
+    // Validate URL first. Keep the specific reason (raw IP, reserved domain,
+    // control characters) instead of collapsing every refusal into one phrase.
+    if let Err(e) = validate_url(&payload.url) {
         return (
             StatusCode::BAD_REQUEST,
             Json(UrlHealthResponse {
@@ -4676,7 +4927,7 @@ pub async fn check_url_health(
                 reachable: false,
                 status_code: None,
                 response_time_ms: None,
-                error: Some("Invalid URL format".to_string()),
+                error: Some(e),
             }),
         )
             .into_response();
@@ -4846,7 +5097,8 @@ pub struct SparklineResponse {
         (status = 200, description = "Sparkline data", body = SparklineResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_sparklines(
     State(state): State<AppState>,
@@ -5002,6 +5254,9 @@ fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
 /// visitor's IP (the link-in-bio privacy leak). The fetch is SSRF-guarded
 /// (validated + DNS-pinned, redirects re-validated), restricted to successful
 /// http(s) responses carrying an allowed raster image type, and size-capped.
+///
+/// The URL must also be the `avatar_url` of a non-deleted user whose bio is
+/// public. Otherwise this route is an open fetch.
 #[utoipa::path(
     get,
     path = "/api/bio/avatar",
@@ -5009,12 +5264,14 @@ fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
     responses(
         (status = 200, description = "Proxied raster avatar bytes", content_type = "image/png"),
         (status = 400, description = "Invalid avatar URL"),
+        (status = 404, description = "URL is not the avatar of a public bio"),
         (status = 415, description = "Avatar is not a supported image type"),
         (status = 502, description = "Could not fetch avatar"),
     ),
     tag = "Bio"
 )]
 pub async fn proxy_bio_avatar(
+    State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<AvatarProxyQuery>,
 ) -> axum::response::Response {
     use axum::http::header;
@@ -5022,6 +5279,26 @@ pub async fn proxy_bio_avatar(
 
     if validate_url(&query.url).is_err() {
         return (StatusCode::BAD_REQUEST, "Invalid avatar URL").into_response();
+    }
+
+    if !crate::handlers::bio::link_in_bio_enabled() {
+        return (StatusCode::NOT_FOUND, "Avatar not found").into_response();
+    }
+
+    // Exact column match: the bio page requests the URL it just received.
+    let allowed = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::BioEnabled.eq(true))
+        .filter(users::Column::AvatarUrl.eq(&query.url))
+        .limit(1)
+        .one(&state.db)
+        .await;
+    match allowed {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "Avatar not found").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Could not check avatar").into_response();
+        }
     }
 
     let response = match ssrf_guarded_fetch(reqwest::Method::GET, &query.url, None).await {
@@ -5088,7 +5365,8 @@ pub async fn proxy_bio_avatar(
         (status = 400, description = "Invalid URL"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_link_preview_metadata(
     State(state): State<AppState>,

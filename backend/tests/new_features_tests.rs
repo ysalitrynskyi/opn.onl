@@ -118,16 +118,13 @@ async fn clone_enforces_max_links_per_user() {
     .await;
 
     let prev = std::env::var("MAX_LINKS_PER_USER").ok();
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("MAX_LINKS_PER_USER", "2") };
+    common::set_env("MAX_LINKS_PER_USER", "2");
     struct Restore(Option<String>);
     impl Drop for Restore {
         fn drop(&mut self) {
             match &self.0 {
-                // FIXME: Audit that the environment access only happens in single-threaded code.
-                Some(v) => unsafe { std::env::set_var("MAX_LINKS_PER_USER", v) },
-                // FIXME: Audit that the environment access only happens in single-threaded code.
-                None => unsafe { std::env::remove_var("MAX_LINKS_PER_USER") },
+                Some(v) => common::set_env("MAX_LINKS_PER_USER", v),
+                None => common::remove_env("MAX_LINKS_PER_USER"),
             }
         }
     }
