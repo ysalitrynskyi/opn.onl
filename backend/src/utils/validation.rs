@@ -61,6 +61,64 @@ fn field_label(field: &str) -> String {
     }
 }
 
+/// Longest name a folder, tag or organization may have.
+pub const MAX_NAME_CHARS: usize = 100;
+
+/// A folder, tag or organization name: not blank and at most
+/// `MAX_NAME_CHARS` characters.
+pub fn check_name(label: &str, name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err(format!(
+            "{label} must be at most {MAX_NAME_CHARS} characters"
+        ));
+    }
+    Ok(())
+}
+
+/// `#rgb` or `#rrggbb`, which is what the colour inputs send. The value is
+/// rendered straight into a style attribute, so nothing else is stored.
+pub fn check_hex_color(color: &str) -> Result<(), String> {
+    let hex = color.strip_prefix('#').unwrap_or_default();
+    if matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err("Color must be a hex color such as #2563eb".to_string())
+    }
+}
+
+/// An optional colour field: absent or empty clears it, anything else must
+/// pass `check_hex_color`.
+pub fn check_optional_color(color: Option<&str>) -> Result<(), String> {
+    match color {
+        None | Some("") => Ok(()),
+        Some(color) => check_hex_color(color),
+    }
+}
+
+/// Organization slug: 2 to 64 lowercase letters, digits, `-` or `_`,
+/// starting with a letter or digit.
+pub fn check_slug(slug: &str) -> Result<(), String> {
+    let valid = (2..=64).contains(&slug.len())
+        && slug
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(
+            "Slug must be 2 to 64 lowercase letters, digits, hyphens or underscores, starting with a letter or digit"
+                .to_string(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +168,34 @@ mod tests {
             message.contains("Password must be at least 8 characters"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn names_colors_and_slugs() {
+        assert!(check_name("Tag name", "launch").is_ok());
+        assert!(check_name("Tag name", "   ").is_err());
+        assert!(check_name("Tag name", &"x".repeat(MAX_NAME_CHARS)).is_ok());
+        assert!(check_name("Tag name", &"x".repeat(MAX_NAME_CHARS + 1)).is_err());
+
+        for ok in ["#fff", "#2563EB", "#e11d48"] {
+            assert!(check_hex_color(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "red",
+            "#12345",
+            "#gggggg",
+            "2563eb",
+            "#2563eb; background:url(x)",
+        ] {
+            assert!(check_hex_color(bad).is_err(), "{bad}");
+        }
+
+        for ok in ["acme", "org-test_1a2b", "a1"] {
+            assert!(check_slug(ok).is_ok(), "{ok}");
+        }
+        for bad in ["a", "Acme", "-acme", "acme corp", "<b>", &"a".repeat(65)] {
+            assert!(check_slug(bad).is_err(), "{bad}");
+        }
     }
 }

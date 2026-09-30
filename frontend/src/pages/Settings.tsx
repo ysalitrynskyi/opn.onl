@@ -6,7 +6,7 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, shortLinkHost } from '../config/api';
+import { API_ENDPOINTS, authFetch, responseError, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { isSafeHttpUrl } from '../utils';
@@ -443,8 +443,7 @@ export default function Settings() {
                 }),
             });
             if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(txt || 'Failed to save bio settings');
+                throw new Error(await responseError(res, 'Failed to save bio settings'));
             }
             const data = await res.json();
             setBioUsername(data.bio_username || '');
@@ -468,8 +467,7 @@ export default function Settings() {
                 body: JSON.stringify({ name: newKeyName || undefined }),
             });
             if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(txt || 'Failed to create API key');
+                throw new Error(await responseError(res, 'Failed to create API key'));
             }
             const data = await res.json();
             setCreatedApiKey(data.key);
@@ -501,8 +499,7 @@ export default function Settings() {
         try {
             const res = await authFetch(API_ENDPOINTS.apiKey(id), { method: 'DELETE' });
             if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(txt || 'Failed to revoke API key');
+                throw new Error(await responseError(res, 'Failed to revoke API key'));
             }
             setApiKeys(prev => prev.filter(k => k.id !== id));
             setSuccess('API key revoked');

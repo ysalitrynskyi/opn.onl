@@ -15,6 +15,7 @@ use crate::AppState;
 use crate::entity::{folders, links, org_members};
 use crate::handlers::links::get_tags_by_link_ids;
 use crate::utils::time::utc_rfc3339;
+use crate::utils::validation::{check_name, check_optional_color};
 
 // ============= DTOs =============
 
@@ -134,9 +135,18 @@ pub async fn create_folder(
         ));
     }
 
+    if let Err(e) = check_name("Folder name", &payload.name)
+        .and_then(|()| check_optional_color(payload.color.as_deref()))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
+
     let folder = folders::ActiveModel {
         name: Set(payload.name.clone()),
-        color: Set(payload.color.clone()),
+        color: Set(payload.color.clone().filter(|c| !c.is_empty())),
         user_id: Set(if payload.org_id.is_some() {
             None
         } else {
@@ -390,13 +400,25 @@ pub async fn update_folder(
         ));
     }
 
+    if let Err(e) = payload
+        .name
+        .as_deref()
+        .map_or(Ok(()), |name| check_name("Folder name", name))
+        .and_then(|()| check_optional_color(payload.color.as_deref()))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
+
     let mut folder: folders::ActiveModel = folder.into();
 
     if let Some(name) = payload.name {
         folder.name = Set(name);
     }
     if let Some(color) = payload.color {
-        folder.color = Set(Some(color));
+        folder.color = Set(Some(color).filter(|c| !c.is_empty()));
     }
 
     let folder = folder.update(&state.db).await.map_err(|_| {

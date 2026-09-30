@@ -17,6 +17,7 @@ use crate::entity::{
 };
 use crate::utils::email_domain_policy::normalize_email;
 use crate::utils::time::utc_rfc3339;
+use crate::utils::validation::{check_name, check_slug};
 
 // ============= DTOs =============
 
@@ -329,6 +330,15 @@ pub async fn create_organization(
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
         })?;
+
+    if let Err(e) =
+        check_name("Organization name", &payload.name).and_then(|()| check_slug(&payload.slug))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
 
     // Check if slug already exists
     let existing = organizations::Entity::find()
@@ -653,6 +663,18 @@ pub async fn update_organization(
                 Json(serde_json::json!({"error": "Organization not found"})),
             )
         })?;
+
+    if let Err(e) = payload
+        .name
+        .as_deref()
+        .map_or(Ok(()), |name| check_name("Organization name", name))
+        .and_then(|()| payload.slug.as_deref().map_or(Ok(()), check_slug))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
 
     let mut org: organizations::ActiveModel = org.into();
 

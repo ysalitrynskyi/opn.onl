@@ -15,6 +15,7 @@ use validator::Validate;
 
 use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
+use crate::handlers::json_error;
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
@@ -270,6 +271,25 @@ fn contains_nested_data_url(url_lower: &str) -> bool {
     url_lower
         .match_indices("data:")
         .any(|(i, _)| i > 0 && matches!(url_lower.as_bytes()[i - 1], b'=' | b'?' | b'&' | b'#'))
+}
+
+/// Longest title and notes a link may carry. Both were unbounded, so one
+/// request could store megabytes of text per link.
+const MAX_TITLE_CHARS: usize = 500;
+const MAX_NOTES_CHARS: usize = 5000;
+
+fn check_link_text(title: Option<&str>, notes: Option<&str>) -> Result<(), String> {
+    if title.is_some_and(|t| t.chars().count() > MAX_TITLE_CHARS) {
+        return Err(format!(
+            "Title must be at most {MAX_TITLE_CHARS} characters"
+        ));
+    }
+    if notes.is_some_and(|n| n.chars().count() > MAX_NOTES_CHARS) {
+        return Err(format!(
+            "Notes must be at most {MAX_NOTES_CHARS} characters"
+        ));
+    }
+    Ok(())
 }
 
 /// Validate URL is http/https only and sanitize if enabled
@@ -1360,6 +1380,9 @@ pub async fn create_link(
         )
             .into_response();
     }
+    if let Err(e) = check_link_text(payload.title.as_deref(), payload.notes.as_deref()) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
     if let (Some(starts), Some(expires)) = (payload.starts_at, payload.expires_at)
         && starts >= expires
     {
@@ -2401,7 +2424,7 @@ pub async fn get_qr_code(
     // Verify authentication
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
     let link = links::Entity::find_by_id(id)
@@ -2429,11 +2452,10 @@ pub async fn get_qr_code(
         };
 
         if !has_access {
-            return (
+            return json_error(
                 StatusCode::FORBIDDEN,
                 "You don't have permission to access this link",
-            )
-                .into_response();
+            );
         }
 
         let url = format!("{}/{}", get_base_url(), link.code);
@@ -2457,14 +2479,13 @@ pub async fn get_qr_code(
                 bytes,
             )
                 .into_response(),
-            None => (
+            None => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to generate QR code",
-            )
-                .into_response(),
+            ),
         }
     } else {
-        (StatusCode::NOT_FOUND, "Link not found").into_response()
+        json_error(StatusCode::NOT_FOUND, "Link not found")
     }
 }
 
@@ -3111,14 +3132,13 @@ pub async fn get_routing_rules(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
     if link_for_owner(&state.db, id, user_id).await.is_none() {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "You don't have permission to access this link",
-        )
-            .into_response();
+        );
     }
     let rules = crate::entity::routing_rules::Entity::find()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
@@ -3165,16 +3185,15 @@ pub async fn replace_routing_rules(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
     let link = match link_for_owner(&state.db, id, user_id).await {
         Some(l) => l,
         None => {
-            return (
+            return json_error(
                 StatusCode::FORBIDDEN,
                 "You don't have permission to modify this link",
-            )
-                .into_response();
+            );
         }
     };
 
@@ -3186,22 +3205,20 @@ pub async fn replace_routing_rules(
         && link.user_id != Some(user_id)
         && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
     {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "You don't have permission to modify this link",
-        )
-            .into_response();
+        );
     }
 
     if payload.rules.len() > MAX_ROUTING_RULES {
-        return (
+        return json_error(
             StatusCode::BAD_REQUEST,
             format!(
                 "A link can have at most {} routing rules",
                 MAX_ROUTING_RULES
             ),
-        )
-            .into_response();
+        );
     }
 
     // Validate every destination (format + blocklist) before persisting anything.
@@ -3209,24 +3226,23 @@ pub async fn replace_routing_rules(
     for rule in &payload.rules {
         let url = match validate_url(&rule.destination_url) {
             Ok(u) => u,
-            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+            Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
         };
         if let Err(e) = ensure_public_destination(&url).await {
-            return (StatusCode::BAD_REQUEST, e).into_response();
+            return json_error(StatusCode::BAD_REQUEST, e);
         }
         if check_blocked(&state.db, &url).await.is_err() {
-            return (
+            return json_error(
                 StatusCode::BAD_REQUEST,
                 "A destination URL is blocked".to_string(),
-            )
-                .into_response();
+            );
         }
         validated.push((url, rule));
     }
 
     let txn = match state.db.begin().await {
         Ok(t) => t,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response(),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
     if crate::entity::routing_rules::Entity::delete_many()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
@@ -3235,7 +3251,7 @@ pub async fn replace_routing_rules(
         .is_err()
     {
         let _ = txn.rollback().await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
     }
     for (url, rule) in &validated {
         let am = crate::entity::routing_rules::ActiveModel {
@@ -3251,11 +3267,11 @@ pub async fn replace_routing_rules(
         };
         if am.insert(&txn).await.is_err() {
             let _ = txn.rollback().await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
         }
     }
     if txn.commit().await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
     }
 
     // A stale fast-path entry would bypass the newly saved routing rules.
@@ -3263,11 +3279,10 @@ pub async fn replace_routing_rules(
         .await
         .is_err()
     {
-        return (
+        return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Routing rules saved, but cache invalidation failed",
-        )
-            .into_response();
+        );
     }
 
     (
@@ -3596,6 +3611,10 @@ pub async fn update_link(
                 }),
             )
                 .into_response();
+        }
+
+        if let Err(e) = check_link_text(payload.title.as_deref(), payload.notes.as_deref()) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
 
         if let Some(ref url) = payload.original_url {
@@ -4332,7 +4351,7 @@ pub async fn export_links_csv(
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
     let user_links = links::Entity::find()

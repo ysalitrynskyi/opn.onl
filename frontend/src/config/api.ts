@@ -191,6 +191,13 @@ export async function authFetch(
     return response;
 }
 
+// The API's error text from a failed response: `{"error": "..."}` (or a
+// `message`), else the fallback. Never shows a raw JSON body to the user.
+export async function responseError(response: Response, fallback: string): Promise<string> {
+    const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
+    return body?.error || body?.message || fallback;
+}
+
 // Helper for API calls with error handling
 export async function apiCall<T>(
     url: string,

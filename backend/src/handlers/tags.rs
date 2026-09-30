@@ -14,6 +14,7 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::{link_tags, links, org_members, tags};
 use crate::utils::time::utc_rfc3339;
+use crate::utils::validation::{check_name, check_optional_color};
 
 // ============= DTOs =============
 
@@ -175,9 +176,18 @@ pub async fn create_tag(
         ));
     }
 
+    if let Err(e) = check_name("Tag name", &payload.name)
+        .and_then(|()| check_optional_color(payload.color.as_deref()))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
+
     let tag = tags::ActiveModel {
         name: Set(payload.name.clone()),
-        color: Set(payload.color.clone()),
+        color: Set(payload.color.clone().filter(|c| !c.is_empty())),
         user_id: Set(if payload.org_id.is_some() {
             None
         } else {
@@ -423,13 +433,25 @@ pub async fn update_tag(
         ));
     }
 
+    if let Err(e) = payload
+        .name
+        .as_deref()
+        .map_or(Ok(()), |name| check_name("Tag name", name))
+        .and_then(|()| check_optional_color(payload.color.as_deref()))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ));
+    }
+
     let mut tag: tags::ActiveModel = tag.into();
 
     if let Some(name) = payload.name {
         tag.name = Set(name);
     }
     if let Some(color) = payload.color {
-        tag.color = Set(Some(color));
+        tag.color = Set(Some(color).filter(|c| !c.is_empty()));
     }
 
     let tag = tag.update(&state.db).await.map_err(|_| {

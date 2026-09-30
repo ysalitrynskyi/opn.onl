@@ -10,6 +10,7 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{links, users};
+use crate::handlers::json_error;
 
 /// Usernames that would collide with app routes or API paths.
 const RESERVED_USERNAMES: &[&str] = &[
@@ -132,15 +133,14 @@ pub async fn update_bio_settings(
     Json(payload): Json<BioSettingsRequest>,
 ) -> impl IntoResponse {
     if !link_in_bio_enabled() {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
             "Link-in-bio is not enabled on this instance",
-        )
-            .into_response();
+        );
     }
     let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
     let user = match users::Entity::find_by_id(user_id)
         .filter(users::Column::DeletedAt.is_null())
@@ -150,7 +150,7 @@ pub async fn update_bio_settings(
         .flatten()
     {
         Some(u) => u,
-        None => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        None => return json_error(StatusCode::NOT_FOUND, "User not found"),
     };
 
     let mut active: users::ActiveModel = user.clone().into();
@@ -164,7 +164,7 @@ pub async fn update_bio_settings(
         } else {
             let username = match validate_username(raw) {
                 Ok(u) => u,
-                Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+                Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
             };
             let taken = users::Entity::find()
                 .filter(users::Column::BioUsername.eq(username.clone()))
@@ -175,7 +175,7 @@ pub async fn update_bio_settings(
                 .flatten()
                 .is_some();
             if taken {
-                return (StatusCode::CONFLICT, "That username is taken").into_response();
+                return json_error(StatusCode::CONFLICT, "That username is taken");
             }
             active.bio_username = Set(Some(username.clone()));
             eff_username = Some(username);
@@ -186,6 +186,17 @@ pub async fn update_bio_settings(
         eff_enabled = enabled;
     }
     if let Some(theme) = &payload.bio_theme {
+        // No theme list exists yet; keep the stored value a short identifier.
+        let valid = theme.len() <= 30
+            && theme
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+        if !valid {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "Theme must be at most 30 lowercase letters, digits, hyphens or underscores",
+            );
+        }
         active.bio_theme = Set(if theme.is_empty() {
             None
         } else {
@@ -195,11 +206,10 @@ pub async fn update_bio_settings(
 
     // The page can't go live without a username.
     if eff_enabled && eff_username.is_none() {
-        return (
+        return json_error(
             StatusCode::BAD_REQUEST,
             "Choose a username before enabling your bio page",
-        )
-            .into_response();
+        );
     }
 
     match active.update(&state.db).await {
@@ -215,9 +225,9 @@ pub async fn update_bio_settings(
         // The read-then-write uniqueness check races; idx-users-bio_username
         // is the real guard. Map that unique violation to the documented 409.
         Err(err) if err.to_string().contains("duplicate key value") => {
-            (StatusCode::CONFLICT, "That username is taken").into_response()
+            json_error(StatusCode::CONFLICT, "That username is taken")
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save settings").into_response(),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save settings"),
     }
 }
 
@@ -239,7 +249,7 @@ pub async fn get_public_bio(
     Path(username): Path<String>,
 ) -> impl IntoResponse {
     if !link_in_bio_enabled() {
-        return (StatusCode::NOT_FOUND, "Not found").into_response();
+        return json_error(StatusCode::NOT_FOUND, "Not found");
     }
     let uname = username.trim().to_lowercase();
     let user = match users::Entity::find()
@@ -251,7 +261,7 @@ pub async fn get_public_bio(
         .flatten()
     {
         Some(u) if u.bio_enabled => u,
-        _ => return (StatusCode::NOT_FOUND, "Not found").into_response(),
+        _ => return json_error(StatusCode::NOT_FOUND, "Not found"),
     };
 
     let base_url =
