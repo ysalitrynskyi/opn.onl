@@ -219,11 +219,12 @@ pub struct PasskeyAuthResponse {
 
 /// Begin passkey enrollment for the authenticated caller. Returns a WebAuthn
 /// `CreationChallengeResponse` to pass to the browser's credential API. The
-/// request/response bodies are standard WebAuthn ceremony objects and are not
-/// expanded into the schema.
+/// response is a standard WebAuthn ceremony object and is not expanded into
+/// the schema.
 #[utoipa::path(
     post,
     path = "/auth/passkey/register/start",
+    request_body = RegisterStartRequest,
     responses(
         (status = 200, description = "WebAuthn creation challenge"),
         (status = 401, description = "Unauthorized"),
@@ -305,6 +306,7 @@ pub async fn register_start(
 #[utoipa::path(
     post,
     path = "/auth/passkey/register/finish",
+    request_body = RegisterFinishRequest,
     responses(
         (status = 200, description = "Passkey registered"),
         (status = 400, description = "Invalid or expired registration ceremony"),
@@ -510,6 +512,7 @@ fn decoy_login_start(username: &str) -> axum::response::Response {
 #[utoipa::path(
     post,
     path = "/auth/passkey/login/start",
+    request_body = LoginStartRequest,
     responses(
         (status = 200, description = "WebAuthn assertion challenge"),
         (status = 403, description = "Passkeys are disabled on this instance"),
@@ -588,6 +591,7 @@ pub async fn login_start(
 #[utoipa::path(
     post,
     path = "/auth/passkey/login/finish",
+    request_body = LoginFinishRequest,
     responses(
         (status = 200, description = "Authenticated; JWT issued", body = PasskeyAuthResponse),
         (status = 400, description = "Invalid or expired assertion"),
@@ -789,6 +793,7 @@ pub struct DeletePasskeyRequest {
 #[utoipa::path(
     post,
     path = "/auth/passkey/delete",
+    request_body = DeletePasskeyRequest,
     responses(
         (status = 200, description = "Passkey deleted"),
         (status = 400, description = "Cannot delete the account's only login method"),
@@ -930,6 +935,7 @@ pub struct RenamePasskeyRequest {
 #[utoipa::path(
     post,
     path = "/auth/passkey/rename",
+    request_body = RenamePasskeyRequest,
     responses(
         (status = 200, description = "Passkey renamed"),
         (status = 401, description = "Unauthorized"),
