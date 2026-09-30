@@ -26,39 +26,31 @@ pub fn validation_error_message(errors: &ValidationErrors) -> String {
 }
 
 fn describe(field: &str, err: &ValidationError) -> String {
+    // "field: detail" is the shape these errors have always had (validator's
+    // own Display uses it), and API clients and the e2e suite match on it.
     if let Some(message) = err.message.as_deref() {
-        return message.to_string();
+        return format!("{field}: {message}");
     }
-    let name = field_label(field);
     let bound = |key: &str| err.params.get(key).and_then(|v| v.as_f64());
-    match err.code.as_ref() {
-        "email" => format!("{name} must be a valid email address"),
-        "url" => format!("{name} must be a valid URL"),
+    let detail = match err.code.as_ref() {
+        "email" => "must be a valid email address".to_string(),
+        "url" => "must be a valid URL".to_string(),
         // validator counts characters, not bytes, for `length`.
         "length" => match (bound("min"), bound("max")) {
-            (Some(min), Some(max)) => format!("{name} must be {min} to {max} characters"),
-            (Some(min), None) => format!("{name} must be at least {min} characters"),
-            (None, Some(max)) => format!("{name} must be at most {max} characters"),
-            (None, None) => format!("{name} has the wrong length"),
+            (Some(min), Some(max)) => format!("must be {min} to {max} characters"),
+            (Some(min), None) => format!("must be at least {min} characters"),
+            (None, Some(max)) => format!("must be at most {max} characters"),
+            (None, None) => "has the wrong length".to_string(),
         },
         "range" => match (bound("min"), bound("max")) {
-            (Some(min), Some(max)) => format!("{name} must be between {min} and {max}"),
-            (Some(min), None) => format!("{name} must be at least {min}"),
-            (None, Some(max)) => format!("{name} must be at most {max}"),
-            (None, None) => format!("{name} is out of range"),
+            (Some(min), Some(max)) => format!("must be between {min} and {max}"),
+            (Some(min), None) => format!("must be at least {min}"),
+            (None, Some(max)) => format!("must be at most {max}"),
+            (None, None) => "is out of range".to_string(),
         },
-        _ => format!("{name} is invalid"),
-    }
-}
-
-/// `new_password` → `New password`.
-fn field_label(field: &str) -> String {
-    let spaced = field.replace('_', " ");
-    let mut chars = spaced.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => "Field".to_string(),
-    }
+        _ => "is invalid".to_string(),
+    };
+    format!("{field}: {detail}")
 }
 
 /// Longest name a folder, tag or organization may have.
@@ -153,19 +145,19 @@ mod tests {
             );
         }
         assert!(
-            message.contains("Email must be a valid email address"),
+            message.contains("email: must be a valid email address"),
             "{message}"
         );
         assert!(
-            message.contains("New password must be at least 8 characters"),
+            message.contains("new_password: must be at least 8 characters"),
             "{message}"
         );
         assert!(
-            message.contains("Message must be 10 to 5000 characters"),
+            message.contains("message: must be 10 to 5000 characters"),
             "{message}"
         );
         assert!(
-            message.contains("Password must be at least 8 characters"),
+            message.contains("password: Password must be at least 8 characters"),
             "{message}"
         );
     }
