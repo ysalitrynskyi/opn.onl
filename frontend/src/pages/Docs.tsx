@@ -264,7 +264,7 @@ export default function Docs() {
                         <li>Docker and Docker Compose</li>
                         <li>PostgreSQL database</li>
                         <li>Redis (optional, for caching)</li>
-                        <li>SMTP server (for email verification)</li>
+                        <li>SMTP server (for email verification, password reset and the contact form)</li>
                     </ul>
 
                     <h3 className="flex items-center gap-2 mt-8">

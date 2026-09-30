@@ -207,6 +207,9 @@ the frontend yourself (`docker compose up -d --build` from Option 1, or
 | `SMTP_FROM_NAME` | opn.onl | From display name |
 | `ADMIN_EMAIL` | admin@opn.onl | Admin email for contact form |
 
+Without SMTP, verification and password-reset emails are not sent, and the contact form answers
+`503` ("not delivered") instead of accepting a message it has nowhere to send.
+
 ### Link Management
 
 | Variable | Default | Description |
@@ -277,6 +280,8 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 ## API Reference
 
 Full API documentation available at `/swagger-ui/` when backend is running.
+
+Timestamps in responses are RFC 3339 in UTC, for example `2026-11-15T04:59:00Z`.
 
 ### Authentication
 
@@ -529,10 +534,14 @@ Backups can be triggered via Admin panel or API. Old backups are automatically c
 - **Per-second:** 10 requests/second per IP
 - **General:** 100 requests/minute per IP
 - **Link creation:** 100 links/hour per user
-- **Auth endpoints:** 10 attempts/minute per IP
+- **Sign-in and other auth writes:** 10/minute per IP (`POST /auth/*`; reads such as `/auth/me`
+  use the general limit)
 - **Password verification:** 5 attempts/minute per IP+link (anti-bruteforce)
 - **Same URL:** 10 times per 10 minutes per user
 - **Redirects:** 100/second per IP
+
+A refused request gets `429` with `Retry-After` (seconds, rounded up) and `X-RateLimit-Limit` /
+`X-RateLimit-Remaining`; all three are readable by cross-origin clients.
 
 ### Content Blocking
 Admins can block:
@@ -542,7 +551,9 @@ Admins can block:
 Blocked content cannot be shortened via any endpoint (single, bulk, API).
 
 ### Data Protection
-- Passwords hashed with bcrypt
+- Passwords hashed with bcrypt, off the request threads; new passwords are limited to 72 bytes,
+  bcrypt's input limit
+- Email verification and password-reset tokens stored only as SHA-256 hashes
 - JWT tokens with expiration
 - Soft-delete for links and users (data preserved)
 - Email verification required before creating links
@@ -579,10 +590,13 @@ DATABASE_URL=postgres://localhost/opn_test cargo test
 cd frontend
 npm run dev        # Dev server on :5173
 npm run test       # Unit tests (Vitest)
-npm run test:e2e   # E2E tests (Playwright)
+npm run test:e2e:ci  # E2E tests (Playwright, Chromium), against a running backend
 npm run build      # Production build
 npm run lint       # ESLint
 ```
+
+The E2E suite needs the backend running on a fresh database; see
+[frontend/e2e/README.md](frontend/e2e/README.md).
 
 ### Database Migrations
 
