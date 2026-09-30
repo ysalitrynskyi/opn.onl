@@ -155,7 +155,7 @@ export default function Contact() {
                                     </button>
                                 </motion.div>
                             ) : (
-                                <form onSubmit={handleSubmit} className="space-y-5">
+                                <form method="post" onSubmit={handleSubmit} className="space-y-5">
                                     <div className="grid sm:grid-cols-2 gap-5">
                                         <div>
                                             <label htmlFor="name" className="block text-sm font-medium text-slate-700 mb-1">

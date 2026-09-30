@@ -148,5 +148,40 @@ mod tests {
         let claims = decode_jwt(&token).expect("token should decode");
         assert_eq!(claims.user_id, 42);
         assert_eq!(claims.sub, "x@y.z");
+
+        assert!(
+            decode_jwt(&format!("{token}x")).is_err(),
+            "tampered token must not decode"
+        );
+
+        let expired = encode(
+            &Header::default(),
+            &Claims {
+                sub: "x@y.z".into(),
+                exp: (Utc::now() - Duration::hours(1)).timestamp() as usize,
+                user_id: 1,
+                token_version: 0,
+            },
+            &EncodingKey::from_secret(b"a-sufficiently-long-test-secret-0123456789"),
+        )
+        .unwrap();
+        assert!(
+            decode_jwt(&expired).is_err(),
+            "expired token must not decode"
+        );
+
+        std::env::set_var("JWT_SECRET", "a-different-long-test-secret-0123456789ab");
+        assert!(
+            decode_jwt(&token).is_err(),
+            "token signed with another secret must not decode"
+        );
+        std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");
+    }
+
+    #[test]
+    fn password_hash_roundtrips_and_rejects_mismatch() {
+        let hashed = hash_password("p@ss word").unwrap();
+        assert!(verify_password("p@ss word", &hashed).unwrap());
+        assert!(!verify_password("p@ss Word", &hashed).unwrap());
     }
 }

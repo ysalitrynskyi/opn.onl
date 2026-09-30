@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -6,6 +6,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
+import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
 
 interface DayStats {
     date: string;
@@ -157,14 +158,25 @@ export default function Analytics() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [days, setDays] = useState(30);
+    const requestGen = useRef(0);
+    const loadedId = useRef<string | undefined>(undefined);
 
-    const fetchStats = async () => {
+    const fetchStats = useCallback(async () => {
+        const gen = ++requestGen.current;
+        if (loadedId.current !== id) {
+            loadedId.current = id;
+            setStats(null);
+        }
+        setError('');
+        setLoading(true);
+
         try {
-            setLoading(true);
             const res = await authFetch(`${API_ENDPOINTS.linkStats(Number(id))}?days=${days}`);
+            if (gen !== requestGen.current) return;
 
             if (res.ok) {
                 const data = await res.json();
+                if (gen !== requestGen.current) return;
                 setStats(data);
             } else if (res.status === 403) {
                 setError('You do not have permission to view this link\'s analytics.');
@@ -174,12 +186,15 @@ export default function Analytics() {
                 setError('Failed to load analytics.');
             }
         } catch (error) {
+            if (gen !== requestGen.current) return;
             logger.error('Failed to fetch stats', error);
             setError('Network error. Please try again.');
         } finally {
-            setLoading(false);
+            if (gen === requestGen.current) {
+                setLoading(false);
+            }
         }
-    };
+    }, [id, days]);
 
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -188,7 +203,7 @@ export default function Analytics() {
             return;
         }
         fetchStats();
-    }, [id, navigate, days]);
+    }, [navigate, fetchStats]);
 
     if (loading && !stats) {
         return <Skeleton />;
@@ -214,16 +229,11 @@ export default function Analytics() {
     // Calculate today and this week clicks
     const today = new Date().toISOString().split('T')[0];
     const todayClicks = stats.clicks_by_day.find(d => d.date === today)?.count || 0;
-
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    const weekClicks = stats.clicks_by_day
-        .filter(d => new Date(d.date) >= weekAgo)
-        .reduce((sum, d) => sum + d.count, 0);
+    const weekClicks = sumClicksInUtcWindow(stats.clicks_by_day, 7);
 
     // Format chart data
     const chartData = stats.clicks_by_day.map(d => ({
-        date: new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        date: formatDayBucketLabel(d.date),
         clicks: d.count
     }));
 

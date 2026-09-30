@@ -220,7 +220,7 @@ async fn capped_link_never_overshoots_under_concurrency() {
 
     let stored = persisted_link(&db, &code).await;
     assert_eq!(
-        stored.click_count, MAX as i32,
+        stored.click_count, MAX as i64,
         "persisted click_count must settle at exactly max_clicks"
     );
 }
@@ -270,7 +270,8 @@ async fn take_pending_count_waits_for_in_flight_flush() {
     .expect("lock link");
 
     let buffer = std::sync::Arc::new(ClickBuffer::with_limits(1000, 1000, 60));
-    const PENDING: i32 = 50;
+    // i64 since m20220101_000033 widened links.click_count to bigint.
+    const PENDING: i64 = 50;
     for _ in 0..PENDING {
         buffer.add_click(buffered_click(link_id));
     }

@@ -12,7 +12,7 @@ pub struct CachedLink {
     pub expires_at: Option<i64>,
     pub starts_at: Option<i64>,
     pub max_clicks: Option<i32>,
-    pub click_count: i32,
+    pub click_count: i64,
     pub user_id: Option<i32>,
     /// When true, redirect must go through the frontend interstitial first.
     pub safe_link_interstitial: bool,
@@ -43,7 +43,7 @@ impl CachedLink {
             expires_at: json["expires_at"].as_i64(),
             starts_at: json["starts_at"].as_i64(),
             max_clicks: json["max_clicks"].as_i64().map(|n| n as i32),
-            click_count: json["click_count"].as_i64()? as i32,
+            click_count: json["click_count"].as_i64()?,
             user_id: json["user_id"].as_i64().map(|n| n as i32),
             safe_link_interstitial: json["safe_link_interstitial"].as_bool().unwrap_or(false),
         })

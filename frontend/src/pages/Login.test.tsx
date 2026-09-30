@@ -29,6 +29,11 @@ describe('Login Page', () => {
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
   });
 
+  it('posts the form so a native submit cannot leak credentials into the URL', () => {
+    render(<Login />);
+    expect(screen.getByLabelText(/email address/i).closest('form')).toHaveAttribute('method', 'post');
+  });
+
   it('shows link to register page', () => {
     render(<Login />);
     expect(screen.getByRole('link', { name: /create an account/i })).toBeInTheDocument();

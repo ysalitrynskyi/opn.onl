@@ -112,7 +112,7 @@ pub struct RefererStats {
 
 #[derive(Serialize, ToSchema)]
 pub struct RecentClick {
-    pub id: i32,
+    pub id: i64,
     pub timestamp: String,
     pub country: Option<String>,
     pub city: Option<String>,
@@ -151,7 +151,7 @@ pub struct TopLink {
     pub id: i32,
     pub code: String,
     pub original_url: String,
-    pub click_count: i32,
+    pub click_count: i64,
 }
 
 // ============= Handlers =============
@@ -446,6 +446,148 @@ pub async fn get_link_stats(
     (StatusCode::OK, Json(response)).into_response()
 }
 
+/// `ids` are i32 primary keys from our own query, never request text.
+fn sql_int_list(ids: &[i32]) -> String {
+    ids.iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+async fn dashboard_window_counts(
+    db: &DatabaseConnection,
+    link_ids: &[i32],
+    today_start: chrono::NaiveDateTime,
+    week_start: chrono::NaiveDateTime,
+    month_start: chrono::NaiveDateTime,
+) -> (i64, i64, i64) {
+    if link_ids.is_empty() {
+        return (0, 0, 0);
+    }
+    let sql = format!(
+        "SELECT COUNT(*) FILTER (WHERE created_at >= $1)::bigint AS today, \
+                COUNT(*) FILTER (WHERE created_at >= $2)::bigint AS week, \
+                COUNT(*)::bigint AS month \
+         FROM click_events \
+         WHERE link_id IN ({}) AND created_at >= $3",
+        sql_int_list(link_ids)
+    );
+    let row = db
+        .query_one(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            &sql,
+            [today_start.into(), week_start.into(), month_start.into()],
+        ))
+        .await
+        .ok()
+        .flatten();
+    match row {
+        Some(row) => (
+            row.try_get::<i64>("", "today").unwrap_or(0),
+            row.try_get::<i64>("", "week").unwrap_or(0),
+            row.try_get::<i64>("", "month").unwrap_or(0),
+        ),
+        None => (0, 0, 0),
+    }
+}
+
+async fn dashboard_clicks_by_day(
+    db: &DatabaseConnection,
+    link_ids: &[i32],
+    month_start: chrono::NaiveDateTime,
+) -> Vec<DayStats> {
+    if link_ids.is_empty() {
+        return vec![];
+    }
+    let sql = format!(
+        "SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::bigint AS cnt \
+         FROM click_events \
+         WHERE link_id IN ({}) AND created_at >= $1 \
+         GROUP BY 1 ORDER BY 1",
+        sql_int_list(link_ids)
+    );
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            &sql,
+            [month_start.into()],
+        ))
+        .await
+        .unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|row| {
+            let date = row.try_get::<String>("", "day").ok()?;
+            let count = row.try_get::<i64>("", "cnt").ok()?;
+            Some(DayStats { date, count })
+        })
+        .collect()
+}
+
+async fn dashboard_grouped_label_counts(
+    db: &DatabaseConnection,
+    link_ids: &[i32],
+    month_start: chrono::NaiveDateTime,
+    column: click_events::Column,
+) -> Vec<(String, i64)> {
+    if link_ids.is_empty() {
+        return vec![];
+    }
+    let rows: Vec<(Option<String>, i64)> = click_events::Entity::find()
+        .select_only()
+        .column(column)
+        .column_as(click_events::Column::Id.count(), "cnt")
+        .filter(click_events::Column::LinkId.is_in(link_ids.to_vec()))
+        .filter(click_events::Column::CreatedAt.gte(month_start))
+        .group_by(column)
+        .into_tuple()
+        .all(db)
+        .await
+        .unwrap_or_default();
+    rows.into_iter()
+        .map(|(label, count)| (label.unwrap_or_else(|| "Unknown".to_string()), count))
+        .collect()
+}
+
+async fn dashboard_top_countries(
+    db: &DatabaseConnection,
+    link_ids: &[i32],
+    month_start: chrono::NaiveDateTime,
+    total_for_percentage: f64,
+) -> Vec<CountryStats> {
+    let mut rows =
+        dashboard_grouped_label_counts(db, link_ids, month_start, click_events::Column::Country)
+            .await;
+    rows.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    rows.truncate(10);
+    rows.into_iter()
+        .map(|(country, count)| CountryStats {
+            country,
+            count,
+            percentage: (count as f64 / total_for_percentage) * 100.0,
+        })
+        .collect()
+}
+
+async fn dashboard_top_browsers(
+    db: &DatabaseConnection,
+    link_ids: &[i32],
+    month_start: chrono::NaiveDateTime,
+    total_for_percentage: f64,
+) -> Vec<BrowserStats> {
+    let mut rows =
+        dashboard_grouped_label_counts(db, link_ids, month_start, click_events::Column::Browser)
+            .await;
+    rows.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    rows.truncate(5);
+    rows.into_iter()
+        .map(|(browser, count)| BrowserStats {
+            browser,
+            count,
+            percentage: (count as f64 / total_for_percentage) * 100.0,
+        })
+        .collect()
+}
+
 /// Get dashboard analytics
 #[utoipa::path(
     get,
@@ -480,7 +622,7 @@ pub async fn get_dashboard_stats(
         .unwrap_or_default();
 
     let total_links = user_links.len() as i64;
-    let total_clicks: i64 = user_links.iter().map(|l| l.click_count as i64).sum();
+    let total_clicks: i64 = user_links.iter().map(|l| l.click_count).sum();
     let active_links = user_links.iter().filter(|l| l.is_active()).count() as i64;
 
     let link_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
@@ -492,21 +634,18 @@ pub async fn get_dashboard_stats(
     let week_start = now - chrono::Duration::days(7);
     let month_start = now - chrono::Duration::days(30);
 
-    // Get all clicks in the last 30 days
-    let events = click_events::Entity::find()
-        .filter(click_events::Column::LinkId.is_in(link_ids))
-        .filter(click_events::Column::CreatedAt.gte(month_start))
-        .all(&state.db)
-        .await
-        .unwrap_or_default();
-
-    // Calculate time-based stats
-    let clicks_today = events
-        .iter()
-        .filter(|e| e.created_at >= today_start)
-        .count() as i64;
-    let clicks_this_week = events.iter().filter(|e| e.created_at >= week_start).count() as i64;
-    let clicks_this_month = events.len() as i64;
+    // Aggregates stay in SQL. Loading every click in the window used to OOM
+    // the worker on a busy account; a truncated row cap would silently under-
+    // count, so COUNT / GROUP BY over the window is the correct shape.
+    let (clicks_today, clicks_this_week, clicks_this_month) =
+        dashboard_window_counts(&state.db, &link_ids, today_start, week_start, month_start)
+            .await;
+    let clicks_by_day = dashboard_clicks_by_day(&state.db, &link_ids, month_start).await;
+    let total_for_percentage = clicks_this_month.max(1) as f64;
+    let top_countries =
+        dashboard_top_countries(&state.db, &link_ids, month_start, total_for_percentage).await;
+    let top_browsers =
+        dashboard_top_browsers(&state.db, &link_ids, month_start, total_for_percentage).await;
 
     // Top links
     let mut top_links: Vec<TopLink> = user_links
@@ -520,59 +659,6 @@ pub async fn get_dashboard_stats(
         .collect();
     top_links.sort_by_key(|b| std::cmp::Reverse(b.click_count));
     top_links.truncate(10);
-
-    // Clicks by day (last 30 days)
-    let mut clicks_by_day_map: HashMap<String, i64> = HashMap::new();
-    for event in &events {
-        let date = event.created_at.format("%Y-%m-%d").to_string();
-        *clicks_by_day_map.entry(date).or_insert(0) += 1;
-    }
-    let mut clicks_by_day: Vec<DayStats> = clicks_by_day_map
-        .into_iter()
-        .map(|(date, count)| DayStats { date, count })
-        .collect();
-    clicks_by_day.sort_by(|a, b| a.date.cmp(&b.date));
-
-    // Top countries
-    let mut country_map: HashMap<String, i64> = HashMap::new();
-    for event in &events {
-        let country = event
-            .country
-            .clone()
-            .unwrap_or_else(|| "Unknown".to_string());
-        *country_map.entry(country).or_insert(0) += 1;
-    }
-    let total_for_percentage = events.len().max(1) as f64;
-    let mut top_countries: Vec<CountryStats> = country_map
-        .into_iter()
-        .map(|(country, count)| CountryStats {
-            country,
-            count,
-            percentage: (count as f64 / total_for_percentage) * 100.0,
-        })
-        .collect();
-    top_countries.sort_by_key(|b| std::cmp::Reverse(b.count));
-    top_countries.truncate(10);
-
-    // Top browsers
-    let mut browser_map: HashMap<String, i64> = HashMap::new();
-    for event in &events {
-        let browser = event
-            .browser
-            .clone()
-            .unwrap_or_else(|| "Unknown".to_string());
-        *browser_map.entry(browser).or_insert(0) += 1;
-    }
-    let mut top_browsers: Vec<BrowserStats> = browser_map
-        .into_iter()
-        .map(|(browser, count)| BrowserStats {
-            browser,
-            count,
-            percentage: (count as f64 / total_for_percentage) * 100.0,
-        })
-        .collect();
-    top_browsers.sort_by_key(|b| std::cmp::Reverse(b.count));
-    top_browsers.truncate(5);
 
     let response = DashboardStats {
         total_links,

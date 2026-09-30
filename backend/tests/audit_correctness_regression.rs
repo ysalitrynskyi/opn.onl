@@ -97,8 +97,9 @@ async fn tag_link_count_excludes_soft_deleted_links() {
 }
 
 /// A custom alias previously used by a now-deleted link cannot be reused: the
-/// global UNIQUE on links.code still holds it. Reuse must be a clean 409 (the
-/// old ALLOW_DELETED_SLUG_REUSE path 500'd), and check-code must report it taken.
+/// global UNIQUE on links.code still holds it. Reuse must be a clean 409
+/// (insert would 500 against the unique constraint), and check-code must
+/// report it taken.
 #[tokio::test]
 async fn deleted_alias_cannot_be_reused() {
     let (server, db) = spawn_real_app().await;

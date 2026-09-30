@@ -409,3 +409,18 @@ pub fn generate_token() -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::generate_token;
+
+    #[test]
+    fn generate_token_is_64_alnum_and_unique() {
+        let a = generate_token();
+        let b = generate_token();
+        assert_eq!(a.len(), 64);
+        assert_eq!(b.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(a, b);
+    }
+}
