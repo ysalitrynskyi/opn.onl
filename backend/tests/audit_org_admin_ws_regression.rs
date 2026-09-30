@@ -12,7 +12,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
     PaginatorTrait, QueryFilter,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 async fn register_verified(
@@ -347,13 +347,15 @@ async fn personal_tag_cannot_be_attached_to_another_users_link() {
     );
     assert_eq!(res.json::<Value>()["added"].as_u64(), Some(0));
 
-    assert!(link_tags::Entity::find()
-        .filter(link_tags::Column::LinkId.eq(attacker_link_id))
-        .filter(link_tags::Column::TagId.eq(victim_tag_id))
-        .one(&db)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        link_tags::Entity::find()
+            .filter(link_tags::Column::LinkId.eq(attacker_link_id))
+            .filter(link_tags::Column::TagId.eq(victim_tag_id))
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_ne!(victim_id, attacker_id);
 }
 
@@ -412,13 +414,15 @@ async fn admin_restore_only_reverses_its_personal_link_cascade() {
         .unwrap();
     assert!(deleted_user.deleted_at.is_some());
     assert_eq!(deleted_user.token_version, before + 1);
-    assert!(links::Entity::find_by_id(personal_link_id)
-        .one(&db)
-        .await
-        .unwrap()
-        .unwrap()
-        .deleted_at
-        .is_some());
+    assert!(
+        links::Entity::find_by_id(personal_link_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some()
+    );
     assert!(
         links::Entity::find_by_id(org_link_id)
             .one(&db)
@@ -482,7 +486,8 @@ async fn admin_restore_only_reverses_its_personal_link_cascade() {
 
 #[tokio::test]
 async fn self_delete_revokes_credentials_and_preserves_org_links() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let (setup_server, db) = spawn_real_app().await;
     let (owner_token, _) = register_verified(&setup_server, &db).await;
     let (target_token, target_id) = register_verified(&setup_server, &db).await;
@@ -514,13 +519,15 @@ async fn self_delete_revokes_credentials_and_preserves_org_links() {
         .unwrap();
     assert!(user.deleted_at.is_some());
     assert_eq!(user.token_version, before + 1);
-    assert!(links::Entity::find_by_id(personal_link_id)
-        .one(&db)
-        .await
-        .unwrap()
-        .unwrap()
-        .deleted_at
-        .is_some());
+    assert!(
+        links::Entity::find_by_id(personal_link_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some()
+    );
     assert!(
         links::Entity::find_by_id(org_link_id)
             .one(&db)
@@ -1045,7 +1052,8 @@ async fn update_organization_duplicate_slug_returns_409() {
 
 #[tokio::test]
 async fn deleted_members_are_omitted_and_do_not_block_owner_deletion() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let (server, db) = spawn_real_app().await;
     let (owner_token, owner_id) = register_verified(&server, &db).await;
     let (admin_token, admin_id) = register_verified(&server, &db).await;

@@ -1,17 +1,18 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use chrono::{Duration, Utc};
-use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::AppState;
 use crate::entity::{
     api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events, links,
     org_members, organizations, passkeys, users,
@@ -20,7 +21,6 @@ use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::is_reserved_email_domain;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
-use crate::AppState;
 
 /// Clamp pagination params: 1-based page, 1..=100 per_page (default 25).
 fn clamp_pagination(page: Option<u64>, per_page: Option<u64>) -> (u64, u64) {
@@ -208,12 +208,12 @@ async fn invalidate_cache_for_domain(state: &AppState, domain: &str) {
         .await
         .unwrap_or_default();
     for l in all {
-        if let Ok(u) = url::Url::parse(&l.original_url) {
-            if let Some(h) = u.host_str() {
-                let h = h.trim_end_matches('.').to_lowercase();
-                if h == domain || h.ends_with(&format!(".{}", domain)) {
-                    let _ = cache.invalidate_link(&l.code).await;
-                }
+        if let Ok(u) = url::Url::parse(&l.original_url)
+            && let Some(h) = u.host_str()
+        {
+            let h = h.trim_end_matches('.').to_lowercase();
+            if h == domain || h.ends_with(&format!(".{}", domain)) {
+                let _ = cache.invalidate_link(&l.code).await;
             }
         }
     }
@@ -1238,7 +1238,7 @@ pub async fn make_admin(
                     message: "Failed to update user".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
     let user = users::Entity::find_by_id(user_id)
@@ -1849,7 +1849,7 @@ pub async fn block_domain(
                     message: "Failed to block domain".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -2108,7 +2108,7 @@ pub async fn block_email_domain(
                     message: "Failed to block email domain".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -3033,7 +3033,7 @@ pub async fn admin_block_domain_from_link(
                     message: "Failed to block domain".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 

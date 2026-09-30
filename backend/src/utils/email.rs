@@ -1,6 +1,6 @@
 use lettre::{
-    message::header::ContentType, transport::smtp::authentication::Credentials, AsyncSmtpTransport,
-    AsyncTransport, Message, Tokio1Executor,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::header::ContentType,
+    transport::smtp::authentication::Credentials,
 };
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};

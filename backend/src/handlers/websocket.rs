@@ -1,8 +1,8 @@
 use crate::utils::decode_jwt;
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -128,10 +128,10 @@ async fn resolve_ws_user(
     token: Option<&str>,
     headers: &HeaderMap,
 ) -> Option<i32> {
-    if let Some(t) = token {
-        if let Some(id) = resolve_ws_token(db, t).await {
-            return Some(id);
-        }
+    if let Some(t) = token
+        && let Some(id) = resolve_ws_token(db, t).await
+    {
+        return Some(id);
     }
     crate::handlers::links::get_user_id_from_header(db, headers).await
 }

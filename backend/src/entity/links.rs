@@ -126,24 +126,24 @@ impl Model {
         let now = chrono::Utc::now().naive_utc();
 
         // Check if link hasn't started yet
-        if let Some(starts_at) = self.starts_at {
-            if now < starts_at {
-                return false;
-            }
+        if let Some(starts_at) = self.starts_at
+            && now < starts_at
+        {
+            return false;
         }
 
         // Check if link has expired
-        if let Some(expires_at) = self.expires_at {
-            if now > expires_at {
-                return false;
-            }
+        if let Some(expires_at) = self.expires_at
+            && now > expires_at
+        {
+            return false;
         }
 
         // Check if max clicks reached
-        if let Some(max_clicks) = self.max_clicks {
-            if self.click_count >= i64::from(max_clicks) {
-                return false;
-            }
+        if let Some(max_clicks) = self.max_clicks
+            && self.click_count >= i64::from(max_clicks)
+        {
+            return false;
         }
 
         true
@@ -165,22 +165,22 @@ impl Model {
             return Some("This one-time link has already been opened");
         }
 
-        if let Some(starts_at) = self.starts_at {
-            if now < starts_at {
-                return Some("Link is scheduled to activate later");
-            }
+        if let Some(starts_at) = self.starts_at
+            && now < starts_at
+        {
+            return Some("Link is scheduled to activate later");
         }
 
-        if let Some(expires_at) = self.expires_at {
-            if now > expires_at {
-                return Some("Link has expired");
-            }
+        if let Some(expires_at) = self.expires_at
+            && now > expires_at
+        {
+            return Some("Link has expired");
         }
 
-        if let Some(max_clicks) = self.max_clicks {
-            if self.click_count >= i64::from(max_clicks) {
-                return Some("Link has reached maximum clicks");
-            }
+        if let Some(max_clicks) = self.max_clicks
+            && self.click_count >= i64::from(max_clicks)
+        {
+            return Some("Link has reached maximum clicks");
         }
 
         None

@@ -1,15 +1,15 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::entity::{links, users};
 use crate::AppState;
+use crate::entity::{links, users};
 
 /// Usernames that would collide with app routes or API paths.
 const RESERVED_USERNAMES: &[&str] = &[

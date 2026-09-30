@@ -10,7 +10,7 @@ use opn_onl_backend::entity::{
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register_verified(
     server: &axum_test::TestServer,
@@ -178,9 +178,11 @@ async fn org_audit_attaches_emails_and_honours_limit() {
         all_rows.len() >= 5,
         "default page includes the five rows, got {all}"
     );
-    assert!(all_rows
-        .iter()
-        .all(|r| r["user_email"].as_str() == Some(owner_email.as_str())));
+    assert!(
+        all_rows
+            .iter()
+            .all(|r| r["user_email"].as_str() == Some(owner_email.as_str()))
+    );
 
     let page: Value = server
         .get(&format!("/orgs/{org_id}/audit?limit=2"))

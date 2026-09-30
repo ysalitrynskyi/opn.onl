@@ -1,6 +1,6 @@
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{DEFAULT_COST, hash, verify};
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use std::env;
 
@@ -149,7 +149,8 @@ mod tests {
     #[test]
     fn jwt_secret_enforced_and_roundtrips() {
         // A too-short / weak secret must be rejected rather than silently accepted.
-        std::env::set_var("JWT_SECRET", "short");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JWT_SECRET", "short") };
         let weak = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
         assert!(
             weak.is_err(),
@@ -163,10 +164,13 @@ mod tests {
                 "known placeholder must be rejected: {placeholder}"
             );
         }
-        std::env::set_var(
-            "JWT_SECRET",
-            "your-super-secret-jwt-key-minimum-32-characters-long",
-        );
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "JWT_SECRET",
+                "your-super-secret-jwt-key-minimum-32-characters-long",
+            )
+        };
         let placeholder = std::panic::catch_unwind(|| create_jwt(1, "a@b.c", 0));
         assert!(
             placeholder.is_err(),
@@ -174,7 +178,8 @@ mod tests {
         );
 
         // A strong secret round-trips and preserves the claims.
-        std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789") };
         let token = create_jwt(42, "x@y.z", 0).expect("valid secret should sign");
         let claims = decode_jwt(&token).expect("token should decode");
         assert_eq!(claims.user_id, 42);
@@ -201,12 +206,14 @@ mod tests {
             "expired token must not decode"
         );
 
-        std::env::set_var("JWT_SECRET", "a-different-long-test-secret-0123456789ab");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JWT_SECRET", "a-different-long-test-secret-0123456789ab") };
         assert!(
             decode_jwt(&token).is_err(),
             "token signed with another secret must not decode"
         );
-        std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JWT_SECRET", "a-sufficiently-long-test-secret-0123456789") };
     }
 
     /// On a single-threaded runtime, awaiting bcrypt must let other tasks run:
@@ -214,8 +221,8 @@ mod tests {
     /// requests. Run inline, neither spawned task would get a turn first.
     #[tokio::test(flavor = "current_thread")]
     async fn bcrypt_runs_off_the_async_worker() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let hashed_first = Arc::new(AtomicBool::new(false));
         let flag = hashed_first.clone();

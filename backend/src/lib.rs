@@ -12,12 +12,12 @@ pub mod openapi;
 pub mod utils;
 
 use axum::{
+    Router,
     body::Body,
     http::Request,
     middleware,
     response::{IntoResponse, Redirect},
     routing::{delete, get, post, put},
-    Router,
 };
 use sea_orm::DatabaseConnection;
 use std::sync::Arc;
@@ -26,7 +26,7 @@ use tower_http::trace::TraceLayer;
 
 use handlers::websocket::WsState;
 use utils::cache::RedisCache;
-use utils::rate_limiter::{rate_limit_middleware, RateLimiters};
+use utils::rate_limiter::{RateLimiters, rate_limit_middleware};
 use utils::{BackupService, ClickBuffer, EmailService};
 
 #[derive(Clone)]
@@ -250,12 +250,11 @@ pub fn build_cors() -> CorsLayer {
     for var in ["FRONTEND_URL", "BASE_URL"] {
         if let Ok(val) = std::env::var(var) {
             let trimmed = val.trim().trim_end_matches('/');
-            if !trimmed.is_empty() {
-                if let Ok(hv) = trimmed.parse::<HeaderValue>() {
-                    if !origins.contains(&hv) {
-                        origins.push(hv);
-                    }
-                }
+            if !trimmed.is_empty()
+                && let Ok(hv) = trimmed.parse::<HeaderValue>()
+                && !origins.contains(&hv)
+            {
+                origins.push(hv);
             }
         }
     }

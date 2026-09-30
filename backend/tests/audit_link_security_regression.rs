@@ -5,13 +5,13 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{blocked_domains, click_events, links};
-use opn_onl_backend::utils::click_buffer::ClickData;
 use opn_onl_backend::utils::ClickBuffer;
+use opn_onl_backend::utils::click_buffer::ClickData;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
     PaginatorTrait, QueryFilter,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register_verified(
     server: &axum_test::TestServer,

@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
+use crate::AppState;
 use crate::entity::{link_tags, links, org_members, tags};
 use crate::utils::time::utc_rfc3339;
-use crate::AppState;
 
 // ============= DTOs =============
 
@@ -164,15 +164,15 @@ pub async fn create_tag(
         })?;
 
     // Org tags can only be created by members with edit rights (not viewers).
-    if let Some(org_id) = payload.org_id {
-        if !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(
-                    serde_json::json!({"error": "Insufficient permissions to create an organization tag"}),
-                ),
-            ));
-        }
+    if let Some(org_id) = payload.org_id
+        && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "Insufficient permissions to create an organization tag"}),
+            ),
+        ));
     }
 
     let tag = tags::ActiveModel {

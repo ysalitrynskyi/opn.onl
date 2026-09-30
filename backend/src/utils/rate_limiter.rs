@@ -226,11 +226,7 @@ impl ClientIpConfig {
         let real_ip_header = match std::env::var("REAL_IP_HEADER") {
             Ok(v) => {
                 let v = v.trim().to_ascii_lowercase();
-                if v.is_empty() {
-                    None
-                } else {
-                    Some(v)
-                }
+                if v.is_empty() { None } else { Some(v) }
             }
             Err(_) => Some("cf-connecting-ip".to_string()),
         };
@@ -297,14 +293,13 @@ pub fn client_ip_with(headers: &HeaderMap, config: &ClientIpConfig) -> Option<St
         return None;
     }
 
-    if let Some(name) = &config.real_ip_header {
-        if let Some(ip) = headers
+    if let Some(name) = &config.real_ip_header
+        && let Some(ip) = headers
             .get(name.as_str())
             .and_then(|v| v.to_str().ok())
             .and_then(parse_ip)
-        {
-            return Some(ip);
-        }
+    {
+        return Some(ip);
     }
 
     // X-Forwarded-For fallback: count from the RIGHT. Each trusted proxy
@@ -416,35 +411,34 @@ pub async fn rate_limit_middleware(
     // else (including /contact) is classified by its route, not a path heuristic.
     let is_redirect = is_redirect_path(path);
 
-    if !is_redirect {
-        if let RateLimitResult::Limited {
+    if !is_redirect
+        && let RateLimitResult::Limited {
             retry_after_secs,
             limit,
             remaining,
         } = limiters.per_second.check(&format!("sec:{}", ip))
-        {
-            let mut response = (
-                StatusCode::TOO_MANY_REQUESTS,
-                serde_json::json!({
-                    "error": "Too many requests",
-                    "retry_after": retry_after_secs,
-                    "message": format!("Rate limit: maximum {} requests per second", limit)
-                })
-                .to_string(),
-            )
-                .into_response();
+    {
+        let mut response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({
+                "error": "Too many requests",
+                "retry_after": retry_after_secs,
+                "message": format!("Rate limit: maximum {} requests per second", limit)
+            })
+            .to_string(),
+        )
+            .into_response();
 
-            let headers = response.headers_mut();
-            headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
-            headers.insert(
-                "X-RateLimit-Remaining",
-                remaining.to_string().parse().unwrap(),
-            );
-            headers.insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
-            headers.insert("Content-Type", "application/json".parse().unwrap());
+        let headers = response.headers_mut();
+        headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
+        headers.insert(
+            "X-RateLimit-Remaining",
+            remaining.to_string().parse().unwrap(),
+        );
+        headers.insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
+        headers.insert("Content-Type", "application/json".parse().unwrap());
 
-            return response;
-        }
+        return response;
     }
 
     // Choose appropriate limiter based on path
@@ -608,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_ip_budget_cannot_be_bypassed_by_rotating_codes() {
-        use axum::{middleware, routing::post, Router};
+        use axum::{Router, middleware, routing::post};
 
         let limiters = Arc::new(RateLimiters {
             per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
@@ -662,9 +656,8 @@ mod tests {
     #[tokio::test]
     async fn auth_reads_do_not_spend_the_sign_in_budget() {
         use axum::{
-            middleware,
+            Router, middleware,
             routing::{get, post},
-            Router,
         };
 
         let limiters = generous_limiters(RateLimiter::new(RateLimitConfig::new(2, 60)));
@@ -882,13 +875,14 @@ mod tests {
     /// direct tunnel path — is attacker-controlled.
     mod client_identity {
         use super::*;
-        use axum::{middleware, routing::post, Router};
+        use axum::{Router, middleware, routing::post};
 
         async fn spawn_test_server() -> SocketAddr {
             // Matches the production deployment: proxy headers are trusted.
             // REAL_IP_HEADER is left unset so the cf-connecting-ip default
             // applies.
-            std::env::set_var("TRUST_PROXY_HEADERS", "true");
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("TRUST_PROXY_HEADERS", "true") };
 
             let limiters = Arc::new(RateLimiters {
                 per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),

@@ -4,7 +4,7 @@
 mod common;
 
 use common::{spawn_real_app, unique_email};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register(server: &axum_test::TestServer, email: &str) -> String {
     let res = server

@@ -9,14 +9,14 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 use utoipa::ToSchema;
 use uuid::Uuid;
-use webauthn_rs::prelude::*;
 use webauthn_rs::Webauthn;
+use webauthn_rs::prelude::*;
 
+use crate::AppState;
 use crate::entity::{passkeys, users};
 use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
 use crate::utils::jwt::create_jwt;
 use crate::utils::time::utc_rfc3339;
-use crate::AppState;
 
 // In-memory store for registration/auth state
 // In production, use Redis or database with expiration
@@ -291,7 +291,7 @@ pub async fn register_start(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to start registration",
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -347,7 +347,7 @@ pub async fn register_finish(
     let passkey = match webauthn.finish_passkey_registration(&payload.credential, &reg_state) {
         Ok(p) => p,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response()
+            return (StatusCode::BAD_REQUEST, "Failed to finish registration").into_response();
         }
     };
 
@@ -358,7 +358,7 @@ pub async fn register_finish(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to register passkey",
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -573,7 +573,7 @@ pub async fn login_start(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to start authentication",
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -636,7 +636,7 @@ pub async fn login_finish(
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to authenticate").into_response();
         }
     };
 
@@ -758,7 +758,7 @@ pub async fn list_passkeys(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -817,7 +817,7 @@ pub async fn delete_passkey(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -828,7 +828,7 @@ pub async fn delete_passkey(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Failed to delete passkey"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -958,7 +958,7 @@ pub async fn rename_passkey(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 

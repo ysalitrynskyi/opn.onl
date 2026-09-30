@@ -19,13 +19,13 @@ use std::future::IntoFuture;
 
 use common::{mark_email_verified, setup_test_db, spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::entity::links;
-use opn_onl_backend::utils::click_buffer::ClickData;
 use opn_onl_backend::utils::ClickBuffer;
+use opn_onl_backend::utils::click_buffer::ClickData;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
     EntityTrait, QueryFilter, Set, Statement, TransactionTrait,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register_verified(server: &axum_test::TestServer, db: &DatabaseConnection) -> String {
     let res = server

@@ -1,18 +1,18 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
+use crate::AppState;
 use crate::entity::{click_events, links};
 use crate::handlers::links::get_user_id_from_header;
 use crate::utils::time::utc_rfc3339;
-use crate::AppState;
 
 /// Default stats window when `days` is omitted. The dashboard's "Last 90 days"
 /// option must stay inside the clamp below.
@@ -186,7 +186,7 @@ pub async fn get_link_stats(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -201,7 +201,7 @@ pub async fn get_link_stats(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Link not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -610,7 +610,7 @@ pub async fn get_dashboard_stats(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -703,7 +703,7 @@ pub async fn get_realtime_clicks(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -718,7 +718,7 @@ pub async fn get_realtime_clicks(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Link not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 

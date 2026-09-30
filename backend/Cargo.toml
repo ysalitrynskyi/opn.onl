@@ -1,7 +1,7 @@
 [package]
 name = "opn_onl_backend"
 version = "1.3.2"
-edition = "2021"
+edition = "2024"
 # Keep in lockstep with rust-toolchain.toml and the Dockerfile builder image.
 # CI used to float on stable while the release image stayed on 1.85, so a
 # newer crate could pass every PR check and then fail the image build.

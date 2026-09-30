@@ -97,8 +97,10 @@ mod tests {
         fn drop(&mut self) {
             for (key, value) in &self.saved {
                 match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
+                    // FIXME: Audit that the environment access only happens in single-threaded code.
+                    Some(v) => unsafe { std::env::set_var(key, v) },
+                    // FIXME: Audit that the environment access only happens in single-threaded code.
+                    None => unsafe { std::env::remove_var(key) },
                 }
             }
         }
@@ -158,12 +160,18 @@ mod tests {
     fn resolve_assembles_from_postgres_parts_when_database_url_unset() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = EnvRestore::capture(POSTGRES_ENV);
-        std::env::remove_var("DATABASE_URL");
-        std::env::set_var("POSTGRES_USER", "postgres");
-        std::env::set_var("POSTGRES_PASSWORD", "p@ss/w:rd");
-        std::env::set_var("POSTGRES_HOST", "db");
-        std::env::set_var("POSTGRES_PORT", "5432");
-        std::env::set_var("POSTGRES_DB", "opn_onl");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_USER", "postgres") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_PASSWORD", "p@ss/w:rd") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_HOST", "db") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_PORT", "5432") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_DB", "opn_onl") };
 
         let url = resolve_database_url();
         let parsed = url::Url::parse(&url).expect("assembled DATABASE_URL must parse");
@@ -177,12 +185,18 @@ mod tests {
     fn resolve_treats_empty_database_url_as_unset() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = EnvRestore::capture(POSTGRES_ENV);
-        std::env::set_var("DATABASE_URL", "");
-        std::env::set_var("POSTGRES_USER", "postgres");
-        std::env::set_var("POSTGRES_PASSWORD", "p@ss");
-        std::env::set_var("POSTGRES_HOST", "db");
-        std::env::set_var("POSTGRES_PORT", "5432");
-        std::env::set_var("POSTGRES_DB", "opn_onl");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_URL", "") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_USER", "postgres") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_PASSWORD", "p@ss") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_HOST", "db") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_PORT", "5432") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_DB", "opn_onl") };
 
         let url = resolve_database_url();
         let parsed = url::Url::parse(&url).expect("empty DATABASE_URL must fall through");
@@ -194,12 +208,18 @@ mod tests {
     fn resolve_brackets_ipv6_postgres_host() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = EnvRestore::capture(POSTGRES_ENV);
-        std::env::remove_var("DATABASE_URL");
-        std::env::set_var("POSTGRES_USER", "postgres");
-        std::env::set_var("POSTGRES_PASSWORD", "p@ss");
-        std::env::set_var("POSTGRES_HOST", "::1");
-        std::env::set_var("POSTGRES_PORT", "5432");
-        std::env::set_var("POSTGRES_DB", "opn_onl");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_USER", "postgres") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_PASSWORD", "p@ss") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_HOST", "::1") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_PORT", "5432") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_DB", "opn_onl") };
 
         let url = resolve_database_url();
         let parsed = url::Url::parse(&url)
@@ -213,12 +233,17 @@ mod tests {
     fn resolve_prefers_non_empty_database_url() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = EnvRestore::capture(POSTGRES_ENV);
-        std::env::set_var(
-            "DATABASE_URL",
-            "postgres://explicit:ex@example:6543/explicitdb",
-        );
-        std::env::set_var("POSTGRES_PASSWORD", "ignored");
-        std::env::set_var("POSTGRES_HOST", "db");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "DATABASE_URL",
+                "postgres://explicit:ex@example:6543/explicitdb",
+            )
+        };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_PASSWORD", "ignored") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("POSTGRES_HOST", "db") };
 
         let url = resolve_database_url();
         assert_eq!(url, "postgres://explicit:ex@example:6543/explicitdb");

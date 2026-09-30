@@ -3,14 +3,16 @@
 //! Built from the real `build_cors()` layer. This binary owns its environment,
 //! so setting FRONTEND_URL here cannot race another test.
 
-use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
-use axum::{routing::get, Router};
+use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
+use axum::{Router, routing::get};
 
 const ORIGIN: &str = "https://app.opn.example";
 
 fn server() -> axum_test::TestServer {
-    std::env::set_var("FRONTEND_URL", ORIGIN);
-    std::env::remove_var("BASE_URL");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("FRONTEND_URL", ORIGIN) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("BASE_URL") };
     let app = Router::new()
         .route("/links", get(|| async { "ok" }))
         .layer(opn_onl_backend::build_cors());

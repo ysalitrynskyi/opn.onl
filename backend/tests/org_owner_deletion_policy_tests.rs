@@ -8,7 +8,7 @@ mod common;
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::users;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn register_verified(
     server: &axum_test::TestServer,
@@ -102,7 +102,8 @@ async fn org_with_live_member() -> (
 
 #[tokio::test]
 async fn admin_hard_delete_of_owner_with_members_is_409() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let (server, admin_token, owner_id, _, org_id, member_token, _, code) =
         org_with_live_member().await;
 
@@ -138,7 +139,8 @@ async fn admin_hard_delete_of_owner_with_members_is_409() {
 
 #[tokio::test]
 async fn owner_self_delete_with_members_is_409_and_lists_the_org() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let (server, _, _, owner_token, org_id, _, _, _) = org_with_live_member().await;
 
     let res = server
@@ -166,7 +168,8 @@ async fn owner_self_delete_with_members_is_409_and_lists_the_org() {
 
 #[tokio::test]
 async fn admin_soft_delete_of_owner_with_members_is_409() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let (server, admin_token, owner_id, _, _, _, _, _) = org_with_live_member().await;
 
     let res = server
@@ -183,7 +186,8 @@ async fn admin_soft_delete_of_owner_with_members_is_409() {
 
 #[tokio::test]
 async fn transfer_then_self_delete_leaves_org_and_link_with_new_owner() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let (server, _, _, owner_token, org_id, member_token, member_id, code) =
         org_with_live_member().await;
 
@@ -247,7 +251,8 @@ async fn transfer_then_self_delete_leaves_org_and_link_with_new_owner() {
 
 #[tokio::test]
 async fn hard_delete_of_solo_owner_purges_the_org_and_frees_the_slug() {
-    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
     let (setup, db) = spawn_real_app().await;
     let (admin_token, admin_id, _) = register_verified(&setup, &db).await;
     make_admin(&db, admin_id).await;

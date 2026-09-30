@@ -4,7 +4,7 @@
 mod common;
 
 use opn_onl_backend::redact_request_uri;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn redacts_token_query_on_ws_and_sse() {

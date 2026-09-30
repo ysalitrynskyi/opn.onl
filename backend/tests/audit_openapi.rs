@@ -164,15 +164,15 @@ fn operations_from_router_debug(debug: &str) -> BTreeSet<(String, String)> {
         let trimmed = rest.trim_start();
         if let Some(after_colon) = trimmed.strip_prefix(':') {
             let after_colon = after_colon.trim_start();
-            if let Some(quoted) = after_colon.strip_prefix('"') {
-                if let Some(qend) = quoted.find('"') {
-                    let path = quoted[..qend].to_string();
-                    if !path.contains("__private__") {
-                        id_to_path.insert(id, axum_path_to_openapi(&path));
-                    }
-                    rest = &quoted[qend + 1..];
-                    continue;
+            if let Some(quoted) = after_colon.strip_prefix('"')
+                && let Some(qend) = quoted.find('"')
+            {
+                let path = quoted[..qend].to_string();
+                if !path.contains("__private__") {
+                    id_to_path.insert(id, axum_path_to_openapi(&path));
                 }
+                rest = &quoted[qend + 1..];
+                continue;
             }
         }
     }

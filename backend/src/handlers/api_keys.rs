@@ -1,19 +1,19 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::AppState;
 use crate::entity::{api_keys, users};
 use crate::handlers::links::{get_jwt_auth_from_header, hash_api_key};
 use crate::utils::time::utc_rfc3339;
-use crate::AppState;
 
 const MAX_API_KEYS: u64 = 20;
 
@@ -85,7 +85,7 @@ pub async fn create_api_key(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to create API key",
             )
-                .into_response()
+                .into_response();
         }
     };
     let user = match users::Entity::find_by_id(auth.user_id)

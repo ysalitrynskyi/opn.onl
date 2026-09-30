@@ -7,7 +7,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Register a user through the real handler; returns (token, user_id).
 async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) {

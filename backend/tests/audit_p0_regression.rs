@@ -10,7 +10,7 @@ mod common;
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::utils::create_jwt;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Register through the real handler. Returns (jwt, user_id); the token carries
 /// `token_version` 0.
