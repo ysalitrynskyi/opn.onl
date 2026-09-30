@@ -55,6 +55,14 @@ describe('API_ENDPOINTS', () => {
             expect(API_ENDPOINTS.linkDelete(10)).toContain('/links/10');
             expect(API_ENDPOINTS.linkUpdate(20)).toContain('/links/20');
             expect(API_ENDPOINTS.linkTags(3)).toContain('/links/3/tags');
+            expect(API_ENDPOINTS.linkClone(123)).toMatch(/\/links\/123\/clone$/);
+            expect(API_ENDPOINTS.linkPin(123)).toMatch(/\/links\/123\/pin$/);
+        });
+
+        it('should have check-code, health-check, and utm endpoints', () => {
+            expect(API_ENDPOINTS.checkCode).toMatch(/\/links\/check-code$/);
+            expect(API_ENDPOINTS.healthCheck).toMatch(/\/links\/health-check$/);
+            expect(API_ENDPOINTS.buildUtm).toMatch(/\/links\/build-utm$/);
         });
 
         it('should build branded QR query params', () => {

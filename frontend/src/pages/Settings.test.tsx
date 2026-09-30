@@ -225,6 +225,52 @@ describe('Settings Page', () => {
             });
         });
 
+        it('starts passkey registration without decoding the JWT payload', async () => {
+            localStorage.setItem('token', 'eyJhbGciOiJIUzI1NiJ9.abc-def_ghi.sig');
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/passkey/register/start')) {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 400,
+                        json: () => Promise.resolve({ error: 'nope' }),
+                    });
+                }
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockUserProfile),
+                    });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockAppSettings),
+                    });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockPasskeys),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({}),
+                });
+            }) as any;
+
+            render(<Settings />);
+            fireEvent.click(await screen.findByRole('button', { name: /add passkey/i }));
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/passkey/register/start'),
+                    expect.objectContaining({ method: 'POST' }),
+                );
+            });
+            expect(screen.queryByText(/invalid character/i)).not.toBeInTheDocument();
+        });
+
         it('can delete passkey', async () => {
             render(<Settings />);
             
@@ -373,10 +419,192 @@ describe('Settings Page', () => {
             // Should handle error gracefully
         });
 
+        it('shows a retryable error instead of an empty profile when /auth/me fails', async () => {
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 500,
+                        json: () => Promise.resolve({ error: 'Server error' }),
+                    });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockAppSettings),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({}),
+                });
+            }) as any;
+
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert')).toHaveTextContent(/server error/i);
+            expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+            expect(screen.queryByText('test@example.com')).not.toBeInTheDocument();
+            expect(screen.queryByText('Total Links')).not.toBeInTheDocument();
+        });
+
+        it('shows a retryable error when the settings fetch throws', async () => {
+            global.fetch = vi.fn().mockRejectedValue(new Error('Network down'));
+
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert')).toHaveTextContent(/failed to load account settings/i);
+            expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+            expect(screen.queryByText('Total Links')).not.toBeInTheDocument();
+        });
+
         it('displays success messages', async () => {
             render(<Settings />);
             
             // After successful update, should show success message
+        });
+    });
+
+    describe('API Keys', () => {
+        const settingsWithKeys = { ...mockAppSettings, api_keys_enabled: true };
+        const keys = [{
+            id: 7,
+            name: 'Laptop',
+            key_prefix: 'opn_abcd',
+            last_used_at: null,
+            created_at: '2024-01-01T00:00:00Z',
+        }];
+
+        const mockWithKeys = () => {
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    if (options?.method === 'DELETE') {
+                        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+                    }
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(keys) });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+        };
+
+        it('keeps an uncopied API secret when a second create fails', async () => {
+            let creates = 0;
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys') && options?.method === 'POST') {
+                    creates += 1;
+                    if (creates === 1) {
+                        return Promise.resolve({
+                            ok: true,
+                            json: () => Promise.resolve({ key: 'opn_secret_one_time' }),
+                        });
+                    }
+                    return Promise.resolve({
+                        ok: false,
+                        status: 400,
+                        text: () => Promise.resolve('Too many keys'),
+                    });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(keys) });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+
+            render(<Settings />);
+            const nameInput = await screen.findByPlaceholderText(/key name/i);
+            fireEvent.change(nameInput, { target: { value: 'First' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            expect(await screen.findByText('opn_secret_one_time')).toBeInTheDocument();
+
+            fireEvent.change(nameInput, { target: { value: 'Second' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            await waitFor(() => {
+                expect(screen.getByRole('alert')).toHaveTextContent(/too many keys/i);
+            });
+            expect(screen.getByText('opn_secret_one_time')).toBeInTheDocument();
+        });
+
+        it('keeps the one-time API secret when the following profile fetch fails', async () => {
+            let meCalls = 0;
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                if (url.includes('/auth/me')) {
+                    meCalls += 1;
+                    if (meCalls === 1) {
+                        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                    }
+                    return Promise.resolve({
+                        ok: false,
+                        status: 500,
+                        json: () => Promise.resolve({ error: 'profile down' }),
+                    });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys') && options?.method === 'POST') {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({
+                            id: 8,
+                            name: 'First',
+                            key: 'opn_secret_survives',
+                            key_prefix: 'opn_secret_s',
+                            created_at: '2024-01-02T00:00:00Z',
+                        }),
+                    });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(keys) });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+
+            render(<Settings />);
+            const nameInput = await screen.findByPlaceholderText(/key name/i);
+            fireEvent.change(nameInput, { target: { value: 'First' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            await waitFor(() => {
+                expect(screen.getByRole('button', { name: /create key/i })).not.toBeDisabled();
+            });
+            expect(screen.getByText('opn_secret_survives')).toBeInTheDocument();
+            expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+        });
+
+        it('does not revoke an API key when confirm is cancelled', async () => {
+            mockWithKeys();
+            vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+            render(<Settings />);
+            fireEvent.click(await screen.findByRole('button', { name: /revoke laptop/i }));
+
+            expect(global.fetch).not.toHaveBeenCalledWith(
+                expect.stringContaining('/auth/api-keys/7'),
+                expect.objectContaining({ method: 'DELETE' }),
+            );
         });
     });
 });
