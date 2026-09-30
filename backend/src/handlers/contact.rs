@@ -100,9 +100,17 @@ pub async fn send_contact_message(
         html_escape(&payload.message),
     );
 
+    let text_body = format!(
+        "New contact form submission\n\nFrom: {} <{}>\nSubject: {}\n\n{}\n\n\
+         This message was sent via the opn.onl contact form.\n\
+         Reply directly to this email to respond to the sender.\n",
+        payload.name, payload.email, payload.subject, payload.message,
+    );
+    let body = crate::utils::email::EmailBody::from_parts(html_body, text_body);
+
     // Send email to admin
     match email_service
-        .send_email_with_reply_to(&admin_email, &subject, &html_body, &payload.email)
+        .send_email_with_reply_to(&admin_email, &subject, &body, &payload.email)
         .await
     {
         Ok(_) => {

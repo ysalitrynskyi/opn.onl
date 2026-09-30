@@ -711,6 +711,7 @@ pub async fn reset_password(
             )
                 .into_response();
         };
+        let account_email = user.email.clone();
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
         active_user.password_reset_token = Set(None);
@@ -737,6 +738,8 @@ pub async fn reset_password(
                 .into_response();
         }
 
+        notify_password_changed(&state, account_email);
+
         return (
             StatusCode::OK,
             Json(MessageResponse {
@@ -754,6 +757,20 @@ pub async fn reset_password(
         }),
     )
         .into_response()
+}
+
+/// Email the account owner that their password changed, without holding the
+/// response on SMTP. Skipped when email is not configured.
+fn notify_password_changed(state: &AppState, email: String) {
+    if let Some(service) = state.email_service.clone()
+        && service.is_configured()
+    {
+        tokio::spawn(async move {
+            if let Err(e) = service.send_password_changed_email(&email).await {
+                tracing::error!("Failed to send password-changed email: {}", e);
+            }
+        });
+    }
 }
 
 #[derive(Deserialize, Validate, ToSchema)]
@@ -938,6 +955,8 @@ pub async fn change_password(
             )
                 .into_response();
         }
+
+        notify_password_changed(&state, token_email.clone());
 
         // Return a fresh token carrying the new version so the current session
         // stays valid; the bump just revoked the client's existing token, and
