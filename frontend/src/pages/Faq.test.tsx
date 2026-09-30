@@ -17,4 +17,13 @@ describe('FAQ', () => {
         expect(answer).toHaveTextContent(/global privacy control signal keeps it off in both cases/i);
         expect(answer).not.toHaveTextContent(/does not load until you allow it/i);
     });
+
+    it('tells assistive tech whether an answer is open', async () => {
+        const { user } = render(<Faq />);
+        const question = screen.getByRole('button', { name: /do you track users who click my links/i });
+
+        expect(question).toHaveAttribute('aria-expanded', 'false');
+        await user.click(question);
+        expect(question).toHaveAttribute('aria-expanded', 'true');
+    });
 });

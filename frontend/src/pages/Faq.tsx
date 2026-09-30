@@ -214,6 +214,8 @@ export default function Faq() {
                                                 className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden"
                                             >
                                                 <button
+                                                    type="button"
+                                                    aria-expanded={isOpen}
                                                     onClick={() => toggleItem(itemId)}
                                                     className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-slate-50 transition-colors"
                                                 >

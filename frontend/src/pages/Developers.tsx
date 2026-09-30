@@ -126,7 +126,7 @@ export default function Developers() {
                 keywords="opn.onl api, url shortener api, mcp server, model context protocol, rest api, api keys, link shortener integration, self-hosted, claude mcp, developer"
                 url="/developers"
             />
-            <main>
+            <div>
                 {/* ===== Hero ===== */}
                 <section className="relative overflow-hidden bg-ink text-white">
                     <img src="/bg-network.png" alt="" aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-20 [mask-image:radial-gradient(120%_110%_at_80%_0%,black,transparent_72%)]" />
@@ -402,7 +402,7 @@ export default function Developers() {
                         </div>
                     </div>
                 </section>
-            </main>
+            </div>
         </>
     );
 }

@@ -118,5 +118,11 @@ describe('Home Page', () => {
       expect(screen.getByText(/invalid url/i)).toBeInTheDocument();
     });
   });
-});
 
+  // Layout owns the page's one <main> (the skip link targets it); a page
+  // that renders its own nests a second main landmark inside it.
+  it('does not render a main landmark of its own', () => {
+    const { container } = render(<Home />);
+    expect(container.querySelector('main')).toBeNull();
+  });
+});

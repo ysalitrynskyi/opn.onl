@@ -75,7 +75,7 @@ export default function Home() {
     return (
         <>
             <SEO />
-            <main>
+            <div>
                 {/* ===== Hero ===== */}
                 <section className="relative border-b border-line overflow-hidden">
                     <div className="absolute inset-0 bg-grid-pattern [mask-image:radial-gradient(120%_90%_at_50%_0%,black,transparent)]" />
@@ -406,7 +406,7 @@ export default function Home() {
                         <Link to="/terms" className="ml-1 underline decoration-line2 underline-offset-2 hover:text-muted">Terms apply</Link>.
                     </p>
                 </section>
-            </main>
+            </div>
         </>
     );
 }
