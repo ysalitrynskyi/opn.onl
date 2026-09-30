@@ -5,7 +5,7 @@ mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::{
-    api_keys, folders, link_tags, links, org_members, passkeys, tags, users,
+    api_keys, click_events, folders, link_tags, links, org_members, organizations, passkeys, tags, users,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -545,5 +545,546 @@ async fn self_delete_revokes_credentials_and_preserves_org_links() {
             .await
             .unwrap(),
         0
+    );
+}
+
+/// Hard-deleting an editor must not destroy links they created inside someone
+/// else's organization (or those links' click history). Organization links
+/// belong to the team; only the editor's personal links die with the account.
+#[tokio::test]
+async fn admin_hard_delete_preserves_other_orgs_links_and_clicks() {
+    let (setup_server, db) = spawn_real_app().await;
+    let (admin_token, admin_id) = register_verified(&setup_server, &db).await;
+    make_admin(&db, admin_id).await;
+    let (owner_token, owner_id) = register_verified(&setup_server, &db).await;
+    let (editor_token, editor_id) = register_verified(&setup_server, &db).await;
+
+    let org_id = create_org(&setup_server, &owner_token).await;
+    add_member(&db, org_id, editor_id, "editor").await;
+    let personal_link_id = create_link(&setup_server, &editor_token, None).await;
+    let org_link_id = create_link(&setup_server, &editor_token, Some(org_id)).await;
+
+    let org_click = click_events::ActiveModel {
+        link_id: Set(org_link_id),
+        created_at: Set(chrono::Utc::now().naive_utc()),
+        ip_address: Set(Some("203.0.113.10".to_string())),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert org click");
+    click_events::ActiveModel {
+        link_id: Set(personal_link_id),
+        created_at: Set(chrono::Utc::now().naive_utc()),
+        ip_address: Set(Some("203.0.113.11".to_string())),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert personal click");
+
+    let org_link_before = links::Entity::find_by_id(org_link_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let org_code = org_link_before.code.clone();
+
+    let (server, _) = spawn_real_app().await;
+    let res = server
+        .delete(&format!("/admin/users/{editor_id}/hard"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "hard delete: {}", res.text());
+
+    assert!(
+        users::Entity::find_by_id(editor_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "target user row must be gone"
+    );
+    assert!(
+        links::Entity::find_by_id(personal_link_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "personal links must be permanently deleted"
+    );
+
+    let org_link = links::Entity::find_by_id(org_link_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .expect("org-owned link must survive hard delete of its creator");
+    assert!(
+        org_link.deleted_at.is_none(),
+        "surviving org link must stay live"
+    );
+    assert_eq!(org_link.org_id, Some(org_id));
+    assert_eq!(
+        org_link.user_id,
+        Some(owner_id),
+        "org link must be reassigned to the org owner so they can list and manage it"
+    );
+
+    assert!(
+        click_events::Entity::find_by_id(org_click.id)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_some(),
+        "click history on the surviving org link must remain"
+    );
+    assert_eq!(
+        click_events::Entity::find()
+            .filter(click_events::Column::LinkId.eq(personal_link_id))
+            .count(&db)
+            .await
+            .unwrap(),
+        0,
+        "clicks on deleted personal links must cascade away"
+    );
+
+    let res = server.get(&format!("/{org_code}")).await;
+    assert!(
+        res.status_code().is_redirection(),
+        "org link must keep redirecting after creator hard-delete, got {}",
+        res.status_code()
+    );
+
+    // A remaining org member (the owner) must still be able to list and
+    // manage the surviving link. Clearing user_id to NULL without reassigning
+    // leaves a live redirect that only an instance admin can take down.
+    let listed: Value = server
+        .get(&format!("/links?org_id={org_id}"))
+        .authorization_bearer(&owner_token)
+        .await
+        .json();
+    let listed_ids: Vec<i64> = listed
+        .as_array()
+        .expect("GET /links returns an array")
+        .iter()
+        .filter_map(|l| l["id"].as_i64())
+        .collect();
+    assert!(
+        listed_ids.contains(&(org_link_id as i64)),
+        "org owner must see the surviving link in GET /links, got {listed_ids:?}"
+    );
+
+    let upd = server
+        .put(&format!("/links/{org_link_id}"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "original_url": "https://iana.org/retargeted" }))
+        .await;
+    assert_eq!(
+        upd.status_code(),
+        200,
+        "org owner must be able to retarget the surviving link: {}",
+        upd.text()
+    );
+
+    let del = server
+        .delete(&format!("/links/{org_link_id}"))
+        .authorization_bearer(&owner_token)
+        .await;
+    assert_eq!(
+        del.status_code(),
+        200,
+        "org owner must be able to take down the surviving link: {}",
+        del.text()
+    );
+}
+
+fn org_link_count(orgs: &Value, org_id: i32) -> i64 {
+    orgs.as_array()
+        .unwrap()
+        .iter()
+        .find(|org| org["id"].as_i64() == Some(org_id as i64))
+        .expect("org present")["link_count"]
+        .as_i64()
+        .unwrap()
+}
+
+/// Org-facing `link_count` must match the live-link listing (and admin
+/// `links_count`), not raw `links.org_id` rows. Soft-deleted links used to
+/// inflate GET /orgs, GET /orgs/{id}, PUT /orgs/{id}, and transfer.
+#[tokio::test]
+async fn org_link_count_excludes_soft_deleted_links() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let (_member_token, member_id) = register_verified(&server, &db).await;
+
+    let org_id = create_org(&server, &owner_token).await;
+    add_member(&db, org_id, member_id, "admin").await;
+    let live_id = create_link(&server, &owner_token, Some(org_id)).await;
+    let deleted_id = create_link(&server, &owner_token, Some(org_id)).await;
+    let _ = live_id;
+
+    let del = server
+        .delete(&format!("/links/{deleted_id}"))
+        .authorization_bearer(&owner_token)
+        .await;
+    assert_eq!(del.status_code(), 200, "soft-delete org link: {}", del.text());
+
+    let list: Value = server
+        .get("/orgs")
+        .authorization_bearer(&owner_token)
+        .await
+        .json();
+    assert_eq!(
+        org_link_count(&list, org_id),
+        1,
+        "GET /orgs must not count the soft-deleted link"
+    );
+
+    let detail: Value = server
+        .get(&format!("/orgs/{org_id}"))
+        .authorization_bearer(&owner_token)
+        .await
+        .json();
+    assert_eq!(
+        detail["link_count"].as_i64(),
+        Some(1),
+        "GET /orgs/{{id}} must not count the soft-deleted link"
+    );
+
+    let updated: Value = server
+        .put(&format!("/orgs/{org_id}"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "name": "Audit Org Renamed" }))
+        .await
+        .json();
+    assert_eq!(
+        updated["link_count"].as_i64(),
+        Some(1),
+        "PUT /orgs/{{id}} must not count the soft-deleted link"
+    );
+
+    let transferred = server
+        .post(&format!("/orgs/{org_id}/transfer-ownership"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "new_owner_user_id": member_id }))
+        .await;
+    assert_eq!(
+        transferred.status_code(),
+        200,
+        "transfer: {}",
+        transferred.text()
+    );
+    assert_eq!(
+        transferred.json::<Value>()["link_count"].as_i64(),
+        Some(1),
+        "transfer-ownership must not count the soft-deleted link"
+    );
+}
+
+#[tokio::test]
+async fn invite_member_looks_up_normalized_email() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let local = format!("User_{}", uuid::Uuid::new_v4().simple());
+    let res = server
+        .post("/auth/register")
+        .json(&json!({
+            "email": format!("{local}@Users.OPN.ONL"),
+            "password": "password123",
+        }))
+        .await;
+    assert_eq!(res.status_code(), 201, "register: {}", res.text());
+    let invitee_id = res.json::<Value>()["user_id"].as_i64().unwrap() as i32;
+    mark_email_verified(&db, invitee_id).await;
+
+    let org_id = create_org(&server, &owner_token).await;
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({
+            "email": format!(" {local}@USERS.opn.onl "),
+            "role": "viewer",
+        }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        201,
+        "invite must match the stored normalized email: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["user_id"].as_i64().unwrap() as i32,
+        invitee_id
+    );
+}
+
+#[tokio::test]
+async fn invite_member_rejects_deleted_or_disabled_users() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let (admin_token, admin_id) = register_verified(&server, &db).await;
+    make_admin(&db, admin_id).await;
+    let org_id = create_org(&server, &owner_token).await;
+
+    let (_, deleted_id) = register_verified(&server, &db).await;
+    let deleted_email = users::Entity::find_by_id(deleted_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .email;
+    let res = server
+        .delete(&format!("/admin/users/{deleted_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "soft-delete invitee: {}", res.text());
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "email": deleted_email, "role": "viewer" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        404,
+        "deleted user must not be invitable: {}",
+        res.text()
+    );
+    assert!(
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(deleted_id))
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "must not insert membership for a deleted user"
+    );
+
+    let (_, disabled_id) = register_verified(&server, &db).await;
+    let disabled = users::Entity::find_by_id(disabled_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let disabled_email = disabled.email.clone();
+    let mut active: users::ActiveModel = disabled.into();
+    active.disabled_at = Set(Some(chrono::Utc::now().naive_utc()));
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "email": disabled_email, "role": "viewer" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        404,
+        "disabled user must not be invitable: {}",
+        res.text()
+    );
+    assert!(
+        org_members::Entity::find()
+            .filter(org_members::Column::OrgId.eq(org_id))
+            .filter(org_members::Column::UserId.eq(disabled_id))
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none(),
+        "must not insert membership for a disabled user"
+    );
+}
+
+#[tokio::test]
+async fn transfer_ownership_rejects_disabled_member() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _) = register_verified(&server, &db).await;
+    let (_, member_id) = register_verified(&server, &db).await;
+    let org_id = create_org(&server, &owner_token).await;
+    add_member(&db, org_id, member_id, "admin").await;
+
+    let member = users::Entity::find_by_id(member_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: users::ActiveModel = member.into();
+    active.disabled_at = Set(Some(chrono::Utc::now().naive_utc()));
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .post(&format!("/orgs/{org_id}/transfer-ownership"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "new_owner_user_id": member_id }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        400,
+        "disabled member must not become owner: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"].as_str(),
+        Some("New owner must be an active user")
+    );
+
+    let org = organizations::Entity::find_by_id(org_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        org.owner_id, member_id,
+        "ownership must stay with the original owner"
+    );
+}
+
+#[tokio::test]
+async fn create_organization_duplicate_slug_returns_409() {
+    let (server, db) = spawn_real_app().await;
+    let (token_a, _) = register_verified(&server, &db).await;
+    let (token_b, _) = register_verified(&server, &db).await;
+    let slug = format!("slug-{}", uuid::Uuid::new_v4().simple());
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_a)
+        .json(&json!({ "name": "Org A", "slug": &slug }))
+        .await;
+    assert_eq!(res.status_code(), 201, "first create: {}", res.text());
+
+    let listed = server
+        .get("/orgs")
+        .authorization_bearer(&token_a)
+        .await;
+    assert_eq!(listed.status_code(), 200);
+    assert_eq!(
+        listed.json::<Value>().as_array().unwrap().len(),
+        1,
+        "owner membership must commit with the org row"
+    );
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_b)
+        .json(&json!({ "name": "Org B", "slug": &slug }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        409,
+        "duplicate slug must conflict: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"].as_str(),
+        Some("Slug already exists")
+    );
+
+    let listed_b = server
+        .get("/orgs")
+        .authorization_bearer(&token_b)
+        .await;
+    assert_eq!(listed_b.status_code(), 200);
+    assert!(
+        listed_b.json::<Value>().as_array().unwrap().is_empty(),
+        "losing create must not leave a membership-less org for the caller"
+    );
+}
+
+#[tokio::test]
+async fn update_organization_duplicate_slug_returns_409() {
+    let (server, db) = spawn_real_app().await;
+    let (token_a, _) = register_verified(&server, &db).await;
+    let (token_b, _) = register_verified(&server, &db).await;
+    let slug_a = format!("acme-{}", uuid::Uuid::new_v4().simple());
+    let slug_b = format!("beta-{}", uuid::Uuid::new_v4().simple());
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_a)
+        .json(&json!({ "name": "Acme", "slug": &slug_a }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create A: {}", res.text());
+
+    let res = server
+        .post("/orgs")
+        .authorization_bearer(&token_b)
+        .json(&json!({ "name": "Beta", "slug": &slug_b }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create B: {}", res.text());
+    let org_b_id = res.json::<Value>()["id"].as_i64().unwrap() as i32;
+
+    let res = server
+        .put(&format!("/orgs/{org_b_id}"))
+        .authorization_bearer(&token_b)
+        .json(&json!({ "slug": &slug_a }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        409,
+        "taken slug must conflict: {}",
+        res.text()
+    );
+    assert_eq!(
+        res.json::<Value>()["error"].as_str(),
+        Some("Slug already exists")
+    );
+
+    let org_b = organizations::Entity::find_by_id(org_b_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(org_b.slug, slug_b, "slug must stay unchanged on conflict");
+}
+
+#[tokio::test]
+async fn deleted_members_are_omitted_and_do_not_block_owner_deletion() {
+    std::env::set_var("ENABLE_ACCOUNT_DELETION", "true");
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, owner_id) = register_verified(&server, &db).await;
+    let (admin_token, admin_id) = register_verified(&server, &db).await;
+    make_admin(&db, admin_id).await;
+    let (_, member_id) = register_verified(&server, &db).await;
+    let org_id = create_org(&server, &owner_token).await;
+    add_member(&db, org_id, member_id, "viewer").await;
+
+    let res = server
+        .delete(&format!("/admin/users/{member_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "soft-delete member: {}", res.text());
+
+    let members = server
+        .get(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .await;
+    assert_eq!(members.status_code(), 200, "list members: {}", members.text());
+    let member_ids: Vec<i32> = members
+        .json::<Value>()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["user_id"].as_i64().unwrap() as i32)
+        .collect();
+    assert!(
+        member_ids.contains(&owner_id),
+        "owner must still appear in the member list"
+    );
+    assert!(
+        !member_ids.contains(&member_id),
+        "soft-deleted user must not appear in the member list: {member_ids:?}"
+    );
+
+    let res = server
+        .post("/auth/delete-account")
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "password": "password123" }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        200,
+        "deleted members must not block owner account deletion: {}",
+        res.text()
     );
 }

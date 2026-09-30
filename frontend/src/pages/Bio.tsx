@@ -10,7 +10,6 @@ interface BioLink {
     code: string;
     short_url: string;
     label: string;
-    click_count: number;
 }
 
 interface BioProfile {

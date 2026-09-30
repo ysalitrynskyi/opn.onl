@@ -3,10 +3,9 @@
 use std::thread;
 use std::time::Duration;
 
-#[path = "../src/utils/rate_limiter.rs"]
-mod rate_limiter;
-
-use rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter, RateLimiters};
+use opn_onl_backend::utils::rate_limiter::{
+    RateLimitConfig, RateLimitResult, RateLimiter, RateLimiters,
+};
 
 // ============= Basic Rate Limiter Tests =============
 
@@ -330,7 +329,6 @@ mod cleanup_tests {
 
 mod limiters_tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn test_default_limiters() {

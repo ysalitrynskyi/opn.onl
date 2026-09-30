@@ -46,7 +46,13 @@ pub fn dangerous_extension(url: &str) -> Option<&'static str> {
         .map(|c| c.into_owned())
         .unwrap_or(path);
 
-    let last_segment = decoded.rsplit('/').next().unwrap_or("").trim();
+    // A trailing `/` (or a decoded `%2F`) makes the last split empty; skip those
+    // so `payload.hta/` is still treated as `payload.hta`.
+    let last_segment = decoded
+        .rsplit('/')
+        .find(|s| !s.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     let ext = last_segment.rsplit_once('.')?.1.to_ascii_lowercase();
     DANGEROUS_EXTENSIONS.iter().copied().find(|&d| d == ext)
 }
@@ -194,6 +200,22 @@ mod tests {
     #[test]
     fn flags_percent_encoded_extension() {
         assert_eq!(dangerous_extension("http://evil.test/a%2Ehta"), Some("hta"));
+    }
+
+    #[test]
+    fn flags_trailing_slash_after_dangerous_extension() {
+        assert_eq!(
+            dangerous_extension("http://malware.example/payload.hta/"),
+            Some("hta")
+        );
+    }
+
+    #[test]
+    fn flags_trailing_encoded_slash_after_dangerous_extension() {
+        assert_eq!(
+            dangerous_extension("http://malware.example/payload.hta%2F"),
+            Some("hta")
+        );
     }
 
     #[test]

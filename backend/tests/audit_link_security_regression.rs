@@ -295,6 +295,7 @@ fn click(link_id: i32) -> ClickData {
         device: None,
         browser: None,
         os: None,
+        created_at: None,
     }
 }
 

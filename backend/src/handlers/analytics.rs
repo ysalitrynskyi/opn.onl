@@ -13,6 +13,19 @@ use crate::entity::{click_events, links};
 use crate::handlers::links::get_user_id_from_header;
 use crate::AppState;
 
+/// Default stats window when `days` is omitted. The dashboard's "Last 90 days"
+/// option must stay inside the clamp below.
+const DEFAULT_STATS_DAYS: i64 = 30;
+const MIN_STATS_DAYS: i64 = 1;
+const MAX_STATS_DAYS: i64 = 366;
+/// Hard cap on click rows loaded for one stats request.
+const MAX_STATS_EVENTS: u64 = 50_000;
+
+fn clamp_stats_days(days: Option<i64>) -> i64 {
+    days.unwrap_or(DEFAULT_STATS_DAYS)
+        .clamp(MIN_STATS_DAYS, MAX_STATS_DAYS)
+}
+
 /// Aggregated geo bucket value: (latitude, longitude, city, country, hit count).
 type GeoAggregate = (f64, f64, Option<String>, Option<String>, i64);
 
@@ -20,6 +33,7 @@ type GeoAggregate = (f64, f64, Option<String>, Option<String>, i64);
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct AnalyticsQuery {
+    /// Stats window in days. Omitted defaults to 30; values are clamped to 1..=366.
     pub days: Option<i64>,
 }
 
@@ -28,7 +42,13 @@ pub struct LinkStatsResponse {
     pub link_id: i32,
     pub code: String,
     pub original_url: String,
+    /// Clicks in the requested window, from a `COUNT(*)` over that window.
+    /// Breakdown maps below may be computed from a newest-first sample when
+    /// `truncated` is true.
     pub total_clicks: i32,
+    /// True when the window contained more click rows than the per-request
+    /// cap, so country/city/day percentages describe the newest sample.
+    pub truncated: bool,
     pub unique_visitors: i32,
     pub clicks_by_day: Vec<DayStats>,
     pub clicks_by_country: Vec<CountryStats>,
@@ -116,6 +136,7 @@ pub struct DashboardStats {
     pub total_links: i64,
     pub total_clicks: i64,
     pub active_links: i64,
+    /// Clicks since 00:00:00 UTC of the current UTC day. Not the caller's local day.
     pub clicks_today: i64,
     pub clicks_this_week: i64,
     pub clicks_this_month: i64,
@@ -209,22 +230,35 @@ pub async fn get_link_stats(
             .into_response();
     }
 
-    // Get time range
-    let days = query.days.unwrap_or(30);
-    let start_date = chrono::Utc::now().naive_utc() - chrono::Duration::days(days);
+    // Get time range. Clamp so a huge/negative `days` cannot panic inside
+    // `TimeDelta::days` or load a link's entire click history into memory.
+    let days = clamp_stats_days(query.days);
+    let start_date = chrono::Utc::now().naive_utc()
+        - chrono::Duration::try_days(days).unwrap_or(chrono::Duration::days(MAX_STATS_DAYS));
 
-    // Fetch click events
+    // Fetch click events. Newest-first with a hard row cap so a busy link's
+    // year of clicks cannot OOM the worker; aggregates then describe the most
+    // recent events in the window.
     let events = click_events::Entity::find()
         .filter(click_events::Column::LinkId.eq(id))
         .filter(click_events::Column::CreatedAt.gte(start_date))
         .order_by_desc(click_events::Column::CreatedAt)
+        .limit(MAX_STATS_EVENTS)
         .all(&state.db)
         .await
         .unwrap_or_default();
 
-    let total_clicks = events.len() as i32;
-    // Prevent division by zero - use 1 as minimum for percentage calculations
-    let total_for_percentage = total_clicks.max(1) as f64;
+    let total_clicks = click_events::Entity::find()
+        .filter(click_events::Column::LinkId.eq(id))
+        .filter(click_events::Column::CreatedAt.gte(start_date))
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+    let truncated = total_clicks > events.len() as u64;
+    let total_clicks = total_clicks.min(i32::MAX as u64) as i32;
+    // Percentages describe the loaded sample, not the full window, so a
+    // truncated response still adds to 100% of what is shown.
+    let total_for_percentage = (events.len() as i32).max(1) as f64;
 
     // Unique visitors (by IP)
     let unique_ips: std::collections::HashSet<_> =
@@ -396,6 +430,7 @@ pub async fn get_link_stats(
         code: link.code,
         original_url: link.original_url,
         total_clicks,
+        truncated,
         unique_visitors,
         clicks_by_day,
         clicks_by_country,
@@ -416,7 +451,7 @@ pub async fn get_link_stats(
     get,
     path = "/analytics/dashboard",
     responses(
-        (status = 200, description = "Dashboard statistics", body = DashboardStats),
+        (status = 200, description = "Dashboard statistics. clicks_today is the UTC calendar day.", body = DashboardStats),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "Analytics"
@@ -450,7 +485,8 @@ pub async fn get_dashboard_stats(
 
     let link_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
 
-    // Get time boundaries
+    // Get time boundaries. "Today" is the UTC calendar day; this endpoint
+    // does not take a timezone, so the field is documented as UTC.
     let now = chrono::Utc::now().naive_utc();
     let today_start = now.date().and_hms_opt(0, 0, 0).unwrap();
     let week_start = now - chrono::Duration::days(7);
@@ -563,6 +599,8 @@ pub async fn get_dashboard_stats(
     ),
     responses(
         (status = 200, description = "Current click count"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
     tag = "Analytics"
