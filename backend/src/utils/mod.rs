@@ -21,3 +21,13 @@ pub use backup::BackupService;
 pub use click_buffer::ClickBuffer;
 pub use email::EmailService;
 pub use jwt::*;
+
+/// Escape text for an HTML element body or a double- or single-quoted
+/// attribute.
+pub fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}

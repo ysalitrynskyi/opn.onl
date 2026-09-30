@@ -1746,6 +1746,90 @@ pub struct RedirectQuery {
 }
 
 /// Redirect to original URL
+/// The answer for a short code that will not redirect: missing (404) or no
+/// longer live (410). A browser gets a small branded page instead of a bare
+/// line of text; anything that does not ask for HTML (API clients, link
+/// unfurlers, curl) still gets the plain reason. Not cached, since a
+/// scheduled link becomes live later.
+fn dead_link(headers: &HeaderMap, status: StatusCode, reason: &str) -> axum::response::Response {
+    use axum::http::header;
+
+    let wants_html = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
+    if !wants_html {
+        return (
+            status,
+            [(header::CACHE_CONTROL, "no-store")],
+            reason.to_string(),
+        )
+            .into_response();
+    }
+
+    let home = std::env::var("FRONTEND_URL")
+        .ok()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+        .unwrap_or_else(|| "/".to_string());
+    let site = url::Url::parse(&home)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "opn.onl".to_string());
+    let title = if status == StatusCode::NOT_FOUND {
+        "Link not found"
+    } else {
+        "Link unavailable"
+    };
+    let message = if status == StatusCode::NOT_FOUND {
+        "There is no short link at this address. Check it for typos, or ask whoever shared it."
+            .to_string()
+    } else {
+        format!("{}.", reason.trim_end_matches('.'))
+    };
+    let html = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{title} · {site}</title>
+<style>
+body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7fb; color: #1d2330; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+main {{ box-sizing: border-box; width: calc(100% - 2rem); max-width: 28rem; padding: 2rem; background: #fff; border: 1px solid #e2e5ee; border-radius: 1rem; text-align: center; }}
+.brand {{ font-weight: 700; color: #2d58cc; text-decoration: none; }}
+h1 {{ font-size: 1.5rem; line-height: 1.25; margin: 1.25rem 0 .5rem; }}
+p {{ margin: 0 0 1.5rem; color: #4a5160; }}
+.home {{ display: inline-block; padding: .625rem 1.25rem; border-radius: .5rem; background: #2d58cc; color: #fff; text-decoration: none; font-weight: 600; }}
+</style>
+</head>
+<body>
+<main>
+<a class="brand" href="{home}">{site}</a>
+<h1>{title}</h1>
+<p>{message}</p>
+<a class="home" href="{home}">Go to the home page</a>
+</main>
+</body>
+</html>
+"#,
+        title = title,
+        site = crate::utils::html_escape(&site),
+        home = crate::utils::html_escape(&home),
+        message = crate::utils::html_escape(&message),
+    );
+    (
+        status,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        html,
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/{code}",
@@ -1819,8 +1903,11 @@ pub async fn redirect_link(
                                         error
                                     );
                                 }
-                                return (StatusCode::GONE, "This link has been disabled")
-                                    .into_response();
+                                return dead_link(
+                                    &headers,
+                                    StatusCode::GONE,
+                                    "This link has been disabled",
+                                );
                             }
 
                             let now = chrono::Utc::now().timestamp();
@@ -1828,14 +1915,17 @@ pub async fn redirect_link(
                             if let Some(starts_at) = cached.starts_at
                                 && now < starts_at
                             {
-                                return (StatusCode::GONE, "Link is scheduled to activate later")
-                                    .into_response();
+                                return dead_link(
+                                    &headers,
+                                    StatusCode::GONE,
+                                    "Link is scheduled to activate later",
+                                );
                             }
 
                             if let Some(expires_at) = cached.expires_at
                                 && now > expires_at
                             {
-                                return (StatusCode::GONE, "Link has expired").into_response();
+                                return dead_link(&headers, StatusCode::GONE, "Link has expired");
                             }
 
                             // Record click using buffer (synchronous, non-blocking).
@@ -1885,14 +1975,14 @@ pub async fn redirect_link(
         // Check if link is active
         if !link.is_active() {
             let reason = link.inactive_reason().unwrap_or("Link is inactive");
-            return (StatusCode::GONE, reason).into_response();
+            return dead_link(&headers, StatusCode::GONE, reason);
         }
 
         // Enforce content blocking at redirect time so a block applied after the
         // link was created is retroactive. Runs before the caching block below, so
         // a blocked link is never (re)written to the cache.
         if check_blocked(&state.db, &link.original_url).await.is_err() {
-            return (StatusCode::GONE, "This link has been disabled").into_response();
+            return dead_link(&headers, StatusCode::GONE, "This link has been disabled");
         }
 
         // Advisory fast-fail for capped links, e.g. so an exhausted link 410s
@@ -1910,7 +2000,7 @@ pub async fn redirect_link(
             } else {
                 "Link has reached maximum clicks"
             };
-            return (StatusCode::GONE, msg).into_response();
+            return dead_link(&headers, StatusCode::GONE, msg);
         }
 
         let mut active_unlock = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
@@ -2044,7 +2134,7 @@ pub async fn redirect_link(
 
             // A routing rule must not be able to bypass the blocklist.
             if check_blocked(&state.db, &destination).await.is_err() {
-                return (StatusCode::GONE, "This link has been disabled").into_response();
+                return dead_link(&headers, StatusCode::GONE, "This link has been disabled");
             }
             Some(destination)
         } else {
@@ -2070,7 +2160,7 @@ pub async fn redirect_link(
                     } else {
                         "Link has reached maximum clicks"
                     };
-                    return (StatusCode::GONE, msg).into_response();
+                    return dead_link(&headers, StatusCode::GONE, msg);
                 }
                 // Fail closed: a capped (possibly burn) link must never
                 // redirect without its click being counted.
@@ -2139,7 +2229,7 @@ pub async fn redirect_link(
 
         destination_redirect(&link.original_url)
     } else {
-        (StatusCode::NOT_FOUND, "Link not found").into_response()
+        dead_link(&headers, StatusCode::NOT_FOUND, "Link not found")
     }
 }
 

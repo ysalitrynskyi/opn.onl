@@ -4,6 +4,7 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::AppState;
+use crate::utils::html_escape;
 use crate::utils::validation::validation_error_message;
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -139,13 +140,4 @@ pub async fn send_contact_message(
                 .into_response()
         }
     }
-}
-
-/// Simple HTML escape for security
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
