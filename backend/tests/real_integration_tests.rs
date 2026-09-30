@@ -307,9 +307,10 @@ async fn custom_alias_unique_violation_is_conflict() {
     .await
     .expect("hold unique code");
 
-    let create_fut = server.post("/links").authorization_bearer(&token).json(
-        &json!({ "original_url": "https://iana.org/racer-alias", "custom_alias": alias }),
-    );
+    let create_fut = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/racer-alias", "custom_alias": alias }));
     let commit_fut = async {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         txn.commit().await.expect("commit held alias");
@@ -366,7 +367,9 @@ async fn bulk_create_retries_when_generated_code_is_taken() {
     let links = body["links"].as_array().cloned().unwrap_or_default();
     let errors = body["errors"].as_array().cloned().unwrap_or_default();
     assert!(
-        errors.iter().all(|e| !e.as_str().unwrap_or("").contains("duplicate key")),
+        errors
+            .iter()
+            .all(|e| !e.as_str().unwrap_or("").contains("duplicate key")),
         "bulk create must not surface a unique-index error: {errors:?}"
     );
     assert_eq!(

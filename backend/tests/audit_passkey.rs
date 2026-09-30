@@ -51,9 +51,7 @@ async fn passkey_cred_id_must_be_unique() {
 
 fn passkey_login_start_shape(body: &Value) -> (bool, Option<&Vec<Value>>) {
     let public_key = body.get("options").and_then(|o| o.get("publicKey"));
-    let has_challenge = public_key
-        .and_then(|pk| pk.get("challenge"))
-        .is_some();
+    let has_challenge = public_key.and_then(|pk| pk.get("challenge")).is_some();
     let allow = public_key
         .and_then(|pk| pk.get("allowCredentials"))
         .and_then(|a| a.as_array());
@@ -128,7 +126,8 @@ async fn passkey_login_start_does_not_enumerate_users() {
 
     let (unknown_challenge, unknown_allow) = passkey_login_start_shape(&unknown_body);
     let (no_passkey_challenge, no_passkey_allow) = passkey_login_start_shape(&no_passkey_body);
-    let (with_passkey_challenge, with_passkey_allow) = passkey_login_start_shape(&with_passkey_body);
+    let (with_passkey_challenge, with_passkey_allow) =
+        passkey_login_start_shape(&with_passkey_body);
 
     assert!(
         unknown_challenge && unknown_allow.is_some(),

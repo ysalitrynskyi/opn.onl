@@ -678,7 +678,10 @@ mod links_limit_tests {
 
     #[test]
     fn values_above_the_maximum_are_clamped() {
-        assert_eq!(clamp_links_limit(Some(MAX_LINKS_LIMIT + 1)), MAX_LINKS_LIMIT);
+        assert_eq!(
+            clamp_links_limit(Some(MAX_LINKS_LIMIT + 1)),
+            MAX_LINKS_LIMIT
+        );
         assert_eq!(clamp_links_limit(Some(u64::MAX)), MAX_LINKS_LIMIT);
     }
 }
@@ -2813,8 +2816,8 @@ mod ssrf_tests {
             "http://[::1]/",      // IPv6 loopback
             "http://[fd00::1]/",  // IPv6 ULA
             "http://0.0.0.0/",
-            "http://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
-            "http://[::192.168.1.1]/",    // IPv4-compatible private
+            "http://[::ffff:127.0.0.1]/",  // IPv4-mapped loopback
+            "http://[::192.168.1.1]/",     // IPv4-compatible private
             "http://[::169.254.169.254]/", // IPv4-compatible cloud metadata
         ] {
             let err = resolve_and_validate(url)

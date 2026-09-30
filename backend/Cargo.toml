@@ -72,7 +72,6 @@ lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-t
 aws-sdk-s3 = "=1.65.0"
 aws-config = "=1.5.10"
 flate2 = "1.0"
-tar = "0.4"
 
 # Structured logging
 tracing-appender = "0.2"

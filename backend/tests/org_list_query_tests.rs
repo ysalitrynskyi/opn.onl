@@ -25,11 +25,7 @@ async fn register_verified(
     let body: Value = res.json();
     let user_id = body["user_id"].as_i64().unwrap() as i32;
     mark_email_verified(db, user_id).await;
-    (
-        body["token"].as_str().unwrap().to_string(),
-        user_id,
-        email,
-    )
+    (body["token"].as_str().unwrap().to_string(), user_id, email)
 }
 
 async fn create_org(server: &axum_test::TestServer, token: &str) -> i32 {
@@ -101,8 +97,16 @@ async fn org_list_counts_members_and_live_links() {
         .iter()
         .find(|o| o["id"].as_i64() == Some(org_id as i64))
         .expect("org");
-    assert_eq!(org["member_count"].as_i64(), Some(2), "owner + editor, got {org}");
-    assert_eq!(org["link_count"].as_i64(), Some(1), "soft-deleted link excluded, got {org}");
+    assert_eq!(
+        org["member_count"].as_i64(),
+        Some(2),
+        "owner + editor, got {org}"
+    );
+    assert_eq!(
+        org["link_count"].as_i64(),
+        Some(1),
+        "soft-deleted link excluded, got {org}"
+    );
 }
 
 #[tokio::test]
@@ -131,10 +135,7 @@ async fn org_members_skip_soft_deleted_users_and_keep_emails() {
         .await
         .json();
     let members = listed.as_array().unwrap();
-    let emails: Vec<&str> = members
-        .iter()
-        .filter_map(|m| m["email"].as_str())
-        .collect();
+    let emails: Vec<&str> = members.iter().filter_map(|m| m["email"].as_str()).collect();
     assert_eq!(members.len(), 2, "deleted user omitted, got {listed}");
     assert!(emails.contains(&owner_email.as_str()));
     assert!(emails.contains(&live_email.as_str()));
@@ -173,15 +174,24 @@ async fn org_audit_attaches_emails_and_honours_limit() {
         .await
         .json();
     let all_rows = all.as_array().unwrap();
-    assert!(all_rows.len() >= 5, "default page includes the five rows, got {all}");
-    assert!(all_rows.iter().all(|r| r["user_email"].as_str() == Some(owner_email.as_str())));
+    assert!(
+        all_rows.len() >= 5,
+        "default page includes the five rows, got {all}"
+    );
+    assert!(all_rows
+        .iter()
+        .all(|r| r["user_email"].as_str() == Some(owner_email.as_str())));
 
     let page: Value = server
         .get(&format!("/orgs/{org_id}/audit?limit=2"))
         .authorization_bearer(&owner_token)
         .await
         .json();
-    assert_eq!(page.as_array().map(|a| a.len()), Some(2), "limit=2, got {page}");
+    assert_eq!(
+        page.as_array().map(|a| a.len()),
+        Some(2),
+        "limit=2, got {page}"
+    );
 }
 
 #[tokio::test]

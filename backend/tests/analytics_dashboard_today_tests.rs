@@ -8,7 +8,10 @@ use common::{mark_email_verified, spawn_real_app, unique_email};
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 use serde_json::{json, Value};
 
-async fn register_verified(server: &axum_test::TestServer, db: &sea_orm::DatabaseConnection) -> String {
+async fn register_verified(
+    server: &axum_test::TestServer,
+    db: &sea_orm::DatabaseConnection,
+) -> String {
     let res = server
         .post("/auth/register")
         .json(&json!({ "email": unique_email(), "password": "password123" }))
@@ -32,7 +35,12 @@ async fn clicks_today_buckets_from_utc_midnight() {
         .authorization_bearer(&token)
         .json(&json!({ "original_url": "https://iana.org/dash-today" }))
         .await;
-    assert_eq!(created.status_code(), 201, "create link: {}", created.text());
+    assert_eq!(
+        created.status_code(),
+        201,
+        "create link: {}",
+        created.text()
+    );
     let link_id = created.json::<Value>()["id"].as_i64().unwrap() as i32;
 
     let today_start = Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
@@ -66,7 +74,8 @@ async fn clicks_today_buckets_from_utc_midnight() {
 async fn openapi_documents_clicks_today_as_utc() {
     let (server, _db) = spawn_real_app().await;
     let spec: Value = server.get("/api-docs/openapi.json").await.json();
-    let clicks_today = &spec["components"]["schemas"]["DashboardStats"]["properties"]["clicks_today"];
+    let clicks_today =
+        &spec["components"]["schemas"]["DashboardStats"]["properties"]["clicks_today"];
     let description = clicks_today["description"].as_str().unwrap_or("");
     assert!(
         description.to_ascii_lowercase().contains("utc"),

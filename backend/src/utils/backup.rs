@@ -1,10 +1,10 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::{Credentials, Region};
+use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use chrono::Utc;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use aws_sdk_s3::primitives::ByteStream;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -81,9 +81,7 @@ impl BackupService {
         let _guard = DeleteOnDrop(tmp_path.clone());
         stream_pg_dump_to_gzip_file(&self.database_url, &tmp_path).await?;
 
-        let compressed_len = std::fs::metadata(&tmp_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let compressed_len = std::fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
         info!("Backup compressed: {} bytes", compressed_len);
 
         let body = ByteStream::from_path(&tmp_path)
@@ -132,9 +130,7 @@ impl BackupService {
                         .filter_map(|obj| obj.key().map(|k| k.to_string()))
                         .collect(),
                     is_truncated: response.is_truncated() == Some(true),
-                    next_continuation_token: response
-                        .next_continuation_token()
-                        .map(str::to_string),
+                    next_continuation_token: response.next_continuation_token().map(str::to_string),
                 })
             }
         })
@@ -394,7 +390,10 @@ mod tests {
         let url = "postgres://opn:p%40ss%2Fword@localhost:5432/opn_onl";
         let cmd = pg_dump_command(url);
         let joined = argv_joined(&cmd);
-        assert!(!joined.contains("p%40ss"), "encoded password on argv: {joined}");
+        assert!(
+            !joined.contains("p%40ss"),
+            "encoded password on argv: {joined}"
+        );
         assert!(
             !joined.contains("p@ss/word"),
             "decoded password on argv: {joined}"
@@ -419,10 +418,8 @@ mod tests {
         use std::os::unix::net::UnixStream;
         use std::time::{Duration, Instant};
 
-        let dest = std::env::temp_dir().join(format!(
-            "opn-gzip-stream-{}.gz",
-            uuid::Uuid::new_v4()
-        ));
+        let dest =
+            std::env::temp_dir().join(format!("opn-gzip-stream-{}.gz", uuid::Uuid::new_v4()));
         let dest_for_thread = dest.clone();
         let _guard = DeleteOnDrop(dest.clone());
 

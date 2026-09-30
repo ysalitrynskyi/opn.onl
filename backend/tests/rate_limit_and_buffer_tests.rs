@@ -152,8 +152,8 @@ async fn bulk_create_charges_one_create_token_per_url() {
     let mut limiters = RateLimiters::new();
     limiters.link_creation = Arc::new(RateLimiter::new(RateLimitConfig::new(3, 3600)));
     state.rate_limiters = Arc::new(limiters);
-    let server = axum_test::TestServer::new(opn_onl_backend::build_router(state))
-        .expect("test server");
+    let server =
+        axum_test::TestServer::new(opn_onl_backend::build_router(state)).expect("test server");
 
     let token = register_verified(&server, &db).await;
     let res = server

@@ -638,8 +638,7 @@ pub async fn get_dashboard_stats(
     // the worker on a busy account; a truncated row cap would silently under-
     // count, so COUNT / GROUP BY over the window is the correct shape.
     let (clicks_today, clicks_this_week, clicks_this_month) =
-        dashboard_window_counts(&state.db, &link_ids, today_start, week_start, month_start)
-            .await;
+        dashboard_window_counts(&state.db, &link_ids, today_start, week_start, month_start).await;
     let clicks_by_day = dashboard_clicks_by_day(&state.db, &link_ids, month_start).await;
     let total_for_percentage = clicks_this_month.max(1) as f64;
     let top_countries =
