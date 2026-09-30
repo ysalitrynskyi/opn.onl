@@ -45,6 +45,7 @@ function routeToFile(route) {
 
 const routes = parsePrerenderRoutes()
 const failures = []
+const chartFailures = new Set()
 
 for (const route of routes) {
   const rel = routeToFile(route)
@@ -72,6 +73,19 @@ for (const route of routes) {
   if (!html.includes('data-prerendered')) {
     failures.push(`${route} -> dist/${rel} was not prerendered (no data-prerendered marker)`)
   }
+  // Charts are drawn only on the lazy Analytics and Admin pages. A static
+  // path from the entry into vendor-charts (it once swallowed React itself)
+  // makes every page download ~340 KB it never runs.
+  for (const [, asset] of html.matchAll(/<(?:link|script)\b[^>]*\b(?:href|src)="\/assets\/([^"]+\.js)"/g)) {
+    if (asset.startsWith('vendor-charts-')) {
+      chartFailures.add(`dist/${rel} loads ${asset} up front`)
+      continue
+    }
+    const code = readFileSync(join(distDir, 'assets', asset), 'utf8')
+    if (/\bfrom\s*["']\.\/vendor-charts-/.test(code) || /\bimport\s*["']\.\/vendor-charts-/.test(code)) {
+      chartFailures.add(`${asset} statically imports vendor-charts`)
+    }
+  }
 }
 
 if (failures.length > 0) {
@@ -81,6 +95,17 @@ if (failures.length > 0) {
     '\nThis build must not be shipped: at least one route (often "/") would serve a\n' +
       'broken or stock page in production. Re-run the build; if it keeps failing,\n' +
       'the failing route likely crashes during headless prerender.\n'
+  )
+  process.exit(1)
+}
+
+if (chartFailures.size > 0) {
+  console.error('\nverify-prerender: FAILED — prerendered pages load the charts chunk up front:\n')
+  for (const f of chartFailures) console.error(`  ✗ ${f}`)
+  console.error(
+    '\nOnly the lazy Analytics and Admin pages draw charts. Check the codeSplitting\n' +
+      'groups in vite.config.ts: a module the entry needs has been pulled into\n' +
+      'vendor-charts (React was, once).\n'
   )
   process.exit(1)
 }
