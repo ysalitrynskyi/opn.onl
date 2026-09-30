@@ -8,7 +8,7 @@ use axum::{
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Rate limiter configuration
@@ -246,9 +246,20 @@ impl ClientIpConfig {
     }
 }
 
+#[cfg(not(test))]
 fn client_ip_config() -> &'static ClientIpConfig {
-    static CONFIG: OnceLock<ClientIpConfig> = OnceLock::new();
+    static CONFIG: std::sync::OnceLock<ClientIpConfig> = std::sync::OnceLock::new();
     CONFIG.get_or_init(ClientIpConfig::from_env)
+}
+
+/// Unit tests set TRUST_PROXY_HEADERS at run time. With the cached read, the
+/// outcome depended on which test happened to reach the middleware first, so
+/// the client-identity tests failed whenever another test got there before
+/// them. Tests read the environment on every call instead; the leak is a few
+/// bytes per request, in test builds only.
+#[cfg(test)]
+fn client_ip_config() -> &'static ClientIpConfig {
+    Box::leak(Box::new(ClientIpConfig::from_env()))
 }
 
 /// Parse a single header/XFF token into a canonical IP string.
