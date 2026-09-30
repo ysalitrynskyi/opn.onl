@@ -70,7 +70,7 @@ fn tag_ids_for(link: &Value) -> Vec<i64> {
     ids
 }
 
-fn find_link<'a>(links: &'a [Value], id: i32) -> &'a Value {
+fn find_link(links: &[Value], id: i32) -> &Value {
     links
         .iter()
         .find(|l| l["id"].as_i64() == Some(id as i64))

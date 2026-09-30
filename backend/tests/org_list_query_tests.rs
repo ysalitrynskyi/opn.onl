@@ -138,9 +138,12 @@ async fn org_members_skip_soft_deleted_users_and_keep_emails() {
     assert_eq!(members.len(), 2, "deleted user omitted, got {listed}");
     assert!(emails.contains(&owner_email.as_str()));
     assert!(emails.contains(&live_email.as_str()));
-    assert!(!emails.iter().any(|e| members.iter().any(|m| {
-        m["user_id"].as_i64() == Some(gone_id as i64)
-    })));
+    assert!(
+        !members
+            .iter()
+            .any(|m| m["user_id"].as_i64() == Some(gone_id as i64)),
+        "deleted user must not be listed, got {listed}"
+    );
     let _ = owner_id;
 }
 
