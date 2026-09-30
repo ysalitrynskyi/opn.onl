@@ -33,4 +33,15 @@ async fn avatar_proxy_rejects_bad_and_internal_urls() {
             "internal target {internal} must be refused, got {status}"
         );
     }
+
+    // A public URL that no live bio uses as its avatar must not be fetched.
+    let public = server
+        .get("/api/bio/avatar?url=https%3A%2F%2Fiana.org%2Fqa-avatar.png")
+        .await;
+    assert_eq!(
+        public.status_code(),
+        404,
+        "unlisted avatar URL must not be fetched: {}",
+        public.text()
+    );
 }

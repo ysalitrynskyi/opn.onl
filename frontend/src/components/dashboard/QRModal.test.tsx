@@ -44,6 +44,7 @@ describe('QRModal', () => {
 
         const dialog = screen.getByRole('dialog');
         expect(dialog).toHaveAttribute('aria-modal', 'true');
+        expect(dialog).toHaveAccessibleName('QR code');
         expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
 
         for (let i = 0; i < 6; i++) {

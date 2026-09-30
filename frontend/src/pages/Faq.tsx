@@ -72,7 +72,7 @@ const faqs = [
             },
             {
                 q: "Do you track users who click my links?",
-                a: "We collect basic analytics data (clicks, devices, referrers, city-level location) to provide you with insights. Visitor IP addresses are truncated before storage and anonymized entirely after 13 months. We do NOT track users across websites, sell data to advertisers, or use any third-party tracking scripts."
+                a: "We collect basic analytics data (clicks, devices, referrers, city-level location) to provide you with insights. Visitor IP addresses are truncated before storage and anonymized entirely after 13 months. We do not follow visitors across other websites or sell data to advertisers. If the operator enables Google Analytics, the privacy page says so, and the tag does not load until you allow it."
             },
             {
                 q: "What is passkey authentication?",

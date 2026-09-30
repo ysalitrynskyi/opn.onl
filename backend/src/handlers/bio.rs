@@ -49,7 +49,7 @@ const RESERVED_USERNAMES: &[&str] = &[
     "avatar",
 ];
 
-fn link_in_bio_enabled() -> bool {
+pub(crate) fn link_in_bio_enabled() -> bool {
     std::env::var("ENABLE_LINK_IN_BIO")
         .map(|v| v != "false")
         .unwrap_or(true)

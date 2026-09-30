@@ -24,7 +24,9 @@ interface BioProfile {
 }
 
 export default function Bio() {
-    const { username } = useParams<{ username: string }>();
+    const params = useParams<{ username?: string; code?: string }>();
+    const raw = params.username ?? params.code ?? '';
+    const username = raw.startsWith('@') ? raw.slice(1) : raw;
     const [profile, setProfile] = useState<BioProfile | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);

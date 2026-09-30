@@ -80,7 +80,7 @@ function Method({ verb }: { verb: keyof typeof METHOD_STYLES }) {
 const endpoints: { verb: keyof typeof METHOD_STYLES; path: string; desc: string }[] = [
     { verb: 'POST', path: '/links', desc: 'Shorten a URL — custom alias, password, expiry, click cap, routing.' },
     { verb: 'GET', path: '/links', desc: 'List every link on your account, with live click counts.' },
-    { verb: 'PUT', path: '/links/:id', desc: 'Update a link — destination, alias, limits or rules.' },
+    { verb: 'PUT', path: '/links/:id', desc: 'Update a link — destination, limits or rules. The short code cannot be changed.' },
     { verb: 'DELETE', path: '/links/:id', desc: 'Delete a link and stop its redirect.' },
     { verb: 'GET', path: '/links/:id/stats', desc: 'First-party click analytics — geo, device, referrer, timeline.' },
     { verb: 'GET', path: '/links/:id/qr', desc: 'Branded QR for a link — brand colour + logo, PNG or SVG.' },

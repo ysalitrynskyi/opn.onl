@@ -127,7 +127,14 @@ async fn health_check_requires_auth_and_rejects_invalid_urls() {
         .await;
     assert_eq!(unauth.status_code(), 401, "health-check requires auth");
 
-    for url in ["ftp://iana.org/file", "javascript:alert(1)", "not a url"] {
+    // The specific reason is returned. A scheme refusal is not collapsed into
+    // "Invalid URL format", which used to hide raw-IP and reserved-domain errors.
+    let cases = [
+        ("ftp://iana.org/file", "http or https"),
+        ("javascript:alert(1)", "http or https"),
+        ("not a url", "Invalid URL format"),
+    ];
+    for (url, expected) in cases {
         let res = server
             .post("/links/health-check")
             .authorization_bearer(&token)
@@ -137,12 +144,8 @@ async fn health_check_requires_auth_and_rejects_invalid_urls() {
         let body: Value = res.json();
         assert_eq!(body["reachable"], false);
         assert!(
-            body["error"]
-                .as_str()
-                .unwrap_or("")
-                .to_lowercase()
-                .contains("invalid"),
-            "{url} should be invalid: {body}"
+            body["error"].as_str().unwrap_or("").contains(expected),
+            "{url} should mention {expected}: {body}"
         );
     }
 }

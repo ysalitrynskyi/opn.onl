@@ -4,6 +4,7 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::AppState;
+use crate::utils::validation::validation_error_message;
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ContactRequest {
@@ -46,7 +47,7 @@ pub async fn send_contact_message(
             StatusCode::BAD_REQUEST,
             Json(ContactResponse {
                 success: false,
-                message: format!("Validation error: {}", e),
+                message: validation_error_message(&e),
             }),
         )
             .into_response();

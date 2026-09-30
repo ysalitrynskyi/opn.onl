@@ -12,6 +12,7 @@ pub mod rate_limiter;
 pub mod routing;
 pub mod time;
 pub mod url_policy;
+pub mod validation;
 
 pub use backup::BackupService;
 pub use click_buffer::ClickBuffer;

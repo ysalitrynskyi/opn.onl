@@ -43,7 +43,27 @@
           security_storage: 'granted'
         });
         gtag('js', new Date());
-        gtag('config', gaId, { page_path: window.location.pathname, anonymize_ip: true });
+        // page_path does not override the document location GA sends. Build the
+        // hit ourselves so a reset or verify token in the query or hash, or in
+        // the referrer, never leaves the browser.
+        /* analytics-hit:start */
+        function analyticsHit() {
+          var hit = {
+            page_path: window.location.pathname,
+            page_location: window.location.origin + window.location.pathname,
+            anonymize_ip: true
+          };
+          var ref = document.referrer;
+          if (ref) {
+            try {
+              var u = new URL(ref);
+              hit.page_referrer = u.origin + u.pathname;
+            } catch (e) { /* ignore unparsable referrer */ }
+          }
+          return hit;
+        }
+        /* analytics-hit:end */
+        gtag('config', gaId, analyticsHit());
         var script = document.createElement('script');
         script.async = true;
         script.src = 'https://www.googletagmanager.com/gtag/js?id=' + gaId;

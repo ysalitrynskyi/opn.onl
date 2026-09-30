@@ -5,7 +5,7 @@ import {
     QrCode, Download, Lock, Clock, Edit2, X, Check,
     Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
     MousePointer, SortAsc, SortDesc,
-    Zap, Link2, Share2, Upload, Clipboard, Pin, CopyPlus,
+    Zap, Link2, Share2, Upload, Pin, CopyPlus,
     Eye, ArrowRight, Flame, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -81,7 +81,6 @@ export default function Dashboard() {
     const [showBulkImport, setShowBulkImport] = useState(false);
     const [bulkUrls, setBulkUrls] = useState('');
     const [bulkImporting, setBulkImporting] = useState(false);
-    const [clipboardUrl, setClipboardUrl] = useState<string | null>(null);
     const navigate = useNavigate();
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
@@ -112,38 +111,6 @@ export default function Dashboard() {
             logger.error('Failed to fetch settings', err);
         }
     };
-
-    // Check clipboard for URL on focus
-    useEffect(() => {
-        let isMounted = true;
-
-        const checkClipboard = async () => {
-            try {
-                const text = await navigator.clipboard.readText();
-                // Only update state if component is still mounted
-                if (!isMounted) return;
-
-                if (text && /^https?:\/\/.+/.test(text.trim())) {
-                    setClipboardUrl(text.trim());
-                } else {
-                    setClipboardUrl(null);
-                }
-            } catch {
-                // Clipboard access denied or not available
-                if (isMounted) {
-                    setClipboardUrl(null);
-                }
-            }
-        };
-
-        window.addEventListener('focus', checkClipboard);
-        checkClipboard();
-
-        return () => {
-            isMounted = false;
-            window.removeEventListener('focus', checkClipboard);
-        };
-    }, []);
 
     // Keyboard shortcuts
     useKeyboardShortcuts([
@@ -219,11 +186,19 @@ export default function Dashboard() {
         }
     };
 
-    // Quick create from clipboard
-    const handleClipboardCreate = () => {
-        if (clipboardUrl) {
-            setNewUrl(clipboardUrl);
-            setClipboardUrl(null);
+    // Clipboard is read only from this click. A mount or focus listener prompts
+    // (or, in some browsers, reads) without the user asking.
+    const pasteClipboardUrl = async () => {
+        try {
+            const text = (await navigator.clipboard.readText()).trim();
+            if (/^https?:\/\/.+/.test(text)) {
+                setNewUrl(text);
+                setError('');
+            } else {
+                setError('Clipboard does not contain an http(s) URL');
+            }
+        } catch {
+            setError('Clipboard access was denied. Paste the URL into the field instead.');
         }
     };
 
@@ -237,6 +212,7 @@ export default function Dashboard() {
             result = result.filter(link =>
                 link.code.toLowerCase().includes(query) ||
                 link.original_url.toLowerCase().includes(query) ||
+                link.title?.toLowerCase().includes(query) ||
                 link.notes?.toLowerCase().includes(query) ||
                 link.tags.some(t => t.name.toLowerCase().includes(query))
             );
@@ -700,39 +676,6 @@ export default function Dashboard() {
                 </div>
             </div>
 
-            {/* Clipboard URL Suggestion */}
-            {clipboardUrl && !newUrl && (
-                <motion.div
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-line2 bg-surface px-4 py-3 shadow-subtle"
-                >
-                    <div className="flex items-center gap-3 min-w-0">
-                        <Clipboard className="h-5 w-5 shrink-0 text-primary-600" />
-                        <div className="min-w-0">
-                            <p className="text-sm font-medium text-ink">URL detected in clipboard</p>
-                            <p className="truncate font-mono text-xs text-faint max-w-md">{clipboardUrl}</p>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                        <button
-                            onClick={() => setClipboardUrl(null)}
-                            aria-label="Dismiss"
-                            className="p-1 text-faint transition-colors hover:text-ink"
-                        >
-                            <X className="h-4 w-4" />
-                        </button>
-                        <button
-                            onClick={handleClipboardCreate}
-                            className="rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
-                        >
-                            Shorten it
-                        </button>
-                    </div>
-                </motion.div>
-            )}
-
             {/* Bulk Import Modal */}
             <AnimatePresence>
                 {showBulkImport && (
@@ -823,6 +766,13 @@ export default function Dashboard() {
                             value={newUrl}
                             onChange={(e) => setNewUrl(e.target.value)}
                         />
+                        <button
+                            type="button"
+                            onClick={pasteClipboardUrl}
+                            className="inline-flex items-center justify-center rounded-lg border border-line2 bg-surface px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-ink/30"
+                        >
+                            Paste
+                        </button>
                         {appSettings.custom_aliases_enabled && (
                             <input
                                 type="text"
@@ -973,7 +923,7 @@ export default function Dashboard() {
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-faint" />
                         <input
                             type="text"
-                            placeholder="Search links, notes, tags..."
+                            placeholder="Search links, titles, notes, tags..."
                             className="w-full rounded-lg border border-line2 bg-surface pl-10 pr-4 py-2.5 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                             value={searchQuery}
                             onChange={e => setSearchQuery(e.target.value)}

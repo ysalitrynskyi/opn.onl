@@ -13,6 +13,7 @@ use crate::utils::jwt::{
     PASSWORD_TOO_LONG, create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password,
 };
 use crate::utils::time::utc_rfc3339;
+use crate::utils::validation::validation_error_message;
 use axum::http::HeaderMap;
 
 #[derive(Deserialize, Validate, ToSchema)]
@@ -90,7 +91,7 @@ pub async fn register(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: validation_error_message(&e),
             }),
         )
             .into_response();
@@ -619,7 +620,7 @@ pub async fn reset_password(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: validation_error_message(&e),
             }),
         )
             .into_response();
@@ -786,7 +787,7 @@ pub async fn change_password(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: validation_error_message(&e),
             }),
         )
             .into_response();
@@ -869,6 +870,19 @@ pub async fn change_password(
                 )
                     .into_response();
             }
+        }
+
+        // Checked after the current password verifies, so a wrong password
+        // still says so, and a no-op change does not revoke existing sessions.
+        if payload.new_password == payload.current_password {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "New password must be different from the current password".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         // Hash new password

@@ -274,6 +274,12 @@ fn contains_nested_data_url(url_lower: &str) -> bool {
 
 /// Validate URL is http/https only and sanitize if enabled
 fn validate_url(url: &str) -> Result<String, String> {
+    // Raw CR/LF (and other controls) survive `Url::parse` and then break the
+    // redirect response, so one visit can be retried into several clicks.
+    if url.chars().any(|c| c.is_ascii_control()) {
+        return Err("URL contains control characters".to_string());
+    }
+
     // Must be a valid URL
     let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
 
@@ -286,6 +292,9 @@ fn validate_url(url: &str) -> Result<String, String> {
     let Some(host) = parsed.host_str() else {
         return Err("URL must have a valid host".to_string());
     };
+    if crate::utils::url_policy::is_reserved_hostname(host) {
+        return Err("Links to reserved example domains are not allowed".to_string());
+    }
     if crate::utils::url_policy::is_disallowed_hostname(host) {
         return Err("Links to local/internal hosts are not allowed".to_string());
     }
@@ -442,6 +451,23 @@ async fn resolve_and_validate(url: &str) -> Result<ValidatedTarget, String> {
         addrs,
         is_literal_ip,
     })
+}
+
+/// Same address check as `/links/health-check`, applied when a destination is
+/// stored (create, update, bulk, clone, routing rules). Literal private IPs
+/// are already refused by `validate_url`. A name that resolves to any private
+/// or internal address is refused too (`127.0.0.1.nip.io` and friends).
+///
+/// A lookup that fails is not a refusal. NXDOMAIN and a resolver blip share
+/// one error, and refusing both would reject not-yet-published hostnames and
+/// make every create depend on DNS being up. The click redirect is not a
+/// server-side fetch and is not re-resolved.
+async fn ensure_public_destination(url: &str) -> Result<(), String> {
+    match resolve_and_validate(url).await {
+        Ok(_) => Ok(()),
+        Err(e) if e == "Could not resolve host" || e == "Host did not resolve" => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Build a reqwest client that connects **only** to the validated addresses for
@@ -627,6 +653,9 @@ pub struct UpdateLinkRequest {
     pub remove_password: Option<bool>,
     pub remove_expiration: Option<bool>,
     pub notes: Option<String>,
+    /// Accepted so a client that echoes the current code is not ignored
+    /// silently. A different value is rejected: the code is not editable.
+    pub custom_alias: Option<String>,
     pub folder_id: Option<i32>,
     pub starts_at: Option<DateTime<Utc>>,
     pub max_clicks: Option<i32>,
@@ -1095,6 +1124,9 @@ pub async fn create_link(
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
+    if let Err(e) = ensure_public_destination(&validated_url).await {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
 
     // An empty password is no password. The unlock form will not submit an
     // empty field, so a link "protected" by "" could never be opened from the
@@ -3139,6 +3171,9 @@ pub async fn replace_routing_rules(
             Ok(u) => u,
             Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
         };
+        if let Err(e) = ensure_public_destination(&url).await {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
         if check_blocked(&state.db, &url).await.is_err() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -3247,7 +3282,7 @@ pub async fn get_user_links(
         link_query = link_query.filter(links::Column::OrgId.eq(org_id));
     }
 
-    // Search by URL or code. `contains` becomes LIKE '%…%' / ILIKE, which
+    // Search by URL, code, title, or notes. `contains` becomes LIKE '%…%' / ILIKE, which
     // cannot use btree idx_links_original_url (or any btree). A pg_trgm GIN
     // index is the real answer if this filter becomes hot; do not add another
     // btree expecting it to serve a leading wildcard.
@@ -3256,6 +3291,7 @@ pub async fn get_user_links(
             Condition::any()
                 .add(links::Column::OriginalUrl.contains(&search))
                 .add(links::Column::Code.contains(&search))
+                .add(links::Column::Title.contains(&search))
                 .add(links::Column::Notes.contains(&search)),
         );
     }
@@ -3535,7 +3571,22 @@ pub async fn update_link(
             if let Err(e) = check_blocked(&state.db, &validated_url).await {
                 return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
             }
+            if let Err(e) = ensure_public_destination(&validated_url).await {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            }
             active_link.original_url = Set(validated_url);
+        }
+
+        if let Some(alias) = payload.custom_alias.as_deref().filter(|a| !a.is_empty())
+            && alias != link.code
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "The short code cannot be changed".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         if payload.remove_expiration == Some(true) {
@@ -3887,6 +3938,10 @@ pub async fn bulk_create_links(
         // (bad format, dangerous file type, raw IP, …) rather than a generic
         // message, so a bulk upload tells the user which links were rejected why.
         if let Err(e) = validate_url(&url) {
+            errors.push(format!("{}: {}", url, e));
+            continue;
+        }
+        if let Err(e) = ensure_public_destination(&url).await {
             errors.push(format!("{}: {}", url, e));
             continue;
         }
@@ -4347,6 +4402,15 @@ pub async fn clone_link(
                 .into_response();
         }
 
+        // Re-check the destination. A link stored before this rule, or written
+        // straight into the database, must not be cloned into a fresh code.
+        if let Err(e) = validate_url(&link.original_url) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+        if let Err(e) = ensure_public_destination(&link.original_url).await {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+
         // Clone inserts a new row, so it must honour the same per-user cap as
         // create_link / bulk_create_links. Skipping it lets a user at the
         // advertised MAX_LINKS_PER_USER mint extra active links.
@@ -4667,8 +4731,9 @@ pub async fn check_url_health(
             .into_response();
     }
 
-    // Validate URL first
-    if validate_url(&payload.url).is_err() {
+    // Validate URL first. Keep the specific reason (raw IP, reserved domain,
+    // control characters) instead of collapsing every refusal into one phrase.
+    if let Err(e) = validate_url(&payload.url) {
         return (
             StatusCode::BAD_REQUEST,
             Json(UrlHealthResponse {
@@ -4676,7 +4741,7 @@ pub async fn check_url_health(
                 reachable: false,
                 status_code: None,
                 response_time_ms: None,
-                error: Some("Invalid URL format".to_string()),
+                error: Some(e),
             }),
         )
             .into_response();
@@ -5002,6 +5067,9 @@ fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
 /// visitor's IP (the link-in-bio privacy leak). The fetch is SSRF-guarded
 /// (validated + DNS-pinned, redirects re-validated), restricted to successful
 /// http(s) responses carrying an allowed raster image type, and size-capped.
+///
+/// The URL must also be the `avatar_url` of a non-deleted user whose bio is
+/// public. Otherwise this route is an open fetch.
 #[utoipa::path(
     get,
     path = "/api/bio/avatar",
@@ -5009,12 +5077,14 @@ fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
     responses(
         (status = 200, description = "Proxied raster avatar bytes", content_type = "image/png"),
         (status = 400, description = "Invalid avatar URL"),
+        (status = 404, description = "URL is not the avatar of a public bio"),
         (status = 415, description = "Avatar is not a supported image type"),
         (status = 502, description = "Could not fetch avatar"),
     ),
     tag = "Bio"
 )]
 pub async fn proxy_bio_avatar(
+    State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<AvatarProxyQuery>,
 ) -> axum::response::Response {
     use axum::http::header;
@@ -5022,6 +5092,26 @@ pub async fn proxy_bio_avatar(
 
     if validate_url(&query.url).is_err() {
         return (StatusCode::BAD_REQUEST, "Invalid avatar URL").into_response();
+    }
+
+    if !crate::handlers::bio::link_in_bio_enabled() {
+        return (StatusCode::NOT_FOUND, "Avatar not found").into_response();
+    }
+
+    // Exact column match: the bio page requests the URL it just received.
+    let allowed = users::Entity::find()
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::BioEnabled.eq(true))
+        .filter(users::Column::AvatarUrl.eq(&query.url))
+        .limit(1)
+        .one(&state.db)
+        .await;
+    match allowed {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "Avatar not found").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Could not check avatar").into_response();
+        }
     }
 
     let response = match ssrf_guarded_fetch(reqwest::Method::GET, &query.url, None).await {

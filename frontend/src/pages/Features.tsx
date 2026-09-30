@@ -74,7 +74,7 @@ const features = [
     {
         icon: <Shield className="h-6 w-6" />,
         title: "Privacy First",
-        description: "We don't track users across the web. Your data stays yours. No third-party trackers or cookies.",
+        description: "First-party click analytics stay on your instance. We don't sell your data or follow visitors across other sites.",
         color: "text-green-600",
         bgColor: "bg-green-100"
     },
@@ -95,7 +95,7 @@ const features = [
     {
         icon: <LayoutList className="h-6 w-6" />,
         title: "Link-in-Bio",
-        description: "A profile page for your links — if you want one. Public only when you flip the switch; your page stays private until you enable it. No tracking pixels, no third parties: just your links on your own opn.onl/@you page.",
+        description: "A profile page for your links — if you want one. Public only when you flip the switch; your page stays private until you enable it. Just your links on your own opn.onl/@you page.",
         color: "text-fuchsia-600",
         bgColor: "bg-fuchsia-100"
     },
@@ -235,7 +235,7 @@ export default function Features() {
                             <h3 className="text-lg font-bold mb-6">opn.onl</h3>
                             <ul className="space-y-4">
                                 {[
-                                    'Privacy-first, no tracking scripts',
+                                    'Privacy-first. Optional analytics is disclosed',
                                     'Your data stays yours forever',
                                     'All features free, no limits',
                                     'Open source and transparent',

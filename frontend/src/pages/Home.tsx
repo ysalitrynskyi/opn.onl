@@ -57,7 +57,7 @@ export default function Home() {
 
     const features = [
         { icon: Zap, title: 'Rust-fast redirects', desc: 'An Axum + Redis core resolves links in microseconds, built to index billions of rows.' },
-        { icon: Shield, title: 'Privacy by default', desc: 'No cross-site tracking, no third-party pixels. The data your links generate stays yours.' },
+        { icon: Shield, title: 'Privacy by default', desc: 'Click data stays on your instance. We don\'t sell it or follow visitors across other sites.' },
         { icon: BarChart2, title: 'Honest analytics', desc: 'Clicks, geography, devices and referrers — first-party, in real time, no sampling.' },
         { icon: QrCode, title: 'Branded QR codes', desc: 'Every link ships with a QR — add your brand colour and logo, export PNG or SVG.' },
         { icon: Lock, title: 'Password & limits', desc: 'Gate sensitive links behind a password, cap total clicks, or schedule a window.' },
@@ -231,7 +231,7 @@ export default function Home() {
                             <span>React 19</span><span className="text-line2">/</span>
                             <span>PostgreSQL</span><span className="text-line2">/</span>
                             <span>Self-hosted</span><span className="text-line2">/</span>
-                            <span>No tracking</span>
+                            <span>No ads</span>
                         </div>
                     </div>
                 </section>
