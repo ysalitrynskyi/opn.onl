@@ -32,6 +32,7 @@ pub struct ContactResponse {
         (status = 200, description = "Message sent successfully", body = ContactResponse),
         (status = 400, description = "Validation error"),
         (status = 500, description = "Failed to send message"),
+        (status = 503, description = "Email is not configured on this instance; nothing was sent"),
     ),
     tag = "Contact"
 )]
@@ -51,17 +52,20 @@ pub async fn send_contact_message(
             .into_response();
     }
 
-    // Check if email service is available
+    // Without a working mail transport the message has nowhere to go: it is
+    // not stored anywhere. Answering "sent" dropped it silently while telling
+    // the visitor it had arrived, so say it was not delivered instead.
     let email_service = match &state.email_service {
-        Some(service) => service,
-        None => {
-            tracing::warn!("Contact form submission received but email service not configured");
-            // Return success anyway - we can log it or store it
+        Some(service) if service.is_configured() => service,
+        _ => {
+            tracing::warn!("Contact form submission refused: email is not configured");
             return (
-                StatusCode::OK,
+                StatusCode::SERVICE_UNAVAILABLE,
                 Json(ContactResponse {
-                    success: true,
-                    message: "Message received. We'll get back to you soon.".to_string(),
+                    success: false,
+                    message: "This site cannot send email right now, so your message was not \
+                              delivered. Please reach the operator another way."
+                        .to_string(),
                 }),
             )
                 .into_response();

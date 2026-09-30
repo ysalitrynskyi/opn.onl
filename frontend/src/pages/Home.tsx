@@ -8,6 +8,7 @@ import { API_ENDPOINTS, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import AmbientNetwork from '../components/AmbientNetwork';
 import { savePendingUrl } from '../utils/pendingUrl';
+import { safeLocalStorage } from '../utils/storage';
 
 export default function Home() {
     const [url, setUrl] = useState('');
@@ -23,7 +24,7 @@ export default function Home() {
         setError('');
         setShortUrl('');
 
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (!token) {
             savePendingUrl(url);
             navigate('/register');

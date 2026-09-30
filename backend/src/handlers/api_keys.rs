@@ -12,6 +12,7 @@ use utoipa::ToSchema;
 
 use crate::entity::{api_keys, users};
 use crate::handlers::links::{get_jwt_auth_from_header, hash_api_key};
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 
 const MAX_API_KEYS: u64 = 20;
@@ -169,7 +170,7 @@ pub async fn create_api_key(
             name,
             key,
             key_prefix,
-            created_at: rec.created_at.to_string(),
+            created_at: utc_rfc3339(rec.created_at),
         }),
     )
         .into_response()
@@ -203,8 +204,8 @@ pub async fn list_api_keys(State(state): State<AppState>, headers: HeaderMap) ->
             id: k.id,
             name: k.name,
             key_prefix: k.key_prefix,
-            last_used_at: k.last_used_at.map(|d| d.to_string()),
-            created_at: k.created_at.to_string(),
+            last_used_at: k.last_used_at.map(utc_rfc3339),
+            created_at: utc_rfc3339(k.created_at),
         })
         .collect();
     (StatusCode::OK, Json(out)).into_response()

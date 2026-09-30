@@ -84,6 +84,13 @@ describe('Sparkline', () => {
             expect(wrapper).toHaveAttribute('title');
         });
 
+        it('uses the singular for a single click', () => {
+            const { container } = render(<Sparkline data={[0, 1, 0]} showTooltip={true} />);
+            const wrapper = container.firstChild as HTMLElement;
+            expect(wrapper).toHaveAttribute('title', 'Total: 1 click');
+            expect(screen.getByText('1 click (7d)')).toBeInTheDocument();
+        });
+
         it('includes total clicks in tooltip', () => {
             const { container } = render(<Sparkline data={[10, 20, 30]} showTooltip={true} />);
             const wrapper = container.firstChild as HTMLElement;

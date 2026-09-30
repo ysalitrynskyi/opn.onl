@@ -9,7 +9,7 @@ import {
     Eye, ArrowRight, Flame, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, authFetch } from '../config/api';
+import { API_ENDPOINTS, authFetch, shortLinkBase } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -23,7 +23,9 @@ import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
 import { takePendingUrl } from '../utils/pendingUrl';
+import { safeLocalStorage } from '../utils/storage';
 import { localIsoDate } from '../utils/localIsoDate';
+import { pluralize } from '../utils/plural';
 
 interface AppSettings {
     custom_aliases_enabled: boolean;
@@ -88,7 +90,7 @@ export default function Dashboard() {
     const droppedLinkIds = useRef(new Set<number>());
 
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (!token) {
             navigate('/login');
             return;
@@ -201,7 +203,7 @@ export default function Dashboard() {
                 fetchLinks();
 
                 if (data.errors && data.errors.length > 0) {
-                    setError(`Created ${data.links.length} links. ${data.errors.length} failed: ${data.errors.slice(0, 3).join(', ')}${data.errors.length > 3 ? '...' : ''}`);
+                    setError(`Created ${data.links.length} ${pluralize(data.links.length, 'link')}. ${data.errors.length} failed: ${data.errors.slice(0, 3).join(', ')}${data.errors.length > 3 ? '...' : ''}`);
                 }
             } else {
                 const data = await res.json();
@@ -474,7 +476,7 @@ export default function Dashboard() {
 
     const handleCopy = async (link: LinkData) => {
         try {
-            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+            const mainUrl = `${shortLinkBase()}/${link.code}`;
             await navigator.clipboard.writeText(mainUrl);
             setCopiedId(link.id);
             toast('Short link copied!', 'success');
@@ -554,7 +556,7 @@ export default function Dashboard() {
     const handleShare = (link: LinkData) => {
         // On mobile, try native share first
         if (navigator.share && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+            const mainUrl = `${shortLinkBase()}/${link.code}`;
             navigator.share({
                 title: link.title || 'Check out this link',
                 url: mainUrl,
@@ -570,6 +572,7 @@ export default function Dashboard() {
 
     const totalClicks = links.reduce((sum, link) => sum + link.click_count, 0);
     const activeLinks = links.filter(l => l.is_active).length;
+    const validBulkUrlCount = bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length;
 
     if (loading) {
         return (
@@ -604,7 +607,7 @@ export default function Dashboard() {
                 )}
                 {shareLink && (
                     <ShareModal
-                        url={`${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${shareLink.code}`}
+                        url={`${shortLinkBase()}/${shareLink.code}`}
                         title={shareLink.title || `Check out this link`}
                         onClose={() => setShareLink(null)}
                     />
@@ -667,7 +670,7 @@ export default function Dashboard() {
                     <div className="flex items-center gap-4 mt-3 text-sm text-muted">
                         <span className="inline-flex items-center gap-1.5">
                             <Link2 className="h-4 w-4 text-faint" />
-                            {links.length} links
+                            {links.length} {pluralize(links.length, 'link')}
                         </span>
                         <span className="inline-flex items-center gap-1.5">
                             <Zap className="h-4 w-4 text-success" />
@@ -675,7 +678,7 @@ export default function Dashboard() {
                         </span>
                         <span className="inline-flex items-center gap-1.5">
                             <MousePointer className="h-4 w-4 text-faint" />
-                            {totalClicks.toLocaleString()} clicks
+                            {totalClicks.toLocaleString()} {pluralize(totalClicks, 'click')}
                         </span>
                     </div>
                 </div>
@@ -765,7 +768,7 @@ export default function Dashboard() {
                             />
                             <div className="flex justify-between items-center mt-4">
                                 <span className="text-sm text-faint">
-                                    {bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length} valid URLs
+                                    {validBulkUrlCount} valid {pluralize(validBulkUrlCount, 'URL')}
                                 </span>
                                 <div className="flex gap-3">
                                     <button
@@ -1005,7 +1008,7 @@ export default function Dashboard() {
                         {paginatedLinks.map((link, index) => {
                             // Calculate link number (bottom to top, 1 = oldest)
                             const linkNumber = filteredLinks.length - ((currentPage - 1) * LINKS_PER_PAGE + index);
-                            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+                            const mainUrl = `${shortLinkBase()}/${link.code}`;
                             const apiUrl = link.api_url || link.short_url; // Use api_url from backend
 
                             return (

@@ -359,3 +359,13 @@ async fn openapi_schema_refs_resolve() {
         "object schemas with no properties (unregistered or empty ToSchema): {empty:?}"
     );
 }
+
+/// The redirect answers `307 Temporary Redirect` (`Redirect::temporary`); the
+/// published spec said 302, so generated clients expected the wrong status.
+#[test]
+fn redirect_is_documented_as_307() {
+    let doc = serde_json::to_value(opn_onl_backend::openapi::api_doc()).unwrap();
+    let responses = &doc["paths"]["/{code}"]["get"]["responses"];
+    assert!(responses.get("307").is_some(), "{responses}");
+    assert!(responses.get("302").is_none(), "{responses}");
+}

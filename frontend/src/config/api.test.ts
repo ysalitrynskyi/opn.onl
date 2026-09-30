@@ -5,6 +5,8 @@ import {
     getAuthHeaders, 
     apiCall,
     authFetch,
+    shortLinkBase,
+    shortLinkHost,
 } from './api';
 
 describe('API Configuration', () => {
@@ -17,6 +19,24 @@ describe('API Configuration', () => {
         it('should start with http', () => {
             expect(API_BASE_URL.startsWith('http')).toBe(true);
         });
+    });
+});
+
+describe('short link base', () => {
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
+    it('is the configured frontend URL when one is set', () => {
+        vi.stubEnv('VITE_FRONTEND_URL', 'https://links.example.org');
+        expect(shortLinkBase()).toBe('https://links.example.org');
+        expect(shortLinkHost()).toBe('links.example.org');
+    });
+
+    it('falls back to the origin the app is served from', () => {
+        vi.stubEnv('VITE_FRONTEND_URL', '');
+        expect(shortLinkBase()).toBe(window.location.origin);
+        expect(shortLinkHost()).toBe(window.location.host);
     });
 });
 

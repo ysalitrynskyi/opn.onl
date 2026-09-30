@@ -2,12 +2,15 @@ import { useState } from 'react';
 import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Github, LogOut, Menu, X, User, Settings, LayoutDashboard, Shield } from 'lucide-react';
 import Logo from './Logo';
+import { safeLocalStorage } from '../utils/storage';
 
 export default function Layout() {
     const navigate = useNavigate();
     const location = useLocation();
-    const token = localStorage.getItem('token');
-    const isAdmin = localStorage.getItem('is_admin') === 'true';
+    // Read during render on every page, public ones included: this must not
+    // throw when the browser blocks site storage (the visitor is then signed out).
+    const token = safeLocalStorage.getItem('token');
+    const isAdmin = safeLocalStorage.getItem('is_admin') === 'true';
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const [userMenuOpen, setUserMenuOpen] = useState(false);
 
@@ -17,8 +20,8 @@ export default function Layout() {
     };
 
     const handleLogout = () => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('is_admin');
+        safeLocalStorage.removeItem('token');
+        safeLocalStorage.removeItem('is_admin');
         closeMenus();
         navigate('/login');
     };

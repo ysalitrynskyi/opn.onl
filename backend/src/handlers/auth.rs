@@ -8,7 +8,10 @@ use validator::Validate;
 use crate::entity::{api_keys, passkeys, users};
 use crate::utils::email::generate_token;
 use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
-use crate::utils::jwt::{create_jwt, hash_password, verify_password};
+use crate::utils::jwt::{
+    create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password, PASSWORD_TOO_LONG,
+};
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 use axum::http::HeaderMap;
 
@@ -93,6 +96,16 @@ pub async fn register(
             .into_response();
     }
 
+    if password_exceeds_bcrypt_limit(&payload.password) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let email = normalize_email(&payload.email);
     if let Err(rejection) = ensure_email_domain_allowed(&state.db, &email).await {
         return (
@@ -104,7 +117,7 @@ pub async fn register(
             .into_response();
     }
 
-    let hashed_password = match hash_password(&payload.password) {
+    let hashed_password = match hash_password(&payload.password).await {
         Ok(h) => h,
         Err(_) => {
             return (
@@ -270,7 +283,7 @@ pub async fn login(
         .await
         .is_err()
     {
-        let _ = verify_password(&payload.password, dummy_password_hash());
+        let _ = verify_password(&payload.password, dummy_password_hash()).await;
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -289,7 +302,10 @@ pub async fn login(
         .unwrap_or(None);
 
     if let Some(user) = user {
-        if verify_password(&payload.password, &user.password_hash).unwrap_or(false) {
+        if verify_password(&payload.password, &user.password_hash)
+            .await
+            .unwrap_or(false)
+        {
             let token = match create_jwt(user.id, &user.email, user.token_version) {
                 Ok(t) => t,
                 Err(e) => {
@@ -318,7 +334,7 @@ pub async fn login(
     } else {
         // No such (active) account: run a dummy verify so the response time does
         // not reveal whether the email is registered (user-enumeration timing).
-        let _ = verify_password(&payload.password, dummy_password_hash());
+        let _ = verify_password(&payload.password, dummy_password_hash()).await;
     }
 
     (
@@ -342,8 +358,10 @@ pub fn hash_secret_token(token: &str) -> String {
 /// does not exist, mitigating user enumeration via response time.
 fn dummy_password_hash() -> &'static str {
     use once_cell::sync::Lazy;
+    // Computed once, synchronously; only the per-request verify must stay off
+    // the async workers.
     static DUMMY: Lazy<String> =
-        Lazy::new(|| crate::utils::jwt::hash_password("not-a-real-password").unwrap_or_default());
+        Lazy::new(|| bcrypt::hash("not-a-real-password", bcrypt::DEFAULT_COST).unwrap_or_default());
     DUMMY.as_str()
 }
 
@@ -528,15 +546,15 @@ pub async fn forgot_password(
     let email = normalize_email(&payload.email);
     // Same dummy bcrypt as login, paid on every path so a miss is not a
     // cheap SELECT while a hit pays for UPDATE (and SMTP when configured).
-    let equalize_work = || {
-        let _ = verify_password("not-a-real-password", dummy_password_hash());
+    let equalize_work = || async {
+        let _ = verify_password("not-a-real-password", dummy_password_hash()).await;
     };
 
     if ensure_email_domain_allowed(&state.db, &email)
         .await
         .is_err()
     {
-        equalize_work();
+        equalize_work().await;
         return (
             StatusCode::OK,
             Json(MessageResponse {
@@ -554,7 +572,7 @@ pub async fn forgot_password(
         .await
         .unwrap_or(None);
 
-    equalize_work();
+    equalize_work().await;
 
     if let Some(user) = user {
         let reset_token = generate_token();
@@ -614,6 +632,16 @@ pub async fn reset_password(
             .into_response();
     }
 
+    if password_exceeds_bcrypt_limit(&payload.password) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
@@ -664,7 +692,7 @@ pub async fn reset_password(
             }
         }
 
-        let hashed_password = match hash_password(&payload.password) {
+        let hashed_password = match hash_password(&payload.password).await {
             Ok(h) => h,
             Err(_) => {
                 let _ = txn.rollback().await;
@@ -771,6 +799,16 @@ pub async fn change_password(
             .into_response();
     }
 
+    if password_exceeds_bcrypt_limit(&payload.new_password) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let auth = match crate::handlers::links::get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
         None => {
@@ -816,7 +854,7 @@ pub async fn change_password(
                 .into_response();
         }
 
-        match verify_password(&payload.current_password, &user.password_hash) {
+        match verify_password(&payload.current_password, &user.password_hash).await {
             Ok(true) => {}
             Ok(false) => {
                 let _ = txn.rollback().await;
@@ -841,7 +879,7 @@ pub async fn change_password(
         }
 
         // Hash new password
-        let hashed_password = match hash_password(&payload.new_password) {
+        let hashed_password = match hash_password(&payload.new_password).await {
             Ok(h) => h,
             Err(_) => {
                 let _ = txn.rollback().await;
@@ -997,7 +1035,7 @@ pub async fn delete_account(
                 .into_response();
         }
 
-        match verify_password(&payload.password, &user.password_hash) {
+        match verify_password(&payload.password, &user.password_hash).await {
             Ok(true) => {}
             Ok(false) => {
                 return (
@@ -1053,7 +1091,10 @@ pub async fn delete_account(
                     .into_response();
             }
         };
-        if !verify_password(&payload.password, &user.password_hash).unwrap_or(false) {
+        if !verify_password(&payload.password, &user.password_hash)
+            .await
+            .unwrap_or(false)
+        {
             let _ = txn.rollback().await;
             return (
                 StatusCode::BAD_REQUEST,
@@ -1436,7 +1477,7 @@ pub async fn get_current_user(
                 email: user.email,
                 email_verified: user.email_verified,
                 is_admin: user.is_admin,
-                created_at: user.created_at.to_string(),
+                created_at: utc_rfc3339(user.created_at),
                 link_count,
                 total_clicks,
                 display_name: user.display_name,
@@ -1579,7 +1620,7 @@ pub async fn update_profile(
                         email: updated.email,
                         email_verified: updated.email_verified,
                         is_admin: updated.is_admin,
-                        created_at: updated.created_at.to_string(),
+                        created_at: utc_rfc3339(updated.created_at),
                         link_count,
                         total_clicks,
                         display_name: updated.display_name,

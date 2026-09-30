@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '../test/test-utils';
 import Login from './Login';
 import { mockFetchResponse, mockFetchError, mockToken } from '../test/test-utils';
+import { blockSiteStorage } from '../test/helpers';
 
 describe('Login Page', () => {
   beforeEach(() => {
@@ -131,6 +132,26 @@ describe('Login Page', () => {
       expect(localStorage.setItem).toHaveBeenCalledWith('token', mockToken);
       expect(localStorage.setItem).toHaveBeenCalledWith('is_admin', 'true');
     });
+  });
+
+  it('says why instead of bouncing back to the form when the browser blocks site storage', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      mockFetchResponse({ token: mockToken, email_verified: true }) as any
+    );
+    const unblock = blockSiteStorage();
+    try {
+      const { user } = render(<Login />);
+
+      await user.type(screen.getByLabelText(/email address/i), 'test@example.com');
+      await user.type(screen.getByLabelText(/password/i), 'password123');
+      await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+      expect(await screen.findByText(/blocking storage for this site/i)).toBeInTheDocument();
+      // Without a stored token the dashboard would only send the visitor back here.
+      expect(window.location.pathname).toBe('/');
+    } finally {
+      unblock();
+    }
   });
 
   it('shows error on failed login', async () => {

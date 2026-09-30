@@ -15,6 +15,7 @@ use webauthn_rs::Webauthn;
 use crate::entity::{passkeys, users};
 use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
 use crate::utils::jwt::create_jwt;
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 
 // In-memory store for registration/auth state
@@ -772,7 +773,7 @@ pub async fn list_passkeys(
         .map(|pk| PasskeyInfo {
             id: pk.id,
             name: pk.name.unwrap_or_else(|| format!("Passkey {}", pk.id)),
-            created_at: pk.created_at.to_string(),
+            created_at: utc_rfc3339(pk.created_at),
             last_used: pk.last_used.map(|lu| lu.to_string()),
         })
         .collect();

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { safeLocalStorage } from '../utils/storage';
 
 // GA_ID and GA_CONSENT_MODE are injected into index.html at runtime; loadAnalytics
 // and disableAnalytics are defined there and do the actual gtag work. This
@@ -42,19 +43,13 @@ function doNotTrack(): boolean {
 }
 
 function storedChoice(): string | null {
-    try {
-        return localStorage.getItem(CONSENT_KEY);
-    } catch {
-        return null;
-    }
+    return safeLocalStorage.getItem(CONSENT_KEY);
 }
 
 function storeChoice(choice: 'granted' | 'denied'): void {
-    try {
-        localStorage.setItem(CONSENT_KEY, choice);
-    } catch {
-        /* storage blocked: the in-page decision below still applies to this visit */
-    }
+    // If storage is blocked this is not remembered, but the in-page decision
+    // below still applies to this visit.
+    safeLocalStorage.setItem(CONSENT_KEY, choice);
 }
 
 /**
