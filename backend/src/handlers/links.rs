@@ -1161,7 +1161,9 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 /// Create a new shortened link
 ///
 /// Credentials are optional. Without them the link is anonymous and cannot be
-/// put in a folder, tagged, or owned by an organization.
+/// put in a folder, tagged, or owned by an organization. An account can shorten
+/// the same URL at most 10 times in 10 minutes; the next request is answered
+/// 429 with only an `error` field and no `Retry-After`.
 #[utoipa::path(
     post,
     path = "/links",
@@ -1171,7 +1173,6 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
         (status = 400, description = "Invalid request"),
         (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
-        (status = 429, description = "Same URL shortened too many times"),
     ),
     tag = "Links",
     security((), ("bearer_auth" = []), ("api_key" = []))

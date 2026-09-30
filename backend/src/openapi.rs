@@ -1,4 +1,4 @@
-use utoipa::OpenApi;
+use utoipa::{OpenApi, ToResponse, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
@@ -6,6 +6,9 @@ use crate::handlers::{
 };
 
 /// `info.description` of the served document (Markdown), set in [`api_doc`].
+///
+/// The rate-limit table mirrors `RateLimiters::default()` and the routing in
+/// `rate_limit_middleware`. `tests/audit_openapi.rs` fails if the numbers drift.
 const API_DESCRIPTION: &str = "\
 A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.
 
@@ -22,7 +25,54 @@ deletion, passkeys, API keys) and `/admin` require the session JWT.
 
 Operations without a security requirement are public. `POST /links` also works without a token \
 and then creates an anonymous link.
+
+## Rate limits
+
+Limits are counted per client IP address (per /64 for IPv6). A response that passed the limiter \
+carries `X-RateLimit-Limit` and `X-RateLimit-Remaining` for the budget it was charged to. Over a \
+limit, the answer is `429 Too Many Requests` with `Retry-After` (seconds, rounded up), the same \
+two headers, and a `RateLimitResponse` body.
+
+| Budget | Limit | Requests it covers |
+|---|---|---|
+| Burst | 10 per second | Every request except short-link visits (`/{code}`, `/{code}/preview`, \
+`/{code}/verify`), counted in addition to the request's own budget below |
+| Sign-in | 10 per minute | Every `POST` under `/auth/` |
+| Link creation | 100 per hour | `POST /links` and `POST /links/{id}/clone`. `POST /links/bulk` \
+spends one per URL and lists the URLs past the budget in `errors` instead of answering 429 |
+| Contact | 10 per hour | `POST /contact` |
+| Link password | 5 per minute per link, 20 per minute in total | `POST /{code}/verify`, and \
+`GET /{code}` with an `X-Link-Password` header |
+| Redirects | 100 per second | `GET /{code}` and `GET /{code}/preview` |
+| General | 100 per minute | Every other request, including `GET`, `PUT`, and `DELETE` under \
+`/auth/` |
 ";
+
+// Only the document uses this type: `rate_limit_middleware` builds the body
+// with `json!`, and tests/audit_openapi.rs checks that the two agree.
+/// Body of a `429 Too Many Requests` answer from the rate limiter.
+#[derive(ToSchema)]
+pub struct RateLimitResponse {
+    /// Always `Too many requests`.
+    pub error: String,
+    /// Seconds until the budget refills, the same value as `Retry-After`.
+    pub retry_after: u64,
+    /// Human-readable explanation.
+    pub message: String,
+}
+
+/// The rate limiter's answer when a budget is spent.
+#[derive(ToResponse)]
+#[response(
+    description = "Rate limit exceeded. Retry after the number of seconds in `Retry-After`. \
+                   The budgets are listed under Rate limits in the API description.",
+    headers(
+        ("Retry-After" = u64, description = "Seconds until the budget refills, rounded up"),
+        ("X-RateLimit-Limit" = u32, description = "Size of the budget that ran out"),
+        ("X-RateLimit-Remaining" = u32, description = "Requests left in that budget (0)")
+    )
+)]
+pub struct TooManyRequests(pub RateLimitResponse);
 
 #[derive(OpenApi)]
 #[openapi(
@@ -328,9 +378,13 @@ and then creates an anonymous link.
             admin::BlockedEmailDomainResponse,
             admin::BackupResponse,
             admin::BackupListResponse,
-        )
+
+            // Rate limiting
+            RateLimitResponse,
+        ),
+        responses(TooManyRequests)
     ),
-    modifiers(&SecurityAddon)
+    modifiers(&SecurityAddon, &RateLimitAddon)
 )]
 pub struct ApiDoc;
 
@@ -372,6 +426,28 @@ impl utoipa::Modify for SecurityAddon {
                         .build(),
                 ),
             );
+        }
+    }
+}
+
+/// Every route sits behind `rate_limit_middleware`, so any operation can be
+/// answered 429. Add the shared response to each operation that does not
+/// describe a 429 of its own.
+struct RateLimitAddon;
+
+impl utoipa::Modify for RateLimitAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::{Ref, RefOr};
+
+        let (name, _) = TooManyRequests::response();
+        for item in openapi.paths.paths.values_mut() {
+            for operation in item.operations.values_mut() {
+                operation
+                    .responses
+                    .responses
+                    .entry("429".to_string())
+                    .or_insert_with(|| RefOr::Ref(Ref::from_response_name(name)));
+            }
         }
     }
 }
