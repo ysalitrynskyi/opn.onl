@@ -15,6 +15,7 @@ use crate::entity::{
     audit_log, click_events, folders, link_tags, links, org_members, organizations, tags, users,
 };
 use crate::utils::email_domain_policy::normalize_email;
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 
 // ============= DTOs =============
@@ -426,7 +427,7 @@ pub async fn create_organization(
             name: org.name,
             slug: org.slug,
             owner_id: org.owner_id,
-            created_at: org.created_at.to_string(),
+            created_at: utc_rfc3339(org.created_at),
             member_count: 1,
             link_count: 0,
         }),
@@ -523,7 +524,7 @@ pub async fn get_user_organizations(
             name: org.name.clone(),
             slug: org.slug.clone(),
             owner_id: org.owner_id,
-            created_at: org.created_at.to_string(),
+            created_at: utc_rfc3339(org.created_at),
             member_count: member_counts.get(&org.id).copied().unwrap_or(0),
             link_count: link_counts.get(&org.id).copied().unwrap_or(0),
         })
@@ -597,7 +598,7 @@ pub async fn get_organization(
         name: org.name.clone(),
         slug: org.slug.clone(),
         owner_id: org.owner_id,
-        created_at: org.created_at.to_string(),
+        created_at: utc_rfc3339(org.created_at),
         member_count,
         link_count,
     }))
@@ -725,7 +726,7 @@ pub async fn update_organization(
         name: org.name.clone(),
         slug: org.slug.clone(),
         owner_id: org.owner_id,
-        created_at: org.created_at.to_string(),
+        created_at: utc_rfc3339(org.created_at),
         member_count,
         link_count,
     }))
@@ -851,7 +852,7 @@ pub async fn get_organization_members(
             user_id: member.user_id,
             email: user.email.clone(),
             role: member.role,
-            joined_at: member.joined_at.to_string(),
+            joined_at: utc_rfc3339(member.joined_at),
         });
     }
 
@@ -977,7 +978,7 @@ pub async fn invite_member(
             user_id: invite_user.id,
             email: invite_user.email,
             role: member.role,
-            joined_at: member.joined_at.to_string(),
+            joined_at: utc_rfc3339(member.joined_at),
         }),
     ))
 }
@@ -1083,7 +1084,7 @@ pub async fn update_member_role(
         user_id: member.user_id,
         email: user.map(|u| u.email).unwrap_or_default(),
         role: member.role,
-        joined_at: member.joined_at.to_string(),
+        joined_at: utc_rfc3339(member.joined_at),
     }))
 }
 
@@ -1357,7 +1358,7 @@ pub async fn transfer_ownership(
         name: org.name.clone(),
         slug: org.slug.clone(),
         owner_id: org.owner_id,
-        created_at: org.created_at.to_string(),
+        created_at: utc_rfc3339(org.created_at),
         member_count,
         link_count,
     }))
@@ -1450,7 +1451,7 @@ pub async fn get_audit_log(
             resource_id: log.resource_id,
             details: log.details,
             ip_address: log.ip_address,
-            created_at: log.created_at.to_string(),
+            created_at: utc_rfc3339(log.created_at),
         });
     }
 

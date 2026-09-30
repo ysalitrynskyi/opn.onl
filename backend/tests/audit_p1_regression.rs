@@ -98,7 +98,8 @@ async fn contact_form_is_rate_limited() {
         "message": "This is a test contact message body."
     });
 
-    // First request is accepted (email is skipped without SMTP, still 200).
+    // The limiter runs before the handler, so without SMTP the first request
+    // is a 503 (nothing can be sent), not a 429.
     let first = server.post("/contact").json(&payload).await;
     assert_ne!(
         first.status_code(),
@@ -118,6 +119,32 @@ async fn contact_form_is_rate_limited() {
     assert!(
         throttled,
         "contact form must be rate-limited once the budget is exceeded"
+    );
+}
+
+/// Without SMTP the message cannot go anywhere (it is not stored), so the form
+/// must say it was not delivered instead of reporting success and dropping it.
+#[tokio::test]
+async fn contact_form_without_email_says_it_was_not_delivered() {
+    let (server, _db) = spawn_real_app().await;
+    let res = server
+        .post("/contact")
+        .json(&json!({
+            "name": "Test User",
+            "email": "sender@iana.org",
+            "subject": "Hello",
+            "message": "This is a test contact message body."
+        }))
+        .await;
+    assert_eq!(res.status_code(), 503, "{}", res.text());
+    let body: serde_json::Value = res.json();
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not delivered"),
+        "{body}"
     );
 }
 

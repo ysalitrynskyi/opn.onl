@@ -4,7 +4,6 @@ use axum::{
     response::{IntoResponse, Redirect},
     Json,
 };
-use bcrypt::{hash, DEFAULT_COST};
 use chrono::{DateTime, Utc};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -17,7 +16,8 @@ use validator::Validate;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
-use crate::utils::jwt::decode_jwt;
+use crate::utils::jwt::{decode_jwt, password_exceeds_bcrypt_limit, PASSWORD_TOO_LONG};
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
@@ -263,6 +263,15 @@ fn check_url_content_policy(url: &str) -> Result<(), String> {
 
 // ============= URL Validation =============
 
+/// `data:` right after a query or fragment delimiter, where a destination's
+/// redirect parameter would treat it as a URL. Not `Wikidata:` or a `/Data:`
+/// wiki namespace in a path.
+fn contains_nested_data_url(url_lower: &str) -> bool {
+    url_lower
+        .match_indices("data:")
+        .any(|(i, _)| i > 0 && matches!(url_lower.as_bytes()[i - 1], b'=' | b'?' | b'&' | b'#'))
+}
+
 /// Validate URL is http/https only and sanitize if enabled
 fn validate_url(url: &str) -> Result<String, String> {
     // Must be a valid URL
@@ -290,8 +299,11 @@ fn validate_url(url: &str) -> Result<String, String> {
             return Err("URL contains potentially malicious content".to_string());
         }
 
-        // Block data: URLs (can contain malicious payloads)
-        if url_lower.contains("data:") {
+        // Block a data: URL nested where a redirector would follow it
+        // (`?next=data:…`, `#data:…`). A top-level data: URL already failed the
+        // scheme check above; matching the bare substring also refused ordinary
+        // pages such as https://www.wikidata.org/wiki/Wikidata:Main_Page.
+        if contains_nested_data_url(&url_lower) {
             return Err("Data URLs are not allowed".to_string());
         }
 
@@ -1085,6 +1097,20 @@ pub async fn create_link(
         }
     };
 
+    // An empty password is no password. The unlock form will not submit an
+    // empty field, so a link "protected" by "" could never be opened from the
+    // UI; the dashboard already omits the field instead of sending "".
+    let link_password = payload.password.as_deref().filter(|p| !p.is_empty());
+    if link_password.is_some_and(password_exceeds_bcrypt_limit) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let user_id = get_user_id_from_header(&state.db, &headers).await;
 
     // Check email verification for authenticated users
@@ -1239,8 +1265,8 @@ pub async fn create_link(
         code
     };
 
-    let password_hash = if let Some(password) = &payload.password {
-        match hash(password, DEFAULT_COST) {
+    let password_hash = if let Some(password) = link_password {
+        match crate::utils::jwt::hash_password(password).await {
             Ok(h) => Some(h),
             Err(_) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash password")
@@ -1425,6 +1451,14 @@ pub async fn create_link(
     }
 
     let tags = get_link_tags(&state.db, link_id).await;
+    // Report what the row actually is: a link created with an expiry already
+    // past, or a start still ahead, is not active, and the redirect agrees.
+    let is_active = links::Entity::find_by_id(link_id)
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .is_none_or(|link| link.is_active());
     let base_url = get_base_url();
     let api_url = get_api_url();
     (
@@ -1449,7 +1483,7 @@ pub async fn create_link(
             burned_at: None,
             safe_link_interstitial,
             bio_visible: false,
-            is_active: true,
+            is_active,
             is_pinned: false,
             tags,
         }),
@@ -1587,7 +1621,7 @@ pub async fn preview_link(
                     has_password: link.password_hash.is_some(),
                     is_expired,
                     is_active: link.is_active(),
-                    created_at: link.created_at.to_string(),
+                    created_at: utc_rfc3339(link.created_at),
                     click_count: link.click_count,
                     reputation: ReputationInfo {
                         verdict: verdict.to_string(),
@@ -1625,7 +1659,7 @@ pub struct RedirectQuery {
         ("code" = String, Path, description = "Short link code")
     ),
     responses(
-        (status = 302, description = "Redirect to original URL"),
+        (status = 307, description = "Redirect to original URL"),
         (status = 401, description = "Password required"),
         (status = 404, description = "Link not found"),
         (status = 410, description = "Link expired or inactive"),
@@ -3269,16 +3303,16 @@ pub async fn get_user_links(
             original_url: l.original_url.clone(),
             title: l.title.clone(),
             click_count: l.click_count,
-            created_at: l.created_at.to_string(),
-            expires_at: l.expires_at.map(|d| d.to_string()),
+            created_at: utc_rfc3339(l.created_at),
+            expires_at: l.expires_at.map(utc_rfc3339),
             has_password: l.password_hash.is_some(),
             notes: l.notes.clone(),
             folder_id: l.folder_id,
             org_id: l.org_id,
-            starts_at: l.starts_at.map(|s| s.to_string()),
+            starts_at: l.starts_at.map(utc_rfc3339),
             max_clicks: l.max_clicks,
             burn_after_reading: l.burn_after_reading,
-            burned_at: l.burned_at.map(|d| d.to_string()),
+            burned_at: l.burned_at.map(utc_rfc3339),
             safe_link_interstitial: l.safe_link_interstitial,
             bio_visible: l.bio_visible,
             is_active: l.is_active(),
@@ -3513,10 +3547,21 @@ pub async fn update_link(
             active_link.expires_at = Set(Some(expires.naive_utc()));
         }
 
+        // "" is not a new password (see create_link); clearing one is what
+        // remove_password is for, so an empty field leaves it unchanged.
         if payload.remove_password == Some(true) {
             active_link.password_hash = Set(None);
-        } else if let Some(password) = payload.password {
-            match hash(password, DEFAULT_COST) {
+        } else if let Some(password) = payload.password.filter(|p| !p.is_empty()) {
+            if password_exceeds_bcrypt_limit(&password) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: PASSWORD_TOO_LONG.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            match crate::utils::jwt::hash_password(&password).await {
                 Ok(h) => active_link.password_hash = Set(Some(h)),
                 Err(_) => {
                     return (
@@ -3692,16 +3737,16 @@ pub async fn update_link(
                         original_url: updated.original_url.clone(),
                         title: updated.title.clone(),
                         click_count: updated.click_count,
-                        created_at: updated.created_at.to_string(),
-                        expires_at: updated.expires_at.map(|d| d.to_string()),
+                        created_at: utc_rfc3339(updated.created_at),
+                        expires_at: updated.expires_at.map(utc_rfc3339),
                         has_password: updated.password_hash.is_some(),
                         notes: updated.notes.clone(),
                         folder_id: updated.folder_id,
                         org_id: updated.org_id,
-                        starts_at: updated.starts_at.map(|s| s.to_string()),
+                        starts_at: updated.starts_at.map(utc_rfc3339),
                         max_clicks: updated.max_clicks,
                         burn_after_reading: updated.burn_after_reading,
-                        burned_at: updated.burned_at.map(|d| d.to_string()),
+                        burned_at: updated.burned_at.map(utc_rfc3339),
                         safe_link_interstitial: updated.safe_link_interstitial,
                         bio_visible: updated.bio_visible,
                         is_active: updated.is_active(),

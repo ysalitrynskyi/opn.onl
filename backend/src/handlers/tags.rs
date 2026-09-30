@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 use crate::entity::{link_tags, links, org_members, tags};
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 
 // ============= DTOs =============
@@ -201,7 +202,7 @@ pub async fn create_tag(
             color: tag.color,
             user_id: tag.user_id,
             org_id: tag.org_id,
-            created_at: tag.created_at.to_string(),
+            created_at: utc_rfc3339(tag.created_at),
             link_count: 0,
         }),
     ))
@@ -295,7 +296,7 @@ pub async fn get_tags(
             color: tag.color.clone(),
             user_id: tag.user_id,
             org_id: tag.org_id,
-            created_at: tag.created_at.to_string(),
+            created_at: utc_rfc3339(tag.created_at),
             link_count: link_counts.get(&tag.id).copied().unwrap_or(0),
         })
         .collect();
@@ -363,7 +364,7 @@ pub async fn get_tag(
         color: tag.color.clone(),
         user_id: tag.user_id,
         org_id: tag.org_id,
-        created_at: tag.created_at.to_string(),
+        created_at: utc_rfc3339(tag.created_at),
         link_count,
     }))
 }
@@ -446,7 +447,7 @@ pub async fn update_tag(
         color: tag.color.clone(),
         user_id: tag.user_id,
         org_id: tag.org_id,
-        created_at: tag.created_at.to_string(),
+        created_at: utc_rfc3339(tag.created_at),
         link_count,
     }))
 }
@@ -812,16 +813,16 @@ pub async fn get_links_by_tag(
             original_url: l.original_url.clone(),
             title: l.title.clone(),
             click_count: l.click_count,
-            created_at: l.created_at.to_string(),
-            expires_at: l.expires_at.map(|e| e.to_string()),
+            created_at: utc_rfc3339(l.created_at),
+            expires_at: l.expires_at.map(utc_rfc3339),
             has_password: l.password_hash.is_some(),
             notes: l.notes.clone(),
             folder_id: l.folder_id,
             org_id: l.org_id,
-            starts_at: l.starts_at.map(|s| s.to_string()),
+            starts_at: l.starts_at.map(utc_rfc3339),
             max_clicks: l.max_clicks,
             burn_after_reading: l.burn_after_reading,
-            burned_at: l.burned_at.map(|d| d.to_string()),
+            burned_at: l.burned_at.map(utc_rfc3339),
             safe_link_interstitial: l.safe_link_interstitial,
             bio_visible: l.bio_visible,
             is_active: l.is_active(),

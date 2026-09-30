@@ -464,3 +464,210 @@ async fn qr_code_png_for_owner_forbidden_for_stranger() {
         &bytes[..bytes.len().min(8)]
     );
 }
+
+/// An empty password is no password. Stored as a bcrypt hash of "", it made a
+/// link that the unlock form (which will not submit an empty field) could
+/// never open. On create "" leaves the link open; on update it leaves the
+/// existing password alone, because clearing it is what remove_password is for.
+#[tokio::test]
+async fn empty_link_password_is_no_password() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let dest = format!("https://iana.org/open-{}", unique_code());
+    let body = create_link(
+        &server,
+        &token,
+        json!({ "original_url": dest, "password": "" }),
+    )
+    .await;
+    assert_eq!(body["has_password"], json!(false), "created: {body}");
+    let code = body["code"].as_str().unwrap().to_string();
+    let id = body["id"].as_i64().unwrap();
+
+    let redirect = server.get(&format!("/{code}")).await;
+    assert_eq!(
+        redirect.status_code(),
+        307,
+        "an open link must redirect: {}",
+        redirect.text()
+    );
+    assert_eq!(
+        redirect
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some(dest.as_str())
+    );
+
+    let set = server
+        .put(&format!("/links/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "password": "correct-horse" }))
+        .await;
+    assert_eq!(set.status_code(), 200, "set password: {}", set.text());
+    let blank = server
+        .put(&format!("/links/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "password": "" }))
+        .await;
+    assert_eq!(blank.status_code(), 200, "empty update: {}", blank.text());
+    assert_eq!(
+        blank.json::<Value>()["has_password"],
+        json!(true),
+        "\"\" must not replace the password"
+    );
+    let unlock = server
+        .post(&format!("/{code}/verify"))
+        .json(&json!({ "password": "correct-horse" }))
+        .await;
+    assert_eq!(
+        unlock.status_code(),
+        200,
+        "the original password must still unlock: {}",
+        unlock.text()
+    );
+}
+
+/// bcrypt reads only the first 72 bytes, so a longer link password would
+/// unlock with anything sharing that prefix. Create and update refuse it,
+/// counted in bytes (37 "é" are 74); exactly 72 bytes is accepted.
+#[tokio::test]
+async fn link_password_over_72_bytes_is_refused() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let dest = format!("https://iana.org/long-{}", unique_code());
+
+    for too_long in ["k".repeat(73), "é".repeat(37)] {
+        let res = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": dest, "password": too_long }))
+            .await;
+        assert_eq!(
+            res.status_code(),
+            400,
+            "{} bytes accepted: {}",
+            too_long.len(),
+            res.text()
+        );
+        assert!(res.text().contains("at most 72 bytes"), "{}", res.text());
+    }
+
+    let body = create_link(
+        &server,
+        &token,
+        json!({ "original_url": dest, "password": "k".repeat(72) }),
+    )
+    .await;
+    assert_eq!(body["has_password"], json!(true), "created: {body}");
+    let id = body["id"].as_i64().unwrap();
+
+    let res = server
+        .put(&format!("/links/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "password": "k".repeat(73) }))
+        .await;
+    assert_eq!(res.status_code(), 400, "update: {}", res.text());
+    assert!(res.text().contains("at most 72 bytes"), "{}", res.text());
+}
+
+/// `data:` is refused only where a destination's redirect parameter would
+/// treat it as a URL. A path that merely contains the letters, like Wikidata's
+/// own namespace or the Commons `Data:` namespace, is an ordinary link.
+#[tokio::test]
+async fn data_in_an_ordinary_url_is_allowed_but_not_as_a_nested_url() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    for ok in [
+        "https://www.wikidata.org/wiki/Wikidata:Main_Page",
+        "https://commons.wikimedia.org/wiki/Data:Sandbox/Example.tab",
+    ] {
+        let body = create_link(&server, &token, json!({ "original_url": ok })).await;
+        assert_eq!(body["original_url"], json!(ok));
+    }
+
+    for nested in [
+        "https://iana.org/go?next=data:text/html,hi",
+        "https://iana.org/go#data:text/html,hi",
+        "https://iana.org/go?a=1&data:text/html,hi",
+    ] {
+        let res = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": nested }))
+            .await;
+        assert_eq!(res.status_code(), 400, "{nested} accepted: {}", res.text());
+        assert!(res.text().contains("Data URLs"), "{nested}: {}", res.text());
+    }
+}
+
+/// Creating a link whose expiry has already passed is allowed, but the
+/// response must say it is inactive, as GET /links and the redirect do.
+#[tokio::test]
+async fn create_reports_an_already_expired_link_as_inactive() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+
+    let expired = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": format!("https://iana.org/expired-{}", unique_code()),
+            "expires_at": (Utc::now() - Duration::hours(1)).to_rfc3339(),
+        }),
+    )
+    .await;
+    assert_eq!(expired["is_active"], json!(false), "created: {expired}");
+    let code = expired["code"].as_str().unwrap();
+    let redirect = server.get(&format!("/{code}")).await;
+    assert_eq!(redirect.status_code(), 410, "{}", redirect.text());
+
+    let live = create_link(
+        &server,
+        &token,
+        json!({ "original_url": format!("https://iana.org/live-{}", unique_code()) }),
+    )
+    .await;
+    assert_eq!(live["is_active"], json!(true), "created: {live}");
+}
+
+/// Link times leave the API as RFC 3339 UTC. Sent without the `Z`, browsers
+/// read the stored UTC time as local time, so an expiry at 23:59 in New York
+/// (04:59 UTC the next day) showed as the next day.
+#[tokio::test]
+async fn link_times_are_rfc3339_utc() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let created = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": format!("https://iana.org/tz-{}", unique_code()),
+            "expires_at": "2030-01-16T04:59:00Z",
+        }),
+    )
+    .await;
+    let id = created["id"].as_i64().unwrap();
+
+    let list: Value = server
+        .get("/links")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["id"].as_i64() == Some(id))
+        .expect("the new link is listed");
+    assert_eq!(row["expires_at"], json!("2030-01-16T04:59:00Z"), "{row}");
+    let created_at = row["created_at"].as_str().unwrap();
+    assert!(created_at.ends_with('Z'), "{created_at}");
+    let parsed = chrono::DateTime::parse_from_rfc3339(created_at).expect("RFC 3339");
+    let skew = Utc::now() - parsed.with_timezone(&Utc);
+    assert!(
+        skew.num_minutes().abs() < 5,
+        "{created_at} is not the creation time in UTC"
+    );
+}

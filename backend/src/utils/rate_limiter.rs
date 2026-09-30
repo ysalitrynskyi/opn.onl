@@ -8,7 +8,7 @@ use axum::{
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Rate limiter configuration
@@ -79,8 +79,12 @@ impl RateLimiter {
                 .checked_sub(now.duration_since(entry.window_start))
                 .unwrap_or(Duration::ZERO);
 
+            // Round up: truncating told per-second clients to retry after 0
+            // seconds, i.e. immediately, into the same closed window.
+            let retry_after_secs =
+                retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
             return RateLimitResult::Limited {
-                retry_after_secs: retry_after.as_secs(),
+                retry_after_secs,
                 limit: self.config.max_requests,
                 remaining: 0,
             };
@@ -242,9 +246,20 @@ impl ClientIpConfig {
     }
 }
 
+#[cfg(not(test))]
 fn client_ip_config() -> &'static ClientIpConfig {
-    static CONFIG: OnceLock<ClientIpConfig> = OnceLock::new();
+    static CONFIG: std::sync::OnceLock<ClientIpConfig> = std::sync::OnceLock::new();
     CONFIG.get_or_init(ClientIpConfig::from_env)
+}
+
+/// Unit tests set TRUST_PROXY_HEADERS at run time. With the cached read, the
+/// outcome depended on which test happened to reach the middleware first, so
+/// the client-identity tests failed whenever another test got there before
+/// them. Tests read the environment on every call instead; the leak is a few
+/// bytes per request, in test builds only.
+#[cfg(test)]
+fn client_ip_config() -> &'static ClientIpConfig {
+    Box::leak(Box::new(ClientIpConfig::from_env()))
 }
 
 /// Parse a single header/XFF token into a canonical IP string.
@@ -448,7 +463,11 @@ pub async fn rate_limit_middleware(
                     .check(&format!("pwverify:{}:{}", ip, code))
             }
         }
-    } else if is_auth_path(path) {
+    } else if is_auth_path(path) && req.method() == axum::http::Method::POST {
+        // Only the POSTs (sign-in, sign-up, password and passkey operations)
+        // share the strict auth budget. Pages read /auth/me, /auth/settings,
+        // /auth/api-keys and /auth/passkeys on every load; counting those too
+        // locked a user out of signing in after a handful of page views.
         limiters.auth.check(&format!("auth:{}", ip))
     } else if is_link_creation_path(path) && req.method() == axum::http::Method::POST {
         limiters.link_creation.check(&format!("create:{}", ip))
@@ -622,6 +641,81 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "different codes must still consume one shared per-IP bcrypt budget"
         );
+    }
+
+    fn generous_limiters(auth: RateLimiter) -> Arc<RateLimiters> {
+        Arc::new(RateLimiters {
+            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            general: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            auth: Arc::new(auth),
+            redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+        })
+    }
+
+    /// Reading the signed-in user's own data must not spend the sign-in budget:
+    /// every page load reads /auth/me and /auth/settings, and those used to lock
+    /// the user out of POST /auth/login after a few views.
+    #[tokio::test]
+    async fn auth_reads_do_not_spend_the_sign_in_budget() {
+        use axum::{
+            middleware,
+            routing::{get, post},
+            Router,
+        };
+
+        let limiters = generous_limiters(RateLimiter::new(RateLimitConfig::new(2, 60)));
+        let app = Router::new()
+            .route("/auth/me", get(|| async { "me" }))
+            .route("/auth/settings", get(|| async { "settings" }))
+            .route("/auth/login", post(|| async { "login" }))
+            .layer(middleware::from_fn_with_state(
+                limiters,
+                rate_limit_middleware,
+            ));
+        let server = axum_test::TestServer::new(app).unwrap();
+
+        for _ in 0..5 {
+            assert_eq!(server.get("/auth/me").await.status_code(), StatusCode::OK);
+            assert_eq!(
+                server.get("/auth/settings").await.status_code(),
+                StatusCode::OK
+            );
+        }
+        assert_eq!(
+            server.post("/auth/login").await.status_code(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            server.post("/auth/login").await.status_code(),
+            StatusCode::OK
+        );
+        let limited = server.post("/auth/login").await;
+        assert_eq!(
+            limited.status_code(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "credential POSTs keep the strict budget"
+        );
+    }
+
+    /// A limited response never tells the client to retry after 0 seconds:
+    /// the remaining window is rounded up, not truncated.
+    #[test]
+    fn retry_after_rounds_up_to_the_next_second() {
+        let limiter = RateLimiter::new(RateLimitConfig::new(1, 1));
+        assert!(matches!(
+            limiter.check("k"),
+            RateLimitResult::Allowed { .. }
+        ));
+        match limiter.check("k") {
+            RateLimitResult::Limited {
+                retry_after_secs, ..
+            } => assert_eq!(retry_after_secs, 1, "a sub-second remainder is one second"),
+            other => panic!("second request in a 1/s window must be limited: {other:?}"),
+        }
     }
 
     mod client_ip_resolution {

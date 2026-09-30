@@ -3,10 +3,11 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { API_ENDPOINTS, authFetch } from '../config/api';
+import { API_ENDPOINTS, authFetch, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
+import { safeLocalStorage } from '../utils/storage';
 
 interface DayStats {
     date: string;
@@ -197,7 +198,7 @@ export default function Analytics() {
     }, [id, days]);
 
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (!token) {
             navigate('/login');
             return;
@@ -276,7 +277,7 @@ export default function Analytics() {
             >
                 <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary-600">Analytics</p>
                 <h1 className="mt-2 font-display text-3xl sm:text-4xl font-extrabold text-ink tracking-tight">
-                    <span className="font-mono text-muted">opn.onl/</span><span className="font-mono">{stats.code}</span>
+                    <span className="font-mono text-muted">{shortLinkHost()}/</span><span className="font-mono">{stats.code}</span>
                 </h1>
                 <p className="mt-2 truncate max-w-2xl font-mono text-sm text-faint">{stats.original_url}</p>
             </motion.div>

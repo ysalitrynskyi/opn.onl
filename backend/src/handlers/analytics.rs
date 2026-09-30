@@ -11,6 +11,7 @@ use utoipa::ToSchema;
 
 use crate::entity::{click_events, links};
 use crate::handlers::links::get_user_id_from_header;
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 
 /// Default stats window when `days` is omitted. The dashboard's "Last 90 days"
@@ -388,7 +389,7 @@ pub async fn get_link_stats(
         .take(100)
         .map(|e| RecentClick {
             id: e.id,
-            timestamp: e.created_at.to_string(),
+            timestamp: utc_rfc3339(e.created_at),
             country: e.country.clone(),
             city: e.city.clone(),
             device: e.device.clone(),

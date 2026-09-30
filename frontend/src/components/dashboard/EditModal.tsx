@@ -17,9 +17,15 @@ interface EditModalProps {
     bioEnabled?: boolean;
 }
 
+/**
+ * The expiry's calendar day where the user is, for the date input. The API
+ * sends UTC instants; slicing the string took the UTC day, which is already
+ * tomorrow for an evening expiry anywhere west of UTC.
+ */
 function expiryDateInputValue(value: string | null): string {
     if (!value) return '';
-    return value.match(/^(\d{4}-\d{2}-\d{2})(?:T| |$)/)?.[1] ?? '';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '' : localIsoDate(date);
 }
 
 async function responseError(response: Response, fallback: string): Promise<string> {

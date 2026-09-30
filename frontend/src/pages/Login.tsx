@@ -4,6 +4,7 @@ import { Loader2, Fingerprint, Mail, Send, CheckCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
 import logger from '../utils/logger';
+import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
 export default function Login() {
     const [email, setEmail] = useState('');
@@ -19,7 +20,7 @@ export default function Login() {
 
     // Redirect to dashboard if already logged in
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = safeLocalStorage.getItem('token');
         if (token) {
             navigate('/dashboard', { replace: true });
         }
@@ -42,16 +43,15 @@ export default function Login() {
 
             if (!res.ok) throw new Error(data.error || 'Login failed');
 
+            if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
+            safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
+
             // Check if email needs verification
             if (data.email_verified === false) {
                 setNeedsVerification(true);
-                localStorage.setItem('token', data.token);
-                localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
                 return;
             }
 
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
             navigate('/dashboard');
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : 'Login failed');
@@ -154,8 +154,8 @@ export default function Login() {
                 throw new Error(data.error || 'Authentication failed');
             }
 
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
+            if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
+            safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
 
             if (data.email_verified === false) {
                 setNeedsVerification(true);

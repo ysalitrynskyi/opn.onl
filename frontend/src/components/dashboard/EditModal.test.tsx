@@ -46,6 +46,25 @@ describe('EditModal', () => {
         expect(screen.getByLabelText(/^expiration date$/i)).toHaveValue('2030-05-17');
     });
 
+    it('shows the local calendar day of a UTC expiry, not the UTC day', () => {
+        const tz = process.env.TZ;
+        process.env.TZ = 'America/New_York';
+        try {
+            render(
+                <EditModal
+                    link={{ ...baseLink, expires_at: '2030-01-16T04:59:00Z' }}
+                    onClose={vi.fn()}
+                    onSave={vi.fn()}
+                />
+            );
+            // 04:59 UTC on the 16th is 23:59 on the 15th in New York.
+            expect(screen.getByLabelText(/^expiration date$/i)).toHaveValue('2030-01-15');
+        } finally {
+            if (tz === undefined) delete process.env.TZ;
+            else process.env.TZ = tz;
+        }
+    });
+
     it('preserves the original expiration value when the date is unchanged', async () => {
         const onClose = vi.fn();
         const onSave = vi.fn().mockResolvedValue(undefined);

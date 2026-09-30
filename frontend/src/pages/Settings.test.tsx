@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '../test/test-utils';
 import Settings from './Settings';
 import { mockToken } from '../test/test-utils';
@@ -605,6 +605,31 @@ describe('Settings Page', () => {
                 expect.stringContaining('/auth/api-keys/7'),
                 expect.objectContaining({ method: 'DELETE' }),
             );
+        });
+    });
+
+    describe('Public profile', () => {
+        afterEach(() => {
+            vi.unstubAllEnvs();
+        });
+
+        it("prefixes the bio username with the instance's own host", async () => {
+            vi.stubEnv('VITE_FRONTEND_URL', 'https://links.example.org');
+            const baseFetch = global.fetch as any;
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ ...mockAppSettings, link_in_bio_enabled: true }),
+                    });
+                }
+                return baseFetch(url);
+            }) as any;
+
+            render(<Settings />);
+
+            expect(await screen.findByText('links.example.org/@')).toBeInTheDocument();
+            expect(screen.queryByText('opn.onl/@')).not.toBeInTheDocument();
         });
     });
 });

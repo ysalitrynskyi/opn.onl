@@ -463,6 +463,30 @@ describe('Analytics Page', () => {
             });
         });
     });
+
+    describe('Short link host', () => {
+        afterEach(() => {
+            vi.unstubAllEnvs();
+        });
+
+        it('shows the instance host in front of the code, not a hard-coded opn.onl', async () => {
+            vi.stubEnv('VITE_FRONTEND_URL', 'https://links.example.org');
+            render(<Analytics />);
+
+            const heading = await screen.findByRole('heading', { level: 1 });
+            expect(heading).toHaveTextContent(/^links\.example\.org\/abc123$/);
+            expect(within(heading).getByText('links.example.org/')).toHaveClass('text-muted');
+        });
+
+        it('falls back to the host the app is served from', async () => {
+            vi.stubEnv('VITE_FRONTEND_URL', '');
+            render(<Analytics />);
+
+            const heading = await screen.findByRole('heading', { level: 1 });
+            expect(heading).toHaveTextContent(`${window.location.host}/abc123`);
+            expect(heading).not.toHaveTextContent('opn.onl');
+        });
+    });
 });
 
 

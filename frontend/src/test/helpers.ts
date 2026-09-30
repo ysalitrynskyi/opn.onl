@@ -227,6 +227,23 @@ export const setLoggedOut = () => {
     localStorage.removeItem('token');
 };
 
+/**
+ * Make every read of `window.localStorage` / `window.sessionStorage` throw, the
+ * way a browser does when the visitor blocks site data. Returns a function that
+ * restores both.
+ */
+export const blockSiteStorage = () => {
+    const spies = (['localStorage', 'sessionStorage'] as const).map((area) =>
+        vi.spyOn(window, area, 'get').mockImplementation(() => {
+            throw new DOMException(
+                `Failed to read the '${area}' property from 'Window': Access is denied for this document.`,
+                'SecurityError',
+            );
+        }),
+    );
+    return () => spies.forEach((spy) => spy.mockRestore());
+};
+
 // ============= Wait Helpers =============
 
 export const waitFor = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
