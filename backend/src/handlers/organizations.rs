@@ -1,13 +1,14 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, Set, TransactionTrait,
+    QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::ToSchema;
 
 use crate::entity::{
@@ -170,18 +171,32 @@ pub(crate) async fn split_owned_orgs<C: ConnectionTrait>(
         .filter(organizations::Column::OwnerId.eq(user_id))
         .all(db)
         .await?;
+    if owned.is_empty() {
+        return Ok(OwnedOrgsSplit {
+            blocking: Vec::new(),
+            solo: Vec::new(),
+        });
+    }
+
+    let owned_ids: Vec<i32> = owned.iter().map(|org| org.id).collect();
+    let rows: Vec<(i32, i64)> = org_members::Entity::find()
+        .select_only()
+        .column(org_members::Column::OrgId)
+        .column_as(org_members::Column::Id.count(), "cnt")
+        .inner_join(users::Entity)
+        .filter(org_members::Column::OrgId.is_in(owned_ids))
+        .filter(org_members::Column::UserId.ne(user_id))
+        .filter(users::Column::DeletedAt.is_null())
+        .group_by(org_members::Column::OrgId)
+        .into_tuple()
+        .all(db)
+        .await?;
+    let other_live: HashMap<i32, i64> = rows.into_iter().collect();
 
     let mut blocking = Vec::new();
     let mut solo = Vec::new();
     for org in owned {
-        let other_members = org_members::Entity::find()
-            .inner_join(users::Entity)
-            .filter(org_members::Column::OrgId.eq(org.id))
-            .filter(org_members::Column::UserId.ne(user_id))
-            .filter(users::Column::DeletedAt.is_null())
-            .count(db)
-            .await?;
-        if other_members > 0 {
+        if other_live.get(&org.id).copied().unwrap_or(0) > 0 {
             blocking.push(org);
         } else {
             solo.push(org);
@@ -210,22 +225,28 @@ pub(crate) async fn purge_organization<C: ConnectionTrait>(
     db: &C,
     org_id: i32,
 ) -> Result<(), sea_orm::DbErr> {
-    let org_links = links::Entity::find()
+    let link_ids: Vec<i32> = links::Entity::find()
+        .select_only()
+        .column(links::Column::Id)
         .filter(links::Column::OrgId.eq(org_id))
+        .into_tuple()
         .all(db)
         .await?;
 
-    for link in org_links {
+    if !link_ids.is_empty() {
         click_events::Entity::delete_many()
-            .filter(click_events::Column::LinkId.eq(link.id))
+            .filter(click_events::Column::LinkId.is_in(link_ids.clone()))
             .exec(db)
             .await?;
         link_tags::Entity::delete_many()
-            .filter(link_tags::Column::LinkId.eq(link.id))
+            .filter(link_tags::Column::LinkId.is_in(link_ids))
             .exec(db)
             .await?;
-        links::Entity::delete_by_id(link.id).exec(db).await?;
     }
+    links::Entity::delete_many()
+        .filter(links::Column::OrgId.eq(org_id))
+        .exec(db)
+        .await?;
 
     folders::Entity::delete_many()
         .filter(folders::Column::OrgId.eq(org_id))
@@ -461,33 +482,52 @@ pub async fn get_user_organizations(
             )
         })?;
 
-    let mut responses = Vec::new();
-    for org in orgs {
-        // Count members
-        let member_count = org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org.id))
-            .count(&state.db)
+    let org_ids: Vec<i32> = orgs.iter().map(|o| o.id).collect();
+    let mut member_counts: HashMap<i32, i64> = HashMap::new();
+    let mut link_counts: HashMap<i32, i64> = HashMap::new();
+    if !org_ids.is_empty() {
+        let rows: Vec<(i32, i64)> = org_members::Entity::find()
+            .select_only()
+            .column(org_members::Column::OrgId)
+            .column_as(org_members::Column::Id.count(), "cnt")
+            .filter(org_members::Column::OrgId.is_in(org_ids.clone()))
+            .group_by(org_members::Column::OrgId)
+            .into_tuple()
+            .all(&state.db)
             .await
-            .unwrap_or(0) as i64;
+            .unwrap_or_default();
+        member_counts.extend(rows);
 
-        // Count links
-        let link_count = crate::entity::links::Entity::find()
-            .filter(crate::entity::links::Column::OrgId.eq(org.id))
+        let rows: Vec<(Option<i32>, i64)> = crate::entity::links::Entity::find()
+            .select_only()
+            .column(crate::entity::links::Column::OrgId)
+            .column_as(crate::entity::links::Column::Id.count(), "cnt")
+            .filter(crate::entity::links::Column::OrgId.is_in(org_ids))
             .filter(crate::entity::links::Column::DeletedAt.is_null())
-            .count(&state.db)
+            .group_by(crate::entity::links::Column::OrgId)
+            .into_tuple()
+            .all(&state.db)
             .await
-            .unwrap_or(0) as i64;
+            .unwrap_or_default();
+        for (org_id, count) in rows {
+            if let Some(org_id) = org_id {
+                link_counts.insert(org_id, count);
+            }
+        }
+    }
 
-        responses.push(OrgResponse {
+    let responses = orgs
+        .into_iter()
+        .map(|org| OrgResponse {
             id: org.id,
             name: org.name.clone(),
             slug: org.slug.clone(),
             owner_id: org.owner_id,
             created_at: org.created_at.to_string(),
-            member_count,
-            link_count,
-        });
-    }
+            member_count: member_counts.get(&org.id).copied().unwrap_or(0),
+            link_count: link_counts.get(&org.id).copied().unwrap_or(0),
+        })
+        .collect();
 
     Ok(Json(responses))
 }
@@ -788,22 +828,28 @@ pub async fn get_organization_members(
             )
         })?;
 
+    let user_ids: Vec<i32> = members.iter().map(|m| m.user_id).collect();
+    let mut users_by_id: HashMap<i32, users::Model> = HashMap::new();
+    if !user_ids.is_empty() {
+        let loaded = users::Entity::find()
+            .filter(users::Column::Id.is_in(user_ids))
+            .filter(users::Column::DeletedAt.is_null())
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        users_by_id.extend(loaded.into_iter().map(|u| (u.id, u)));
+    }
+
     let mut responses = Vec::new();
     for member in members {
-        let Some(user) = users::Entity::find_by_id(member.user_id)
-            .filter(users::Column::DeletedAt.is_null())
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-        else {
+        let Some(user) = users_by_id.get(&member.user_id) else {
             continue;
         };
 
         responses.push(OrgMemberResponse {
             id: member.id,
             user_id: member.user_id,
-            email: user.email,
+            email: user.email.clone(),
             role: member.role,
             joined_at: member.joined_at.to_string(),
         });
@@ -1317,15 +1363,33 @@ pub async fn transfer_ownership(
     }))
 }
 
+#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct AuditQuery {
+    /// Newest-first page size. Omitted or 0 defaults to 200. Maximum 500.
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+}
+
+const DEFAULT_AUDIT_LIMIT: u64 = 200;
+const MAX_AUDIT_LIMIT: u64 = 500;
+
+fn clamp_audit_limit(limit: Option<u64>) -> u64 {
+    limit
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_AUDIT_LIMIT)
+        .min(MAX_AUDIT_LIMIT)
+}
+
 /// Get organization audit log
 #[utoipa::path(
     get,
     path = "/orgs/{org_id}/audit",
     params(
-        ("org_id" = i32, Path, description = "Organization ID")
+        ("org_id" = i32, Path, description = "Organization ID"),
+        AuditQuery,
     ),
     responses(
-        (status = 200, description = "Audit log entries", body = Vec<AuditLogResponse>),
+        (status = 200, description = "Audit log entries (newest first, default 200, maximum 500)", body = Vec<AuditLogResponse>),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
     ),
@@ -1335,6 +1399,7 @@ pub async fn get_audit_log(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(org_id): Path<i32>,
+    Query(query): Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditLogResponse>>, (StatusCode, Json<serde_json::Value>)> {
     let user_id = get_user_id_from_header(&state.db, &headers)
         .await
@@ -1347,31 +1412,35 @@ pub async fn get_audit_log(
 
     check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
-    let logs = audit_log::Entity::find()
+    let mut logs_query = audit_log::Entity::find()
         .filter(audit_log::Column::OrgId.eq(org_id))
         .order_by_desc(audit_log::Column::CreatedAt)
-        .all(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database error"})),
-            )
-        })?;
+        .limit(clamp_audit_limit(query.limit));
+    if let Some(offset) = query.offset {
+        logs_query = logs_query.offset(offset);
+    }
+
+    let logs = logs_query.all(&state.db).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Database error"})),
+        )
+    })?;
+
+    let user_ids: Vec<i32> = logs.iter().filter_map(|log| log.user_id).collect();
+    let mut emails: HashMap<i32, String> = HashMap::new();
+    if !user_ids.is_empty() {
+        let loaded = users::Entity::find()
+            .filter(users::Column::Id.is_in(user_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        emails.extend(loaded.into_iter().map(|u| (u.id, u.email)));
+    }
 
     let mut responses = Vec::new();
     for log in logs {
-        let user_email = if let Some(uid) = log.user_id {
-            users::Entity::find_by_id(uid)
-                .one(&state.db)
-                .await
-                .ok()
-                .flatten()
-                .map(|u| u.email)
-        } else {
-            None
-        };
-
+        let user_email = log.user_id.and_then(|uid| emails.get(&uid).cloned());
         responses.push(AuditLogResponse {
             id: log.id,
             user_id: log.user_id,

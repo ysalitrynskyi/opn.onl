@@ -33,6 +33,9 @@ mod m20220101_000030_domain_abuse_controls;
 mod m20220101_000031_users_email_partial_unique;
 mod m20220101_000032_click_events_id_bigint;
 mod m20220101_000033_links_click_count_bigint;
+mod m20220101_000034_idx_org_members_user_id;
+mod m20220101_000035_partial_live_link_indexes;
+mod m20220101_000036_idx_created_at_admin_activity;
 
 pub struct Migrator;
 
@@ -73,6 +76,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000031_users_email_partial_unique::Migration),
             Box::new(m20220101_000032_click_events_id_bigint::Migration),
             Box::new(m20220101_000033_links_click_count_bigint::Migration),
+            Box::new(m20220101_000034_idx_org_members_user_id::Migration),
+            Box::new(m20220101_000035_partial_live_link_indexes::Migration),
+            Box::new(m20220101_000036_idx_created_at_admin_activity::Migration),
         ]
     }
 }
