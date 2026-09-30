@@ -212,7 +212,7 @@ pub async fn list_api_keys(State(state): State<AppState>, headers: HeaderMap) ->
     path = "/auth/api-keys/{id}",
     params(("id" = i32, Path, description = "API key id to revoke")),
     responses(
-        (status = 200, description = "API key revoked"),
+        (status = 200, description = "API key revoked", body = MessageResponse),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "API key not found"),
     ),

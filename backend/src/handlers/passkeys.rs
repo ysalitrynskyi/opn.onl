@@ -308,7 +308,7 @@ pub async fn register_start(
     path = "/auth/passkey/register/finish",
     request_body = RegisterFinishRequest,
     responses(
-        (status = 200, description = "Passkey registered"),
+        (status = 200, description = "Passkey registered", body = MessageResponse),
         (status = 400, description = "Invalid or expired registration ceremony"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Passkeys are disabled on this instance"),

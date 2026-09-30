@@ -91,7 +91,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
     ),
     servers(
         (url = "http://localhost:3000", description = "Local development server"),
-        (url = "https://api.opn.onl", description = "Production server")
+        (url = "https://l.opn.onl", description = "Hosted opn.onl API")
     ),
     tags(
         (name = "Authentication", description = "User registration, login, and passkey management"),
