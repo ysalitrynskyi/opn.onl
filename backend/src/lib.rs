@@ -4,7 +4,7 @@
 //! integration tests in `tests/` can import the real router, state, and
 //! handlers instead of stubbing them. `build_router` must stay byte-for-byte
 //! equivalent to what the binary serves: same routes, same middleware order
-//! (https_redirect → rate limit → CORS → tracing).
+//! (https_redirect → rate limit → CORS → tracing → security headers).
 
 pub mod entity;
 pub mod handlers;
@@ -300,6 +300,8 @@ pub async fn health_check(
         let backup_configured = state.backup.is_configured();
         let status = serde_json::json!({
             "status": "healthy",
+            // Which release is serving, so a deploy can be checked from outside.
+            "version": env!("CARGO_PKG_VERSION"),
             "database": "connected",
             "redis": if state.redis_cache.is_some() { "connected" } else { "disabled" },
             "email": if email_configured { "configured" } else { "disabled" },
@@ -319,7 +321,7 @@ pub async fn health_check(
 /// routes and middleware, shared by the binary and the integration tests.
 ///
 /// Middleware order (outermost last): with_state → https_redirect →
-/// rate limit → CORS → tracing. Do not reorder.
+/// rate limit → CORS → tracing → security headers. Do not reorder.
 pub fn build_router(app_state: AppState) -> Router {
     // Rate limiters live for as long as the router; the cleanup task holds its
     // own Arc and just prunes stale entries every 5 minutes. Shared with handlers
@@ -612,6 +614,43 @@ pub fn build_router(app_state: AppState) -> Router {
         .layer(build_cors())
         // Tracing
         .layer(http_trace_layer())
+        // Outermost, so 429s, CORS preflights and HTTPS redirects carry the
+        // headers too.
+        .layer(middleware::from_fn(security_headers))
+}
+
+/// Headers every API response carries. The frontend's nginx adds its own to
+/// the pages it serves, but the API host (l.opn.onl in production) is reached
+/// directly and sent none. HSTS goes only on requests that arrived over HTTPS
+/// behind the proxy (`X-Forwarded-Proto: https`); a plain-HTTP self-host gets
+/// no HSTS, which browsers would ignore there anyway.
+pub async fn security_headers(
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::{HeaderValue, header};
+
+    let over_https = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|h| h.to_str().ok())
+        == Some("https");
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers
+        .entry(header::X_CONTENT_TYPE_OPTIONS)
+        .or_insert(HeaderValue::from_static("nosniff"));
+    headers
+        .entry(header::X_FRAME_OPTIONS)
+        .or_insert(HeaderValue::from_static("DENY"));
+    if over_https {
+        headers
+            .entry(header::STRICT_TRANSPORT_SECURITY)
+            .or_insert(HeaderValue::from_static(
+                "max-age=63072000; includeSubDomains",
+            ));
+    }
+    response
 }
 
 fn http_trace_layer() -> TraceLayer<
