@@ -175,6 +175,7 @@ mod tests {
             .unwrap_or(-1.0)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn insert_event(
         db: &DatabaseConnection,
         link_id: i32,
