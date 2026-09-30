@@ -1,455 +1,210 @@
+import { randomUUID } from 'node:crypto';
 import { test, expect } from '@playwright/test';
+import { API_URL, TEST_PASSWORD, api, uniqueEmail, verifyEmail } from './support/api';
 
-// Generate unique test data
-const timestamp = Date.now();
-const testEmail = `test-${timestamp}@example.com`;
-const testPassword = 'TestPassword123!';
+/**
+ * The suite's one end-to-end journey, against the real backend and database:
+ * sign up through the form, get verified, sign in through the form, shorten a
+ * link in the dashboard, follow it through the backend redirect, see the click
+ * counted, delete the link. Everything a single feature spec tests in depth
+ * (form validation, dashboard widgets, analytics charts) lives in that spec;
+ * this file proves the pieces work together.
+ */
 
-test.describe('Complete User Flow', () => {
-    test.describe.serial('User Registration and Login', () => {
-        test('should allow new user registration', async ({ page }) => {
-            await page.goto('/register');
-            
-            // Fill registration form
-            await page.fill('input[type="email"]', testEmail);
-            await page.fill('input[type="password"]', testPassword);
-            
-            // If there's a confirm password field
-            const confirmField = page.locator('input[name="confirmPassword"], input[placeholder*="confirm"]');
-            if (await confirmField.count() > 0) {
-                await confirmField.fill(testPassword);
-            }
-            
-            await page.click('button[type="submit"]');
-            
-            // Should redirect to login or dashboard
-            await expect(page).toHaveURL(/\/login|\/dashboard|\/verify-email/);
+/**
+ * A client address owned by this test run. The backend trusts
+ * CF-Connecting-IP in e2e (TRUST_PROXY_HEADERS=true, as behind Cloudflare in
+ * production), so the browser's sign-up, sign-in and page loads spend this
+ * address's rate-limit buckets instead of the 127.0.0.1 ones that every other
+ * browser test shares. Random in 198.18.0.0/15, a range the shared helpers
+ * (10.x) never hand out.
+ */
+function freshClientIp(): string {
+    const b = randomUUID().replace(/-/g, '');
+    const octet = (i: number) => parseInt(b.slice(i * 2, i * 2 + 2), 16);
+    return `198.${18 + (octet(0) & 1)}.${octet(1)}.${octet(2) || 1}`;
+}
+
+interface CreatedLink {
+    id: number;
+    code: string;
+    original_url: string;
+}
+
+test('a visitor signs up, is verified, signs in, shortens a link and sees its click counted', async ({
+    page,
+    request,
+}) => {
+    // Two bcrypt rounds per sign-in/sign-up on a debug backend, plus the click
+    // buffer's flush interval: slower than a single-page test.
+    test.slow();
+
+    const email = uniqueEmail('journey');
+    const destination = `https://www.iana.org/help/example-domains?journey=${randomUUID()}`;
+    await page.setExtraHTTPHeaders({ 'CF-Connecting-IP': freshClientIp() });
+
+    // The page's API calls are cross-origin, so each non-simple one is preceded
+    // by an OPTIONS preflight to the same URL; match on the method as well.
+    const apiResponse = (method: string, path: string) =>
+        page.waitForResponse((r) => r.request().method() === method && r.url() === `${API_URL}${path}`);
+    // The dashboard and analytics pages are lazy chunks that load their data on
+    // mount. Waiting for that data (no timeout but the test's) rather than for
+    // the first element keeps a slow first compile from failing an assertion.
+    const linkListLoaded = () => apiResponse('GET', '/links');
+    const urlInput = page.getByPlaceholder('https://example.com/long-url');
+    const createButton = page.getByRole('button', { name: 'Create', exact: true });
+
+    let userId = 0;
+    await test.step('sign up with the registration form', async () => {
+        await page.goto('/register');
+        await page.getByLabel('Email address').fill(email);
+        await page.getByLabel('Password').fill(TEST_PASSWORD);
+        const registered = apiResponse('POST', '/auth/register');
+        await page.getByRole('button', { name: 'Create account' }).click();
+
+        const res = await registered;
+        expect(res.status()).toBe(201);
+        const body = await res.json();
+        expect(body).toMatchObject({ email, email_verified: false, is_admin: false });
+        userId = body.user_id;
+
+        await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible();
+        await expect(page.getByText(email)).toBeVisible();
+    });
+
+    await test.step('an unverified account cannot shorten links yet', async () => {
+        const listed = linkListLoaded();
+        await page.getByRole('button', { name: 'Continue to dashboard' }).click();
+        expect((await listed).status()).toBe(200);
+        await expect(page).toHaveURL(/\/dashboard$/);
+        await expect(page.getByText('No links yet')).toBeVisible();
+
+        await urlInput.fill(destination);
+        const refused = apiResponse('POST', '/links');
+        await createButton.click();
+        expect((await refused).status()).toBe(403);
+        await expect(page.getByRole('alert')).toHaveText('Please verify your email address before creating links');
+        await expect(urlInput).toHaveValue(destination);
+    });
+
+    await test.step('an admin verifies the address (no SMTP in e2e)', async () => {
+        await verifyEmail(request, userId);
+    });
+
+    let token = '';
+    await test.step('sign out, then sign back in, mistyping the password once', async () => {
+        await page.getByRole('button', { name: 'Account menu' }).click();
+        await page.getByRole('button', { name: 'Log out' }).click();
+        await expect(page).toHaveURL(/\/login$/);
+
+        await page.getByLabel('Email address').fill(email);
+        await page.getByLabel('Password').fill(`${TEST_PASSWORD}-typo`);
+        const rejected = apiResponse('POST', '/auth/login');
+        await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+        expect((await rejected).status()).toBe(401);
+        await expect(page.getByRole('alert')).toHaveText('Invalid credentials');
+        await expect(page).toHaveURL(/\/login$/);
+
+        await page.getByLabel('Password').fill(TEST_PASSWORD);
+        const accepted = apiResponse('POST', '/auth/login');
+        const listed = linkListLoaded();
+        await page.getByLabel('Password').press('Enter');
+        const res = await accepted;
+        expect(res.status()).toBe(200);
+        const body = await res.json();
+        expect(body).toMatchObject({ user_id: userId, email, email_verified: true });
+        token = body.token;
+        expect((await listed).status()).toBe(200);
+        await expect(page).toHaveURL(/\/dashboard$/);
+    });
+
+    let link: CreatedLink = { id: 0, code: '', original_url: '' };
+    await test.step('shorten the link from the dashboard', async () => {
+        await expect(page.getByText('No links yet')).toBeVisible();
+        await urlInput.fill(destination);
+        const created = apiResponse('POST', '/links');
+        const relisted = linkListLoaded();
+        await createButton.click();
+
+        const res = await created;
+        expect(res.status()).toBe(201);
+        link = await res.json();
+        expect(link.original_url).toBe(destination);
+        expect((await relisted).status()).toBe(200);
+
+        // The dashboard shows the short link on the frontend origin, with no clicks yet.
+        const origin = new URL(page.url()).origin;
+        const shortLink = page.getByRole('link', { name: `${new URL(origin).host}/${link.code}`, exact: true });
+        await expect(shortLink).toHaveAttribute('href', `${origin}/${link.code}`);
+        await expect(page.locator(`a[href="/analytics/${link.id}"]`)).toHaveText('0');
+        await expect(urlInput).toHaveValue('');
+        await expect(page.getByText('No links yet')).toBeHidden();
+    });
+
+    await test.step('the short link redirects to the destination', async () => {
+        const res = await request.get(`${API_URL}/${link.code}`, {
+            maxRedirects: 0,
+            headers: { 'CF-Connecting-IP': freshClientIp() },
         });
-
-        test('should show validation errors for invalid input', async ({ page }) => {
-            await page.goto('/register');
-            
-            // Try to submit with invalid email
-            await page.fill('input[type="email"]', 'invalidemail');
-            await page.fill('input[type="password"]', 'short');
-            
-            await page.click('button[type="submit"]');
-            
-            // Should show validation error
-            await expect(page.locator('text=/invalid|error|too short/i')).toBeVisible();
-        });
-
-        test('should allow user login', async ({ page }) => {
-            await page.goto('/login');
-            
-            await page.fill('input[type="email"]', testEmail);
-            await page.fill('input[type="password"]', testPassword);
-            
-            await page.click('button[type="submit"]');
-            
-            // Should redirect to dashboard
-            await page.waitForURL(/\/dashboard/, { timeout: 10000 });
-        });
-
-        test('should show error for wrong credentials', async ({ page }) => {
-            await page.goto('/login');
-            
-            await page.fill('input[type="email"]', 'wrong@example.com');
-            await page.fill('input[type="password"]', 'wrongpassword');
-            
-            await page.click('button[type="submit"]');
-            
-            // Should show error
-            await expect(page.locator('text=/invalid|error|incorrect/i')).toBeVisible();
-        });
-    });
-});
-
-test.describe('Link Management Flow', () => {
-    test.beforeEach(async ({ page }) => {
-        // Login first
-        await page.goto('/login');
-        await page.fill('input[type="email"]', testEmail);
-        await page.fill('input[type="password"]', testPassword);
-        await page.click('button[type="submit"]');
-        await page.waitForURL(/\/dashboard/, { timeout: 10000 });
+        expect(res.status()).toBe(307);
+        expect(res.headers()['location']).toBe(destination);
     });
 
-    test('should create a new link', async ({ page }) => {
-        // Find the URL input
-        const urlInput = page.locator('input[placeholder*="http"], input[type="url"]').first();
-        await urlInput.fill('https://example.com/test-page');
-        
-        // Click create button
-        await page.click('button:has-text("Shorten"), button:has-text("Create")');
-        
-        // Should see success or the new link
-        await expect(page.locator('text=/success|created|shortened/i').or(page.locator('text=/example\.com/'))).toBeVisible({ timeout: 5000 });
-    });
+    await test.step('the dashboard counts the click', async () => {
+        // Clicks are buffered and written to the database every few seconds;
+        // wait for the write through the API so the page is loaded only once.
+        await expect
+            .poll(
+                async () => {
+                    const res = await api(request, 'get', '/links', token);
+                    const links: Array<{ id: number; click_count: number }> = await res.json();
+                    return links.find((l) => l.id === link.id)?.click_count;
+                },
+                { message: 'click_count of the new link', timeout: 20_000 },
+            )
+            .toBe(1);
 
-    test('should create link with custom alias', async ({ page }) => {
-        const urlInput = page.locator('input[placeholder*="http"], input[type="url"]').first();
-        await urlInput.fill('https://example.com/custom-alias-test');
-        
-        // Look for custom alias input or expand options
-        const aliasInput = page.locator('input[name="alias"], input[placeholder*="alias"]');
-        if (await aliasInput.count() > 0) {
-            await aliasInput.fill(`custom-${timestamp}`);
-        }
-        
-        await page.click('button:has-text("Shorten"), button:has-text("Create")');
-        
-        await expect(page.locator(`text=/custom-${timestamp}|success/`)).toBeVisible({ timeout: 5000 });
-    });
-
-    test('should view link analytics', async ({ page }) => {
-        // Find first link's analytics button
-        const analyticsButton = page.locator('[aria-label*="analytics"], button:has-text("Analytics")').first();
-        
-        if (await analyticsButton.count() > 0) {
-            await analyticsButton.click();
-            await page.waitForURL(/\/analytics\//);
-            
-            // Should see analytics page elements
-            await expect(page.locator('text=/clicks|visits|statistics/i')).toBeVisible();
-        }
-    });
-
-    test('should copy link to clipboard', async ({ page }) => {
-        const copyButton = page.locator('[aria-label*="copy"], button:has-text("Copy")').first();
-        
-        if (await copyButton.count() > 0) {
-            await copyButton.click();
-            
-            // Should show copied confirmation
-            await expect(page.locator('text=/copied/i')).toBeVisible();
-        }
-    });
-
-    test('should generate QR code', async ({ page }) => {
-        const qrButton = page.locator('[aria-label*="qr"], button:has-text("QR")').first();
-        
-        if (await qrButton.count() > 0) {
-            await qrButton.click();
-            
-            // Should show QR modal or image
-            await expect(page.locator('img[alt*="QR"], [class*="qr"]')).toBeVisible();
-        }
-    });
-
-    test('should edit link', async ({ page }) => {
-        const editButton = page.locator('[aria-label*="edit"], button:has-text("Edit")').first();
-        
-        if (await editButton.count() > 0) {
-            await editButton.click();
-            
-            // Should show edit modal/form
-            await expect(page.locator('input, form')).toBeVisible();
-        }
-    });
-
-    test('should delete link', async ({ page }) => {
-        const deleteButton = page.locator('[aria-label*="delete"], button:has-text("Delete")').first();
-        
-        if (await deleteButton.count() > 0) {
-            await deleteButton.click();
-            
-            // Confirm deletion if dialog appears
-            const confirmButton = page.locator('button:has-text("Confirm"), button:has-text("Yes")');
-            if (await confirmButton.count() > 0) {
-                await confirmButton.click();
-            }
-            
-            // Should show success or link removed
-            await expect(page.locator('text=/deleted|removed|success/i')).toBeVisible();
-        }
-    });
-});
-
-test.describe('Search and Filter', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.goto('/login');
-        await page.fill('input[type="email"]', testEmail);
-        await page.fill('input[type="password"]', testPassword);
-        await page.click('button[type="submit"]');
-        await page.waitForURL(/\/dashboard/, { timeout: 10000 });
-    });
-
-    test('should search links', async ({ page }) => {
-        const searchInput = page.locator('input[placeholder*="search"], input[type="search"]');
-        
-        if (await searchInput.count() > 0) {
-            await searchInput.fill('example');
-            await page.waitForTimeout(500); // Debounce
-            
-            // Results should filter
-        }
-    });
-
-    test('should sort links', async ({ page }) => {
-        const sortSelect = page.locator('select, [role="combobox"]').first();
-        
-        if (await sortSelect.count() > 0) {
-            await sortSelect.click();
-            // Select an option
-        }
-    });
-});
-
-test.describe('Folder Management', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.goto('/login');
-        await page.fill('input[type="email"]', testEmail);
-        await page.fill('input[type="password"]', testPassword);
-        await page.click('button[type="submit"]');
-        await page.waitForURL(/\/dashboard/, { timeout: 10000 });
-    });
-
-    test('should create a folder', async ({ page }) => {
-        const createFolderBtn = page.locator('button:has-text("New Folder"), button:has-text("Create Folder")');
-        
-        if (await createFolderBtn.count() > 0) {
-            await createFolderBtn.click();
-            
-            const nameInput = page.locator('input[name="name"], input[placeholder*="folder"]');
-            await nameInput.fill(`Test Folder ${timestamp}`);
-            
-            await page.click('button:has-text("Create"), button:has-text("Save")');
-            
-            await expect(page.locator(`text=/Test Folder ${timestamp}|success/`)).toBeVisible();
-        }
-    });
-
-    test('should move link to folder', async ({ page }) => {
-        // This would involve drag-drop or a move button
-    });
-});
-
-test.describe('Settings Page', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.goto('/login');
-        await page.fill('input[type="email"]', testEmail);
-        await page.fill('input[type="password"]', testPassword);
-        await page.click('button[type="submit"]');
-        await page.waitForURL(/\/dashboard/, { timeout: 10000 });
-    });
-
-    test('should navigate to settings', async ({ page }) => {
-        await page.goto('/settings');
-        
-        await expect(page.locator('text=/settings|profile|account/i')).toBeVisible();
-    });
-
-    test('should update profile', async ({ page }) => {
-        await page.goto('/settings');
-        
-        const displayNameInput = page.locator('input[name="displayName"], input[name="display_name"]');
-        if (await displayNameInput.count() > 0) {
-            await displayNameInput.fill(`Test User ${timestamp}`);
-            
-            await page.click('button:has-text("Save"), button:has-text("Update")');
-            
-            await expect(page.locator('text=/saved|updated|success/i')).toBeVisible();
-        }
-    });
-
-    test('should change password', async ({ page }) => {
-        await page.goto('/settings');
-        
-        const changePasswordBtn = page.locator('button:has-text("Change Password")');
-        if (await changePasswordBtn.count() > 0) {
-            await changePasswordBtn.click();
-            
-            // Fill password change form
-            const currentPasswordInput = page.locator('input[name="currentPassword"]');
-            const newPasswordInput = page.locator('input[name="newPassword"]');
-            
-            if (await currentPasswordInput.count() > 0) {
-                await currentPasswordInput.fill(testPassword);
-                await newPasswordInput.fill(testPassword + 'New');
-                
-                // Submit
-                await page.click('button:has-text("Update"), button[type="submit"]');
-            }
-        }
-    });
-
-    test('should export data', async ({ page }) => {
-        await page.goto('/settings');
-        
-        const exportBtn = page.locator('button:has-text("Export")');
-        if (await exportBtn.count() > 0) {
-            const [download] = await Promise.all([
-                page.waitForEvent('download'),
-                exportBtn.click(),
-            ]);
-            
-            expect(download.suggestedFilename()).toMatch(/\.csv|\.json/);
-        }
-    });
-});
-
-test.describe('Link Redirection', () => {
-    test('should redirect short links', async ({ page }) => {
-        // Create a link first
-        await page.goto('/');
-        
-        const urlInput = page.locator('input[placeholder*="http"], input[type="url"]').first();
-        if (await urlInput.count() > 0) {
-            await urlInput.fill('https://example.com');
-            await page.click('button:has-text("Shorten")');
-            
-            // Get the shortened URL
-            const shortUrlElement = page.locator('text=/opn\.onl\/[a-zA-Z0-9]+/');
-            if (await shortUrlElement.count() > 0) {
-                const shortUrl = await shortUrlElement.textContent();
-                if (shortUrl) {
-                    // Navigate to the short URL
-                    await page.goto(shortUrl);
-                    
-                    // Should redirect to original
-                    await expect(page).toHaveURL(/example\.com/);
-                }
-            }
-        }
-    });
-
-    test('should handle invalid short codes', async ({ page }) => {
-        await page.goto('/nonexistent-code');
-        
-        // Should show 404 or redirect
-        await expect(page.locator('text=/not found|404/i').or(page.locator('text=/link.*expired/i'))).toBeVisible();
-    });
-});
-
-test.describe('Password Protected Links', () => {
-    test('should prompt for password on protected links', async ({ page }) => {
-        // Navigate to a password-protected link
-        // This would need a known protected link or to create one first
-    });
-
-    test('should allow access with correct password', async ({ page }) => {
-        // Test password verification flow
-    });
-
-    test('should deny access with wrong password', async ({ page }) => {
-        // Test incorrect password handling
-    });
-});
-
-test.describe('Mobile Responsiveness', () => {
-    test.use({ viewport: { width: 375, height: 667 } });
-
-    test('should display mobile menu', async ({ page }) => {
-        await page.goto('/');
-        
-        // Should have hamburger menu
-        const menuButton = page.locator('button[aria-label*="menu"], [class*="hamburger"]');
-        await expect(menuButton).toBeVisible();
-    });
-
-    test('should navigate via mobile menu', async ({ page }) => {
-        await page.goto('/');
-        
-        const menuButton = page.locator('button[aria-label*="menu"]');
-        if (await menuButton.count() > 0) {
-            await menuButton.click();
-            
-            // Menu should open
-            await expect(page.locator('nav')).toBeVisible();
-        }
-    });
-
-    test('should have responsive forms', async ({ page }) => {
-        await page.goto('/login');
-        
-        const form = page.locator('form');
-        const formBox = await form.boundingBox();
-        
-        if (formBox) {
-            expect(formBox.width).toBeLessThanOrEqual(375);
-        }
-    });
-});
-
-test.describe('Accessibility', () => {
-    test('should have proper focus management', async ({ page }) => {
-        await page.goto('/login');
-        
-        // Tab through form elements
-        await page.keyboard.press('Tab');
-        const focused = await page.evaluate(() => document.activeElement?.tagName);
-        expect(['INPUT', 'BUTTON', 'A']).toContain(focused);
-    });
-
-    test('should have proper ARIA labels', async ({ page }) => {
-        await page.goto('/');
-        
-        // Check for main landmark
-        const main = page.locator('main, [role="main"]');
-        await expect(main).toBeVisible();
-    });
-
-    test('should support keyboard navigation', async ({ page }) => {
-        await page.goto('/login');
-        
-        // Should be able to submit form with Enter
-        await page.fill('input[type="email"]', 'test@example.com');
-        await page.fill('input[type="password"]', 'password123');
-        await page.keyboard.press('Enter');
-    });
-});
-
-test.describe('Error Handling', () => {
-    test('should handle network errors gracefully', async ({ page }) => {
-        // Simulate offline
-        await page.route('**/api/**', route => route.abort());
-        
-        await page.goto('/dashboard');
-        
-        // Should show error state
-        await expect(page.locator('text=/error|offline|try again/i')).toBeVisible();
-    });
-
-    test('should handle 404 pages', async ({ page }) => {
-        await page.goto('/this-page-does-not-exist');
-        
-        await expect(page.locator('text=/not found|404/i')).toBeVisible();
-    });
-
-    test('should handle server errors', async ({ page }) => {
-        await page.route('**/api/**', route => {
-            route.fulfill({ status: 500, body: 'Internal Server Error' });
-        });
-        
-        await page.goto('/dashboard');
-        
-        // Should show error message
-        await expect(page.locator('text=/error|something went wrong/i')).toBeVisible();
-    });
-});
-
-test.describe('Performance', () => {
-    test('should load home page within acceptable time', async ({ page }) => {
-        const startTime = Date.now();
-        await page.goto('/');
-        const loadTime = Date.now() - startTime;
-        
-        // Should load within 5 seconds
-        expect(loadTime).toBeLessThan(5000);
-    });
-
-    test('should cache static assets', async ({ page }) => {
-        // First load
-        await page.goto('/');
-        
-        // Second load should be faster due to caching
-        const startTime = Date.now();
+        const listed = linkListLoaded();
         await page.reload();
-        const loadTime = Date.now() - startTime;
-        
-        expect(loadTime).toBeLessThan(3000);
+        expect((await listed).status()).toBe(200);
+        await expect(page.locator(`a[href="/analytics/${link.id}"]`)).toHaveText('1');
+        await expect(page.getByText(/^1 clicks?$/)).toBeVisible();
+    });
+
+    await test.step("the link's analytics page shows the click", async () => {
+        const statsLoaded = page.waitForResponse(
+            (r) => r.request().method() === 'GET' && r.url().startsWith(`${API_URL}/links/${link.id}/stats?`),
+        );
+        await page.locator(`a[href="/analytics/${link.id}"]`).click();
+        expect((await statsLoaded).status()).toBe(200);
+        await expect(page).toHaveURL(new RegExp(`/analytics/${link.id}$`));
+        await expect(page.getByRole('heading', { level: 1 })).toContainText(link.code);
+        // StatCard: title span inside a header row, value in the card below it.
+        const totalClicks = page.getByText('Total Clicks', { exact: true }).locator('xpath=../..');
+        await expect(totalClicks).toHaveText(/^Total Clicks\s*1$/);
+    });
+
+    await test.step('deleting the link retires the short URL', async () => {
+        const listed = linkListLoaded();
+        await page.goBack();
+        expect((await listed).status()).toBe(200);
+        await expect(page).toHaveURL(/\/dashboard$/);
+
+        const dialogs: string[] = [];
+        page.once('dialog', (dialog) => {
+            dialogs.push(dialog.message());
+            void dialog.accept();
+        });
+        const deleted = apiResponse('DELETE', `/links/${link.id}`);
+        await page.getByRole('button', { name: 'Delete link' }).click();
+        expect((await deleted).status()).toBe(200);
+        expect(dialogs).toEqual(['Are you sure you want to delete this link?']);
+        await expect(page.getByText('No links yet')).toBeVisible();
+
+        const res = await request.get(`${API_URL}/${link.code}`, {
+            maxRedirects: 0,
+            headers: { 'CF-Connecting-IP': freshClientIp() },
+        });
+        expect(res.status()).toBe(404);
     });
 });
-
-
