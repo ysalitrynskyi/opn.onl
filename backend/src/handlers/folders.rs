@@ -107,7 +107,8 @@ async fn can_edit_folder(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Insufficient permissions to create an organization folder"),
     ),
-    tag = "Folders"
+    tag = "Folders",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn create_folder(
     State(state): State<AppState>,
@@ -186,7 +187,8 @@ pub async fn create_folder(
         (status = 200, description = "List of folders", body = Vec<FolderResponse>),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Folders"
+    tag = "Folders",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_folders(
     State(state): State<AppState>,
@@ -289,7 +291,8 @@ pub async fn get_folders(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Folders"
+    tag = "Folders",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_folder(
     State(state): State<AppState>,
@@ -360,7 +363,8 @@ pub async fn get_folder(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Folders"
+    tag = "Folders",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_folder(
     State(state): State<AppState>,
@@ -459,7 +463,8 @@ pub async fn update_folder(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Folders"
+    tag = "Folders",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn delete_folder(
     State(state): State<AppState>,
@@ -528,7 +533,8 @@ pub async fn delete_folder(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),
     ),
-    tag = "Folders"
+    tag = "Folders",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn move_links_to_folder(
     State(state): State<AppState>,
@@ -617,7 +623,8 @@ pub async fn move_links_to_folder(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),
     ),
-    tag = "Folders"
+    tag = "Folders",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_folder_links(
     State(state): State<AppState>,

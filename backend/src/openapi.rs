@@ -5,12 +5,30 @@ use crate::handlers::{
     admin, analytics, api_keys, auth, bio, contact, folders, links, organizations, passkeys, tags,
 };
 
+/// `info.description` of the served document (Markdown), set in [`api_doc`].
+const API_DESCRIPTION: &str = "\
+A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.
+
+## Authentication
+
+Protected operations take `Authorization: Bearer <token>`. Each operation lists the kinds of \
+token it accepts:
+
+- `bearer_auth`: the session JWT returned by `POST /auth/register`, `POST /auth/login`, and \
+`POST /auth/passkey/login/finish`. Every protected operation accepts it.
+- `api_key`: a personal API key (`opn_...`) created with `POST /auth/api-keys`. Links, folders, \
+tags, organizations, analytics, and the profile accept it. Account security (password, account \
+deletion, passkeys, API keys) and `/admin` require the session JWT.
+
+Operations without a security requirement are public. `POST /links` also works without a token \
+and then creates an anonymous link.
+";
+
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "opn.onl URL Shortener API",
-        // No `version` here on purpose — see `api_doc()`.
-        description = "A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.",
+        // No `version` or `description` here on purpose — see `api_doc()`.
         license(
             name = "AGPL-3.0-only",
             url = "https://www.gnu.org/licenses/agpl-3.0.html"
@@ -316,17 +334,42 @@ use crate::handlers::{
 )]
 pub struct ApiDoc;
 
+/// Handlers authenticate themselves by reading `Authorization: Bearer ...`.
+/// Operations name the schemes they accept in `security(...)`: `bearer_auth`
+/// alone where the handler insists on a session JWT, `("bearer_auth" = []),
+/// ("api_key" = [])` where an `opn_` API key works too, and a leading `()`
+/// where credentials are optional.
 struct SecurityAddon;
 
 impl utoipa::Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
         if let Some(components) = openapi.components.as_mut() {
             components.add_security_scheme(
                 "bearer_auth",
-                utoipa::openapi::security::SecurityScheme::Http(
-                    utoipa::openapi::security::Http::new(
-                        utoipa::openapi::security::HttpAuthScheme::Bearer,
-                    ),
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .description(Some(
+                            "Session JWT from `POST /auth/register`, `POST /auth/login`, or \
+                             `POST /auth/passkey/login/finish`.",
+                        ))
+                        .build(),
+                ),
+            );
+            components.add_security_scheme(
+                "api_key",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("opn_ API key")
+                        .description(Some(
+                            "Personal API key from `POST /auth/api-keys`, sent as \
+                             `Authorization: Bearer opn_...`.",
+                        ))
+                        .build(),
                 ),
             );
         }
@@ -339,10 +382,12 @@ impl utoipa::Modify for SecurityAddon {
 /// attribute because utoipa only accepts a string literal there, and the literal
 /// that used to live in it went stale: after the 1.3.0 release the published spec
 /// still advertised 1.2.1. Reading `CARGO_PKG_VERSION` keeps the served document
-/// in step with Cargo.toml on its own.
+/// in step with Cargo.toml on its own. The description is set here too, because
+/// the attribute cannot hold a Markdown document legibly.
 pub fn api_doc() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
     doc.info.version = env!("CARGO_PKG_VERSION").to_string();
+    doc.info.description = Some(API_DESCRIPTION.to_string());
     doc
 }
 

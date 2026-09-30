@@ -1454,7 +1454,7 @@ pub struct UpdateProfileRequest {
         (status = 404, description = "User not found"),
     ),
     tag = "Authentication",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_current_user(
     State(state): State<AppState>,
@@ -1540,7 +1540,7 @@ pub async fn get_current_user(
         (status = 404, description = "User not found"),
     ),
     tag = "Authentication",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_profile(
     State(state): State<AppState>,

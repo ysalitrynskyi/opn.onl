@@ -171,7 +171,8 @@ pub struct TopLink {
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Analytics"
+    tag = "Analytics",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_link_stats(
     State(state): State<AppState>,
@@ -597,7 +598,8 @@ async fn dashboard_top_browsers(
         (status = 200, description = "Dashboard statistics. clicks_today is the UTC calendar day.", body = DashboardStats),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Analytics"
+    tag = "Analytics",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_dashboard_stats(
     State(state): State<AppState>,
@@ -689,7 +691,8 @@ pub async fn get_dashboard_stats(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Analytics"
+    tag = "Analytics",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_realtime_clicks(
     State(state): State<AppState>,

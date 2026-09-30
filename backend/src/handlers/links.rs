@@ -1159,6 +1159,9 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 // ============= Handlers =============
 
 /// Create a new shortened link
+///
+/// Credentials are optional. Without them the link is anonymous and cannot be
+/// put in a folder, tagged, or owned by an organization.
 #[utoipa::path(
     post,
     path = "/links",
@@ -1170,7 +1173,8 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
         (status = 409, description = "Alias already exists"),
         (status = 429, description = "Same URL shortened too many times"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security((), ("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn create_link(
     State(state): State<AppState>,
@@ -2503,7 +2507,8 @@ pub async fn verify_link_password(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_qr_code(
     State(state): State<AppState>,
@@ -3213,7 +3218,7 @@ async fn link_for_owner(db: &DatabaseConnection, id: i32, user_id: i32) -> Optio
         (status = 403, description = "Forbidden"),
     ),
     tag = "Links",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_routing_rules(
     State(state): State<AppState>,
@@ -3265,7 +3270,7 @@ pub async fn get_routing_rules(
         (status = 403, description = "Forbidden"),
     ),
     tag = "Links",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn replace_routing_rules(
     State(state): State<AppState>,
@@ -3393,7 +3398,8 @@ pub async fn replace_routing_rules(
         (status = 200, description = "The caller's non-deleted links (limit defaults to 1000, maximum 1000)", body = Vec<LinkResponse>),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_user_links(
     State(state): State<AppState>,
@@ -3516,7 +3522,8 @@ pub async fn get_user_links(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn delete_link(
     State(state): State<AppState>,
@@ -3622,7 +3629,8 @@ pub async fn delete_link(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_link(
     State(state): State<AppState>,
@@ -3983,7 +3991,8 @@ pub async fn update_link(
         (status = 400, description = "Batch too large"),
         (status = 401, description = "Authentication required"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn bulk_create_links(
     State(state): State<AppState>,
@@ -4238,7 +4247,8 @@ pub async fn bulk_create_links(
         (status = 200, description = "Links deleted", body = BulkDeleteResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn bulk_delete_links(
     State(state): State<AppState>,
@@ -4321,7 +4331,8 @@ pub async fn bulk_delete_links(
         (status = 200, description = "Links updated", body = BulkUpdateResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn bulk_update_links(
     State(state): State<AppState>,
@@ -4433,7 +4444,8 @@ pub async fn bulk_update_links(
         (status = 200, description = "CSV file", content_type = "text/csv"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn export_links_csv(
     State(state): State<AppState>,
@@ -4534,7 +4546,8 @@ pub struct CloneLinkResponse {
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn clone_link(
     State(state): State<AppState>,
@@ -4705,7 +4718,8 @@ pub struct PinResponse {
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn toggle_pin(
     State(state): State<AppState>,
@@ -4879,7 +4893,8 @@ pub struct UrlHealthResponse {
         (status = 400, description = "Invalid URL"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn check_url_health(
     State(state): State<AppState>,
@@ -5081,7 +5096,8 @@ pub struct SparklineResponse {
         (status = 200, description = "Sparkline data", body = SparklineResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_sparklines(
     State(state): State<AppState>,
@@ -5348,7 +5364,8 @@ pub async fn proxy_bio_avatar(
         (status = 400, description = "Invalid URL"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Links"
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_link_preview_metadata(
     State(state): State<AppState>,

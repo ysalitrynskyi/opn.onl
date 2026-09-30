@@ -125,7 +125,7 @@ fn validate_username(name: &str) -> Result<String, String> {
         (status = 409, description = "Username is taken"),
     ),
     tag = "Authentication",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_bio_settings(
     State(state): State<AppState>,

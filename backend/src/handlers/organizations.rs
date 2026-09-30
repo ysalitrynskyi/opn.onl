@@ -315,7 +315,8 @@ async fn log_audit(
         (status = 401, description = "Unauthorized"),
         (status = 409, description = "Slug already exists"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn create_organization(
     State(state): State<AppState>,
@@ -452,7 +453,8 @@ pub async fn create_organization(
         (status = 200, description = "List of organizations", body = Vec<OrgResponse>),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_user_organizations(
     State(state): State<AppState>,
@@ -556,7 +558,8 @@ pub async fn get_user_organizations(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_organization(
     State(state): State<AppState>,
@@ -629,7 +632,8 @@ pub async fn get_organization(
         (status = 404, description = "Not found"),
         (status = 409, description = "Slug already exists"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_organization(
     State(state): State<AppState>,
@@ -767,7 +771,8 @@ pub async fn update_organization(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn delete_organization(
     State(state): State<AppState>,
@@ -821,7 +826,8 @@ pub async fn delete_organization(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_organization_members(
     State(state): State<AppState>,
@@ -897,7 +903,8 @@ pub async fn get_organization_members(
         (status = 404, description = "User not found"),
         (status = 409, description = "Already a member"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn invite_member(
     State(state): State<AppState>,
@@ -1021,7 +1028,8 @@ pub async fn invite_member(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Member not found"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_member_role(
     State(state): State<AppState>,
@@ -1124,7 +1132,8 @@ pub async fn update_member_role(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Member not found"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn remove_member(
     State(state): State<AppState>,
@@ -1208,7 +1217,7 @@ pub async fn remove_member(
         (status = 404, description = "Organization or member not found"),
     ),
     tag = "Organizations",
-    security(("bearer_auth" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn transfer_ownership(
     State(state): State<AppState>,
@@ -1416,7 +1425,8 @@ fn clamp_audit_limit(limit: Option<u64>) -> u64 {
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
     ),
-    tag = "Organizations"
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_audit_log(
     State(state): State<AppState>,

@@ -148,7 +148,8 @@ async fn count_active_tagged_links(db: &sea_orm::DatabaseConnection, tag_id: i32
         (status = 400, description = "Invalid request"),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn create_tag(
     State(state): State<AppState>,
@@ -227,7 +228,8 @@ pub async fn create_tag(
         (status = 200, description = "List of tags", body = Vec<TagResponse>),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_tags(
     State(state): State<AppState>,
@@ -327,7 +329,8 @@ pub async fn get_tags(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_tag(
     State(state): State<AppState>,
@@ -393,7 +396,8 @@ pub async fn get_tag(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn update_tag(
     State(state): State<AppState>,
@@ -487,7 +491,8 @@ pub async fn update_tag(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn delete_tag(
     State(state): State<AppState>,
@@ -553,7 +558,8 @@ pub async fn delete_tag(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn add_tags_to_link(
     State(state): State<AppState>,
@@ -665,7 +671,8 @@ pub async fn add_tags_to_link(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn remove_tags_from_link(
     State(state): State<AppState>,
@@ -750,7 +757,8 @@ pub async fn remove_tags_from_link(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Tag not found"),
     ),
-    tag = "Tags"
+    tag = "Tags",
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn get_links_by_tag(
     State(state): State<AppState>,
