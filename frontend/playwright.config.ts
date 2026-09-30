@@ -26,7 +26,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: isCI,
   retries: isCI ? 2 : 0,
-  workers: isCI ? 1 : undefined,
+  // Two workers in CI: every spec isolates its own data and client address
+  // (see e2e/support/api.ts), and the suite is too long to run serially.
+  workers: isCI ? 2 : undefined,
   reporter: isCI
     ? [['github'], ['html', { open: 'never' }], ['list']]
     : [['html', { open: 'never' }]],

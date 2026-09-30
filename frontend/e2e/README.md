@@ -1,41 +1,49 @@
 # Playwright E2E
 
-337 tests in 16 files under `frontend/e2e/`. Default project is Chromium.
-`playwright.config.ts` starts Vite on `http://localhost:5173` (`webServer`).
-It does **not** start the backend. Specs that talk to a live API need Axum on
-`:3000` and Postgres.
+233 tests in 16 files under `frontend/e2e/`, run against the real stack: Postgres, the backend
+binary, and the Vite dev server that `playwright.config.ts` starts (`webServer`). Playwright does
+not start the backend or the database.
 
-## Tiers
+## In CI
 
-| Tier | When | What |
-|---|---|---|
-| **Gate** | every PR / push (`e2e` job) | Chromium, `password-link.spec.ts` + `edge-cases.spec.ts` (40 tests). These were the only two files that ran 100% green locally. |
-| **Full** | `workflow_dispatch` or weekly Monday 06:17 UTC (`e2e-full` job) | Chromium, all 16 files. Expected red until the suite is rewritten against the current UI and `/auth`, `/links` routes (no `/api` prefix). |
-| **All browsers** | local only | `E2E_FULL=1 npm run test:e2e` — firefox, webkit, Pixel 5, iPhone 12 as well. Not run in CI. |
+The `e2e` job runs the whole Chromium suite on every PR and push (`npm run test:e2e:ci`), with two
+workers and up to two retries. It boots Postgres as a service, builds and starts the backend with
+`TRUST_PROXY_HEADERS=true`, and gives each run a fresh database.
 
-A local run (2026-09-17, Chromium, retries 0, Vite `webServer` + backend on `:3000`):
-**201 passed, 120 failed, 16 skipped** (serial describes aborted after the first fail). Failures are the tests, not the CI wiring: stale marketing copy, mock JWTs that `authFetch` 401s, `API_URL=http://localhost:3000/api` against routes that are `/auth/*` and `/links/*`, register asserted as 200 when the handler returns 201.
-
-## Local
+## Running locally
 
 ```bash
-cd frontend
-npx playwright install chromium
-npm run test:e2e          # all files, Chromium; starts Vite
-npm run test:e2e:gate     # the PR subset
-npm run test:e2e:full     # all files, Chromium (same as test:e2e today)
-E2E_FULL=1 npm run test:e2e   # five browser projects
-```
+# 1. A fresh, empty database. globalSetup registers the first account, which the
+#    backend makes an admin, and uses it to verify every test account.
+createdb opn_e2e
 
-For live-API specs (`api-integration`, `security`, `comprehensive-flow`):
-
-```bash
-# throwaway DB, then from backend/
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/opn_onl_test \
-JWT_SECRET=ci-test-jwt-secret-please-change-in-production-0123456789 \
-FRONTEND_URL=http://localhost:5173 \
-BASE_URL=http://localhost:3000 \
+# 2. The backend, from backend/
+DATABASE_URL=postgres://localhost/opn_e2e \
+JWT_SECRET=local-e2e-jwt-secret-at-least-32-characters \
+FRONTEND_URL=http://localhost:5173 BASE_URL=http://localhost:3000 \
+TRUST_PROXY_HEADERS=true \
 cargo run
+
+# 3. The suite, from frontend/ (starts Vite on :5173)
+npx playwright install chromium
+npm run test:e2e:ci
 ```
 
-Vite 8 needs Node 20.19+ / 22+. CI uses Node 22.
+Re-running against the same database works: globalSetup signs the admin back in. To run a second
+stack side by side, point the suite at it with `E2E_API_URL` (backend origin) and `E2E_WEB_PORT` (the
+Vite port it starts); the backend's `FRONTEND_URL` must match that port for CORS.
+`E2E_FULL=1 npm run test:e2e` adds Firefox, WebKit and two mobile projects; CI does not run those.
+
+## How the specs are written
+
+- **Real accounts, not fake tokens.** `e2e/support/api.ts` registers users through the API and
+  verifies them through the admin endpoint (there is no SMTP), then `signIn(page, user)` seeds
+  `localStorage` exactly as the login page does. Specs that only read share one account per worker.
+- **Separate client addresses.** Helper requests, and each page via
+  `page.setExtraHTTPHeaders(clientIpHeader())`, send their own `CF-Connecting-IP`, so no spec spends
+  the per-address rate-limit budgets another spec asserts on. The rate-limit specs pin one address per
+  test on purpose.
+- **Mocks only where the real thing cannot be produced on demand**: a 500, a network failure, a slow
+  response, GeoIP data (the e2e backend has no MaxMind database). Each mock says why in a comment.
+- **No vacuous assertions.** `if (await el.isVisible()) { … }` passes when the element never renders;
+  assert it is visible, then act.
