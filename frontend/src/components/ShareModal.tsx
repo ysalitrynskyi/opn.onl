@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { X, Copy, Mail, Twitter, Facebook, Linkedin, MessageCircle, Check } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { toast } from './Toast';
 
 interface ShareModalProps {
@@ -15,6 +16,8 @@ const openShareWindow = (url: string) => {
 
 export default function ShareModal({ url, title = 'Check out this link', onClose }: ShareModalProps) {
     const [copied, setCopied] = useState(false);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useFocusTrap(dialogRef);
     
     const handleCopy = async () => {
         try {
@@ -75,6 +78,9 @@ export default function ShareModal({ url, title = 'Check out this link', onClose
             onClick={onClose}
         >
             <motion.div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
                 initial={{ scale: 0.95, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.95, opacity: 0 }}

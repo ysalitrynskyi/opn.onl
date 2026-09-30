@@ -4,8 +4,10 @@ use aws_sdk_s3::Client as S3Client;
 use chrono::Utc;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::io::Write;
-use tokio::process::Command;
+use aws_sdk_s3::primitives::ByteStream;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tracing::{error, info};
 
 /// Backup service for PostgreSQL to S3/R2
@@ -73,40 +75,26 @@ impl BackupService {
 
         info!("Creating database backup: {}", filename);
 
-        // Run pg_dump asynchronously so the dump doesn't block a runtime worker
-        // thread (tokio::process spawns and awaits without blocking).
-        let output = Command::new("pg_dump")
-            .arg(&self.database_url)
-            .arg("--no-owner")
-            .arg("--no-acl")
-            .output()
+        // Stream pg_dump stdout through gzip onto disk so the API process never
+        // holds the raw dump and the compressed copy together in RSS.
+        let tmp_path = std::env::temp_dir().join(format!("{filename}.{}", uuid::Uuid::new_v4()));
+        let _guard = DeleteOnDrop(tmp_path.clone());
+        stream_pg_dump_to_gzip_file(&self.database_url, &tmp_path).await?;
+
+        let compressed_len = std::fs::metadata(&tmp_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        info!("Backup compressed: {} bytes", compressed_len);
+
+        let body = ByteStream::from_path(&tmp_path)
             .await
-            .map_err(|e| format!("Failed to run pg_dump: {}", e))?;
+            .map_err(|e| format!("Failed to read compressed backup: {}", e))?;
 
-        if !output.status.success() {
-            return Err(format!(
-                "pg_dump failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-
-        // Compress the dump
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(&output.stdout)
-            .map_err(|e| format!("Failed to compress backup: {}", e))?;
-        let compressed = encoder
-            .finish()
-            .map_err(|e| format!("Failed to finish compression: {}", e))?;
-
-        info!("Backup compressed: {} bytes", compressed.len());
-
-        // Upload to S3
         client
             .put_object()
             .bucket(&self.bucket)
             .key(&filename)
-            .body(compressed.into())
+            .body(body)
             .content_type("application/gzip")
             .send()
             .await
@@ -123,21 +111,34 @@ impl BackupService {
             .as_ref()
             .ok_or("Backup service not configured")?;
 
-        let response = client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix("backup_")
-            .send()
-            .await
-            .map_err(|e| format!("Failed to list backups: {}", e))?;
-
-        let backups: Vec<String> = response
-            .contents()
-            .iter()
-            .filter_map(|obj| obj.key().map(|k| k.to_string()))
-            .collect();
-
-        Ok(backups)
+        let client = client.clone();
+        let bucket = self.bucket.clone();
+        collect_backup_keys(move |token| {
+            let client = client.clone();
+            let bucket = bucket.clone();
+            async move {
+                let mut req = client.list_objects_v2().bucket(bucket).prefix("backup_");
+                if let Some(token) = token {
+                    req = req.continuation_token(token);
+                }
+                let response = req
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to list backups: {}", e))?;
+                Ok(ObjectListPage {
+                    keys: response
+                        .contents()
+                        .iter()
+                        .filter_map(|obj| obj.key().map(|k| k.to_string()))
+                        .collect(),
+                    is_truncated: response.is_truncated() == Some(true),
+                    next_continuation_token: response
+                        .next_continuation_token()
+                        .map(str::to_string),
+                })
+            }
+        })
+        .await
     }
 
     /// Delete old backups (keep last N)
@@ -203,5 +204,279 @@ impl Clone for BackupService {
             bucket: self.bucket.clone(),
             database_url: self.database_url.clone(),
         }
+    }
+}
+
+/// Split a postgres URL into a password-free connection URI and the password.
+/// The password is returned separately so `pg_dump` can receive it via
+/// `PGPASSWORD` instead of the process argument list (`/proc/pid/cmdline`, `ps`).
+fn pg_dump_connection(database_url: &str) -> (String, Option<String>) {
+    let mut parsed = match url::Url::parse(database_url) {
+        Ok(u) => u,
+        Err(_) => return (database_url.to_string(), None),
+    };
+
+    let password = parsed.password().and_then(|encoded| {
+        if encoded.is_empty() {
+            return None;
+        }
+        Some(
+            urlencoding::decode(encoded)
+                .map(|cow| cow.into_owned())
+                .unwrap_or_else(|_| encoded.to_string()),
+        )
+    });
+
+    if parsed.password().is_some() {
+        let _ = parsed.set_password(None);
+    }
+
+    (parsed.to_string(), password)
+}
+
+fn pg_dump_command(database_url: &str) -> std::process::Command {
+    let (safe_url, password) = pg_dump_connection(database_url);
+    let mut cmd = std::process::Command::new("pg_dump");
+    if let Some(password) = password {
+        cmd.env("PGPASSWORD", password);
+    }
+    cmd.arg(safe_url).arg("--no-owner").arg("--no-acl");
+    cmd
+}
+
+struct DeleteOnDrop(PathBuf);
+
+impl Drop for DeleteOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Gzip `reader` onto `dest` in bounded chunks so the raw dump never sits in RSS.
+fn gzip_chunked_copy(mut reader: impl Read, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::create(dest)
+        .map_err(|e| format!("Failed to create temp backup file: {e}"))?;
+    let mut encoder = GzEncoder::new(file, Compression::default());
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("Failed to read dump: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        encoder
+            .write_all(&buf[..n])
+            .map_err(|e| format!("Failed to compress backup: {e}"))?;
+        encoder
+            .flush()
+            .map_err(|e| format!("Failed to flush compressed backup: {e}"))?;
+    }
+    encoder
+        .finish()
+        .map_err(|e| format!("Failed to finish compression: {e}"))?;
+    Ok(())
+}
+
+async fn stream_pg_dump_to_gzip_file(database_url: &str, dest: &Path) -> Result<(), String> {
+    let dest = dest.to_path_buf();
+    let database_url = database_url.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = pg_dump_command(&database_url);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to run pg_dump: {e}"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "pg_dump stdout not piped".to_string())?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "pg_dump stderr not piped".to_string())?;
+
+        let stderr_thread = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        });
+
+        let compress_result = gzip_chunked_copy(stdout, &dest);
+        if compress_result.is_err() {
+            let _ = child.kill();
+        }
+        let status = child
+            .wait()
+            .map_err(|e| format!("Failed to wait for pg_dump: {e}"))?;
+        let stderr_bytes = stderr_thread.join().unwrap_or_default();
+        if !status.success() {
+            return Err(format!(
+                "pg_dump failed: {}",
+                String::from_utf8_lossy(&stderr_bytes)
+            ));
+        }
+        compress_result
+    })
+    .await
+    .map_err(|e| format!("Backup task failed: {e}"))?
+}
+
+struct ObjectListPage {
+    keys: Vec<String>,
+    is_truncated: bool,
+    next_continuation_token: Option<String>,
+}
+
+/// Walk `list_objects_v2` pages until S3 reports the listing is complete.
+async fn collect_backup_keys<F, Fut>(mut fetch_page: F) -> Result<Vec<String>, String>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<ObjectListPage, String>>,
+{
+    let mut backups = Vec::new();
+    let mut continuation = None;
+    loop {
+        let page = fetch_page(continuation).await?;
+        backups.extend(page.keys);
+        continuation = if page.is_truncated {
+            page.next_continuation_token
+        } else {
+            None
+        };
+        if continuation.is_none() {
+            break;
+        }
+    }
+    Ok(backups)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_pgpassword(cmd: &std::process::Command) -> Option<String> {
+        cmd.get_envs().find_map(|(k, v)| {
+            if k == "PGPASSWORD" {
+                v.map(|val| val.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn argv_joined(cmd: &std::process::Command) -> String {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn pg_dump_argv_omits_password() {
+        let url = "postgres://opn:s3cret-pass@localhost:5432/opn_onl";
+        let cmd = pg_dump_command(url);
+        let joined = argv_joined(&cmd);
+        assert!(
+            !joined.contains("s3cret-pass"),
+            "password leaked onto argv: {joined}"
+        );
+        assert_eq!(env_pgpassword(&cmd).as_deref(), Some("s3cret-pass"));
+        assert!(
+            joined.contains("postgres://opn@localhost:5432/opn_onl"),
+            "password-stripped URI missing from argv: {joined}"
+        );
+    }
+
+    #[test]
+    fn pg_dump_argv_decodes_percent_encoded_password() {
+        let url = "postgres://opn:p%40ss%2Fword@localhost:5432/opn_onl";
+        let cmd = pg_dump_command(url);
+        let joined = argv_joined(&cmd);
+        assert!(!joined.contains("p%40ss"), "encoded password on argv: {joined}");
+        assert!(
+            !joined.contains("p@ss/word"),
+            "decoded password on argv: {joined}"
+        );
+        assert_eq!(env_pgpassword(&cmd).as_deref(), Some("p@ss/word"));
+    }
+
+    #[test]
+    fn pg_dump_skips_pgpassword_when_url_has_no_password() {
+        let url = "postgresql://opn@localhost:5432/opn_onl?sslmode=require";
+        let (safe, pw) = pg_dump_connection(url);
+        assert!(pw.is_none());
+        assert!(safe.contains("sslmode=require"));
+        let cmd = pg_dump_command(url);
+        assert!(env_pgpassword(&cmd).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gzip_emits_output_before_reader_eof() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+
+        let dest = std::env::temp_dir().join(format!(
+            "opn-gzip-stream-{}.gz",
+            uuid::Uuid::new_v4()
+        ));
+        let dest_for_thread = dest.clone();
+        let _guard = DeleteOnDrop(dest.clone());
+
+        let (mut tx, rx) = UnixStream::pair().expect("unix socket pair");
+        let handle = std::thread::spawn(move || gzip_chunked_copy(rx, &dest_for_thread));
+
+        let chunk = vec![b'X'; 256 * 1024];
+        tx.write_all(&chunk).expect("write dump chunk");
+        tx.flush().expect("flush dump chunk");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "gzip waited for the full dump before writing; would double RSS"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(tx);
+        handle.join().expect("gzip thread").expect("gzip copy");
+    }
+
+    #[tokio::test]
+    async fn lists_backups_across_s3_pages() {
+        let keys = collect_backup_keys(|token| async move {
+            Ok(match token.as_deref() {
+                None => ObjectListPage {
+                    keys: (0..1000).map(|i| format!("backup_old_{i:04}")).collect(),
+                    is_truncated: true,
+                    next_continuation_token: Some("page2".into()),
+                },
+                Some("page2") => ObjectListPage {
+                    keys: (0..500).map(|i| format!("backup_new_{i:04}")).collect(),
+                    is_truncated: false,
+                    next_continuation_token: None,
+                },
+                other => panic!("unexpected continuation token {other:?}"),
+            })
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            keys.len(),
+            1500,
+            "must walk every list_objects_v2 page, not stop at 1000"
+        );
+        assert!(
+            keys.iter().any(|k| k.starts_with("backup_new_")),
+            "newest keys live on the second page and must be listed"
+        );
     }
 }

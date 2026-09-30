@@ -277,6 +277,7 @@ export interface DashboardStats {
     total_links: number;
     total_clicks: number;
     active_links: number;
+    /** Clicks since 00:00:00 UTC today. The dashboard endpoint does not accept a timezone. */
     clicks_today: number;
     clicks_this_week: number;
     clicks_this_month: number;
@@ -378,7 +379,7 @@ export interface AuditLog {
     action: string;
     resource_type: string;
     resource_id?: number;
-    details?: Record<string, any>;
+    details?: Record<string, string | number | boolean | null>;
     ip_address?: string;
     created_at: string;
 }

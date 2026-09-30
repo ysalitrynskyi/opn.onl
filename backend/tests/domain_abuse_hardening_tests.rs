@@ -4,7 +4,7 @@
 mod common;
 
 use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
-use opn_onl_backend::entity::{api_keys, links, passkeys, users};
+use opn_onl_backend::entity::{api_keys, blocked_email_domains, links, passkeys, users};
 use opn_onl_backend::handlers::links::hash_api_key;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -296,13 +296,20 @@ async fn email_domain_blocks_reject_registration_and_disable_existing_users_with
             .status_code(),
         401
     );
+    let passkey_start = server
+        .post("/auth/passkey/login/start")
+        .json(&json!({ "username": &user_email }))
+        .await;
     assert_eq!(
-        server
-            .post("/auth/passkey/login/start")
-            .json(&json!({ "username": &user_email }))
-            .await
-            .status_code(),
-        404
+        passkey_start.status_code(),
+        200,
+        "disabled-domain passkey start must not enumerate: {}",
+        passkey_start.text()
+    );
+    let passkey_body: Value = passkey_start.json();
+    assert!(
+        passkey_body["options"]["publicKey"]["challenge"].is_string(),
+        "decoy challenge: {passkey_body}"
     );
     assert_eq!(
         server
@@ -311,5 +318,130 @@ async fn email_domain_blocks_reject_registration_and_disable_existing_users_with
             .await
             .status_code(),
         401
+    );
+}
+
+/// Blocking the acting admin's own email domain must be refused. Otherwise the
+/// request stamps `disabled_at` on that admin (and every other admin on the
+/// domain), `require_admin` starts failing, and nobody can unblock it.
+#[tokio::test]
+async fn email_domain_block_refuses_to_disable_the_acting_admin() {
+    let (server, db) = spawn_real_app().await;
+    let domain = format!("adm-{}.iana.org", unique_code().to_lowercase());
+    let admin_email = format!("root@{domain}");
+    let (admin_token, admin_id) = register(&server, &admin_email).await;
+    mark_email_verified(&db, admin_id).await;
+    promote_admin(&db, admin_id).await;
+
+    let res = server
+        .post("/admin/blocked/email-domains")
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "domain": &domain }))
+        .await;
+    assert_eq!(
+        res.status_code(),
+        400,
+        "blocking own domain must be refused: {}",
+        res.text()
+    );
+    let body: Value = res.json();
+    let message = body["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains(&admin_email),
+        "refusal must name the admin account that would be disabled, got {message:?}"
+    );
+
+    let admin = users::Entity::find_by_id(admin_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        admin.disabled_at.is_none(),
+        "acting admin must remain enabled"
+    );
+    assert_eq!(
+        blocked_email_domains::Entity::find()
+            .filter(blocked_email_domains::Column::Domain.eq(&domain))
+            .count(&db)
+            .await
+            .unwrap(),
+        0,
+        "refused block must not insert the domain"
+    );
+
+    let res = server
+        .get("/admin/stats")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(
+        res.status_code(),
+        200,
+        "acting admin must still reach /admin/* after the refused block: {}",
+        res.text()
+    );
+}
+
+/// Admins on a blocked domain must stay able to sign in and unblock it.
+/// Regular users on that domain are still disabled.
+#[tokio::test]
+async fn email_domain_block_skips_other_admins() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, admin_id, _) = register_verified(&server, &db).await;
+    promote_admin(&db, admin_id).await;
+
+    let domain = format!("peer-{}.iana.org", unique_code().to_lowercase());
+    let (peer_token, peer_id) = register(&server, &format!("admin@{domain}")).await;
+    mark_email_verified(&db, peer_id).await;
+    promote_admin(&db, peer_id).await;
+
+    let (victim_token, victim_id) = register(&server, &format!("user@{domain}")).await;
+    mark_email_verified(&db, victim_id).await;
+
+    let res = server
+        .post("/admin/blocked/email-domains")
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "domain": &domain }))
+        .await;
+    assert_eq!(res.status_code(), 201, "block email domain: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(body["affected_users"].as_u64(), Some(1));
+
+    let peer = users::Entity::find_by_id(peer_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        peer.disabled_at.is_none(),
+        "other admins on the blocked domain must stay enabled"
+    );
+    let victim = users::Entity::find_by_id(victim_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        victim.disabled_at.is_some(),
+        "non-admin users on the blocked domain must still be disabled"
+    );
+
+    assert_eq!(
+        server
+            .get("/admin/stats")
+            .authorization_bearer(&peer_token)
+            .await
+            .status_code(),
+        200,
+        "peer admin must still reach /admin/*"
+    );
+    assert_eq!(
+        server
+            .get("/links")
+            .authorization_bearer(&victim_token)
+            .await
+            .status_code(),
+        401,
+        "disabled victim must not keep their session"
     );
 }

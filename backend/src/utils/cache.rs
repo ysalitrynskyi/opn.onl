@@ -97,6 +97,19 @@ impl RedisCache {
         format!("link_generation:{}", code)
     }
 
+    /// Floor so a tiny `REDIS_CACHE_TTL` cannot expire the generation key
+    /// while a redirect is still in flight (DB load, block check, routing).
+    const MIN_GENERATION_TTL_SECS: u64 = 3600;
+
+    /// Generation keys must outlive the cached row so a slow writer cannot
+    /// observe generation 0 again, but they cannot live forever: every cached
+    /// redirect `INCR`s one. 2× the link TTL, with a one-hour floor.
+    fn generation_ttl_secs(&self) -> u64 {
+        self.ttl_seconds
+            .saturating_mul(2)
+            .max(Self::MIN_GENERATION_TTL_SECS)
+    }
+
     /// Read a cached link and its invalidation generation in one Redis command.
     ///
     /// Writers capture this generation before loading from Postgres and may only
@@ -118,9 +131,34 @@ impl RedisCache {
             .query_async(&mut conn)
             .await?;
 
+        let generation = match generation {
+            Some(g) => g,
+            None => {
+                // Seed 0 on first fill so `set_link_if_generation` can tell a
+                // real generation-0 from a key that expired after an INCR.
+                let seeded: Option<String> = redis::cmd("SET")
+                    .arg(Self::generation_key(code))
+                    .arg(0)
+                    .arg("NX")
+                    .arg("EX")
+                    .arg(self.generation_ttl_secs())
+                    .query_async(&mut conn)
+                    .await?;
+                if seeded.is_some() {
+                    0
+                } else {
+                    let current: Option<u64> = redis::cmd("GET")
+                        .arg(Self::generation_key(code))
+                        .query_async(&mut conn)
+                        .await?;
+                    current.unwrap_or(0)
+                }
+            }
+        };
+
         Ok((
             value.as_deref().and_then(CachedLink::from_redis_value),
-            generation.unwrap_or(0),
+            generation,
         ))
     }
 
@@ -139,7 +177,11 @@ impl RedisCache {
         let mut conn = conn.clone();
         let wrote: i32 = Script::new(
             r#"
-            local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+            local raw = redis.call('GET', KEYS[1])
+            if not raw then
+                return 0
+            end
+            local current = tonumber(raw)
             if current ~= tonumber(ARGV[1]) then
                 return 0
             end
@@ -160,8 +202,9 @@ impl RedisCache {
 
     /// Atomically advance the invalidation generation and delete the cached row.
     ///
-    /// The generation key intentionally outlives cached values. Expiring it could
-    /// let a very slow stale writer observe generation zero again.
+    /// The generation key is given a TTL of max(2× link cache, one hour) so it
+    /// outlives in-flight writers without accumulating forever under
+    /// `volatile-*` / `noeviction`.
     pub async fn invalidate_link(&self, code: &str) -> Result<(), redis::RedisError> {
         let conn_guard = self.connection.read().await;
         if let Some(conn) = conn_guard.as_ref() {
@@ -169,11 +212,13 @@ impl RedisCache {
             let _: i32 = Script::new(
                 r#"
                 redis.call('INCR', KEYS[1])
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
                 return redis.call('DEL', KEYS[2])
                 "#,
             )
             .key(Self::generation_key(code))
             .key(Self::link_key(code))
+            .arg(self.generation_ttl_secs())
             .invoke_async(&mut conn)
             .await?;
         }
@@ -253,5 +298,77 @@ mod tests {
         assert!(new_generation > generation);
 
         cache.invalidate_link(&code).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalidation_generation_key_expires() {
+        // Do not default REDIS_URL here: set_var mutates process-global env
+        // for every other test in this binary. CI exports REDIS_URL; a local
+        // run without Redis skips below.
+        let Some(cache) = RedisCache::new().await else {
+            eprintln!("skipping Redis TTL test: REDIS_URL is not set or unavailable");
+            return;
+        };
+        let code = format!("cache-ttl-{}", uuid::Uuid::new_v4());
+        cache.invalidate_link(&code).await.unwrap();
+
+        let client = redis::Client::open(std::env::var("REDIS_URL").unwrap()).unwrap();
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let ttl: i64 = redis::cmd("TTL")
+            .arg(format!("link_generation:{code}"))
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        let expected = cache.generation_ttl_secs() as i64;
+        assert!(
+            ttl > 0,
+            "generation key must have a TTL, got {ttl} (no expiry is -1)"
+        );
+        assert!(
+            ttl <= expected,
+            "generation TTL {ttl} must not exceed 2× link TTL ({expected})"
+        );
+        assert!(
+            ttl >= expected - 5,
+            "generation TTL {ttl} should be about {expected}"
+        );
+    }
+
+    #[test]
+    fn generation_ttl_floors_tiny_link_ttl() {
+        let cache = RedisCache {
+            client: None,
+            connection: Arc::new(RwLock::new(None)),
+            ttl_seconds: 1,
+        };
+        assert_eq!(cache.generation_ttl_secs(), 3600);
+    }
+
+    #[tokio::test]
+    async fn missing_generation_key_does_not_match_stale_zero() {
+        let Some(cache) = RedisCache::new().await else {
+            eprintln!("skipping Redis expiry test: REDIS_URL is not set or unavailable");
+            return;
+        };
+        let code = format!("cache-expired-{}", uuid::Uuid::new_v4());
+        let (_, generation) = cache.get_link_versioned(&code).await.unwrap();
+        assert_eq!(generation, 0);
+        cache.invalidate_link(&code).await.unwrap();
+
+        let client = redis::Client::open(std::env::var("REDIS_URL").unwrap()).unwrap();
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let _: i64 = redis::cmd("DEL")
+            .arg(format!("link_generation:{code}"))
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+
+        assert!(
+            !cache
+                .set_link_if_generation(&code, 0, &cached("https://stale.example"))
+                .await
+                .unwrap(),
+            "a writer holding generation 0 must not win after the key has expired"
+        );
     }
 }

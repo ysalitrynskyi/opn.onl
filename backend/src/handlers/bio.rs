@@ -74,7 +74,6 @@ pub struct BioLink {
     pub code: String,
     pub short_url: String,
     pub label: String,
-    pub click_count: i32,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -213,6 +212,11 @@ pub async fn update_bio_settings(
             }),
         )
             .into_response(),
+        // The read-then-write uniqueness check races; idx-users-bio_username
+        // is the real guard. Map that unique violation to the documented 409.
+        Err(err) if err.to_string().contains("duplicate key value") => {
+            (StatusCode::CONFLICT, "That username is taken").into_response()
+        }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save settings").into_response(),
     }
 }
@@ -225,7 +229,7 @@ pub async fn update_bio_settings(
     path = "/api/bio/{username}",
     params(("username" = String, Path, description = "Public bio username")),
     responses(
-        (status = 200, description = "Public bio profile and visible links", body = BioProfileResponse),
+        (status = 200, description = "Public bio profile and visible active links (click counts are omitted)", body = BioProfileResponse),
         (status = 404, description = "No public bio for this username"),
     ),
     tag = "Bio"
@@ -276,7 +280,6 @@ pub async fn get_public_bio(
                 short_url: format!("{}/{}", base_url, l.code),
                 code: l.code,
                 label,
-                click_count: l.click_count,
             }
         })
         .collect();

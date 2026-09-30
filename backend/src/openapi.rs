@@ -67,6 +67,7 @@ use crate::handlers::{
         // Link-in-bio
         bio::update_bio_settings,
         bio::get_public_bio,
+        links::proxy_bio_avatar,
 
         // Links
         links::create_link,
@@ -87,6 +88,8 @@ use crate::handlers::{
         links::build_utm_url,
         links::get_sparklines,
         links::get_link_preview_metadata,
+        links::get_routing_rules,
+        links::replace_routing_rules,
         links::preview_link,
 
         // Analytics
@@ -159,14 +162,29 @@ use crate::handlers::{
 
         // Contact
         contact::send_contact_message,
+
+        // Deliberately unpublished (not listed above):
+        // - GET /health — ops probe, not an API consumer contract
+        // - GET /swagger-ui, GET /api-docs/openapi.json — the docs UI itself
+        // - GET /ws, GET /sse — live transports; OpenAPI cannot describe the
+        //   upgrade/event stream, and the query-token auth is not a REST call
     ),
     components(
         schemas(
             // Auth schemas
             auth::RegisterRequest,
             auth::LoginRequest,
+            auth::VerifyEmailRequest,
+            auth::ResendVerificationRequest,
+            auth::ForgotPasswordRequest,
+            auth::ResetPasswordRequest,
+            auth::ChangePasswordRequest,
+            auth::DeleteAccountRequest,
             auth::AuthResponse,
             auth::MessageResponse,
+            auth::AppSettingsResponse,
+            auth::UserProfileResponse,
+            auth::UpdateProfileRequest,
 
             // API key schemas
             api_keys::CreateApiKeyRequest,
@@ -177,6 +195,12 @@ use crate::handlers::{
             passkeys::PasskeyAuthResponse,
             passkeys::PasskeyInfo,
             passkeys::PasskeyListResponse,
+            passkeys::RegisterStartRequest,
+            passkeys::RegisterFinishRequest,
+            passkeys::LoginStartRequest,
+            passkeys::LoginFinishRequest,
+            passkeys::DeletePasskeyRequest,
+            passkeys::RenamePasskeyRequest,
 
             // Link-in-bio schemas
             bio::BioSettingsRequest,
@@ -200,6 +224,24 @@ use crate::handlers::{
             links::SuccessResponse,
             links::VerifyPasswordRequest,
             links::TagInfo,
+            links::LinkPreviewResponse,
+            links::ReputationInfo,
+            links::CloneLinkResponse,
+            links::PinResponse,
+            links::CheckCodeResponse,
+            links::HealthCheckRequest,
+            links::UrlHealthResponse,
+            links::BuildUtmRequest,
+            links::BuildUtmResponse,
+            links::SparklineData,
+            links::SparklineResponse,
+            links::PreviewMetadataRequest,
+            links::LinkPreviewData,
+            links::RoutingRuleInput,
+            links::ReplaceRoutingRulesRequest,
+            links::RoutingRuleResponse,
+            links::RoutingRulesSavedResponse,
+            links::AvatarProxyQuery,
 
             // Analytics schemas
             analytics::AnalyticsQuery,
@@ -240,6 +282,10 @@ use crate::handlers::{
             tags::TagResponse,
             tags::AddTagsToLinkRequest,
             tags::RemoveTagsFromLinkRequest,
+
+            // Contact schemas
+            contact::ContactRequest,
+            contact::ContactResponse,
 
             // Admin schemas
             admin::AdminResponse,

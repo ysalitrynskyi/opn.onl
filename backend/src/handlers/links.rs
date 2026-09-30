@@ -359,7 +359,11 @@ fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.octets()[0] >= 240 // 240.0.0.0/4 reserved
         }
         std::net::IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            // to_ipv4() unwraps both IPv4-mapped (::ffff:a.b.c.d) and the
+            // deprecated IPv4-compatible form (::a.b.c.d). to_ipv4_mapped()
+            // misses the latter, so 192.168.1.1 / 169.254.169.254 encoded that
+            // way would otherwise pass this guard.
+            if let Some(v4) = v6.to_ipv4() {
                 return is_disallowed_ip(&std::net::IpAddr::V4(v4));
             }
             v6.is_loopback()
@@ -989,7 +993,9 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
     responses(
         (status = 201, description = "Link created", body = LinkResponse),
         (status = 400, description = "Invalid request"),
+        (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
+        (status = 429, description = "Same URL shortened too many times"),
     ),
     tag = "Links"
 )]
@@ -1090,6 +1096,7 @@ pub async fn create_link(
         .parse::<bool>()
         .unwrap_or(true);
 
+    let using_custom_alias = payload.custom_alias.is_some();
     let code = if let Some(alias) = payload.custom_alias {
         // Check if custom aliases are enabled
         if !custom_aliases_enabled {
@@ -1291,8 +1298,21 @@ pub async fn create_link(
 
     let link_id = match links::Entity::insert(link).exec(&txn).await {
         Ok(link_res) => link_res.last_insert_id,
-        Err(_) => {
+        Err(err) => {
             let _ = txn.rollback().await;
+            // The active/deleted alias lookups run before this transaction, so
+            // two concurrent custom_alias creates can both pass and one INSERT
+            // hits the unique index. Map that to the documented 409 rather than
+            // a 500 "Database error" with no retry signal.
+            if using_custom_alias && err.to_string().contains("duplicate key value") {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Alias already taken".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -1380,6 +1400,8 @@ pub struct LinkPreviewResponse {
     pub domain: String,
     pub has_password: bool,
     pub is_expired: bool,
+    /// False when the link is not currently live (scheduled, expired, capped, or burned).
+    pub is_active: bool,
     pub created_at: String,
     pub click_count: i32,
     /// Destination reputation signal for the safe-link interstitial.
@@ -1466,9 +1488,16 @@ pub async fn preview_link(
 
             // A valid unlock may reveal an ordinary password-protected target so
             // the interstitial can describe it. Burn links stay secret until the
-            // authoritative redirect consumes their one-time click.
-            let protected =
-                (link.password_hash.is_some() && !password_unlocked) || link.burn_after_reading;
+            // authoritative redirect consumes their one-time click. A not-yet-live
+            // scheduled link is embargoed the same way: GET /{code} already 410s
+            // until starts_at, so the public preview must not leak original_url.
+            let not_yet_started = link
+                .starts_at
+                .map(|starts_at| Utc::now().naive_utc() < starts_at)
+                .unwrap_or(false);
+            let protected = (link.password_hash.is_some() && !password_unlocked)
+                || link.burn_after_reading
+                || not_yet_started;
             let (shown_url, shown_domain) = if protected {
                 (String::new(), String::new())
             } else {
@@ -1484,6 +1513,7 @@ pub async fn preview_link(
                     domain: shown_domain,
                     has_password: link.password_hash.is_some(),
                     is_expired,
+                    is_active: link.is_active(),
                     created_at: link.created_at.to_string(),
                     click_count: link.click_count,
                     reputation: ReputationInfo {
@@ -1714,6 +1744,7 @@ pub async fn redirect_link(
                 // Header-based password checks bypass the /verify middleware, so
                 // enforce both the per-IP CPU budget and per-IP+code budget here.
                 let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
+                    .map(|ip| crate::utils::rate_limiter::rate_limit_bucket(&ip))
                     .unwrap_or_else(|| "unknown".to_string());
                 for (limiter, key) in [
                     (
@@ -2006,6 +2037,7 @@ fn record_click_buffered(
         device: ua_info.device.clone(),
         browser: ua_info.browser.clone(),
         os: ua_info.os,
+        created_at: None,
     };
     match accounting {
         ClickAccounting::Buffered { .. } => click_buffer.add_click(click_data),
@@ -2637,8 +2669,8 @@ mod api_key_tests {
 
 #[cfg(test)]
 mod ssrf_tests {
-    use super::{build_pinned_client, resolve_and_validate, ValidatedTarget};
-    use std::net::SocketAddr;
+    use super::{build_pinned_client, is_disallowed_ip, resolve_and_validate, ValidatedTarget};
+    use std::net::{IpAddr, SocketAddr};
 
     /// Minimal HTTP/1.1 server that answers every connection with `200 ok`.
     /// Returns the address it is listening on (always 127.0.0.1:<ephemeral>).
@@ -2688,6 +2720,17 @@ mod ssrf_tests {
         assert_eq!(resp.text().await.unwrap(), "ok");
     }
 
+    #[test]
+    fn ipv4_compatible_private_and_metadata_are_disallowed() {
+        for s in ["::192.168.1.1", "::169.254.169.254", "::c0a8:1"] {
+            let ip: IpAddr = s.parse().expect(s);
+            assert!(
+                is_disallowed_ip(&ip),
+                "{s} encodes a private/metadata IPv4 and must be refused"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn literal_private_and_metadata_ips_are_refused() {
         for url in [
@@ -2701,6 +2744,8 @@ mod ssrf_tests {
             "http://[fd00::1]/",  // IPv6 ULA
             "http://0.0.0.0/",
             "http://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
+            "http://[::192.168.1.1]/",    // IPv4-compatible private
+            "http://[::169.254.169.254]/", // IPv4-compatible cloud metadata
         ] {
             let err = resolve_and_validate(url)
                 .await
@@ -2869,6 +2914,18 @@ async fn link_for_owner(db: &DatabaseConnection, id: i32, user_id: i32) -> Optio
 }
 
 /// List the routing rules for a link.
+#[utoipa::path(
+    get,
+    path = "/links/{id}/rules",
+    params(("id" = i32, Path, description = "Link ID")),
+    responses(
+        (status = 200, description = "Routing rules for the link", body = Vec<RoutingRuleResponse>),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+    ),
+    tag = "Links",
+    security(("bearer_auth" = []))
+)]
 pub async fn get_routing_rules(
     State(state): State<AppState>,
     Path(id): Path<i32>,
@@ -2908,6 +2965,20 @@ pub async fn get_routing_rules(
 }
 
 /// Replace all routing rules for a link (delete-then-insert in a transaction).
+#[utoipa::path(
+    put,
+    path = "/links/{id}/rules",
+    params(("id" = i32, Path, description = "Link ID")),
+    request_body = ReplaceRoutingRulesRequest,
+    responses(
+        (status = 200, description = "Routing rules replaced", body = RoutingRulesSavedResponse),
+        (status = 400, description = "Too many rules, or a destination URL is invalid or blocked"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+    ),
+    tag = "Links",
+    security(("bearer_auth" = []))
+)]
 pub async fn replace_routing_rules(
     State(state): State<AppState>,
     Path(id): Path<i32>,
@@ -3034,7 +3105,7 @@ pub async fn replace_routing_rules(
     path = "/links",
     params(LinksQuery),
     responses(
-        (status = 200, description = "List of links", body = Vec<LinkResponse>),
+        (status = 200, description = "The caller's non-deleted links", body = Vec<LinkResponse>),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "Links"
@@ -3494,9 +3565,26 @@ pub async fn update_link(
             }
         }
 
+        // consume_capped_click compares only links.click_count. Uncapped clicks
+        // still sitting in the buffer would otherwise be spent again after a
+        // cap is added, then added on flush. Fold them into click_count in the
+        // same write that sets max_clicks.
+        let pending_to_fold = if let ActiveValue::Set(Some(_)) = &active_link.max_clicks {
+            state.click_buffer.take_pending_count(link.id).await
+        } else {
+            0
+        };
+        if pending_to_fold > 0 {
+            active_link.click_count = Set(link.click_count.saturating_add(pending_to_fold));
+        }
+
         match active_link.update(&txn).await {
             Ok(updated) => {
                 if txn.commit().await.is_err() {
+                    state
+                        .click_buffer
+                        .add_pending_count(link.id, pending_to_fold)
+                        .await;
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
@@ -3552,6 +3640,10 @@ pub async fn update_link(
             }
             Err(_) => {
                 let _ = txn.rollback().await;
+                state
+                    .click_buffer
+                    .add_pending_count(link.id, pending_to_fold)
+                    .await;
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
@@ -3579,6 +3671,8 @@ pub async fn update_link(
     request_body = BulkCreateLinkRequest,
     responses(
         (status = 200, description = "Links created", body = BulkCreateLinkResponse),
+        (status = 400, description = "Batch too large"),
+        (status = 401, description = "Authentication required"),
     ),
     tag = "Links"
 )]
@@ -3645,6 +3739,7 @@ pub async fn bulk_create_links(
     // Per-link rate key: charged once per URL below so a bulk request cannot
     // create more links than the single-create budget allows.
     let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers)
+        .map(|ip| crate::utils::rate_limiter::rate_limit_bucket(&ip))
         .unwrap_or_else(|| "unknown".to_string());
 
     // Per-user link cap (MAX_LINKS_PER_USER), enforced across the whole batch so
@@ -3699,68 +3794,95 @@ pub async fn bulk_create_links(
             continue;
         }
 
-        let code: String = thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(6)
-            .map(char::from)
-            .collect();
-
-        let txn = match state.db.begin().await {
-            Ok(txn) => txn,
-            Err(error) => {
-                errors.push(format!("Failed to shorten {}: {}", url, error));
-                continue;
+        // create_link / clone_link loop until links.code is free (the column is
+        // globally unique, including soft-deleted rows). Bulk used to mint one
+        // 6-character code and surface a duplicate-key error on collision.
+        let mut created = false;
+        let mut last_duplicate: Option<String> = None;
+        for _ in 0..8 {
+            let mut code = generate_short_code();
+            while links::Entity::find()
+                .filter(links::Column::Code.eq(&code))
+                .one(&state.db)
+                .await
+                .unwrap_or(None)
+                .is_some()
+            {
+                code = generate_short_code();
             }
-        };
 
-        let scope_allowed = validate_link_resource_scope(
-            &txn,
-            user_id.expect("bulk create authentication checked above"),
-            payload.org_id,
-            payload.folder_id,
-            &[],
-        )
-        .await;
-        match scope_allowed {
-            Ok(true) => {}
-            Ok(false) => {
-                let _ = txn.rollback().await;
-                errors.push(format!("{}: folder or organization access denied", url));
-                continue;
+            let txn = match state.db.begin().await {
+                Ok(txn) => txn,
+                Err(error) => {
+                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    break;
+                }
+            };
+
+            let scope_allowed = validate_link_resource_scope(
+                &txn,
+                user_id.expect("bulk create authentication checked above"),
+                payload.org_id,
+                payload.folder_id,
+                &[],
+            )
+            .await;
+            match scope_allowed {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = txn.rollback().await;
+                    errors.push(format!("{}: folder or organization access denied", url));
+                    break;
+                }
+                Err(error) => {
+                    let _ = txn.rollback().await;
+                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    break;
+                }
             }
-            Err(error) => {
-                let _ = txn.rollback().await;
-                errors.push(format!("Failed to shorten {}: {}", url, error));
-                continue;
+
+            let link = links::ActiveModel {
+                original_url: Set(url.clone()),
+                code: Set(code.clone()),
+                user_id: Set(user_id),
+                folder_id: Set(payload.folder_id),
+                org_id: Set(payload.org_id),
+                ..Default::default()
+            };
+
+            match links::Entity::insert(link).exec(&txn).await {
+                Ok(link_res) => match txn.commit().await {
+                    Ok(()) => {
+                        result_links.push(CreateLinkResponse {
+                            id: link_res.last_insert_id,
+                            code: code.clone(),
+                            short_url: format!("{}/{}", base_url, code),
+                        });
+                        if let Some(b) = remaining_budget.as_mut() {
+                            *b = b.saturating_sub(1);
+                        }
+                        created = true;
+                        break;
+                    }
+                    Err(e) => {
+                        errors.push(format!("Failed to shorten {}: {}", url, e));
+                        break;
+                    }
+                },
+                Err(e) => {
+                    let _ = txn.rollback().await;
+                    if e.to_string().contains("duplicate key value") {
+                        last_duplicate = Some(format!("Failed to shorten {}: {}", url, e));
+                        continue;
+                    }
+                    errors.push(format!("Failed to shorten {}: {}", url, e));
+                    break;
+                }
             }
         }
-
-        let link = links::ActiveModel {
-            original_url: Set(url.clone()),
-            code: Set(code.clone()),
-            user_id: Set(user_id),
-            folder_id: Set(payload.folder_id),
-            org_id: Set(payload.org_id),
-            ..Default::default()
-        };
-
-        match links::Entity::insert(link).exec(&txn).await {
-            Ok(link_res) => match txn.commit().await {
-                Ok(()) => {
-                    result_links.push(CreateLinkResponse {
-                        id: link_res.last_insert_id,
-                        code: code.clone(),
-                        short_url: format!("{}/{}", base_url, code),
-                    });
-                    if let Some(b) = remaining_budget.as_mut() {
-                        *b = b.saturating_sub(1);
-                    }
-                }
-                Err(e) => errors.push(format!("Failed to shorten {}: {}", url, e)),
-            },
-            Err(e) => {
-                let _ = txn.rollback().await;
-                errors.push(format!("Failed to shorten {}: {}", url, e));
+        if !created {
+            if let Some(msg) = last_duplicate {
+                errors.push(msg);
             }
         }
     }
@@ -3907,7 +4029,7 @@ pub async fn bulk_update_links(
             .flatten();
 
         if let Some(link) = link {
-            if link.user_id == Some(user_id) {
+            if link.user_id == Some(user_id) && link.deleted_at.is_none() {
                 let code = link.code.clone();
                 let org_id = link.org_id;
                 let mut active_link: links::ActiveModel = link.into();
@@ -4112,6 +4234,30 @@ pub async fn clone_link(
                 }),
             )
                 .into_response();
+        }
+
+        // Clone inserts a new row, so it must honour the same per-user cap as
+        // create_link / bulk_create_links. Skipping it lets a user at the
+        // advertised MAX_LINKS_PER_USER mint extra active links.
+        if let Some(cap) = get_max_links_per_user() {
+            let existing = links::Entity::find()
+                .filter(links::Column::UserId.eq(user_id))
+                .filter(links::Column::DeletedAt.is_null())
+                .count(&state.db)
+                .await
+                .unwrap_or(0);
+            if existing >= cap {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "You have reached the maximum of {} links for this account",
+                            cap
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
         }
 
         // Generate new short code
@@ -4386,6 +4532,7 @@ pub struct UrlHealthResponse {
     responses(
         (status = 200, description = "URL health checked", body = UrlHealthResponse),
         (status = 400, description = "Invalid URL"),
+        (status = 401, description = "Unauthorized"),
     ),
     tag = "Links"
 )]
@@ -4698,8 +4845,9 @@ pub struct PreviewMetadataRequest {
     pub url: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct AvatarProxyQuery {
+    /// External http(s) avatar URL to fetch through this origin.
     pub url: String,
 }
 
@@ -4713,6 +4861,7 @@ pub struct AvatarProxyQuery {
 ///   * `image/svg+xml` — an SVG can carry `<script>`, which runs on navigation.
 ///   * a spoofed `image/png` header on an HTML/JS body — a sniffing browser
 ///     could execute it.
+///
 /// So we allow only inert raster types and return a fixed canonical string for
 /// each (never the raw upstream header). SVG is deliberately excluded. The
 /// handler additionally sends `X-Content-Type-Options: nosniff` and a locked-down
@@ -4742,6 +4891,18 @@ fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
 /// visitor's IP (the link-in-bio privacy leak). The fetch is SSRF-guarded
 /// (validated + DNS-pinned, redirects re-validated), restricted to successful
 /// http(s) responses carrying an allowed raster image type, and size-capped.
+#[utoipa::path(
+    get,
+    path = "/api/bio/avatar",
+    params(AvatarProxyQuery),
+    responses(
+        (status = 200, description = "Proxied raster avatar bytes", content_type = "image/png"),
+        (status = 400, description = "Invalid avatar URL"),
+        (status = 415, description = "Avatar is not a supported image type"),
+        (status = 502, description = "Could not fetch avatar"),
+    ),
+    tag = "Bio"
+)]
 pub async fn proxy_bio_avatar(
     axum::extract::Query(query): axum::extract::Query<AvatarProxyQuery>,
 ) -> axum::response::Response {
@@ -4814,6 +4975,7 @@ pub async fn proxy_bio_avatar(
     responses(
         (status = 200, description = "Link preview data", body = LinkPreviewData),
         (status = 400, description = "Invalid URL"),
+        (status = 401, description = "Unauthorized"),
     ),
     tag = "Links"
 )]
@@ -4847,6 +5009,17 @@ pub async fn get_link_preview_metadata(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "Only HTTP/HTTPS URLs supported"})),
+        )
+            .into_response();
+    }
+
+    // Same policy as create / health-check / avatar proxy: raw IPs, internal
+    // hostnames, dangerous extensions, and length limits must apply before any
+    // server-side fetch.
+    if let Err(msg) = validate_url(&payload.url) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": msg})),
         )
             .into_response();
     }

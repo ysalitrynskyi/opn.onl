@@ -124,9 +124,14 @@ export default function Settings() {
                 authFetch(API_ENDPOINTS.apiKeys),
             ]);
 
-            if (profileRes.ok) {
-                setProfile(await profileRes.json());
+            if (!profileRes.ok) {
+                const data = await profileRes.json().catch(() => null) as { error?: string } | null;
+                setError(data?.error || 'Failed to load account settings. Please try again.');
+                setProfile(null);
+                return;
             }
+
+            setProfile(await profileRes.json());
             if (settingsRes.ok) {
                 setAppSettings(await settingsRes.json());
             }
@@ -139,6 +144,8 @@ export default function Settings() {
             }
         } catch (err) {
             logger.error('Failed to fetch settings data', err);
+            setError('Failed to load account settings. Please try again.');
+            setProfile(null);
         } finally {
             setLoading(false);
         }
@@ -150,11 +157,10 @@ export default function Settings() {
         setSuccess('');
 
         try {
-            const token = localStorage.getItem('token');
-            if (!token) return;
-
-            const payload = JSON.parse(atob(token.split('.')[1]));
-            const username = payload.sub;
+            // register_start binds the passkey to the authenticated account;
+            // the username field is ignored server-side. Use the loaded profile
+            // rather than decoding the JWT — atob rejects base64url payloads.
+            const username = profile?.email ?? '';
 
             // Step 1: Start registration. Uses authFetch so the Bearer token is
             // sent — the backend binds the new passkey to the authenticated
@@ -455,7 +461,6 @@ export default function Settings() {
         setCreatingKey(true);
         setError('');
         setSuccess('');
-        setCreatedApiKey(null);
         try {
             const res = await authFetch(API_ENDPOINTS.apiKeys, {
                 method: 'POST',
@@ -469,7 +474,17 @@ export default function Settings() {
             setCreatedApiKey(data.key);
             setNewKeyName('');
             setSuccess("API key created — copy it now, it won't be shown again.");
-            await fetchData();
+            // Do not refetch: fetchData sets loading and can null profile,
+            // which unmounts this banner. The plaintext secret is shown once.
+            if (data.id != null) {
+                setApiKeys(prev => [{
+                    id: data.id,
+                    name: data.name || 'API key',
+                    key_prefix: data.key_prefix || String(data.key).slice(0, 12),
+                    last_used_at: null,
+                    created_at: data.created_at || new Date().toISOString(),
+                }, ...prev]);
+            }
         } catch (err) {
             setError(errorMessage(err));
         } finally {
@@ -478,6 +493,8 @@ export default function Settings() {
     };
 
     const handleRevokeApiKey = async (id: number) => {
+        if (!confirm('Are you sure you want to revoke this API key? It cannot be recovered.')) return;
+
         setError('');
         setSuccess('');
         try {
@@ -497,6 +514,31 @@ export default function Settings() {
         return (
             <div className="min-h-[60vh] flex items-center justify-center">
                 <Loader2 className="h-8 w-8 animate-spin text-primary-600" />
+            </div>
+        );
+    }
+
+    if (!profile) {
+        return (
+            <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+                <SEO title="Settings" description="Manage your account settings" noIndex />
+                <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-ink tracking-tight mb-8">Settings</h1>
+                <div
+                    role="alert"
+                    className="mb-6 flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
+                >
+                    <div className="flex items-center gap-2 min-w-0">
+                        <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                        <span>{error || 'Failed to load account settings. Please try again.'}</span>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => { setError(''); fetchData(); }}
+                        className="sm:ml-auto shrink-0 rounded-lg border border-danger/30 bg-surface px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:border-ink/30"
+                    >
+                        Try again
+                    </button>
+                </div>
             </div>
         );
     }

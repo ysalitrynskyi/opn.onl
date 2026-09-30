@@ -130,6 +130,7 @@ async fn get_link_tags(db: &sea_orm::DatabaseConnection, link_id: i32) -> Vec<Ta
         (status = 201, description = "Folder created", body = FolderResponse),
         (status = 400, description = "Invalid request"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions to create an organization folder"),
     ),
     tag = "Folders"
 )]
@@ -487,20 +488,9 @@ pub async fn delete_folder(
         ));
     }
 
-    // Clear folder_id on all links in this folder before deleting
-    use sea_orm::sea_query::Expr;
-    links::Entity::update_many()
-        .col_expr(links::Column::FolderId, Expr::value(Option::<i32>::None))
-        .filter(links::Column::FolderId.eq(folder_id))
-        .exec(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Failed to update links"})),
-            )
-        })?;
-
+    // fk-link-folder_id is ON DELETE SET NULL, so a single DELETE unfiles
+    // links in the same statement. A prior UPDATE then DELETE could unfile
+    // and then fail, leaving an empty folder behind.
     folders::Entity::delete_by_id(folder_id)
         .exec(&state.db)
         .await
@@ -523,7 +513,7 @@ pub async fn delete_folder(
     ),
     request_body = MoveLinkToFolderRequest,
     responses(
-        (status = 200, description = "Links moved", body = serde_json::Value),
+        (status = 200, description = "Links moved (`{\"moved\": N}`)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),
@@ -612,7 +602,7 @@ pub async fn move_links_to_folder(
         ("folder_id" = i32, Path, description = "Folder ID")
     ),
     responses(
-        (status = 200, description = "Links in folder"),
+        (status = 200, description = "Non-deleted links in folder"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),

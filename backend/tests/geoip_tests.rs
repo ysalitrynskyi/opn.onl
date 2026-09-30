@@ -1,9 +1,6 @@
 //! GeoIP and User Agent parsing tests
 
-#[path = "../src/utils/geoip.rs"]
-mod geoip;
-
-use geoip::{lookup_ip, parse_user_agent, GeoLocation, UserAgentInfo};
+use opn_onl_backend::utils::geoip::{lookup_ip, parse_user_agent};
 
 mod browser_detection {
     use super::*;
