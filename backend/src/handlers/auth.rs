@@ -8,7 +8,9 @@ use validator::Validate;
 use crate::entity::{api_keys, passkeys, users};
 use crate::utils::email::generate_token;
 use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
-use crate::utils::jwt::{create_jwt, hash_password, verify_password};
+use crate::utils::jwt::{
+    create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password, PASSWORD_TOO_LONG,
+};
 use crate::AppState;
 use axum::http::HeaderMap;
 
@@ -88,6 +90,16 @@ pub async fn register(
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: e.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if password_exceeds_bcrypt_limit(&payload.password) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
             }),
         )
             .into_response();
@@ -614,6 +626,16 @@ pub async fn reset_password(
             .into_response();
     }
 
+    if password_exceeds_bcrypt_limit(&payload.password) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
@@ -766,6 +788,16 @@ pub async fn change_password(
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: e.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if password_exceeds_bcrypt_limit(&payload.new_password) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
             }),
         )
             .into_response();

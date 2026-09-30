@@ -17,7 +17,7 @@ use validator::Validate;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
-use crate::utils::jwt::decode_jwt;
+use crate::utils::jwt::{decode_jwt, password_exceeds_bcrypt_limit, PASSWORD_TOO_LONG};
 use crate::AppState;
 
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
@@ -1085,6 +1085,20 @@ pub async fn create_link(
         }
     };
 
+    // An empty password is no password. The unlock form will not submit an
+    // empty field, so a link "protected" by "" could never be opened from the
+    // UI; the dashboard already omits the field instead of sending "".
+    let link_password = payload.password.as_deref().filter(|p| !p.is_empty());
+    if link_password.is_some_and(password_exceeds_bcrypt_limit) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: PASSWORD_TOO_LONG.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let user_id = get_user_id_from_header(&state.db, &headers).await;
 
     // Check email verification for authenticated users
@@ -1239,7 +1253,7 @@ pub async fn create_link(
         code
     };
 
-    let password_hash = if let Some(password) = &payload.password {
+    let password_hash = if let Some(password) = link_password {
         match hash(password, DEFAULT_COST) {
             Ok(h) => Some(h),
             Err(_) => {
@@ -3513,9 +3527,20 @@ pub async fn update_link(
             active_link.expires_at = Set(Some(expires.naive_utc()));
         }
 
+        // "" is not a new password (see create_link); clearing one is what
+        // remove_password is for, so an empty field leaves it unchanged.
         if payload.remove_password == Some(true) {
             active_link.password_hash = Set(None);
-        } else if let Some(password) = payload.password {
+        } else if let Some(password) = payload.password.filter(|p| !p.is_empty()) {
+            if password_exceeds_bcrypt_limit(&password) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: PASSWORD_TOO_LONG.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             match hash(password, DEFAULT_COST) {
                 Ok(h) => active_link.password_hash = Set(Some(h)),
                 Err(_) => {

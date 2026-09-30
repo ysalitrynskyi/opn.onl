@@ -101,13 +101,15 @@ mod tests {
     }
 
     /// Login checks the password against the stored hash: the registered one
-    /// (100 characters, non-ASCII) signs in and its token works; the same
-    /// password with one letter changed is refused and yields no token.
+    /// (72 bytes of non-ASCII, the most bcrypt reads) signs in and its token
+    /// works; the same password with one letter changed is refused and yields
+    /// no token.
     #[tokio::test]
     async fn login_accepts_the_registered_password_and_rejects_a_wrong_one() {
         let (server, _db) = common::spawn_real_app().await;
         let email = common::unique_email();
-        let password = format!("{}!", "Пароль-🔐-".repeat(11));
+        let password = "Пароль-🔐-".repeat(4);
+        assert_eq!(password.len(), 72);
 
         let register = server
             .post("/auth/register")
@@ -146,6 +148,95 @@ mod tests {
         assert!(
             login.json::<serde_json::Value>().get("token").is_none(),
             "a refused login must not issue a token"
+        );
+    }
+
+    /// bcrypt hashes only the first 72 bytes, so a longer new password would
+    /// sign in with anything sharing that prefix. Register, reset and change
+    /// refuse it, counted in bytes (37 "é" are 74). Login does not: an account
+    /// whose password was set before the cap still signs in with all of it.
+    #[tokio::test]
+    async fn new_passwords_over_72_bytes_are_refused_but_old_ones_still_sign_in() {
+        use opn_onl_backend::entity::users;
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+        let (server, db) = common::spawn_real_app().await;
+
+        for too_long in ["a".repeat(73), "é".repeat(37)] {
+            let response = server
+                .post("/auth/register")
+                .json(&json!({ "email": common::unique_email(), "password": too_long }))
+                .await;
+            assert_eq!(
+                response.status_code(),
+                400,
+                "{} bytes accepted: {}",
+                too_long.len(),
+                response.text()
+            );
+            assert!(
+                response.text().contains("at most 72 bytes"),
+                "{}",
+                response.text()
+            );
+        }
+
+        let email = common::unique_email();
+        let response = server
+            .post("/auth/register")
+            .json(&json!({ "email": email, "password": "a".repeat(72) }))
+            .await;
+        assert_eq!(
+            response.status_code(),
+            201,
+            "72 bytes refused: {}",
+            response.text()
+        );
+        let body: serde_json::Value = response.json();
+        let token = body["token"].as_str().unwrap().to_string();
+        let user_id = body["user_id"].as_i64().unwrap() as i32;
+
+        let change = server
+            .post("/auth/change-password")
+            .authorization_bearer(&token)
+            .json(&json!({ "current_password": "a".repeat(72), "new_password": "b".repeat(73) }))
+            .await;
+        assert_eq!(change.status_code(), 400, "change: {}", change.text());
+        assert!(
+            change.text().contains("at most 72 bytes"),
+            "{}",
+            change.text()
+        );
+
+        let reset = server
+            .post("/auth/reset-password")
+            .json(&json!({ "token": "not-a-real-token", "password": "b".repeat(73) }))
+            .await;
+        assert_eq!(reset.status_code(), 400, "reset: {}", reset.text());
+        assert!(
+            reset.text().contains("at most 72 bytes"),
+            "{}",
+            reset.text()
+        );
+
+        let long = "x".repeat(100);
+        let user = users::Entity::find_by_id(user_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut active: users::ActiveModel = user.into();
+        active.password_hash = Set(opn_onl_backend::utils::jwt::hash_password(&long).unwrap());
+        active.update(&db).await.unwrap();
+        let login = server
+            .post("/auth/login")
+            .json(&json!({ "email": email, "password": long }))
+            .await;
+        assert_eq!(
+            login.status_code(),
+            200,
+            "a password set before the cap must still sign in: {}",
+            login.text()
         );
     }
 

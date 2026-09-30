@@ -30,6 +30,23 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, bcrypt::Bcryp
     verify(password, hash)
 }
 
+/// bcrypt hashes only the first 72 bytes of its input and ignores the rest,
+/// so a longer password is silently weaker than the one that was typed: every
+/// password sharing those 72 bytes unlocks it. New account and link passwords
+/// are capped here. Login and link unlock still accept any length, so anything
+/// set before the cap keeps working.
+pub const MAX_PASSWORD_BYTES: usize = 72;
+
+/// Error text for a password over [`MAX_PASSWORD_BYTES`]. Counted in bytes
+/// because that is what bcrypt counts; accented letters and emoji take more
+/// than one.
+pub const PASSWORD_TOO_LONG: &str =
+    "Password must be at most 72 bytes (72 plain characters; fewer with accents or emoji)";
+
+pub fn password_exceeds_bcrypt_limit(password: &str) -> bool {
+    password.len() > MAX_PASSWORD_BYTES
+}
+
 /// Read and validate the JWT signing secret from the environment.
 ///
 /// Panics if `JWT_SECRET` is unset, empty, or shorter than 32 bytes. The server

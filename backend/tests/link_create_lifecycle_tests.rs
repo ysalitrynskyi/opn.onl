@@ -464,3 +464,109 @@ async fn qr_code_png_for_owner_forbidden_for_stranger() {
         &bytes[..bytes.len().min(8)]
     );
 }
+
+/// An empty password is no password. Stored as a bcrypt hash of "", it made a
+/// link that the unlock form (which will not submit an empty field) could
+/// never open. On create "" leaves the link open; on update it leaves the
+/// existing password alone, because clearing it is what remove_password is for.
+#[tokio::test]
+async fn empty_link_password_is_no_password() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let dest = format!("https://iana.org/open-{}", unique_code());
+    let body = create_link(
+        &server,
+        &token,
+        json!({ "original_url": dest, "password": "" }),
+    )
+    .await;
+    assert_eq!(body["has_password"], json!(false), "created: {body}");
+    let code = body["code"].as_str().unwrap().to_string();
+    let id = body["id"].as_i64().unwrap();
+
+    let redirect = server.get(&format!("/{code}")).await;
+    assert_eq!(
+        redirect.status_code(),
+        307,
+        "an open link must redirect: {}",
+        redirect.text()
+    );
+    assert_eq!(
+        redirect
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some(dest.as_str())
+    );
+
+    let set = server
+        .put(&format!("/links/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "password": "correct-horse" }))
+        .await;
+    assert_eq!(set.status_code(), 200, "set password: {}", set.text());
+    let blank = server
+        .put(&format!("/links/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "password": "" }))
+        .await;
+    assert_eq!(blank.status_code(), 200, "empty update: {}", blank.text());
+    assert_eq!(
+        blank.json::<Value>()["has_password"],
+        json!(true),
+        "\"\" must not replace the password"
+    );
+    let unlock = server
+        .post(&format!("/{code}/verify"))
+        .json(&json!({ "password": "correct-horse" }))
+        .await;
+    assert_eq!(
+        unlock.status_code(),
+        200,
+        "the original password must still unlock: {}",
+        unlock.text()
+    );
+}
+
+/// bcrypt reads only the first 72 bytes, so a longer link password would
+/// unlock with anything sharing that prefix. Create and update refuse it,
+/// counted in bytes (37 "é" are 74); exactly 72 bytes is accepted.
+#[tokio::test]
+async fn link_password_over_72_bytes_is_refused() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let dest = format!("https://iana.org/long-{}", unique_code());
+
+    for too_long in ["k".repeat(73), "é".repeat(37)] {
+        let res = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": dest, "password": too_long }))
+            .await;
+        assert_eq!(
+            res.status_code(),
+            400,
+            "{} bytes accepted: {}",
+            too_long.len(),
+            res.text()
+        );
+        assert!(res.text().contains("at most 72 bytes"), "{}", res.text());
+    }
+
+    let body = create_link(
+        &server,
+        &token,
+        json!({ "original_url": dest, "password": "k".repeat(72) }),
+    )
+    .await;
+    assert_eq!(body["has_password"], json!(true), "created: {body}");
+    let id = body["id"].as_i64().unwrap();
+
+    let res = server
+        .put(&format!("/links/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "password": "k".repeat(73) }))
+        .await;
+    assert_eq!(res.status_code(), 400, "update: {}", res.text());
+    assert!(res.text().contains("at most 72 bytes"), "{}", res.text());
+}
