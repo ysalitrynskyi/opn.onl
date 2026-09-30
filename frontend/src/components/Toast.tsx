@@ -27,11 +27,13 @@ export function Toast({ id, message, type = 'success', duration = 3000, onClose 
         info: <Info className="h-5 w-5" />,
     };
 
+    // White text needs a fill dark enough for 4.5:1; the 500 shades these
+    // toasts used were 2.2-3.8:1. The state tokens all clear it.
     const styles = {
-        success: 'bg-emerald-500 text-white',
-        error: 'bg-red-500 text-white',
-        warning: 'bg-amber-500 text-white',
-        info: 'bg-blue-500 text-white',
+        success: 'bg-success text-white',
+        error: 'bg-danger text-white',
+        warning: 'bg-warning text-white',
+        info: 'bg-primary-600 text-white',
     };
 
     return (

@@ -178,15 +178,15 @@ export default function Developers() {
                                         <span className="h-2.5 w-2.5 rounded-full bg-white/20" />
                                         <span className="h-2.5 w-2.5 rounded-full bg-white/20" />
                                         <span className="h-2.5 w-2.5 rounded-full bg-white/20" />
-                                        <span className="ml-2 font-mono text-xs text-white/40">shorten.sh</span>
+                                        <span className="ml-2 font-mono text-xs text-white/60">shorten.sh</span>
                                     </div>
                                     <pre className="overflow-x-auto px-5 py-5 font-mono text-[13px] leading-7 text-white/90">
-<span className="text-white/40"># one POST. one short link.</span>{'\n'}
+<span className="text-white/60"># one POST. one short link.</span>{'\n'}
 <span className="text-primary-300">curl</span> -X POST {API_BASE}/links \{'\n'}
 {'  '}-H <span className="text-emerald-300">"Authorization: Bearer opn_•••"</span> \{'\n'}
 {'  '}-H <span className="text-emerald-300">"Content-Type: application/json"</span> \{'\n'}
 {'  '}-d <span className="text-emerald-300">{'\'{"original_url":"https://example.com"}\''}</span>{'\n\n'}
-<span className="text-success">→</span> <span className="text-white/50">{'{ "short_url": "'}</span><span className="text-primary-300">{API_BASE}/abc123</span><span className="text-white/50">{'" }'}</span>
+<span className="text-emerald-400">→</span> <span className="text-white/60">{'{ "short_url": "'}</span><span className="text-primary-300">{API_BASE}/abc123</span><span className="text-white/60">{'" }'}</span>
                                     </pre>
                                 </div>
                             </motion.div>
@@ -307,7 +307,7 @@ export default function Developers() {
                             <div className="border-t lg:border-t-0 lg:border-l border-white/10 p-6 sm:p-10 lg:p-12 flex flex-col justify-center gap-4">
                                 <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
                                     <div className="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
-                                        <span className="font-mono text-xs text-white/40">claude_desktop_config.json</span>
+                                        <span className="font-mono text-xs text-white/60">claude_desktop_config.json</span>
                                         <CopyButton text={MCP_CONFIG} light />
                                     </div>
                                     <pre className="overflow-x-auto px-5 py-4 font-mono text-[13px] leading-6 text-white/90">{MCP_CONFIG}</pre>

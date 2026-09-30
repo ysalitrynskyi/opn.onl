@@ -98,7 +98,7 @@ export default function NotFound() {
             transition={{ delay: 0.5 }}
             className="mt-12 pt-8 border-t border-slate-700/50"
           >
-            <p className="text-slate-500 text-sm mb-4">Looking for something specific?</p>
+            <p className="text-slate-400 text-sm mb-4">Looking for something specific?</p>
             <nav aria-label="Helpful links" className="flex flex-wrap justify-center gap-4">
               <Link 
                 to="/features" 

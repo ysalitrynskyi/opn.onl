@@ -142,7 +142,7 @@ export default function PasswordPrompt() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ delay: 0.4 }}
-                    className="text-center text-xs text-slate-400 mt-6"
+                    className="text-center text-xs text-slate-500 mt-6"
                 >
                     🔒 Your connection is secure. Password is transmitted over HTTPS.
                 </motion.p>

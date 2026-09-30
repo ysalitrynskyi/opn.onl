@@ -154,7 +154,7 @@ export default function Bio() {
 
                 {/* Footer */}
                 <div className="mt-10 text-center">
-                    <RouterLink to="/" className="text-xs text-slate-400 hover:text-slate-600">
+                    <RouterLink to="/" className="text-xs text-slate-500 hover:text-slate-700">
                         Powered by opn.onl
                     </RouterLink>
                 </div>

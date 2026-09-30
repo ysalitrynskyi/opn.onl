@@ -162,7 +162,7 @@ export default function Pricing() {
                                     {plan.price}
                                 </span>
                                 {plan.period && (
-                                    <span className={`text-sm ml-2 ${plan.highlighted ? 'text-primary-200' : 'text-slate-500'}`}>
+                                    <span className={`text-sm ml-2 ${plan.highlighted ? 'text-primary-100' : 'text-slate-500'}`}>
                                         {plan.period}
                                     </span>
                                 )}
@@ -254,13 +254,13 @@ export default function Pricing() {
                     initial={{ opacity: 0, y: 20 }}
                     whileInView={{ opacity: 1, y: 0 }}
                     viewport={{ once: true }}
-                    className="bg-gradient-to-r from-rose-500 to-pink-500 rounded-2xl p-8 sm:p-12 text-center text-white"
+                    className="bg-gradient-to-r from-rose-600 to-pink-600 rounded-2xl p-8 sm:p-12 text-center text-white"
                 >
                     <Heart className="h-12 w-12 mx-auto mb-4 fill-current" />
                     <h2 className="text-2xl sm:text-3xl font-bold mb-4">
                         Love opn.onl? Support the project!
                     </h2>
-                    <p className="text-rose-100 mb-6 max-w-xl mx-auto">
+                    <p className="text-white mb-6 max-w-xl mx-auto">
                         opn.onl is built and maintained by volunteers. If you find it useful, 
                         consider starring us on GitHub or contributing to the project.
                     </p>

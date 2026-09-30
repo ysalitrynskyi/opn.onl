@@ -829,7 +829,7 @@ export default function Admin() {
                                             {user.deleted_at ? (
                                                 <button
                                                     onClick={() => restoreUser(user.id)}
-                                                    className="text-green-600 hover:text-green-800 text-sm font-medium"
+                                                    className="text-green-700 hover:text-green-800 text-sm font-medium"
                                                 >
                                                     Restore
                                                 </button>
@@ -838,7 +838,7 @@ export default function Admin() {
                                                     {user.disabled_at && (
                                                         <button
                                                             onClick={() => enableUser(user.id)}
-                                                            className="text-green-600 hover:text-green-800 text-sm font-medium"
+                                                            className="text-green-700 hover:text-green-800 text-sm font-medium"
                                                             title={user.disabled_reason ?? 'Enable user'}
                                                         >
                                                             Enable
@@ -847,7 +847,7 @@ export default function Admin() {
                                                     {!user.email_verified && (
                                                         <button
                                                             onClick={() => verifyUserEmail(user.id)}
-                                                            className="text-green-600 hover:text-green-800 text-sm font-medium"
+                                                            className="text-green-700 hover:text-green-800 text-sm font-medium"
                                                             title="Mark email as verified"
                                                         >
                                                             <MailCheck className="h-4 w-4 inline" /> Verify
@@ -1039,12 +1039,12 @@ export default function Admin() {
                                             )}
                                         </td>
                                         <td className="px-4 py-3 text-sm text-slate-600 whitespace-nowrap">
-                                            {link.user_email ?? <span className="text-slate-400">anonymous</span>}
+                                            {link.user_email ?? <span className="text-slate-500">anonymous</span>}
                                             {link.org_id != null && <Badge color="blue">org</Badge>}
                                         </td>
                                         <td className="px-4 py-3 text-sm text-right text-slate-600">
                                             {link.click_count.toLocaleString()}
-                                            {link.max_clicks != null && <span className="text-slate-400"> / {link.max_clicks}</span>}
+                                            {link.max_clicks != null && <span className="text-slate-500"> / {link.max_clicks}</span>}
                                         </td>
                                         <td className="px-4 py-3 whitespace-nowrap space-x-1">
                                             {link.has_password && <IconFlag title="Password protected"><Lock className="h-3.5 w-3.5" /></IconFlag>}
@@ -1067,7 +1067,7 @@ export default function Admin() {
                                             {link.deleted_at ? (
                                                 <button
                                                     onClick={() => restoreLink(link)}
-                                                    className="text-green-600 hover:text-green-800 text-sm font-medium"
+                                                    className="text-green-700 hover:text-green-800 text-sm font-medium"
                                                 >
                                                     <RotateCcw className="h-4 w-4 inline" /> Restore
                                                 </button>
@@ -1458,7 +1458,7 @@ function StatCard({
             </div>
             <div className="text-2xl font-bold text-slate-900">{value.toLocaleString()}</div>
             <div className="text-sm text-slate-500">{label}</div>
-            {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
+            {sub && <div className="text-xs text-slate-500 mt-1">{sub}</div>}
         </div>
     );
 }

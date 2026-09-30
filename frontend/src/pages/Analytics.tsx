@@ -308,8 +308,8 @@ export default function Analytics() {
                                 </linearGradient>
                             </defs>
                             <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.916 0.008 266)" />
-                            <XAxis dataKey="date" stroke="oklch(0.598 0.014 266)" fontSize={12} />
-                            <YAxis stroke="oklch(0.598 0.014 266)" fontSize={12} />
+                            <XAxis dataKey="date" stroke="oklch(0.546 0.014 266)" fontSize={12} />
+                            <YAxis stroke="oklch(0.546 0.014 266)" fontSize={12} />
                             <Tooltip
                                 contentStyle={{
                                     backgroundColor: 'oklch(0.999 0.001 266)',

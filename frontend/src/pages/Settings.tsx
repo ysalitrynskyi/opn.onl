@@ -1137,7 +1137,7 @@ export default function Settings() {
                                 </div>
                                 <div>
                                     <h2 className="font-display text-lg font-bold text-danger tracking-tight">Danger Zone</h2>
-                                    <p className="text-sm text-danger/80">Irreversible actions</p>
+                                    <p className="text-sm text-danger">Irreversible actions</p>
                                 </div>
                             </div>
                         </div>
@@ -1157,7 +1157,7 @@ export default function Settings() {
                                 <form onSubmit={handleDeleteAccount} className="space-y-4">
                                     <div className="rounded-xl border border-danger/30 bg-danger/5 p-4">
                                         <p className="text-sm font-medium text-danger">This action cannot be undone!</p>
-                                        <p className="text-sm text-danger/80">All your links and data will be permanently deleted.</p>
+                                        <p className="text-sm text-danger">All your links and data will be permanently deleted.</p>
                                     </div>
                                     <input
                                         type="password"

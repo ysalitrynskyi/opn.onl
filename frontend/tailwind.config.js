@@ -28,17 +28,22 @@ export default {
           soft: 'oklch(0.936 0.035 262 / <alpha-value>)',
         },
         // Neutral scale, tinted slightly toward the cobalt hue for cohesion.
+        // Every token used for text must reach WCAG AA (4.5:1) on the
+        // backgrounds it sits on; src/designTokens.test.ts checks this.
         ink:   'oklch(0.235 0.021 266 / <alpha-value>)', // primary text / near-black
         muted: 'oklch(0.450 0.018 266 / <alpha-value>)', // secondary text
-        faint: 'oklch(0.598 0.014 266 / <alpha-value>)', // tertiary text
+        faint: 'oklch(0.546 0.014 266 / <alpha-value>)', // tertiary text (4.5:1 on paper and primary-50)
         line:  'oklch(0.916 0.008 266 / <alpha-value>)', // hairline border
         line2: 'oklch(0.852 0.010 266 / <alpha-value>)', // stronger border
         paper: 'oklch(0.986 0.004 266 / <alpha-value>)', // page background
         surface: 'oklch(0.999 0.001 266 / <alpha-value>)', // card surface
-        // States (reserved strictly for status, never decoration)
-        success: 'oklch(0.560 0.110 158 / <alpha-value>)',
-        danger:  'oklch(0.560 0.196 25 / <alpha-value>)',
-        warning: 'oklch(0.740 0.140 76 / <alpha-value>)',
+        // States (reserved strictly for status, never decoration). Dark enough
+        // to be read as text on their own /5 and /10 tints.
+        success: 'oklch(0.508 0.110 158 / <alpha-value>)',
+        danger:  'oklch(0.540 0.196 25 / <alpha-value>)',
+        // Chroma is lower than the old light amber so the darker shade stays
+        // inside sRGB.
+        warning: 'oklch(0.526 0.110 76 / <alpha-value>)',
       },
       fontFamily: {
         // Distinctive grotesque display + calm humanist body. Mono only for URLs/codes.

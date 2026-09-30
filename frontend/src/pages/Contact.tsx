@@ -120,7 +120,7 @@ export default function Contact() {
                             </div>
                             <h3 className="font-bold text-slate-900 mb-2">Response Time</h3>
                             <p className="text-slate-500 text-sm mb-3">We typically respond within</p>
-                            <span className="text-emerald-600 font-medium">24-48 hours</span>
+                            <span className="text-emerald-700 font-medium">24-48 hours</span>
                         </motion.div>
                     </div>
 

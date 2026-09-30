@@ -59,7 +59,7 @@ export const LinkPreviewCard = ({ url, className = '', compact = false }: LinkPr
     if (loading) {
         return (
             <div className={`animate-pulse bg-slate-100 rounded-lg ${compact ? 'h-16' : 'h-32'} ${className}`}>
-                <div className="flex items-center justify-center h-full text-slate-400 text-sm">
+                <div className="flex items-center justify-center h-full text-slate-600 text-sm">
                     Loading preview...
                 </div>
             </div>

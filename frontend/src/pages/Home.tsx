@@ -295,11 +295,11 @@ export default function Home() {
                             </div>
                             <div className="border-t lg:border-t-0 lg:border-l border-white/10 p-8 sm:p-12 lg:p-14 flex items-center">
                                 <pre className="w-full font-mono text-sm leading-7 text-white/90 overflow-x-auto">
-<span className="text-white/40"># clone & launch</span>{'\n'}
+<span className="text-white/60"># clone & launch</span>{'\n'}
 <span className="text-primary-300">git</span> clone https://github.com/ysalitrynskyi/opn.onl{'\n'}
 <span className="text-primary-300">cd</span> opn.onl{'\n'}
 <span className="text-primary-300">docker</span> compose up -d{'\n\n'}
-<span className="text-success">✓</span> <span className="text-white/50">api, web, postgres, redis — live</span>
+<span className="text-emerald-400">✓</span> <span className="text-white/60">api, web, postgres, redis — live</span>
                                 </pre>
                             </div>
                         </div>
@@ -364,8 +364,8 @@ export default function Home() {
                                     <pre className="overflow-x-auto font-mono text-[13px] leading-7 text-ink">
 <span className="text-faint"># shorten from anywhere</span>{'\n'}
 <span className="text-primary-600">curl</span> -X POST l.opn.onl/links \{'\n'}
-{'  '}-H <span className="text-emerald-600">"Authorization: Bearer opn_•••"</span> \{'\n'}
-{'  '}-d <span className="text-emerald-600">{'\'{"original_url":"https://…"}\''}</span>
+{'  '}-H <span className="text-emerald-700">"Authorization: Bearer opn_•••"</span> \{'\n'}
+{'  '}-d <span className="text-emerald-700">{'\'{"original_url":"https://…"}\''}</span>
                                     </pre>
                                     <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-4 font-mono text-[11px]">
                                         <span className="text-faint">mcp tools:</span>
