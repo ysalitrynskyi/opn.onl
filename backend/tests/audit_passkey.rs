@@ -60,8 +60,7 @@ fn passkey_login_start_shape(body: &Value) -> (bool, Option<&Vec<Value>>) {
 
 #[tokio::test]
 async fn passkey_login_start_does_not_enumerate_users() {
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("ENABLE_PASSKEYS", "true") };
+    common::set_env("ENABLE_PASSKEYS", "true");
     let (server, db) = spawn_real_app().await;
 
     let no_passkey_email = unique_email();

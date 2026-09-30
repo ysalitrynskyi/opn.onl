@@ -27,8 +27,7 @@ async fn register_ok(server: &axum_test::TestServer, email: &str) -> (String, i3
 
 #[tokio::test]
 async fn soft_deleted_email_can_be_registered_again() {
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("ENABLE_ACCOUNT_DELETION", "true") };
+    common::set_env("ENABLE_ACCOUNT_DELETION", "true");
 
     let (server, db) = spawn_real_app().await;
     let email = unique_email();
