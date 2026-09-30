@@ -1260,4 +1260,64 @@ describe('Admin Page', () => {
             expect(screen.getByText(/page 3 of/i)).toBeInTheDocument();
         });
     });
+
+    describe('Count labels', () => {
+        // Same routing as the beforeEach fetch mock, with single-item payloads swapped in.
+        const mockAdminFetch = (overrides: { stats?: object; users?: object; links?: object }) => {
+            global.fetch = vi.fn((url: string) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/stats')) return respond(overrides.stats ?? mockStats);
+                if (url.includes('/admin/activity')) return respond(mockActivity);
+                if (url.includes('/admin/blocked/')) return respond([]);
+                if (url.includes('/admin/users')) return respond(overrides.users ?? mockUsers);
+                if (url.includes('/admin/links')) return respond(overrides.links ?? mockLinks);
+                if (url.includes('/admin/orgs')) return respond(mockOrgs);
+                return respond({});
+            }) as any;
+        };
+
+        it('says "1 admin" when there is a single admin', async () => {
+            mockAdminFetch({ stats: { ...mockStats, admin_users: 1 } });
+            render(<Admin />);
+
+            expect(await screen.findByText('100 verified · 1 admin')).toBeInTheDocument();
+        });
+
+        it('counts a single user and a single API key in the singular', async () => {
+            mockAdminFetch({ users: { ...mockUsers, users: [mockUsers.users[0]], total: 1 } });
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+
+            expect(await screen.findByText('1 user')).toBeInTheDocument();
+            expect(screen.getByTitle('1 API key · 0 passkeys')).toBeInTheDocument();
+        });
+
+        it('counts a single link in the singular in the total and the bulk actions', async () => {
+            const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+            mockAdminFetch({ links: { ...mockLinks, links: [mockLinks.links[0]], total: 1 } });
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /^links$/i }));
+
+            expect(await screen.findByText('1 link')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('checkbox', { name: /select all links/i }));
+            fireEvent.click(screen.getByRole('button', { name: /restore selected/i }));
+            expect(await screen.findByText('Restored 1 link')).toBeInTheDocument();
+
+            fireEvent.click(await screen.findByRole('checkbox', { name: /select all links/i }));
+            fireEvent.click(await screen.findByRole('button', { name: /delete selected/i }));
+            expect(confirmSpy).toHaveBeenCalledWith('Delete 1 selected link? They stop redirecting immediately.');
+            expect(await screen.findByText('Deleted 1 link')).toBeInTheDocument();
+        });
+
+        it('says "1 organization" for a single organization', async () => {
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /organizations/i }));
+
+            expect(await screen.findByText('1 organization')).toBeInTheDocument();
+        });
+    });
 });

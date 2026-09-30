@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { pluralize } from '../utils/plural';
 
 interface SparklineProps {
     data: number[];
@@ -56,7 +57,7 @@ export const Sparkline = ({
     const total = data.reduce((sum, v) => sum + v, 0);
 
     return (
-        <div className="relative group" title={showTooltip ? `Total: ${total} clicks` : undefined}>
+        <div className="relative group" title={showTooltip ? `Total: ${total} ${pluralize(total, 'click')}` : undefined}>
             <svg
                 ref={svgRef}
                 width={width}
@@ -113,7 +114,7 @@ export const Sparkline = ({
                                 ))}
                             </div>
                         ) : (
-                            <span>{total} clicks (7d)</span>
+                            <span>{total} {pluralize(total, 'click')} (7d)</span>
                         )}
                     </div>
                 </div>

@@ -25,6 +25,7 @@ import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types'
 import { takePendingUrl } from '../utils/pendingUrl';
 import { safeLocalStorage } from '../utils/storage';
 import { localIsoDate } from '../utils/localIsoDate';
+import { pluralize } from '../utils/plural';
 
 interface AppSettings {
     custom_aliases_enabled: boolean;
@@ -202,7 +203,7 @@ export default function Dashboard() {
                 fetchLinks();
 
                 if (data.errors && data.errors.length > 0) {
-                    setError(`Created ${data.links.length} links. ${data.errors.length} failed: ${data.errors.slice(0, 3).join(', ')}${data.errors.length > 3 ? '...' : ''}`);
+                    setError(`Created ${data.links.length} ${pluralize(data.links.length, 'link')}. ${data.errors.length} failed: ${data.errors.slice(0, 3).join(', ')}${data.errors.length > 3 ? '...' : ''}`);
                 }
             } else {
                 const data = await res.json();
@@ -571,6 +572,7 @@ export default function Dashboard() {
 
     const totalClicks = links.reduce((sum, link) => sum + link.click_count, 0);
     const activeLinks = links.filter(l => l.is_active).length;
+    const validBulkUrlCount = bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length;
 
     if (loading) {
         return (
@@ -668,7 +670,7 @@ export default function Dashboard() {
                     <div className="flex items-center gap-4 mt-3 text-sm text-muted">
                         <span className="inline-flex items-center gap-1.5">
                             <Link2 className="h-4 w-4 text-faint" />
-                            {links.length} links
+                            {links.length} {pluralize(links.length, 'link')}
                         </span>
                         <span className="inline-flex items-center gap-1.5">
                             <Zap className="h-4 w-4 text-success" />
@@ -676,7 +678,7 @@ export default function Dashboard() {
                         </span>
                         <span className="inline-flex items-center gap-1.5">
                             <MousePointer className="h-4 w-4 text-faint" />
-                            {totalClicks.toLocaleString()} clicks
+                            {totalClicks.toLocaleString()} {pluralize(totalClicks, 'click')}
                         </span>
                     </div>
                 </div>
@@ -766,7 +768,7 @@ export default function Dashboard() {
                             />
                             <div className="flex justify-between items-center mt-4">
                                 <span className="text-sm text-faint">
-                                    {bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length} valid URLs
+                                    {validBulkUrlCount} valid {pluralize(validBulkUrlCount, 'URL')}
                                 </span>
                                 <div className="flex gap-3">
                                     <button

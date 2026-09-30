@@ -14,6 +14,7 @@ import {
 } from 'recharts';
 import { API_ENDPOINTS, authFetch } from '../config/api';
 import { safeLocalStorage } from '../utils/storage';
+import { pluralize } from '../utils/plural';
 
 interface AdminStats {
     total_users: number;
@@ -446,13 +447,13 @@ export default function Admin() {
     const bulkDeleteSelectedLinks = () => {
         const ids = [...selectedLinkIds];
         if (ids.length === 0) return;
-        if (!confirm(`Delete ${ids.length} selected link(s)? They stop redirecting immediately.`)) return;
+        if (!confirm(`Delete ${ids.length} selected ${pluralize(ids.length, 'link')}? They stop redirecting immediately.`)) return;
         doAction(
             () => authFetch(API_ENDPOINTS.adminLinksBulkDelete, {
                 method: 'POST',
                 body: JSON.stringify({ ids }),
             }),
-            `Deleted ${ids.length} link(s)`,
+            `Deleted ${ids.length} ${pluralize(ids.length, 'link')}`,
             loadLinks,
         );
     };
@@ -465,7 +466,7 @@ export default function Admin() {
                 method: 'POST',
                 body: JSON.stringify({ ids }),
             }),
-            `Restored ${ids.length} link(s)`,
+            `Restored ${ids.length} ${pluralize(ids.length, 'link')}`,
             loadLinks,
         );
     };
@@ -659,7 +660,7 @@ export default function Admin() {
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <StatCard label="Total Users" value={stats.total_users} sub={`+${stats.users_today} today`} icon={Users} />
-                        <StatCard label="Active Users" value={stats.active_users} sub={`${stats.verified_users} verified · ${stats.admin_users} admins`} icon={Users} color="green" />
+                        <StatCard label="Active Users" value={stats.active_users} sub={`${stats.verified_users} verified · ${stats.admin_users} ${pluralize(stats.admin_users, 'admin')}`} icon={Users} color="green" />
                         <StatCard label="Total Links" value={stats.total_links} sub={`+${stats.links_today} today`} icon={Link2} />
                         <StatCard label="Active Links" value={stats.active_links} icon={Link2} color="green" />
                         <StatCard label="Total Clicks" value={stats.total_clicks} sub={`+${stats.clicks_today} today`} icon={BarChart2} color="blue" />
@@ -761,7 +762,7 @@ export default function Admin() {
                             <option value="admins">Admins</option>
                             <option value="unverified">Unverified</option>
                         </select>
-                        <span className="text-sm text-slate-500 ml-auto">{usersTotal.toLocaleString()} users</span>
+                        <span className="text-sm text-slate-500 ml-auto">{usersTotal.toLocaleString()} {pluralize(usersTotal, 'user')}</span>
                     </div>
 
                     <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
@@ -820,7 +821,7 @@ export default function Admin() {
                                         </td>
                                         <td className="px-4 py-3 text-sm text-right text-slate-600">{user.total_clicks.toLocaleString()}</td>
                                         <td className="px-4 py-3 text-sm text-right text-slate-600">
-                                            <span title={`${user.api_keys_count} API keys · ${user.passkeys_count} passkeys`}>
+                                            <span title={`${user.api_keys_count} ${pluralize(user.api_keys_count, 'API key')} · ${user.passkeys_count} ${pluralize(user.passkeys_count, 'passkey')}`}>
                                                 <KeyRound className="h-3.5 w-3.5 inline mr-1 text-slate-400" />
                                                 {user.api_keys_count + user.passkeys_count}
                                             </span>
@@ -939,7 +940,7 @@ export default function Admin() {
                                 </button>
                             </span>
                         )}
-                        <span className="text-sm text-slate-500 ml-auto">{linksTotal.toLocaleString()} links</span>
+                        <span className="text-sm text-slate-500 ml-auto">{linksTotal.toLocaleString()} {pluralize(linksTotal, 'link')}</span>
                     </div>
 
                     {selectedLinkIds.size > 0 && (
@@ -1117,7 +1118,7 @@ export default function Admin() {
                             placeholder="Search name or slug…"
                             onChange={(v) => { setOrgSearch(v); setOrgsPage(1); }}
                         />
-                        <span className="text-sm text-slate-500 ml-auto">{orgsTotal.toLocaleString()} organizations</span>
+                        <span className="text-sm text-slate-500 ml-auto">{orgsTotal.toLocaleString()} {pluralize(orgsTotal, 'organization')}</span>
                     </div>
 
                     <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
