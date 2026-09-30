@@ -441,6 +441,66 @@ mod tests {
         );
         assert_eq!(bucket_count(&body["top_countries"], "country", "TODAY"), 1);
     }
+
+    /// A redirect stores what the analytics views aggregate: the browser,
+    /// device and OS parsed from the visitor's User-Agent, and only the host
+    /// of the Referer. The referring URL's path and query can carry search
+    /// terms or session tokens, so they must never reach `click_events`.
+    #[tokio::test]
+    async fn redirect_records_parsed_user_agent_and_host_only_referer() {
+        use axum::http::header::{REFERER, USER_AGENT};
+        use opn_onl_backend::entity::links;
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+        const IPHONE_SAFARI: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) \
+             AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+        let (server, db) = common::spawn_real_app().await;
+        let (_token, link_id) = register_and_link(&server, &db).await;
+        let code = links::Entity::find_by_id(link_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .expect("link row")
+            .code;
+
+        // Same real router, but this test holds the ClickBuffer so it can
+        // flush the recorded click instead of waiting for a background task.
+        let state = opn_onl_backend::AppState::for_tests(db.clone()).await;
+        let clicks = state.click_buffer.clone();
+        let visitor =
+            axum_test::TestServer::new(opn_onl_backend::build_router(state)).expect("test server");
+
+        let res = visitor
+            .get(&format!("/{code}"))
+            .add_header(USER_AGENT, IPHONE_SAFARI)
+            .add_header(
+                REFERER,
+                "https://www.iana.org/search?q=private+terms&session=abc123",
+            )
+            .await;
+        assert_eq!(res.status_code(), 307, "redirect: {}", res.text());
+        assert!(
+            !clicks.flush(&db).await,
+            "the click must be persisted, not requeued"
+        );
+
+        let rows = click_events::Entity::find()
+            .filter(click_events::Column::LinkId.eq(link_id))
+            .all(&db)
+            .await
+            .expect("click rows");
+        assert_eq!(rows.len(), 1, "one redirect, one click row: {rows:?}");
+        let click = &rows[0];
+        assert_eq!(click.browser.as_deref(), Some("Safari"), "{click:?}");
+        assert_eq!(click.device.as_deref(), Some("Mobile"), "{click:?}");
+        assert_eq!(click.os.as_deref(), Some("iOS"), "{click:?}");
+        assert_eq!(
+            click.referer.as_deref(),
+            Some("www.iana.org"),
+            "referer must be stored host-only, without path or query: {click:?}"
+        );
+    }
 }
 
 // Unit tests for analytics processing
