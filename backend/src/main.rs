@@ -22,6 +22,10 @@ async fn main() {
     // hardcoded-fallback hole where an unset JWT_SECRET let anyone forge admin tokens.
     utils::jwt::validate_jwt_secret();
 
+    // Fail fast if WEBAUTHN_RP_ID is set to a host the frontend origin cannot
+    // use. A passkey registered under the wrong RP ID is silently unusable.
+    opn_onl_backend::handlers::passkeys::validate_webauthn_rp_id();
+
     // Initialize structured logging
     let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
     let file_appender = tracing_appender::rolling::daily(&log_dir, "opn-onl.log");
@@ -40,9 +44,10 @@ async fn main() {
         .init();
 
     // Database connection. Required — fail fast rather than silently falling back
-    // to an insecure hardcoded dev credential in production.
-    let database_url =
-        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set (no default is used)");
+    // to an insecure hardcoded dev credential in production. Compose passes
+    // discrete POSTGRES_* pieces; we assemble (and percent-encode userinfo) here
+    // so a password containing `@` / `:` / `/` does not split the URL.
+    let database_url = utils::database_url::resolve_database_url();
 
     let db = Database::connect(&database_url)
         .await

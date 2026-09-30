@@ -15,8 +15,11 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: opn_onl
+    # Loopback-only: the image uses POSTGRES_PASSWORD=postgres, which is fine
+    # on the compose network and for a local `psql`, but must not be reachable
+    # off-host on a VPS or untrusted LAN.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
@@ -34,8 +37,11 @@ services:
     image: redis:7-alpine
     container_name: opn_onl_redis
     restart: unless-stopped
+    # Loopback-only: this instance has no requirepass (the backend container
+    # talks to it on the compose network). Publishing 0.0.0.0:6379 would let
+    # anyone on the LAN read or poison the cache.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

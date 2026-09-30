@@ -132,6 +132,35 @@ jobs:
           container_id=$(docker run --detach --publish 127.0.0.1:8080:80 opn-frontend-csp-smoke)
           trap 'docker rm --force "$container_id"' EXIT
 
+          # csp-config ships nginx + conf only (no Vite dist). Placeholder files
+          # let the cache-policy split be asserted without a full frontend build.
+          docker exec "$container_id" sh -c '
+            mkdir -p /usr/share/nginx/html/assets
+            printf "ok\n" > /usr/share/nginx/html/assets/app-deadbeef.js
+            printf "ok\n" > /usr/share/nginx/html/favicon-32x32.png
+            printf "{}\n" > /usr/share/nginx/html/manifest.json
+            printf "ok\n" > /usr/share/nginx/html/bg-contours.avif
+            printf "ok\n" > /usr/share/nginx/html/bg-network.webp
+            printf "ok\n" > /usr/share/nginx/html/robots.txt
+            printf "{}\n" > /usr/share/nginx/html/sitemap.xml
+          '
+
+          # nginx drops inherited add_header when a location sets any of its
+          # own, so every class that sets Cache-Control must repeat the full
+          # security set. One helper so HTML /assets/ and public/ cannot drift.
+          # blob: is required by the QR modal, which fetches the code with an auth
+          # header and renders it through URL.createObjectURL. Dropping it blocks
+          # the image and the modal renders empty.
+          assert_security_headers() {
+            printf '%s\n' "$1" | grep -iF "x-frame-options: SAMEORIGIN"
+            printf '%s\n' "$1" | grep -iF "x-content-type-options: nosniff"
+            printf '%s\n' "$1" | grep -iF "x-xss-protection: 1; mode=block"
+            printf '%s\n' "$1" | grep -iF "referrer-policy: strict-origin-when-cross-origin"
+            printf '%s\n' "$1" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
+            printf '%s\n' "$1" | grep -iF "content-security-policy:"
+            printf '%s\n' "$1" | grep -iF "img-src 'self' data: blob: https:;"
+          }
+
           for attempt in $(seq 1 20); do
             if headers=$(curl --fail --silent --show-error --head http://127.0.0.1:8080/); then
               break
@@ -140,18 +169,32 @@ jobs:
           done
 
           test -n "${headers:-}"
-          printf '%s\n' "$headers" | grep -iF "content-security-policy:"
+          assert_security_headers "$headers"
           printf '%s\n' "$headers" | grep -iF "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://static.cloudflareinsights.com;"
           printf '%s\n' "$headers" | grep -iF "connect-src 'self' https://api.smoke.test wss://api.smoke.test https://www.google-analytics.com https://region1.google-analytics.com https://www.google.com https://cloudflareinsights.com;"
-          # blob: is required by the QR modal, which fetches the code with an auth
-          # header and renders it through URL.createObjectURL. Dropping it blocks
-          # the image and the modal renders empty.
-          printf '%s\n' "$headers" | grep -iF "img-src 'self' data: blob: https:;"
-          printf '%s\n' "$headers" | grep -iF "strict-transport-security: max-age=63072000; includeSubDomains"
           # HTML must be revalidated on every load. Without this a browser keeps
           # the previous deploy's SPA shell — stale hashed asset names and stale
           # entrypoint-injected runtime config (GA_ID / GA_CONSENT_MODE).
           printf '%s\n' "$headers" | grep -iE "^cache-control: *no-cache"
+
+          # Hashed Vite output under /assets/ is content-addressed and may be
+          # cached forever. The location repeats security headers because nginx
+          # drops inherited add_header when the inner scope sets Cache-Control.
+          asset_headers=$(curl --fail --silent --show-error --head http://127.0.0.1:8080/assets/app-deadbeef.js)
+          printf '%s\n' "$asset_headers" | grep -iE "^cache-control:.*\bpublic\b.*\bimmutable\b"
+          assert_security_headers "$asset_headers"
+
+          # Unhashed files from public/ keep stable URLs across deploys, so they
+          # must not be immutable. A new logo / favicon / manifest.json / hero
+          # background / sitemap would otherwise stay stale in returning
+          # browsers (and any CDN honoring immutable) for up to a year.
+          for public_path in /favicon-32x32.png /manifest.json /bg-contours.avif /bg-network.webp /robots.txt /sitemap.xml; do
+            public_headers=$(curl --fail --silent --show-error --head "http://127.0.0.1:8080${public_path}")
+            printf '%s\n' "$public_headers" | grep -iE "^cache-control: *no-cache"
+            ! printf '%s\n' "$public_headers" | grep -iE "cache-control:.*\bimmutable\b"
+            assert_security_headers "$public_headers"
+          done
+
           ! printf '%s\n' "$headers" | grep -Fq '__API_CONNECT_SRC__'
           ! docker exec "$container_id" grep -Rq '__API_CONNECT_SRC__' /etc/nginx/conf.d
           ! grep -R "fonts.googleapis.com" frontend/src

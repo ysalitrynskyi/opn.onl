@@ -641,3 +641,34 @@ mod user_agent_tests {
         assert_eq!(info.device.as_deref(), Some("Mobile"));
     }
 }
+
+// ============= DATABASE_URL assembly =============
+
+#[test]
+fn assemble_database_url_percent_encodes_password_userinfo() {
+    // A password that would split the URL on @ : / if interpolated raw.
+    let url = opn_onl_backend::utils::database_url::assemble_database_url(
+        "postgres",
+        "p@ss/w:rd",
+        "db",
+        "5432",
+        "opn_onl",
+    );
+    let parsed = url::Url::parse(&url).expect("assembled DATABASE_URL must parse");
+    assert_eq!(parsed.username(), "postgres");
+    assert_eq!(
+        parsed.host_str(),
+        Some("db"),
+        "unencoded @ would steal the host"
+    );
+    assert_eq!(parsed.port(), Some(5432));
+    assert_eq!(parsed.path(), "/opn_onl");
+    assert!(
+        url.contains("%40"),
+        "@ in the password must be percent-encoded"
+    );
+    assert!(
+        !url.contains("p@ss"),
+        "raw password must not appear in the URL"
+    );
+}
