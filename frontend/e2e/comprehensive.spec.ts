@@ -79,10 +79,21 @@ test.describe('on a phone', () => {
     });
 });
 
+test('keyboard users can skip the header with the first tab stop', async ({ page }) => {
+    await page.goto('/');
+
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('link', { name: 'Skip to content' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('main#main-content')).toBeFocused();
+});
+
 test('keyboard users tab from the logo into the main navigation and follow it', async ({ page }) => {
     await page.goto('/');
     const header = page.getByRole('banner');
 
+    // The skip link comes first; the logo is the next stop.
+    await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await expect(header.locator('a[href="/"]')).toBeFocused();
     await page.keyboard.press('Tab');
