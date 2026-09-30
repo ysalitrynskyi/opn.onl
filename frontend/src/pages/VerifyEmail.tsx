@@ -10,11 +10,11 @@ export default function VerifyEmail() {
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('');
   const token = searchParams.get('token');
+  const viewStatus = token ? status : 'error';
+  const viewMessage = token ? message : 'Invalid verification link. No token provided.';
 
   useEffect(() => {
     if (!token) {
-      setStatus('error');
-      setMessage('Invalid verification link. No token provided.');
       return;
     }
 
@@ -63,7 +63,7 @@ export default function VerifyEmail() {
           transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
           className="w-full max-w-md rounded-2xl border border-line bg-surface p-8 text-center shadow-card"
         >
-          {status === 'loading' && (
+          {viewStatus === 'loading' && (
             <>
               <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-50">
                 <Loader2 className="h-7 w-7 animate-spin text-primary-600" aria-hidden="true" />
@@ -73,7 +73,7 @@ export default function VerifyEmail() {
             </>
           )}
 
-          {status === 'success' && (
+          {viewStatus === 'success' && (
             <>
               <motion.div
                 initial={{ scale: 0 }}
@@ -84,7 +84,7 @@ export default function VerifyEmail() {
                 <CheckCircle className="h-7 w-7 text-success" aria-hidden="true" />
               </motion.div>
               <h1 className="font-display text-2xl font-bold text-ink">Email verified</h1>
-              <p className="mt-2 leading-relaxed text-muted">{message}</p>
+              <p className="mt-2 leading-relaxed text-muted">{viewMessage}</p>
               <Link
                 to="/login"
                 className="mt-6 flex w-full items-center justify-center rounded-xl bg-primary-600 py-3 font-semibold text-white transition-colors hover:bg-primary-700"
@@ -94,7 +94,7 @@ export default function VerifyEmail() {
             </>
           )}
 
-          {status === 'error' && (
+          {viewStatus === 'error' && (
             <>
               <motion.div
                 initial={{ scale: 0 }}
@@ -105,7 +105,7 @@ export default function VerifyEmail() {
                 <XCircle className="h-7 w-7 text-danger" aria-hidden="true" />
               </motion.div>
               <h1 className="font-display text-2xl font-bold text-ink">Verification failed</h1>
-              <p className="mt-2 leading-relaxed text-muted">{message}</p>
+              <p className="mt-2 leading-relaxed text-muted">{viewMessage}</p>
               <div className="mt-6 space-y-3">
                 <Link
                   to="/login"

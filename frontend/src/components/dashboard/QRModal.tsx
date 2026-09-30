@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Download } from 'lucide-react';
 import { API_ENDPOINTS, authFetch } from '../../config/api';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import type { LinkData } from './types';
 
 const COLOR_PRESETS = [
@@ -32,6 +33,8 @@ export default function QRModal({
     const [useLogo, setUseLogo] = useState(true);
     const [format, setFormat] = useState<'png' | 'svg'>('png');
     const qrUrlRef = useRef<string | null>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useFocusTrap(dialogRef);
 
     // Re-fetch whenever a branding option changes. Debounced so dragging the
     // color picker doesn't hammer the backend.
@@ -99,6 +102,9 @@ export default function QRModal({
             onClick={onClose}
         >
             <motion.div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
                 initial={{ scale: 0.97, opacity: 0, y: 8 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 8 }}

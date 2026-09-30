@@ -65,3 +65,41 @@ impl Model {
         true // All members can view
     }
 }
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    fn member(role: &str) -> Model {
+        Model {
+            id: 1,
+            org_id: 1,
+            user_id: 1,
+            role: role.to_string(),
+            joined_at: chrono::Utc::now().naive_utc(),
+        }
+    }
+
+    #[test]
+    fn owner_admin_editor_viewer_permission_matrix() {
+        let owner = member("owner");
+        assert!(owner.is_owner());
+        assert!(owner.is_admin());
+        assert!(owner.can_edit());
+
+        let admin = member("admin");
+        assert!(!admin.is_owner());
+        assert!(admin.is_admin());
+        assert!(admin.can_edit());
+
+        let editor = member("editor");
+        assert!(!editor.is_owner());
+        assert!(!editor.is_admin());
+        assert!(editor.can_edit());
+
+        let viewer = member("viewer");
+        assert!(!viewer.is_owner());
+        assert!(!viewer.is_admin());
+        assert!(!viewer.can_edit());
+    }
+}

@@ -261,4 +261,38 @@ mod burn_tests {
         assert!(!m.is_active());
         assert_eq!(m.inactive_reason(), Some("Link has reached maximum clicks"));
     }
+
+    #[test]
+    fn unconstrained_link_is_active() {
+        assert!(model().is_active());
+        assert!(model().inactive_reason().is_none());
+    }
+
+    #[test]
+    fn future_starts_at_is_inactive() {
+        let mut m = model();
+        m.starts_at = Some(chrono::Utc::now().naive_utc() + chrono::Duration::hours(1));
+        assert!(!m.is_active());
+        assert_eq!(
+            m.inactive_reason(),
+            Some("Link is scheduled to activate later")
+        );
+    }
+
+    #[test]
+    fn past_expires_at_is_inactive() {
+        let mut m = model();
+        m.expires_at = Some(chrono::Utc::now().naive_utc() - chrono::Duration::hours(1));
+        assert!(!m.is_active());
+        assert_eq!(m.inactive_reason(), Some("Link has expired"));
+    }
+
+    #[test]
+    fn zero_max_clicks_is_inactive() {
+        let mut m = model();
+        m.max_clicks = Some(0);
+        m.click_count = 0;
+        assert!(!m.is_active());
+        assert_eq!(m.inactive_reason(), Some("Link has reached maximum clicks"));
+    }
 }

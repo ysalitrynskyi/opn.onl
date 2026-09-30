@@ -108,8 +108,7 @@ mod tests {
         assert_eq!(total, 2, "default 30 days includes 0/10-day events, not 80");
 
         // Just-out-of-bounds for TimeDelta::days: used to panic.
-        let (status, total) =
-            stats_clicks(&server, &token, link_id, Some("106751991167301")).await;
+        let (status, total) = stats_clicks(&server, &token, link_id, Some("106751991167301")).await;
         assert_eq!(status, 200, "huge days must be clamped, not panic");
         assert_eq!(
             total, 3,
@@ -156,6 +155,291 @@ mod tests {
             Some(true),
             "window larger than the row cap must set truncated: {body}"
         );
+    }
+
+    fn bucket_count(arr: &Value, field: &str, name: &str) -> i64 {
+        arr.as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .find(|v| v[field].as_str() == Some(name))
+            .and_then(|v| v["count"].as_i64())
+            .unwrap_or(0)
+    }
+
+    fn bucket_pct(arr: &Value, field: &str, name: &str) -> f64 {
+        arr.as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .find(|v| v[field].as_str() == Some(name))
+            .and_then(|v| v["percentage"].as_f64())
+            .unwrap_or(-1.0)
+    }
+
+    async fn insert_event(
+        db: &DatabaseConnection,
+        link_id: i32,
+        days_ago: i64,
+        country: Option<&str>,
+        browser: Option<&str>,
+        device: Option<&str>,
+        ip: Option<&str>,
+        referer: Option<&str>,
+        lat: Option<f64>,
+        lon: Option<f64>,
+    ) {
+        click_events::ActiveModel {
+            link_id: Set(link_id),
+            created_at: Set(Utc::now().naive_utc() - Duration::days(days_ago)),
+            country: Set(country.map(str::to_string)),
+            browser: Set(browser.map(str::to_string)),
+            device: Set(device.map(str::to_string)),
+            ip_address: Set(ip.map(str::to_string)),
+            referer: Set(referer.map(str::to_string)),
+            latitude: Set(lat),
+            longitude: Set(lon),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .expect("insert click event");
+    }
+
+    /// `/links/{id}/stats` aggregates the stored click rows: country/browser/
+    /// device buckets (null → "Unknown"), unique visitors by IP, day series,
+    /// referer host extraction (null → "Direct"), percentages, and geo
+    /// clustering at two decimal places.
+    #[tokio::test]
+    async fn link_stats_aggregates_dimensions_unique_referer_and_geo() {
+        let (server, db) = common::spawn_real_app().await;
+        let (token, link_id) = register_and_link(&server, &db).await;
+
+        let empty = server
+            .get(&format!("/links/{link_id}/stats"))
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(empty.status_code(), 200, "empty stats: {}", empty.text());
+        let empty_body: Value = empty.json();
+        assert_eq!(empty_body["total_clicks"], 0);
+        assert_eq!(empty_body["unique_visitors"], 0);
+        assert!(empty_body["clicks_by_country"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(empty_body["geo_data"].as_array().unwrap().is_empty());
+
+        // Two clicks from the same IP on nearby NYC coords (must cluster).
+        insert_event(
+            &db,
+            link_id,
+            0,
+            Some("USA"),
+            Some("Chrome"),
+            Some("Desktop"),
+            Some("1.1.1.1"),
+            Some("https://www.google.com/search?q=test"),
+            Some(40.7128),
+            Some(-74.0060),
+        )
+        .await;
+        insert_event(
+            &db,
+            link_id,
+            1,
+            Some("USA"),
+            Some("Chrome"),
+            Some("Desktop"),
+            Some("1.1.1.1"),
+            Some("https://www.google.com/other"),
+            Some(40.7129),
+            Some(-74.0061),
+        )
+        .await;
+        // Different IP, UK, no referer → Direct.
+        insert_event(
+            &db,
+            link_id,
+            0,
+            Some("UK"),
+            Some("Firefox"),
+            Some("Mobile"),
+            Some("2.2.2.2"),
+            None,
+            Some(51.5074),
+            Some(-0.1278),
+        )
+        .await;
+        // Null dimensions → Unknown; no IP (does not count as a unique visitor); no geo.
+        insert_event(&db, link_id, 0, None, None, None, None, None, None, None).await;
+
+        let res = server
+            .get(&format!("/links/{link_id}/stats"))
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(res.status_code(), 200, "stats: {}", res.text());
+        let body: Value = res.json();
+
+        assert_eq!(body["total_clicks"], 4);
+        assert_eq!(
+            body["unique_visitors"], 2,
+            "same IP twice + one other IP; null IP is not a visitor: {body}"
+        );
+
+        let countries = &body["clicks_by_country"];
+        assert_eq!(bucket_count(countries, "country", "USA"), 2);
+        assert_eq!(bucket_count(countries, "country", "UK"), 1);
+        assert_eq!(bucket_count(countries, "country", "Unknown"), 1);
+        assert!((bucket_pct(countries, "country", "USA") - 50.0).abs() < 0.001);
+        assert!((bucket_pct(countries, "country", "UK") - 25.0).abs() < 0.001);
+
+        assert_eq!(
+            bucket_count(&body["clicks_by_browser"], "browser", "Chrome"),
+            2
+        );
+        assert_eq!(
+            bucket_count(&body["clicks_by_browser"], "browser", "Firefox"),
+            1
+        );
+        assert_eq!(
+            bucket_count(&body["clicks_by_browser"], "browser", "Unknown"),
+            1
+        );
+        assert_eq!(
+            bucket_count(&body["clicks_by_device"], "device", "Desktop"),
+            2
+        );
+        assert_eq!(
+            bucket_count(&body["clicks_by_device"], "device", "Mobile"),
+            1
+        );
+        assert_eq!(
+            bucket_count(&body["clicks_by_device"], "device", "Unknown"),
+            1
+        );
+
+        assert_eq!(
+            bucket_count(&body["clicks_by_referer"], "referer", "www.google.com"),
+            2,
+            "full referer URL must be reduced to host, not a social-network label: {body}"
+        );
+        assert_eq!(
+            bucket_count(&body["clicks_by_referer"], "referer", "Direct"),
+            2,
+            "null referer is Direct (the unknown-dimension event plus the UK click)"
+        );
+
+        let days = body["clicks_by_day"].as_array().unwrap();
+        assert_eq!(days.len(), 2, "today + yesterday: {body}");
+        let day_total: i64 = days.iter().filter_map(|d| d["count"].as_i64()).sum();
+        assert_eq!(day_total, 4);
+
+        let geo = body["geo_data"].as_array().unwrap();
+        assert_eq!(
+            geo.len(),
+            2,
+            "NYC pair must cluster at 2 decimal places; London is its own point: {body}"
+        );
+        let mut geo_counts: Vec<i64> = geo.iter().filter_map(|g| g["count"].as_i64()).collect();
+        geo_counts.sort();
+        assert_eq!(geo_counts, vec![1, 2]);
+    }
+
+    /// Dashboard totals come from the caller's links (not a global count):
+    /// `total_links` includes inactive ones, `active_links` uses `is_active()`,
+    /// `total_clicks` sums `links.click_count`, and the week/month windows
+    /// are rolling 7/30-day UTC buckets. `clicks_today` is covered separately.
+    #[tokio::test]
+    async fn dashboard_counts_own_links_and_week_month_windows() {
+        use opn_onl_backend::entity::links;
+        use sea_orm::EntityTrait;
+
+        let (server, db) = common::spawn_real_app().await;
+        let res = server
+            .post("/auth/register")
+            .json(&json!({
+                "email": common::unique_email(),
+                "password": "password123"
+            }))
+            .await;
+        assert_eq!(res.status_code(), 201, "register: {}", res.text());
+        let body: Value = res.json();
+        let token = body["token"].as_str().unwrap().to_string();
+        let user_id = body["user_id"].as_i64().unwrap() as i32;
+        common::mark_email_verified(&db, user_id).await;
+
+        let empty = server
+            .get("/analytics/dashboard")
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(empty.status_code(), 200, "empty dash: {}", empty.text());
+        let empty_body: Value = empty.json();
+        assert_eq!(empty_body["total_links"], 0);
+        assert_eq!(empty_body["total_clicks"], 0);
+        assert_eq!(empty_body["active_links"], 0);
+        assert_eq!(empty_body["clicks_today"], 0);
+        assert_eq!(empty_body["clicks_this_week"], 0);
+        assert_eq!(empty_body["clicks_this_month"], 0);
+
+        let live = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": "https://iana.org/dash-live" }))
+            .await;
+        assert_eq!(live.status_code(), 201, "live: {}", live.text());
+        let live_id = live.json::<Value>()["id"].as_i64().unwrap() as i32;
+
+        let dead = server
+            .post("/links")
+            .authorization_bearer(&token)
+            .json(&json!({ "original_url": "https://iana.org/dash-expired" }))
+            .await;
+        assert_eq!(dead.status_code(), 201, "dead: {}", dead.text());
+        let dead_id = dead.json::<Value>()["id"].as_i64().unwrap() as i32;
+
+        let live_row = links::Entity::find_by_id(live_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut live_am: links::ActiveModel = live_row.into();
+        live_am.click_count = Set(10);
+        live_am.update(&db).await.unwrap();
+
+        let dead_row = links::Entity::find_by_id(dead_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut dead_am: links::ActiveModel = dead_row.into();
+        dead_am.click_count = Set(5);
+        dead_am.expires_at = Set(Some(Utc::now().naive_utc() - Duration::hours(1)));
+        dead_am.update(&db).await.unwrap();
+
+        insert_click(&db, live_id, 0, "TODAY").await;
+        insert_click(&db, live_id, 3, "WEEK").await;
+        insert_click(&db, live_id, 20, "MONTH").await;
+
+        let dash = server
+            .get("/analytics/dashboard")
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(dash.status_code(), 200, "dash: {}", dash.text());
+        let body: Value = dash.json();
+        assert_eq!(body["total_links"], 2, "expired links still count: {body}");
+        assert_eq!(
+            body["active_links"], 1,
+            "expired link must drop out of active_links: {body}"
+        );
+        assert_eq!(
+            body["total_clicks"], 15,
+            "total_clicks is sum of links.click_count, not event rows: {body}"
+        );
+        assert_eq!(body["clicks_today"], 1, "{body}");
+        assert_eq!(body["clicks_this_week"], 2, "today + 3 days ago: {body}");
+        assert_eq!(
+            body["clicks_this_month"], 3,
+            "today + 3d + 20d (not a 40-day-old event): {body}"
+        );
+        assert_eq!(bucket_count(&body["top_countries"], "country", "TODAY"), 1);
     }
 }
 
