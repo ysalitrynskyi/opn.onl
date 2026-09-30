@@ -63,44 +63,21 @@ pub fn lookup_ip(ip_str: &str) -> GeoLocation {
         return GeoLocation::default();
     }
 
-    match reader.lookup::<geoip2::City>(ip) {
-        Ok(city) => {
-            let country = city.country.as_ref().and_then(|c| {
-                c.names
-                    .as_ref()
-                    .and_then(|n| n.get("en").map(|s| s.to_string()))
-            });
-            let country_code = city
-                .country
-                .as_ref()
-                .and_then(|c| c.iso_code.map(|s| s.to_string()));
-            let city_name = city.city.as_ref().and_then(|c| {
-                c.names
-                    .as_ref()
-                    .and_then(|n| n.get("en").map(|s| s.to_string()))
-            });
-            let region = city.subdivisions.as_ref().and_then(|subs| {
-                subs.first().and_then(|s| {
-                    s.names
-                        .as_ref()
-                        .and_then(|n| n.get("en").map(|s| s.to_string()))
-                })
-            });
-            let (latitude, longitude) = city
-                .location
-                .as_ref()
-                .map(|l| (l.latitude, l.longitude))
-                .unwrap_or((None, None));
-
-            GeoLocation {
-                country,
-                country_code,
-                city: city_name,
-                region,
-                latitude,
-                longitude,
-            }
-        }
+    match reader.lookup(ip) {
+        Ok(result) => match result.decode::<geoip2::City>() {
+            Ok(Some(city)) => GeoLocation {
+                country: city.country.names.english.map(str::to_string),
+                country_code: city.country.iso_code.map(str::to_string),
+                city: city.city.names.english.map(str::to_string),
+                region: city
+                    .subdivisions
+                    .first()
+                    .and_then(|subdivision| subdivision.names.english.map(str::to_string)),
+                latitude: city.location.latitude,
+                longitude: city.location.longitude,
+            },
+            _ => GeoLocation::default(),
+        },
         Err(_) => GeoLocation::default(),
     }
 }
