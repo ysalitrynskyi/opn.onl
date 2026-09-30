@@ -119,32 +119,16 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png" />
 
-    <!-- SEO Meta Tags -->
-    <meta name="description" content="Create short, memorable links with branded QR codes, smart device & geo routing, one-time links and first-party analytics. Self-hostable, privacy-focused URL shortener built with Rust and React." />
-    <meta name="keywords" content="url shortener, link shortener, short links, branded qr codes, qr code generator, link in bio, smart routing, conditional routing, one-time links, analytics, open source, privacy, rust, react" />
-    <meta name="author" content="opn.onl" />
     <meta name="theme-color" content="#2f37d8" />
-    <meta name="robots" content="index, follow" />
-    
-    <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://opn.onl/" />
-    <meta property="og:title" content="OPN.ONL - Open Source URL Shortener" />
-    <meta property="og:description" content="Branded QR codes, smart device & geo routing, one-time links and first-party analytics. Self-hostable, privacy-focused URL shortener." />
-    <meta property="og:image" content="https://opn.onl/og-image.png" />
-    <meta property="og:site_name" content="opn.onl" />
-    
-    <!-- Twitter -->
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:url" content="https://opn.onl/" />
-    <meta name="twitter:title" content="OPN.ONL - Open Source URL Shortener" />
-    <meta name="twitter:description" content="Branded QR codes, smart device & geo routing, one-time links and first-party analytics. Self-hostable, privacy-focused URL shortener." />
-    <meta name="twitter:image" content="https://opn.onl/og-image.png" />
-    
+
+    <!-- The title, description, robots, canonical, Open Graph and Twitter tags
+         come from src/components/SEO.tsx, per page. Do not add static copies
+         here: every prerendered page is this file plus the tags SEO renders,
+         so a static tag becomes a second, contradicting one (and on app
+         routes, which are served the prerendered home page, a home-page tag). -->
+
     <!-- Web App Manifest -->
     <link rel="manifest" href="/manifest.json" />
-    
-    <title>OPN.ONL - Open Source URL Shortener</title>
   </head>
   <body>
     <div id="root"></div>

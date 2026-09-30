@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Mail, Lock, Check, CheckCircle, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { API_ENDPOINTS } from '../config/api';
+import SEO from '../components/SEO';
 import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
 const passwordRequirements = [
@@ -93,6 +94,11 @@ export default function Register() {
     if (registrationComplete) {
         return (
             <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+                <SEO
+                    title="Sign up"
+                    description="Create a free opn.onl account: short links with custom aliases, branded QR codes, smart routing and first-party analytics."
+                    url="/register"
+                />
                 <motion.div
                     initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -141,6 +147,11 @@ export default function Register() {
 
     return (
         <div className="flex min-h-[80vh] items-center justify-center px-4 py-16">
+            <SEO
+                title="Sign up"
+                description="Create a free opn.onl account: short links with custom aliases, branded QR codes, smart routing and first-party analytics."
+                url="/register"
+            />
             <motion.div
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
