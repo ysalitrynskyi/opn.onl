@@ -17,6 +17,7 @@ use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, lin
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::utils::jwt::{decode_jwt, password_exceeds_bcrypt_limit, PASSWORD_TOO_LONG};
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
@@ -1620,7 +1621,7 @@ pub async fn preview_link(
                     has_password: link.password_hash.is_some(),
                     is_expired,
                     is_active: link.is_active(),
-                    created_at: link.created_at.to_string(),
+                    created_at: utc_rfc3339(link.created_at),
                     click_count: link.click_count,
                     reputation: ReputationInfo {
                         verdict: verdict.to_string(),
@@ -3302,16 +3303,16 @@ pub async fn get_user_links(
             original_url: l.original_url.clone(),
             title: l.title.clone(),
             click_count: l.click_count,
-            created_at: l.created_at.to_string(),
-            expires_at: l.expires_at.map(|d| d.to_string()),
+            created_at: utc_rfc3339(l.created_at),
+            expires_at: l.expires_at.map(utc_rfc3339),
             has_password: l.password_hash.is_some(),
             notes: l.notes.clone(),
             folder_id: l.folder_id,
             org_id: l.org_id,
-            starts_at: l.starts_at.map(|s| s.to_string()),
+            starts_at: l.starts_at.map(utc_rfc3339),
             max_clicks: l.max_clicks,
             burn_after_reading: l.burn_after_reading,
-            burned_at: l.burned_at.map(|d| d.to_string()),
+            burned_at: l.burned_at.map(utc_rfc3339),
             safe_link_interstitial: l.safe_link_interstitial,
             bio_visible: l.bio_visible,
             is_active: l.is_active(),
@@ -3736,16 +3737,16 @@ pub async fn update_link(
                         original_url: updated.original_url.clone(),
                         title: updated.title.clone(),
                         click_count: updated.click_count,
-                        created_at: updated.created_at.to_string(),
-                        expires_at: updated.expires_at.map(|d| d.to_string()),
+                        created_at: utc_rfc3339(updated.created_at),
+                        expires_at: updated.expires_at.map(utc_rfc3339),
                         has_password: updated.password_hash.is_some(),
                         notes: updated.notes.clone(),
                         folder_id: updated.folder_id,
                         org_id: updated.org_id,
-                        starts_at: updated.starts_at.map(|s| s.to_string()),
+                        starts_at: updated.starts_at.map(utc_rfc3339),
                         max_clicks: updated.max_clicks,
                         burn_after_reading: updated.burn_after_reading,
-                        burned_at: updated.burned_at.map(|d| d.to_string()),
+                        burned_at: updated.burned_at.map(utc_rfc3339),
                         safe_link_interstitial: updated.safe_link_interstitial,
                         bio_visible: updated.bio_visible,
                         is_active: updated.is_active(),

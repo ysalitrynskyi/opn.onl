@@ -11,6 +11,7 @@ use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_e
 use crate::utils::jwt::{
     create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password, PASSWORD_TOO_LONG,
 };
+use crate::utils::time::utc_rfc3339;
 use crate::AppState;
 use axum::http::HeaderMap;
 
@@ -1476,7 +1477,7 @@ pub async fn get_current_user(
                 email: user.email,
                 email_verified: user.email_verified,
                 is_admin: user.is_admin,
-                created_at: user.created_at.to_string(),
+                created_at: utc_rfc3339(user.created_at),
                 link_count,
                 total_clicks,
                 display_name: user.display_name,
@@ -1619,7 +1620,7 @@ pub async fn update_profile(
                         email: updated.email,
                         email_verified: updated.email_verified,
                         is_admin: updated.is_admin,
-                        created_at: updated.created_at.to_string(),
+                        created_at: utc_rfc3339(updated.created_at),
                         link_count,
                         total_clicks,
                         display_name: updated.display_name,

@@ -631,3 +631,43 @@ async fn create_reports_an_already_expired_link_as_inactive() {
     .await;
     assert_eq!(live["is_active"], json!(true), "created: {live}");
 }
+
+/// Link times leave the API as RFC 3339 UTC. Sent without the `Z`, browsers
+/// read the stored UTC time as local time, so an expiry at 23:59 in New York
+/// (04:59 UTC the next day) showed as the next day.
+#[tokio::test]
+async fn link_times_are_rfc3339_utc() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let created = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": format!("https://iana.org/tz-{}", unique_code()),
+            "expires_at": "2030-01-16T04:59:00Z",
+        }),
+    )
+    .await;
+    let id = created["id"].as_i64().unwrap();
+
+    let list: Value = server
+        .get("/links")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["id"].as_i64() == Some(id))
+        .expect("the new link is listed");
+    assert_eq!(row["expires_at"], json!("2030-01-16T04:59:00Z"), "{row}");
+    let created_at = row["created_at"].as_str().unwrap();
+    assert!(created_at.ends_with('Z'), "{created_at}");
+    let parsed = chrono::DateTime::parse_from_rfc3339(created_at).expect("RFC 3339");
+    let skew = Utc::now() - parsed.with_timezone(&Utc);
+    assert!(
+        skew.num_minutes().abs() < 5,
+        "{created_at} is not the creation time in UTC"
+    );
+}

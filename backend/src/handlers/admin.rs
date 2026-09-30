@@ -18,6 +18,7 @@ use crate::entity::{
 };
 use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::is_reserved_email_domain;
+use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
 use crate::AppState;
 
@@ -1701,7 +1702,7 @@ pub async fn block_link(
                     url: result.url,
                     reason: result.reason,
                     blocked_by: result.blocked_by,
-                    created_at: result.created_at.to_string(),
+                    created_at: utc_rfc3339(result.created_at),
                 }),
             )
                 .into_response()
@@ -1749,7 +1750,7 @@ pub async fn get_blocked_links(
             url: b.url,
             reason: b.reason,
             blocked_by: b.blocked_by,
-            created_at: b.created_at.to_string(),
+            created_at: utc_rfc3339(b.created_at),
         })
         .collect();
 
@@ -1929,7 +1930,7 @@ pub async fn block_domain(
             domain: result.domain,
             reason: result.reason,
             blocked_by: result.blocked_by,
-            created_at: result.created_at.to_string(),
+            created_at: utc_rfc3339(result.created_at),
             affected_links: affected_codes.len() as u64,
         }),
     )
@@ -1968,7 +1969,7 @@ pub async fn get_blocked_domains(
             domain: b.domain,
             reason: b.reason,
             blocked_by: b.blocked_by,
-            created_at: b.created_at.to_string(),
+            created_at: utc_rfc3339(b.created_at),
             affected_links: 0,
         })
         .collect();
@@ -2188,7 +2189,7 @@ pub async fn block_email_domain(
             domain: result.domain,
             reason: result.reason,
             blocked_by: result.blocked_by,
-            created_at: result.created_at.to_string(),
+            created_at: utc_rfc3339(result.created_at),
             affected_users,
         }),
     )
@@ -2227,7 +2228,7 @@ pub async fn get_blocked_email_domains(
             domain: b.domain,
             reason: b.reason,
             blocked_by: b.blocked_by,
-            created_at: b.created_at.to_string(),
+            created_at: utc_rfc3339(b.created_at),
             affected_users: 0,
         })
         .collect::<Vec<_>>();
@@ -2432,9 +2433,9 @@ pub async fn get_all_users(
                 display_name: u.display_name,
                 is_admin: u.is_admin,
                 email_verified: u.email_verified,
-                created_at: u.created_at.to_string(),
-                deleted_at: u.deleted_at.map(|d| d.to_string()),
-                disabled_at: u.disabled_at.map(|d| d.to_string()),
+                created_at: utc_rfc3339(u.created_at),
+                deleted_at: u.deleted_at.map(utc_rfc3339),
+                disabled_at: u.disabled_at.map(utc_rfc3339),
                 disabled_reason: u.disabled_reason,
                 disabled_by: u.disabled_by,
                 bio_username: u.bio_username,
@@ -2609,11 +2610,11 @@ pub async fn get_all_links(
                 folder_id: link.folder_id,
                 click_count: link.click_count,
                 max_clicks: link.max_clicks,
-                created_at: link.created_at.to_string(),
-                starts_at: link.starts_at.map(|d| d.to_string()),
-                expires_at: link.expires_at.map(|d| d.to_string()),
-                deleted_at: link.deleted_at.map(|d| d.to_string()),
-                burned_at: link.burned_at.map(|d| d.to_string()),
+                created_at: utc_rfc3339(link.created_at),
+                starts_at: link.starts_at.map(utc_rfc3339),
+                expires_at: link.expires_at.map(utc_rfc3339),
+                deleted_at: link.deleted_at.map(utc_rfc3339),
+                burned_at: link.burned_at.map(utc_rfc3339),
                 is_pinned: link.is_pinned,
                 burn_after_reading: link.burn_after_reading,
                 safe_link_interstitial: link.safe_link_interstitial,
@@ -3328,7 +3329,7 @@ pub async fn get_all_orgs(
             owner_email: owner_emails.get(&o.owner_id).cloned(),
             member_count: member_counts.get(&o.id).copied().unwrap_or(0),
             links_count: link_counts.get(&o.id).copied().unwrap_or(0),
-            created_at: o.created_at.to_string(),
+            created_at: utc_rfc3339(o.created_at),
         })
         .collect();
 

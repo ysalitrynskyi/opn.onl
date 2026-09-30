@@ -50,6 +50,32 @@ mod tests {
         (token, link_id)
     }
 
+    /// Click times leave the API as RFC 3339 UTC. The Analytics page reads
+    /// them with `new Date`, which takes a time without an offset as local
+    /// time, so recent clicks showed hours off for anyone outside UTC.
+    #[tokio::test]
+    async fn recent_click_timestamps_are_rfc3339_utc() {
+        let (server, db) = common::spawn_real_app().await;
+        let (token, link_id) = register_and_link(&server, &db).await;
+        insert_click(&db, link_id, 0, "US").await;
+
+        let stats: Value = server
+            .get(&format!("/links/{link_id}/stats"))
+            .authorization_bearer(&token)
+            .await
+            .json();
+        let ts = stats["recent_clicks"][0]["timestamp"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a recent click in {stats}"));
+        assert!(ts.ends_with('Z'), "{ts}");
+        let parsed = chrono::DateTime::parse_from_rfc3339(ts).expect("RFC 3339");
+        let skew = Utc::now() - parsed.with_timezone(&Utc);
+        assert!(
+            skew.num_minutes().abs() < 5,
+            "{ts} is not the click time in UTC"
+        );
+    }
+
     async fn insert_click(db: &DatabaseConnection, link_id: i32, days_ago: i64, country: &str) {
         click_events::ActiveModel {
             link_id: Set(link_id),
