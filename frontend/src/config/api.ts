@@ -5,6 +5,16 @@ import { safeLocalStorage } from '../utils/storage';
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
+// Short links are served from the frontend origin (its nginx proxies /{code} to
+// the backend), so that origin is what belongs in front of a code: the
+// configured VITE_FRONTEND_URL, else wherever this app is being served from.
+// Never a hard-coded host, which is wrong on every self-hosted instance.
+export const shortLinkBase = (): string =>
+    import.meta.env.VITE_FRONTEND_URL || window.location.origin;
+
+/** shortLinkBase() without the scheme, for display: "links.example.org". */
+export const shortLinkHost = (): string => shortLinkBase().replace(/^https?:\/\//, '');
+
 export const API_ENDPOINTS = {
     // Base URL for constructing custom endpoints
     base: API_BASE_URL,

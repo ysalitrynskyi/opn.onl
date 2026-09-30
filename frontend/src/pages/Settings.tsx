@@ -6,7 +6,7 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch } from '../config/api';
+import { API_ENDPOINTS, authFetch, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { isSafeHttpUrl } from '../utils';
@@ -1083,7 +1083,7 @@ export default function Settings() {
                             <div>
                                 <label htmlFor="bio-username" className="block text-sm font-medium text-ink mb-1.5">Username</label>
                                 <div className="flex items-center gap-2">
-                                    <span className="text-sm text-faint">opn.onl/@</span>
+                                    <span className="text-sm text-faint">{shortLinkHost()}/@</span>
                                     <input
                                         id="bio-username"
                                         type="text"

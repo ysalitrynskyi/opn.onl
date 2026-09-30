@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link as RouterLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ExternalLink, Lock, Clock, MousePointer, Globe, AlertTriangle, ArrowRight, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
-import { API_ENDPOINTS } from '../config/api';
+import { API_ENDPOINTS, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -108,7 +108,7 @@ export default function Preview() {
                             Link Preview
                         </h1>
                         <p className="text-primary-100 text-sm mt-1">
-                            opn.onl/{preview.code}
+                            {shortLinkHost()}/{preview.code}
                         </p>
                     </div>
 

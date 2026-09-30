@@ -12,7 +12,7 @@ import {
     ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
     Tooltip as ChartTooltip, CartesianGrid, Legend,
 } from 'recharts';
-import { API_ENDPOINTS, authFetch } from '../config/api';
+import { API_ENDPOINTS, authFetch, shortLinkBase } from '../config/api';
 import { safeLocalStorage } from '../utils/storage';
 import { pluralize } from '../utils/plural';
 
@@ -129,9 +129,6 @@ interface AdminOrg {
 type Tab = 'overview' | 'users' | 'links' | 'orgs' | 'blocked';
 
 const PER_PAGE = 25;
-
-const SHORT_BASE = import.meta.env.VITE_FRONTEND_URL ||
-    (typeof window !== 'undefined' ? window.location.origin : '');
 
 function formatDate(value: string) {
     const d = new Date(value);
@@ -487,7 +484,7 @@ export default function Admin() {
 
     const copyShortUrl = async (code: string) => {
         try {
-            await navigator.clipboard.writeText(`${SHORT_BASE}/${code}`);
+            await navigator.clipboard.writeText(`${shortLinkBase()}/${code}`);
             flash(setSuccess, 'Short URL copied');
         } catch {
             flash(setError, 'Could not copy to clipboard');

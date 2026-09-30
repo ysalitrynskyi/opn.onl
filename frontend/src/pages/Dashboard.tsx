@@ -9,7 +9,7 @@ import {
     Eye, ArrowRight, Flame, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, authFetch } from '../config/api';
+import { API_ENDPOINTS, authFetch, shortLinkBase } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -476,7 +476,7 @@ export default function Dashboard() {
 
     const handleCopy = async (link: LinkData) => {
         try {
-            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+            const mainUrl = `${shortLinkBase()}/${link.code}`;
             await navigator.clipboard.writeText(mainUrl);
             setCopiedId(link.id);
             toast('Short link copied!', 'success');
@@ -556,7 +556,7 @@ export default function Dashboard() {
     const handleShare = (link: LinkData) => {
         // On mobile, try native share first
         if (navigator.share && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+            const mainUrl = `${shortLinkBase()}/${link.code}`;
             navigator.share({
                 title: link.title || 'Check out this link',
                 url: mainUrl,
@@ -607,7 +607,7 @@ export default function Dashboard() {
                 )}
                 {shareLink && (
                     <ShareModal
-                        url={`${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${shareLink.code}`}
+                        url={`${shortLinkBase()}/${shareLink.code}`}
                         title={shareLink.title || `Check out this link`}
                         onClose={() => setShareLink(null)}
                     />
@@ -1008,7 +1008,7 @@ export default function Dashboard() {
                         {paginatedLinks.map((link, index) => {
                             // Calculate link number (bottom to top, 1 = oldest)
                             const linkNumber = filteredLinks.length - ((currentPage - 1) * LINKS_PER_PAGE + index);
-                            const mainUrl = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/${link.code}`;
+                            const mainUrl = `${shortLinkBase()}/${link.code}`;
                             const apiUrl = link.api_url || link.short_url; // Use api_url from backend
 
                             return (
