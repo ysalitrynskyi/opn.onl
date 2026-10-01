@@ -110,10 +110,10 @@ Release flow, in order:
 
 1. Feature branch → PR → all CI checks green → merge to `main`. **Branch from `main`** — cutting a branch while still checked out on `release` drags release-only history into the next PR (that is how the deploy host's postgres port leaked into `main` before 1.3.1).
 2. `git checkout release && git merge main -m "chore(release): sync main for vX.Y.Z"`. `release` carries no deliberate deviation from `main` any more — host-specific settings are env vars (e.g. `POSTGRES_HOST_PORT`), so `git diff main release` should come back empty. A conflict here means someone re-introduced a branch-local difference; fix that rather than resolving it every release.
-3. Push `release` — this builds and publishes multi-arch `:latest`.
+3. Push `release` — this builds and publishes multi-arch `:latest`. **Let that `docker-build.yml` run start before pushing the tag**: the workflow's concurrency group keeps one run queued at a time, so pushing `release`, the tag and the release within seconds cancels the `release` run, and that is the only run that publishes `:latest` (it happened on 1.4.0). If it was cancelled, `gh run rerun <its id>` once the tag run is going.
 4. Tag `vX.Y.Z` on the release merge commit, push the tag, then `gh release create` (notes follow the shape of the previous releases: Summary / themed sections / Images / Upgrade).
 5. Both the tag push and the release publication trigger `docker-build.yml`, which serializes on a single concurrency group, so **the earlier queued run reports `cancelled`** — expected, not a failure. The surviving run publishes the `X.Y.Z` tags.
-6. Verify before declaring done: `docker manifest inspect ghcr.io/ysalitrynskyi/opn-backend:X.Y.Z` (and `opn-frontend`) must list both `linux/amd64` and `linux/arm64`, and the same for `:latest`.
+6. Verify before declaring done: `docker manifest inspect ghcr.io/ysalitrynskyi/opn-backend:X.Y.Z` (and `opn-frontend`) must list both `linux/amd64` and `linux/arm64`, and the same for `:latest`. Check that `:latest` is really the new build, not only multi-arch: `docker buildx imagetools inspect ghcr.io/ysalitrynskyi/opn-backend:latest --format '{{ with (index .Image "linux/arm64") }}{{ index .Config.Labels "org.opencontainers.image.revision" }}{{ end }}'` must print the release commit.
 
 Deployment to production is a manual Portainer redeploy by the operator; a green release workflow only means the images exist.
 
