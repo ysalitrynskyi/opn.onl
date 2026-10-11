@@ -164,7 +164,8 @@ test.describe('Settings page', () => {
         const file = await download;
 
         expect(file.suggestedFilename()).toBe('opn_onl_links.csv');
-        const csv = await readFile(await file.path(), 'utf8');
+        // The export starts with a UTF-8 byte order mark so Excel reads it as UTF-8.
+        const csv = (await readFile(await file.path(), 'utf8')).replace(/^\uFEFF/, '');
         const [header, ...rows] = csv.trim().split('\n');
         expect(header.startsWith('ID,Code,Original URL,Short URL,Click Count')).toBe(true);
         expect(rows).toHaveLength(1);

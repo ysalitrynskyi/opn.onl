@@ -3,9 +3,10 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
+use sea_orm::sea_query::OnConflict;
 use sea_orm::sea_query::SelectStatement;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
@@ -128,14 +129,25 @@ pub(crate) fn link_ids_with_tag(tag_id: i32) -> SelectStatement {
 /// Count links carrying a tag, excluding soft-deleted links so the reported
 /// `link_count` matches what the tag's link listing actually shows. Counting
 /// raw `link_tags` rows over-counts, since deleting a link is a soft delete that
-/// leaves its tag rows in place.
-async fn count_active_tagged_links(db: &sea_orm::DatabaseConnection, tag_id: i32) -> i64 {
-    links::Entity::find()
+/// leaves its tag rows in place. A database error is returned: a count of 0 for
+/// a tag in use would read as "unused".
+async fn count_active_tagged_links(
+    db: &sea_orm::DatabaseConnection,
+    tag_id: i32,
+) -> Result<i64, DbErr> {
+    let count = links::Entity::find()
         .filter(links::Column::Id.in_subquery(link_ids_with_tag(tag_id)))
         .filter(links::Column::DeletedAt.is_null())
         .count(db)
-        .await
-        .unwrap_or(0) as i64
+        .await?;
+    Ok(count as i64)
+}
+
+fn db_error() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error": "Database error"})),
+    )
 }
 
 // ============= Handlers =============
@@ -229,6 +241,7 @@ pub async fn create_tag(
     responses(
         (status = 200, description = "List of tags", body = Vec<TagResponse>),
         (status = 401, description = "Unauthorized"),
+        (status = 500, description = "The tags could not be read"),
     ),
     tag = "Tags",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -298,7 +311,7 @@ pub async fn get_tags(
             .into_tuple()
             .all(&state.db)
             .await
-            .unwrap_or_default();
+            .map_err(|_| db_error())?;
         link_counts.extend(rows);
     }
 
@@ -330,6 +343,7 @@ pub async fn get_tags(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
+        (status = 500, description = "The tag could not be read"),
     ),
     tag = "Tags",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -371,7 +385,9 @@ pub async fn get_tag(
         ));
     }
 
-    let link_count = count_active_tagged_links(&state.db, tag.id).await;
+    let link_count = count_active_tagged_links(&state.db, tag.id)
+        .await
+        .map_err(|_| db_error())?;
 
     Ok(Json(TagResponse {
         id: tag.id,
@@ -397,6 +413,7 @@ pub async fn get_tag(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
+        (status = 500, description = "The tag could not be updated"),
     ),
     tag = "Tags",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -467,7 +484,9 @@ pub async fn update_tag(
         )
     })?;
 
-    let link_count = count_active_tagged_links(&state.db, tag.id).await;
+    let link_count = count_active_tagged_links(&state.db, tag.id)
+        .await
+        .map_err(|_| db_error())?;
 
     Ok(Json(TagResponse {
         id: tag.id,
@@ -555,11 +574,12 @@ pub async fn delete_tag(
     ),
     request_body = AddTagsToLinkRequest,
     responses(
-        (status = 200, description = "Tags added (`{\"added\": N}`)"),
+        (status = 200, description = "Tags added (`{\"added\": N}`). `added` counts the tags this request attached; ones already on the link, unknown, or out of scope for it are not counted"),
         (status = 400, description = "More than 500 tag ids"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
+        (status = 500, description = "The tags could not be added"),
     ),
     tag = "Tags",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -617,7 +637,7 @@ pub async fn add_tags_to_link(
             .filter(tags::Column::Id.is_in(tag_ids))
             .all(&state.db)
             .await
-            .unwrap_or_default();
+            .map_err(|_| db_error())?;
         let in_scope: Vec<i32> = loaded
             .into_iter()
             .filter(|tag| tag_matches_link_scope(tag, &link, user_id))
@@ -630,7 +650,7 @@ pub async fn add_tags_to_link(
                 .filter(link_tags::Column::TagId.is_in(in_scope.clone()))
                 .all(&state.db)
                 .await
-                .unwrap_or_default()
+                .map_err(|_| db_error())?
                 .into_iter()
                 .map(|lt| lt.tag_id)
                 .collect();
@@ -644,11 +664,25 @@ pub async fn add_tags_to_link(
                     ..Default::default()
                 })
                 .collect();
-            added_count = to_insert.len();
             if !to_insert.is_empty() {
-                let _ = link_tags::Entity::insert_many(to_insert)
-                    .exec(&state.db)
-                    .await;
+                // A concurrent request may attach the same tag between the
+                // lookup above and this insert. The unique index would reject
+                // the whole statement, so a clash is skipped instead, and the
+                // reply counts the rows this request really wrote.
+                added_count = link_tags::Entity::insert_many(to_insert)
+                    .on_conflict(
+                        OnConflict::columns([link_tags::Column::LinkId, link_tags::Column::TagId])
+                            .do_nothing()
+                            .to_owned(),
+                    )
+                    .exec_without_returning(&state.db)
+                    .await
+                    .map_err(|_| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": "Failed to add tags"})),
+                        )
+                    })?;
             }
         }
     }
@@ -770,10 +804,11 @@ pub async fn remove_tags_from_link(
         ("tag_id" = i32, Path, description = "Tag ID")
     ),
     responses(
-        (status = 200, description = "Non-deleted links with this tag"),
+        (status = 200, description = "Non-deleted links with this tag, each with its tags"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Tag not found"),
+        (status = 500, description = "The links could not be read"),
     ),
     tag = "Tags",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -834,6 +869,11 @@ pub async fn get_links_by_tag(
         )
     })?;
 
+    let link_ids: Vec<i32> = links_list.iter().map(|l| l.id).collect();
+    let mut tags_by_link = crate::handlers::links::get_tags_by_link_ids(&state.db, &link_ids)
+        .await
+        .map_err(|_| db_error())?;
+
     let base_url =
         std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
     let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
@@ -861,7 +901,7 @@ pub async fn get_links_by_tag(
             bio_visible: l.bio_visible,
             is_active: l.is_active(),
             is_pinned: l.is_pinned,
-            tags: vec![],
+            tags: tags_by_link.remove(&l.id).unwrap_or_default(),
         })
         .collect();
 
