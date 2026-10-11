@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import {
     ArrowRight, BarChart2, Lock, Shield, Zap, QrCode, Clock, Check, Copy, CornerDownRight
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch } from '../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch } from '../config/api';
 import SEO from '../components/SEO';
 import AmbientNetwork from '../components/AmbientNetwork';
 import { savePendingUrl } from '../utils/pendingUrl';
@@ -42,8 +42,16 @@ export default function Home() {
             } else {
                 setError(data.error || 'Failed to create link');
             }
-        } catch {
-            setError('Network error. Please try again.');
+        } catch (err) {
+            if (err instanceof SessionExpiredError) {
+                // The stored token was rejected (expired or revoked). authFetch
+                // has cleared it and is sending the visitor to /login; carry
+                // the URL over so signing in again does not lose it.
+                savePendingUrl(url);
+                setError(err.message);
+            } else {
+                setError('Network error. Please try again.');
+            }
         } finally {
             setLoading(false);
         }

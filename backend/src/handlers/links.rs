@@ -946,6 +946,34 @@ pub async fn get_user_id_from_header(
         .map(Authentication::user_id)
 }
 
+/// A request sent an `Authorization` header that did not authenticate.
+pub struct RejectedCredential;
+
+impl IntoResponse for RejectedCredential {
+    fn into_response(self) -> axum::response::Response {
+        json_error(StatusCode::UNAUTHORIZED, "Invalid or expired credentials")
+    }
+}
+
+/// Authenticate for an endpoint where credentials are optional. No
+/// `Authorization` header is an anonymous caller (`Ok(None)`). A header that
+/// is present but does not authenticate (expired or revoked token, unknown
+/// key, wrong scheme, garbage) is a 401, never a quiet downgrade to
+/// anonymous: the caller believes they are signed in, and would otherwise get
+/// back a success that is not attached to their account.
+pub async fn optional_user_id_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Result<Option<i32>, RejectedCredential> {
+    if !headers.contains_key(axum::http::header::AUTHORIZATION) {
+        return Ok(None);
+    }
+    get_user_id_from_header(db, headers)
+        .await
+        .map(Some)
+        .ok_or(RejectedCredential)
+}
+
 /// Require a revocable JWT. API keys are intentionally rejected even when they
 /// belong to the same user.
 pub async fn get_jwt_auth_from_header(
@@ -1195,9 +1223,12 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 /// Create a new shortened link
 ///
 /// Credentials are optional. Without them the link is anonymous and cannot be
-/// put in a folder, tagged, or owned by an organization. An account can shorten
-/// the same URL at most 10 times in 10 minutes; the next request is answered
-/// 429 with only an `error` field and no `Retry-After`.
+/// put in a folder, tagged, or owned by an organization. Credentials that are
+/// sent but do not authenticate (expired, revoked, unknown key) are refused
+/// with 401 instead of creating an anonymous link; omit the `Authorization`
+/// header to create one. An account can shorten the same URL at most 10 times
+/// in 10 minutes; the next request is answered 429 with only an `error` field
+/// and no `Retry-After`.
 #[utoipa::path(
     post,
     path = "/links",
@@ -1205,6 +1236,7 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
     responses(
         (status = 201, description = "Link created", body = LinkResponse),
         (status = 400, description = "Invalid request"),
+        (status = 401, description = "Credentials were sent but are invalid, expired or revoked"),
         (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
     ),
@@ -1216,6 +1248,13 @@ pub async fn create_link(
     headers: HeaderMap,
     Json(payload): Json<CreateLinkRequest>,
 ) -> impl IntoResponse {
+    // Resolve the caller first, so rejected credentials are refused before any
+    // validation or DNS lookup is spent on the request.
+    let user_id = match optional_user_id_from_header(&state.db, &headers).await {
+        Ok(user_id) => user_id,
+        Err(rejected) => return rejected.into_response(),
+    };
+
     // Validate URL first
     let validated_url = match validate_url(&payload.original_url) {
         Ok(url) => url,
@@ -1240,8 +1279,6 @@ pub async fn create_link(
         )
             .into_response();
     }
-
-    let user_id = get_user_id_from_header(&state.db, &headers).await;
 
     // Check email verification for authenticated users
     if let Some(uid) = user_id {
@@ -1604,13 +1641,13 @@ pub async fn create_link(
             original_url: payload.original_url,
             title: payload.title,
             click_count: 0,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
+            created_at: utc_rfc3339(chrono::Utc::now().naive_utc()),
+            expires_at: payload.expires_at.map(|d| utc_rfc3339(d.naive_utc())),
             has_password: password_hash.is_some(),
             notes: payload.notes,
             folder_id: payload.folder_id,
             org_id: payload.org_id,
-            starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
+            starts_at: payload.starts_at.map(|d| utc_rfc3339(d.naive_utc())),
             max_clicks: effective_max_clicks,
             burn_after_reading,
             burned_at: None,
@@ -5159,42 +5196,26 @@ pub async fn build_utm_url(Json(payload): Json<BuildUtmRequest>) -> impl IntoRes
         }
     };
 
+    // Collect first: `query_pairs_mut` leaves a bare `?` on the URL as soon as
+    // it is called, even when nothing is appended.
     let mut utm_params = std::collections::HashMap::new();
-
-    // Add UTM parameters
-    {
-        let mut query_pairs = parsed.query_pairs_mut();
-
-        if let Some(ref source) = payload.utm_source
-            && !source.is_empty()
+    let mut utm_pairs = Vec::new();
+    for (name, value) in [
+        ("utm_source", &payload.utm_source),
+        ("utm_medium", &payload.utm_medium),
+        ("utm_campaign", &payload.utm_campaign),
+        ("utm_term", &payload.utm_term),
+        ("utm_content", &payload.utm_content),
+    ] {
+        if let Some(value) = value
+            && !value.is_empty()
         {
-            query_pairs.append_pair("utm_source", source);
-            utm_params.insert("utm_source".to_string(), source.clone());
+            utm_pairs.push((name, value));
+            utm_params.insert(name.to_string(), value.clone());
         }
-        if let Some(ref medium) = payload.utm_medium
-            && !medium.is_empty()
-        {
-            query_pairs.append_pair("utm_medium", medium);
-            utm_params.insert("utm_medium".to_string(), medium.clone());
-        }
-        if let Some(ref campaign) = payload.utm_campaign
-            && !campaign.is_empty()
-        {
-            query_pairs.append_pair("utm_campaign", campaign);
-            utm_params.insert("utm_campaign".to_string(), campaign.clone());
-        }
-        if let Some(ref term) = payload.utm_term
-            && !term.is_empty()
-        {
-            query_pairs.append_pair("utm_term", term);
-            utm_params.insert("utm_term".to_string(), term.clone());
-        }
-        if let Some(ref content) = payload.utm_content
-            && !content.is_empty()
-        {
-            query_pairs.append_pair("utm_content", content);
-            utm_params.insert("utm_content".to_string(), content.clone());
-        }
+    }
+    if !utm_pairs.is_empty() {
+        parsed.query_pairs_mut().extend_pairs(utm_pairs);
     }
 
     (

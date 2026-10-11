@@ -313,7 +313,7 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/links` | List user's links |
-| POST | `/links` | Create new link |
+| POST | `/links` | Create new link. Without an `Authorization` header the link is anonymous; a header that does not authenticate (expired, revoked or unknown token) is a 401, not an anonymous link |
 | PUT | `/links/{id}` | Update link |
 | DELETE | `/links/{id}` | Delete link |
 | GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
