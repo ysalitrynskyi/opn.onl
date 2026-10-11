@@ -7,6 +7,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use rand::distributions::Alphanumeric;
 use rand::{Rng, thread_rng};
+use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::sea_query::{Alias, Expr};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,9 @@ use crate::utils::env::env_flag;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::link_owner::link_owner_is_active;
+use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
+use crate::utils::validation::ilike_pattern;
 
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
 /// hit must never become an unchecked redirect because the blocklist query died.
@@ -702,22 +705,34 @@ pub struct CreateLinkRequest {
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct UpdateLinkRequest {
     pub original_url: Option<String>,
+    /// An empty string clears the title.
     pub title: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub password: Option<String>,
     pub remove_password: Option<bool>,
     pub remove_expiration: Option<bool>,
+    /// An empty string clears the notes.
     pub notes: Option<String>,
     /// Accepted so a client that echoes the current code is not ignored
     /// silently. A different value is rejected: the code is not editable.
     pub custom_alias: Option<String>,
+    /// Move the link into this folder. `null` is the same as leaving it out;
+    /// use `remove_folder` to take the link out of its folder.
     pub folder_id: Option<i32>,
+    /// Take the link out of its folder. Wins over `folder_id`.
+    pub remove_folder: Option<bool>,
     pub starts_at: Option<DateTime<Utc>>,
+    /// Maximum number of clicks. A burn-after-reading link always has a cap:
+    /// it is 1 unless this names another.
     pub max_clicks: Option<i32>,
+    /// A one-time link. Turning it off also removes the cap it implied
+    /// (unless `max_clicks` is set in the same request).
     pub burn_after_reading: Option<bool>,
     pub safe_link_interstitial: Option<bool>,
     pub bio_visible: Option<bool>,
     pub remove_starts_at: Option<bool>,
+    /// Remove the click cap. On a burn-after-reading link this also turns
+    /// burn-after-reading off, because a one-time link cannot be uncapped.
     pub remove_max_clicks: Option<bool>,
 }
 
@@ -736,22 +751,56 @@ pub struct BulkDeleteRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct BulkUpdateRequest {
     pub ids: Vec<i32>,
+    /// Move every link into this folder. `null` is the same as leaving it out;
+    /// use `remove_folder` to take the links out of their folders.
     pub folder_id: Option<i32>,
+    /// Take every link out of its folder. Wins over `folder_id`.
+    pub remove_folder: Option<bool>,
     pub expires_at: Option<DateTime<Utc>>,
     pub remove_expiration: Option<bool>,
 }
 
-/// Dashboard fetches GET /links with no `limit` and paginates in the browser,
-/// so omitting `limit` must still return a complete-enough list. 1000 is a
-/// safety cap, not "every row the user owns".
+/// Scripts and API clients call GET /links with no `limit` and expect the
+/// whole list back, so omitting it still returns up to 1000 rows. That is a
+/// safety cap, not "every row the user owns": `X-Total-Count` says how many
+/// more there are and `offset` reaches them.
 const DEFAULT_LINKS_LIMIT: u64 = 1000;
 const MAX_LINKS_LIMIT: u64 = 1000;
 
-fn clamp_links_limit(limit: Option<u64>) -> u64 {
+/// How many rows matched a link list request, ignoring `limit` and `offset`.
+/// The body stays a bare JSON array (API clients depend on that), so the
+/// total travels in a header; `build_cors` exposes it to the browser.
+pub const X_TOTAL_COUNT: axum::http::HeaderName =
+    axum::http::HeaderName::from_static("x-total-count");
+
+/// One page of a link list: the rows, and `X-Total-Count`.
+pub type LinkPage = (
+    [(axum::http::HeaderName, String); 1],
+    Json<Vec<LinkResponse>>,
+);
+
+pub fn link_page(total: u64, rows: Vec<LinkResponse>) -> LinkPage {
+    ([(X_TOTAL_COUNT, total.to_string())], Json(rows))
+}
+
+pub(crate) fn clamp_links_limit(limit: Option<u64>) -> u64 {
     limit
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_LINKS_LIMIT)
         .min(MAX_LINKS_LIMIT)
+}
+
+/// Apply a link list request's `limit` and `offset` to an already filtered and
+/// ordered query.
+pub(crate) fn page_links(
+    select: Select<links::Entity>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> Select<links::Entity> {
+    // Postgres takes OFFSET as a signed 64-bit number, and the driver panics
+    // instead of failing when handed a larger one.
+    let offset = offset.map(|n| n.min(i64::MAX as u64));
+    select.limit(clamp_links_limit(limit)).offset(offset)
 }
 
 #[cfg(test)]
@@ -791,6 +840,16 @@ pub struct LinksQuery {
     pub search: Option<String>,
     /// Page size. Omitted or 0 defaults to 1000. Maximum 1000.
     pub limit: Option<u64>,
+    /// Number of links to skip, in the order the list is returned.
+    pub offset: Option<u64>,
+}
+
+/// Paging of the folder and tag link lists, the same as `GET /links`.
+#[derive(Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct LinkPageQuery {
+    /// Page size. Omitted or 0 defaults to 1000. Maximum 1000.
+    pub limit: Option<u64>,
+    /// Number of links to skip, in the order the list is returned.
     pub offset: Option<u64>,
 }
 
@@ -873,6 +932,26 @@ fn generate_short_code() -> String {
         .take(6)
         .map(char::from)
         .collect()
+}
+
+/// The first code `next` produces that no link row holds (live or soft-deleted:
+/// the column is globally unique) and that was not retired. Callers pass the
+/// random generator; a test passes a scripted sequence. A failed lookup counts
+/// as free, as it did before retired codes existed: the insert's UNIQUE
+/// constraint still guards link rows.
+pub async fn unused_code<C: ConnectionTrait>(db: &C, mut next: impl FnMut() -> String) -> String {
+    loop {
+        let code = next();
+        let in_use = links::Entity::find()
+            .filter(links::Column::Code.eq(&code))
+            .one(db)
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !in_use && !retired_codes::is_retired(db, &code).await.unwrap_or(false) {
+            return code;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1082,6 +1161,10 @@ fn get_api_url() -> String {
     std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
 }
 
+fn burn_feature_enabled() -> bool {
+    env_flag("ENABLE_BURN_AFTER_READING", true)
+}
+
 fn interstitial_feature_enabled() -> bool {
     env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true)
 }
@@ -1148,34 +1231,45 @@ fn routing_signals(headers: &HeaderMap) -> (UserAgentInfo, GeoLocation, Option<&
     (ua_info, geo, accept_language)
 }
 
-/// Tags for many links in two queries: all `link_tags` for the page, then the
-/// distinct `tags` rows. Soft-deleted links are excluded by the caller — this
-/// table has no `deleted_at`, so a leftover assignment on a deleted link is
-/// only dropped when that link is not in `link_ids`.
+/// Most link ids bound into one `IN (...)` when loading tags. A tag can sit on
+/// more links than a statement has bind parameters for (65,535), so a long
+/// list is read in slices.
+const TAG_LOOKUP_CHUNK: usize = 10_000;
+
+/// Tags for many links: the `link_tags` rows for the ids, then the distinct
+/// `tags` rows. Soft-deleted links are excluded by the caller — this table has
+/// no `deleted_at`, so a leftover assignment on a deleted link is only dropped
+/// when that link is not in `link_ids`. A database error is returned, never an
+/// empty map: a list built from it would show tagged links as untagged.
 pub(crate) async fn get_tags_by_link_ids(
     db: &DatabaseConnection,
     link_ids: &[i32],
-) -> HashMap<i32, Vec<TagInfo>> {
+) -> Result<HashMap<i32, Vec<TagInfo>>, DbErr> {
     let mut by_link: HashMap<i32, Vec<TagInfo>> = HashMap::new();
     if link_ids.is_empty() {
-        return by_link;
+        return Ok(by_link);
     }
 
-    let assignments = link_tags::Entity::find()
-        .filter(link_tags::Column::LinkId.is_in(link_ids.to_vec()))
-        .all(db)
-        .await
-        .unwrap_or_default();
+    let mut assignments = Vec::new();
+    for chunk in link_ids.chunks(TAG_LOOKUP_CHUNK) {
+        assignments.extend(
+            link_tags::Entity::find()
+                .filter(link_tags::Column::LinkId.is_in(chunk.to_vec()))
+                .all(db)
+                .await?,
+        );
+    }
     if assignments.is_empty() {
-        return by_link;
+        return Ok(by_link);
     }
 
-    let tag_ids: Vec<i32> = assignments.iter().map(|lt| lt.tag_id).collect();
+    let mut tag_ids: Vec<i32> = assignments.iter().map(|lt| lt.tag_id).collect();
+    tag_ids.sort_unstable();
+    tag_ids.dedup();
     let tags_list = tags::Entity::find()
         .filter(tags::Column::Id.is_in(tag_ids))
         .all(db)
-        .await
-        .unwrap_or_default();
+        .await?;
     let tags_by_id: HashMap<i32, TagInfo> = tags_list
         .into_iter()
         .map(|t| {
@@ -1198,14 +1292,20 @@ pub(crate) async fn get_tags_by_link_ids(
                 .push(tag.clone());
         }
     }
-    by_link
+    Ok(by_link)
 }
 
+/// Tags of a link that was just written. The write has already happened, so a
+/// failed read leaves the tags out of the response instead of reporting an
+/// error for a change that went through.
 async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
-    get_tags_by_link_ids(db, &[link_id])
-        .await
-        .remove(&link_id)
-        .unwrap_or_default()
+    match get_tags_by_link_ids(db, &[link_id]).await {
+        Ok(mut by_link) => by_link.remove(&link_id).unwrap_or_default(),
+        Err(error) => {
+            tracing::error!("Failed to load tags for link {}: {}", link_id, error);
+            Vec::new()
+        }
+    }
 }
 
 // ============= Handlers =============
@@ -1388,13 +1488,19 @@ pub async fn create_link(
         // An alias previously used by a now-deleted link cannot be reused: the
         // global UNIQUE on links.code still holds that code, so an insert would
         // fail. Reject explicitly with a clear message rather than 500 later.
+        // A code whose link row was purged is reserved the same way, but only
+        // the retired_codes table remembers it.
         let exists_deleted = links::Entity::find()
             .filter(links::Column::Code.eq(&alias))
             .filter(links::Column::DeletedAt.is_not_null())
             .one(&state.db)
             .await
             .unwrap_or(None);
-        if exists_deleted.is_some() {
+        let retired = match retired_codes::is_retired(&state.db, &alias).await {
+            Ok(retired) => retired,
+            Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+        };
+        if exists_deleted.is_some() || retired {
             return (
                 StatusCode::CONFLICT,
                 Json(ErrorResponse {
@@ -1406,17 +1512,7 @@ pub async fn create_link(
 
         alias
     } else {
-        let mut code = generate_short_code();
-        while links::Entity::find()
-            .filter(links::Column::Code.eq(&code))
-            .one(&state.db)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            code = generate_short_code();
-        }
-        code
+        unused_code(&state.db, generate_short_code).await
     };
 
     let password_hash = if let Some(password) = link_password {
@@ -3573,8 +3669,14 @@ pub async fn replace_routing_rules(
     path = "/links",
     params(LinksQuery),
     responses(
-        (status = 200, description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member (limit defaults to 1000, maximum 1000)", body = Vec<LinkResponse>),
+        (
+            status = 200,
+            description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member. Pinned links first, then newest first (limit defaults to 1000, maximum 1000). `search` is a case-insensitive substring match on URL, code, title and notes",
+            body = Vec<LinkResponse>,
+            headers(("X-Total-Count" = u64, description = "How many links match the filters, ignoring `limit` and `offset`"))
+        ),
         (status = 401, description = "Unauthorized"),
+        (status = 500, description = "The links could not be read"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -3606,17 +3708,19 @@ pub async fn get_user_links(
         link_query = link_query.filter(links::Column::FolderId.eq(folder_id));
     }
 
-    // Search by URL, code, title, or notes. `contains` becomes LIKE '%…%' / ILIKE, which
+    // Search by URL, code, title, or notes: a case-insensitive substring match
+    // in which `%` and `_` in the text are ordinary characters. ILIKE '%…%'
     // cannot use btree idx_links_original_url (or any btree). A pg_trgm GIN
     // index is the real answer if this filter becomes hot; do not add another
     // btree expecting it to serve a leading wildcard.
     if let Some(search) = query.search {
+        let pattern = ilike_pattern(&search);
         link_query = link_query.filter(
             Condition::any()
-                .add(links::Column::OriginalUrl.contains(&search))
-                .add(links::Column::Code.contains(&search))
-                .add(links::Column::Title.contains(&search))
-                .add(links::Column::Notes.contains(&search)),
+                .add(Expr::col((links::Entity, links::Column::OriginalUrl)).ilike(pattern.clone()))
+                .add(Expr::col((links::Entity, links::Column::Code)).ilike(pattern.clone()))
+                .add(Expr::col((links::Entity, links::Column::Title)).ilike(pattern.clone()))
+                .add(Expr::col((links::Entity, links::Column::Notes)).ilike(pattern)),
         );
     }
 
@@ -3627,19 +3731,37 @@ pub async fn get_user_links(
         );
     }
 
-    let link_query = link_query.order_by_desc(links::Column::CreatedAt);
-
-    let limit = clamp_links_limit(query.limit);
-    let link_query = link_query.limit(limit);
-    let link_query = if let Some(offset) = query.offset {
-        link_query.offset(offset)
-    } else {
-        link_query
+    let total = match link_query.clone().count(&state.db).await {
+        Ok(total) => total,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
-    let user_links = link_query.all(&state.db).await.unwrap_or_default();
+    // Pinned links lead, then newest first. `id` breaks ties: a bulk create
+    // stamps many rows with the same instant, and without it the database may
+    // order them differently for each page, so paging repeats and skips rows.
+    let link_query = link_query
+        .order_by_desc(links::Column::IsPinned)
+        .order_by_desc(links::Column::CreatedAt)
+        .order_by_desc(links::Column::Id);
+    let link_query = page_links(link_query, query.limit, query.offset);
+
+    // A failed read is a 500: an empty 200 would show the dashboard's "no links
+    // yet" state for an account that has links.
+    let user_links = match link_query.all(&state.db).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!("Failed to list links: {}", error);
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        }
+    };
     let page_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
-    let mut tags_by_link = get_tags_by_link_ids(&state.db, &page_ids).await;
+    let mut tags_by_link = match get_tags_by_link_ids(&state.db, &page_ids).await {
+        Ok(tags) => tags,
+        Err(error) => {
+            tracing::error!("Failed to load tags for the link list: {}", error);
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        }
+    };
 
     let base_url = get_base_url();
     let api_url = get_api_url();
@@ -3672,7 +3794,7 @@ pub async fn get_user_links(
         });
     }
 
-    (StatusCode::OK, Json(response)).into_response()
+    link_page(total, response).into_response()
 }
 
 /// Delete a link
@@ -3775,6 +3897,134 @@ pub async fn delete_link(
     }
 }
 
+/// The burn flag and click cap a link ends up with after an update.
+///
+/// A burn-after-reading link is enforced through its click cap
+/// (`consume_capped_click`), so one without a cap is flagged as one-time but
+/// never burns, and a cap left behind by an un-burned link keeps killing it
+/// after the first visit. The pair therefore changes together:
+///
+/// * burn on: there is always a cap, the one named in the request, else the
+///   current one, else 1;
+/// * burn turned off, or the cap removed from a burn link: the cap goes too,
+///   unless the request names a new one;
+/// * a link that was never burn: only an explicit cap or `remove` changes it.
+///
+/// `burn` is `None` when the request leaves the flag alone (or the feature is
+/// switched off); `remove_cap` wins over `max_clicks`.
+fn burn_and_cap_after_update(
+    stored_burn: bool,
+    stored_cap: Option<i32>,
+    burn: Option<bool>,
+    max_clicks: Option<i32>,
+    remove_cap: bool,
+) -> (bool, Option<i32>) {
+    let named = if remove_cap { None } else { max_clicks };
+    let kept = if remove_cap { None } else { stored_cap };
+    let burn_now = burn.unwrap_or(stored_burn && !remove_cap);
+    let cap = if burn_now {
+        named.or(kept).or(Some(1))
+    } else if stored_burn {
+        named
+    } else {
+        named.or(kept)
+    };
+    (burn_now, cap)
+}
+
+#[cfg(test)]
+mod burn_and_cap_tests {
+    use super::burn_and_cap_after_update as resolve;
+
+    #[test]
+    fn turning_burn_on_gives_a_one_time_cap_unless_one_exists_or_is_named() {
+        assert_eq!(
+            resolve(false, None, Some(true), None, false),
+            (true, Some(1))
+        );
+        assert_eq!(
+            resolve(false, Some(5), Some(true), None, false),
+            (true, Some(5))
+        );
+        assert_eq!(
+            resolve(false, None, Some(true), Some(3), false),
+            (true, Some(3))
+        );
+    }
+
+    #[test]
+    fn turning_burn_off_removes_the_cap_it_implied() {
+        assert_eq!(
+            resolve(true, Some(1), Some(false), None, false),
+            (false, None)
+        );
+        // ... unless the request names a cap of its own.
+        assert_eq!(
+            resolve(true, Some(1), Some(false), Some(10), false),
+            (false, Some(10))
+        );
+    }
+
+    #[test]
+    fn removing_the_cap_of_a_burn_link_turns_burn_off() {
+        assert_eq!(resolve(true, Some(1), None, None, true), (false, None));
+    }
+
+    #[test]
+    fn asking_for_burn_and_no_cap_in_one_request_keeps_the_burn() {
+        assert_eq!(
+            resolve(true, Some(1), Some(true), None, true),
+            (true, Some(1))
+        );
+        assert_eq!(
+            resolve(false, Some(5), Some(true), None, true),
+            (true, Some(1))
+        );
+    }
+
+    #[test]
+    fn echoing_the_current_flag_changes_nothing() {
+        assert_eq!(
+            resolve(true, Some(1), Some(true), None, false),
+            (true, Some(1))
+        );
+        assert_eq!(
+            resolve(true, Some(4), Some(true), None, false),
+            (true, Some(4))
+        );
+        // A capped link that is not burn keeps its cap when the form says
+        // "burn off" again (the dashboard sends the flag on every save).
+        assert_eq!(
+            resolve(false, Some(5), Some(false), None, false),
+            (false, Some(5))
+        );
+        assert_eq!(
+            resolve(false, None, Some(false), None, false),
+            (false, None)
+        );
+    }
+
+    #[test]
+    fn a_burn_link_without_a_cap_is_repaired_by_any_burn_update() {
+        assert_eq!(
+            resolve(true, None, Some(true), None, false),
+            (true, Some(1))
+        );
+    }
+
+    #[test]
+    fn plain_caps_behave_as_before() {
+        assert_eq!(
+            resolve(false, Some(5), None, Some(9), false),
+            (false, Some(9))
+        );
+        assert_eq!(resolve(false, Some(5), None, None, true), (false, None));
+        assert_eq!(resolve(false, None, None, None, false), (false, None));
+        // The feature switched off leaves a burn link's pair alone.
+        assert_eq!(resolve(true, Some(1), None, None, false), (true, Some(1)));
+    }
+}
+
 /// Update a link
 #[utoipa::path(
     put,
@@ -3785,9 +4035,11 @@ pub async fn delete_link(
     request_body = UpdateLinkRequest,
     responses(
         (status = 200, description = "Link updated", body = LinkResponse),
+        (status = 400, description = "Invalid input, such as a non-positive `max_clicks`, `starts_at` not before `expires_at`, or a different `custom_alias`"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found"),
+        (status = 500, description = "The link could not be updated"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -3934,15 +4186,27 @@ pub async fn update_link(
             }
         }
 
+        // An empty string is how a client clears a text field; storing it
+        // would leave a blank title/notes that is not the same as none.
         if let Some(title) = payload.title {
-            active_link.title = Set(Some(title));
+            active_link.title = Set(Some(title).filter(|t| !t.is_empty()));
         }
 
         if let Some(notes) = payload.notes {
-            active_link.notes = Set(Some(notes));
+            active_link.notes = Set(Some(notes).filter(|n| !n.is_empty()));
         }
 
-        if let Some(folder_id) = payload.folder_id {
+        // `folder_id: null` cannot be told from an absent field, so taking a
+        // link out of its folder has its own flag, like the other removals.
+        let remove_folder = payload.remove_folder == Some(true);
+        let new_folder_id = if remove_folder {
+            None
+        } else {
+            payload.folder_id
+        };
+        if remove_folder {
+            active_link.folder_id = Set(None);
+        } else if let Some(folder_id) = new_folder_id {
             active_link.folder_id = Set(Some(folder_id));
         }
 
@@ -3952,46 +4216,31 @@ pub async fn update_link(
             active_link.starts_at = Set(Some(starts_at.naive_utc()));
         }
 
-        if payload.remove_max_clicks == Some(true) {
-            active_link.max_clicks = Set(None);
-        } else if let Some(max_clicks) = payload.max_clicks {
-            active_link.max_clicks = Set(Some(max_clicks));
+        // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING) and the click
+        // cap it rides on are decided together.
+        let burn_enabled = burn_feature_enabled();
+        let (burn_after_reading, max_clicks) = burn_and_cap_after_update(
+            link.burn_after_reading,
+            link.max_clicks,
+            payload.burn_after_reading.filter(|_| burn_enabled),
+            payload.max_clicks,
+            payload.remove_max_clicks == Some(true),
+        );
+        if burn_after_reading != link.burn_after_reading {
+            active_link.burn_after_reading = Set(burn_after_reading);
         }
-
-        // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING).
-        let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
-            .map(|v| v != "false")
-            .unwrap_or(true);
-        if burn_enabled && let Some(burn) = payload.burn_after_reading {
-            active_link.burn_after_reading = Set(burn);
-            if burn {
-                // Ensure a burn link has a click cap (default one-time use),
-                // accounting for any cap change in this same request.
-                let has_cap = if payload.remove_max_clicks == Some(true) {
-                    false
-                } else if let Some(mc) = payload.max_clicks {
-                    mc > 0
-                } else {
-                    link.max_clicks.is_some()
-                };
-                if !has_cap {
-                    active_link.max_clicks = Set(Some(1));
-                }
-            }
+        if max_clicks != link.max_clicks {
+            active_link.max_clicks = Set(max_clicks);
         }
 
         // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
-        let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-            .map(|v| v != "false")
-            .unwrap_or(true);
+        let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
         if interstitial_enabled && let Some(interstitial) = payload.safe_link_interstitial {
             active_link.safe_link_interstitial = Set(interstitial);
         }
 
         // Link-in-bio visibility (gated by ENABLE_LINK_IN_BIO).
-        let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
-            .map(|v| v != "false")
-            .unwrap_or(true);
+        let link_in_bio_enabled = env_flag("ENABLE_LINK_IN_BIO", true);
         if link_in_bio_enabled && let Some(visible) = payload.bio_visible {
             // A bio page lists its owner's links, so only the creator decides
             // whether an organization link appears on theirs. Editors may
@@ -4022,7 +4271,7 @@ pub async fn update_link(
                     .into_response();
             }
         };
-        if let Some(folder_id) = payload.folder_id {
+        if let Some(folder_id) = new_folder_id {
             match validate_link_resource_scope(&txn, user_id, link.org_id, Some(folder_id), &[])
                 .await
             {
@@ -4053,14 +4302,38 @@ pub async fn update_link(
         // consume_capped_click compares only links.click_count. Uncapped clicks
         // still sitting in the buffer would otherwise be spent again after a
         // cap is added, then added on flush. Fold them into click_count in the
-        // same write that sets max_clicks.
+        // same transaction that sets max_clicks.
         let pending_to_fold = if let ActiveValue::Set(Some(_)) = &active_link.max_clicks {
             state.click_buffer.take_pending_count(link.id).await
         } else {
             0
         };
-        if pending_to_fold > 0 {
-            active_link.click_count = Set(link.click_count.saturating_add(pending_to_fold));
+        // Add to the stored count in SQL. The row was read before the password
+        // hash and the DNS check, so writing `link.click_count + pending` back
+        // would undo a buffer flush that landed in between.
+        if pending_to_fold > 0
+            && links::Entity::update_many()
+                .col_expr(
+                    links::Column::ClickCount,
+                    Expr::col(links::Column::ClickCount).add(pending_to_fold),
+                )
+                .filter(links::Column::Id.eq(link.id))
+                .exec(&txn)
+                .await
+                .is_err()
+        {
+            let _ = txn.rollback().await;
+            state
+                .click_buffer
+                .add_pending_count(link.id, pending_to_fold)
+                .await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to update link".to_string(),
+                }),
+            )
+                .into_response();
         }
 
         match active_link.update(&txn).await {
@@ -4311,16 +4584,7 @@ pub async fn bulk_create_links(
         let mut created = false;
         let mut last_duplicate: Option<String> = None;
         for _ in 0..8 {
-            let mut code = generate_short_code();
-            while links::Entity::find()
-                .filter(links::Column::Code.eq(&code))
-                .one(&state.db)
-                .await
-                .unwrap_or(None)
-                .is_some()
-            {
-                code = generate_short_code();
-            }
+            let code = unused_code(&state.db, generate_short_code).await;
 
             let txn = match state.db.begin().await {
                 Ok(txn) => txn,
@@ -4504,7 +4768,9 @@ pub async fn bulk_delete_links(
 }
 
 /// Bulk update links. Ids the caller may not edit are skipped, and `updated`
-/// counts only the links actually changed.
+/// counts only the links actually changed. A link is also skipped when the new
+/// `expires_at` would not be after its own `starts_at`, or when `folder_id` is
+/// not a folder it may be moved into.
 #[utoipa::path(
     post,
     path = "/links/bulk/update",
@@ -4564,6 +4830,15 @@ pub async fn bulk_update_links(
             && access.can(&link, LinkAction::Write)
             && link.deleted_at.is_none()
         {
+            // A new expiry is checked against this link's own start, as a single
+            // update does; a link that would end before it starts is skipped.
+            if payload.remove_expiration != Some(true)
+                && let (Some(expires), Some(starts)) = (payload.expires_at, link.starts_at)
+                && starts >= expires.naive_utc()
+            {
+                continue;
+            }
+
             let code = link.code.clone();
             let org_id = link.org_id;
             let mut active_link: links::ActiveModel = link.into();
@@ -4572,7 +4847,9 @@ pub async fn bulk_update_links(
                 Ok(txn) => txn,
                 Err(_) => continue,
             };
-            if let Some(folder_id) = payload.folder_id {
+            if payload.remove_folder == Some(true) {
+                active_link.folder_id = Set(None);
+            } else if let Some(folder_id) = payload.folder_id {
                 match validate_link_resource_scope(&txn, user_id, org_id, Some(folder_id), &[])
                     .await
                 {
@@ -4631,14 +4908,30 @@ pub struct ExportLinksQuery {
     pub org_id: Option<i32>,
 }
 
+/// Written first so Excel reads the file as UTF-8 instead of the system code
+/// page (a link note in Cyrillic or CJK would otherwise open as mojibake).
+const CSV_BOM: &str = "\u{feff}";
+
+/// A CSV cell: always quoted, inner quotes doubled. A spreadsheet reads a cell
+/// that starts with `=`, `+`, `-`, `@`, TAB or CR as a formula, so such a value
+/// gets a leading apostrophe, which turns it back into text.
+fn csv_field(value: &str) -> String {
+    let mut escaped = value.replace('"', "\"\"");
+    if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        escaped.insert(0, '\'');
+    }
+    format!("\"{}\"", escaped)
+}
+
 /// Export links to CSV
 #[utoipa::path(
     get,
     path = "/links/export",
     params(ExportLinksQuery),
     responses(
-        (status = 200, description = "CSV file", content_type = "text/csv"),
+        (status = 200, description = "UTF-8 CSV file with a byte order mark; timestamps are RFC 3339 in UTC", content_type = "text/csv"),
         (status = 401, description = "Unauthorized"),
+        (status = 500, description = "The links could not be read; no file is produced"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -4653,27 +4946,26 @@ pub async fn export_links_csv(
         None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
-    let user_links = links::Entity::find()
+    // An export is what a user keeps as a backup, so a failed read must not
+    // come back as a file that holds only the header row.
+    let user_links = match links::Entity::find()
         .filter(listed_links(user_id, query.org_id))
         .filter(links::Column::DeletedAt.is_null())
         .order_by_desc(links::Column::CreatedAt)
         .all(&state.db)
         .await
-        .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!("Failed to export links: {}", error);
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        }
+    };
 
     let base_url = get_base_url();
 
-    // Escape a value for safe CSV output: neutralize spreadsheet formula
-    // injection (leading = + - @) and always quote, doubling inner quotes.
-    fn csv_field(value: &str) -> String {
-        let mut escaped = value.replace('"', "\"\"");
-        if value.starts_with(['=', '+', '-', '@']) {
-            escaped.insert(0, '\'');
-        }
-        format!("\"{}\"", escaped)
-    }
-
-    let mut csv_content = String::from(
+    let mut csv_content = String::from(CSV_BOM);
+    csv_content.push_str(
         "ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At\n",
     );
 
@@ -4685,30 +4977,20 @@ pub async fn export_links_csv(
             csv_field(&link.original_url),
             csv_field(&format!("{}/{}", base_url, link.code)),
             link.click_count,
-            csv_field(&link.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
-            csv_field(
-                &link
-                    .expires_at
-                    .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_default()
-            ),
+            csv_field(&utc_rfc3339(link.created_at)),
+            csv_field(&link.expires_at.map(utc_rfc3339).unwrap_or_default()),
             link.password_hash.is_some(),
             csv_field(&link.notes.clone().unwrap_or_default()),
             link.folder_id.map(|f| f.to_string()).unwrap_or_default(),
             link.max_clicks.map(|m| m.to_string()).unwrap_or_default(),
-            csv_field(
-                &link
-                    .starts_at
-                    .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_default()
-            ),
+            csv_field(&link.starts_at.map(utc_rfc3339).unwrap_or_default()),
         ));
     }
 
     (
         StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, "text/csv"),
+            (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
             (
                 axum::http::header::CONTENT_DISPOSITION,
                 "attachment; filename=\"links.csv\"",
@@ -4717,6 +4999,35 @@ pub async fn export_links_csv(
         csv_content,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod csv_tests {
+    use super::csv_field;
+
+    #[test]
+    fn cells_a_spreadsheet_would_run_as_formulas_become_text() {
+        for risky in ["=1+1", "+1", "-1", "@SUM(A1)", "\tcmd", "\rcmd"] {
+            let cell = csv_field(risky);
+            assert!(
+                cell.starts_with("\"'"),
+                "{risky:?} must be prefixed with an apostrophe, got {cell}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_cells_are_only_quoted() {
+        assert_eq!(csv_field("plain"), "\"plain\"");
+        assert_eq!(csv_field(""), "\"\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        // Only the first character decides.
+        assert_eq!(csv_field("a=1"), "\"a=1\"");
+        assert_eq!(
+            csv_field("2026-10-11T10:00:00Z"),
+            "\"2026-10-11T10:00:00Z\""
+        );
+    }
 }
 
 // ============= New Feature: Clone Link =============
@@ -4731,6 +5042,12 @@ pub struct CloneLinkResponse {
 }
 
 /// Clone an existing link with a new short code
+///
+/// The copy is a fresh link with the same settings: password (the stored
+/// hash), schedule, click cap, burn-after-reading, safe-link interstitial,
+/// folder, organization, tags and routing rules. Its clicks start at zero and
+/// it is not pinned. The link, its tags and its rules are written in one
+/// transaction, and the destinations are checked against the blocklist again.
 #[utoipa::path(
     post,
     path = "/links/{id}/clone",
@@ -4739,9 +5056,11 @@ pub struct CloneLinkResponse {
     ),
     responses(
         (status = 201, description = "Link cloned", body = CloneLinkResponse),
+        (status = 400, description = "The destination is no longer acceptable"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
+        (status = 403, description = "Forbidden, link cap reached, or a destination is blocked"),
         (status = 404, description = "Link not found"),
+        (status = 500, description = "The link could not be cloned; nothing was created"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -4786,6 +5105,32 @@ pub async fn clone_link(
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
 
+        // So is the blocklist: a destination blocked after the link was made
+        // must not come back under a new code, and neither must a rule's.
+        let rules = match crate::entity::routing_rules::Entity::find()
+            .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
+            .order_by_asc(crate::entity::routing_rules::Column::Priority)
+            .all(&state.db)
+            .await
+        {
+            Ok(rules) => rules,
+            Err(error) => {
+                tracing::error!(
+                    "Failed to load routing rules for clone of {}: {}",
+                    id,
+                    error
+                );
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            }
+        };
+        let destinations = std::iter::once(link.original_url.as_str())
+            .chain(rules.iter().map(|r| r.destination_url.as_str()));
+        for destination in destinations {
+            if let Err(e) = check_blocked(&state.db, destination).await {
+                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
+            }
+        }
+
         // Clone inserts a new row, so it must honour the same per-user cap as
         // create_link / bulk_create_links. Skipping it lets a user at the
         // advertised MAX_LINKS_PER_USER mint extra active links.
@@ -4811,16 +5156,17 @@ pub async fn clone_link(
         }
 
         // Generate new short code
-        let mut code = generate_short_code();
-        while links::Entity::find()
-            .filter(links::Column::Code.eq(&code))
-            .one(&state.db)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            code = generate_short_code();
-        }
+        let code = unused_code(&state.db, generate_short_code).await;
+
+        // A burn link is its cap: the clone starts with the same cap and no
+        // clicks, so it is a fresh one-time link. The two features follow the
+        // same switches as on create.
+        let burn_after_reading = link.burn_after_reading && burn_feature_enabled();
+        let max_clicks = if burn_after_reading {
+            link.max_clicks.or(Some(1))
+        } else {
+            link.max_clicks
+        };
 
         // Create new link with same settings but new code
         let new_link = links::ActiveModel {
@@ -4829,55 +5175,106 @@ pub async fn clone_link(
             user_id: Set(Some(user_id)),
             expires_at: Set(link.expires_at),
             password_hash: Set(link.password_hash.clone()),
-            title: Set(link.title.clone().map(|t| format!("{} (copy)", t))),
+            title: Set(link
+                .title
+                .clone()
+                .filter(|t| !t.is_empty())
+                .map(|t| format!("{} (copy)", t))),
             notes: Set(link.notes.clone()),
             folder_id: Set(link.folder_id),
             org_id: Set(link.org_id),
             starts_at: Set(link.starts_at),
-            max_clicks: Set(link.max_clicks),
+            max_clicks: Set(max_clicks),
+            burn_after_reading: Set(burn_after_reading),
+            safe_link_interstitial: Set(
+                link.safe_link_interstitial && interstitial_feature_enabled()
+            ),
             is_pinned: Set(false), // Don't copy pin status
             ..Default::default()
         };
 
-        match links::Entity::insert(new_link).exec(&state.db).await {
-            Ok(res) => {
-                // Copy tags
-                let link_tags_list = link_tags::Entity::find()
-                    .filter(link_tags::Column::LinkId.eq(id))
-                    .all(&state.db)
-                    .await
-                    .unwrap_or_default();
-
-                for lt in link_tags_list {
-                    let new_lt = link_tags::ActiveModel {
-                        link_id: Set(res.last_insert_id),
-                        tag_id: Set(lt.tag_id),
-                        ..Default::default()
-                    };
-                    let _ = new_lt.insert(&state.db).await;
-                }
-
-                let base_url = get_base_url();
-                (
-                    StatusCode::CREATED,
-                    Json(CloneLinkResponse {
-                        id: res.last_insert_id,
-                        code: code.clone(),
-                        short_url: format!("{}/{}", base_url, code),
-                        original_url: link.original_url,
-                        message: "Link cloned successfully".to_string(),
-                    }),
-                )
-                    .into_response()
+        // The link, its tags and its rules are one change: a clone that came
+        // back without its tags or rules would be a different link.
+        let txn = match state.db.begin().await {
+            Ok(txn) => txn,
+            Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+        };
+        let new_id = match links::Entity::insert(new_link).exec(&txn).await {
+            Ok(res) => res.last_insert_id,
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
             }
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to clone link".to_string(),
-                }),
-            )
-                .into_response(),
+        };
+
+        // Tags are copied inside the database, so a link with any number of
+        // them is one statement.
+        let copy_tags = match sea_orm::sea_query::Query::insert()
+            .into_table(link_tags::Entity)
+            .columns([link_tags::Column::LinkId, link_tags::Column::TagId])
+            .select_from(
+                sea_orm::sea_query::Query::select()
+                    .expr(Expr::val(new_id))
+                    .column(link_tags::Column::TagId)
+                    .from(link_tags::Entity)
+                    .and_where(Expr::col(link_tags::Column::LinkId).eq(id))
+                    .to_owned(),
+            ) {
+            Ok(insert) => insert.to_owned(),
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
+            }
+        };
+        if txn
+            .execute(txn.get_database_backend().build(&copy_tags))
+            .await
+            .is_err()
+        {
+            let _ = txn.rollback().await;
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
         }
+
+        if !rules.is_empty() {
+            let copies = rules
+                .into_iter()
+                .map(|rule| crate::entity::routing_rules::ActiveModel {
+                    link_id: Set(new_id),
+                    priority: Set(rule.priority),
+                    match_device: Set(rule.match_device),
+                    match_os: Set(rule.match_os),
+                    match_country: Set(rule.match_country),
+                    match_lang: Set(rule.match_lang),
+                    destination_url: Set(rule.destination_url),
+                    weight: Set(rule.weight),
+                    ..Default::default()
+                });
+            if crate::entity::routing_rules::Entity::insert_many(copies)
+                .exec(&txn)
+                .await
+                .is_err()
+            {
+                let _ = txn.rollback().await;
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
+            }
+        }
+
+        if txn.commit().await.is_err() {
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
+        }
+
+        let base_url = get_base_url();
+        (
+            StatusCode::CREATED,
+            Json(CloneLinkResponse {
+                id: new_id,
+                code: code.clone(),
+                short_url: format!("{}/{}", base_url, code),
+                original_url: link.original_url,
+                message: "Link cloned successfully".to_string(),
+            }),
+        )
+            .into_response()
     } else {
         (
             StatusCode::NOT_FOUND,
@@ -5023,12 +5420,16 @@ pub async fn check_code_availability(
 
     // Consider deleted links too: their code is still held by the global UNIQUE
     // constraint on links.code, so it is not actually available for reuse.
+    // Purged links' codes are held by retired_codes instead.
     let exists = links::Entity::find()
         .filter(links::Column::Code.eq(code))
         .one(&state.db)
         .await
         .unwrap_or(None)
-        .is_some();
+        .is_some()
+        || retired_codes::is_retired(&state.db, code)
+            .await
+            .unwrap_or(false);
 
     if exists {
         (

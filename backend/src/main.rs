@@ -13,7 +13,7 @@ use opn_onl_backend::utils::cache::RedisCache;
 use opn_onl_backend::utils::env::env_parse;
 use opn_onl_backend::utils::logging::{DEFAULT_LOG_MAX_FILES, daily_log_appender};
 use opn_onl_backend::utils::{self, BackupService, ClickBuffer, EmailService};
-use opn_onl_backend::{AppState, build_router, ensure_admin_exists};
+use opn_onl_backend::{AppState, build_router, ensure_admin_exists, warn_on_email_case_collisions};
 
 #[tokio::main]
 async fn main() {
@@ -68,6 +68,7 @@ async fn main() {
 
     // Ensure at least one admin exists - promote first user if no admins
     ensure_admin_exists(&db).await;
+    warn_on_email_case_collisions(&db).await;
 
     // Initialize WebSocket state
     let ws_state = Arc::new(WsState::new());

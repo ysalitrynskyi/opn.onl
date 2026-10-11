@@ -88,7 +88,9 @@ function linkRow(page: Page, link: { id: number }) {
 }
 
 function isApiCall(res: Response, method: string, path: string): boolean {
-    return res.url() === `${API_URL}${path}` && res.request().method() === method;
+    // Without the query string: the list is asked for as `/links?limit=100`.
+    const { origin, pathname } = new URL(res.url());
+    return origin + pathname === `${API_URL}${path}` && res.request().method() === method;
 }
 
 /** Open the dashboard and wait for the backend to answer its links request. */
@@ -340,7 +342,9 @@ test.describe('Dashboard Page', () => {
         const file = await download;
         expect(file.suggestedFilename()).toBe('opn_onl_links.csv');
 
-        const [header, ...rows] = (await readFile(await file.path(), 'utf8')).trim().split('\n');
+        // The export starts with a UTF-8 byte order mark so Excel reads it as UTF-8.
+        const csv = (await readFile(await file.path(), 'utf8')).replace(/^\uFEFF/, '');
+        const [header, ...rows] = csv.trim().split('\n');
         expect(header).toBe(
             'ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At',
         );

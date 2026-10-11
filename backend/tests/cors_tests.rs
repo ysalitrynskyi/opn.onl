@@ -52,10 +52,11 @@ async fn preflight_names_authorization() {
     );
 }
 
-/// The app reads Retry-After to tell the user how long to wait; a cross-origin
-/// response only shows it to scripts when it is exposed.
+/// The app reads Retry-After to tell the user how long to wait, and
+/// X-Total-Count to page its link lists; a cross-origin response only shows
+/// them to scripts when they are exposed.
 #[tokio::test]
-async fn responses_expose_the_rate_limit_headers() {
+async fn responses_expose_the_headers_the_app_reads() {
     let server = server();
     let res = server
         .get("/links")
@@ -66,7 +67,12 @@ async fn responses_expose_the_rate_limit_headers() {
         ORIGIN.to_ascii_lowercase()
     );
     let exposed = header_value(&res, header::ACCESS_CONTROL_EXPOSE_HEADERS);
-    for name in ["retry-after", "x-ratelimit-limit", "x-ratelimit-remaining"] {
+    for name in [
+        "retry-after",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-total-count",
+    ] {
         assert!(
             exposed.split(',').any(|h| h.trim() == name),
             "{name} must be exposed, got {exposed:?}"

@@ -72,7 +72,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 ### Prerequisites
 - Docker & Docker Compose
 - Rust 1.98.1 (pinned by `backend/rust-toolchain.toml` for local development)
-- Node.js 20+ (for local development)
+- Node.js 22, or 20.19+ (for local development; `frontend/.nvmrc` pins 22)
 
 ### Development Setup
 
@@ -242,7 +242,7 @@ is ignored with a warning in the log and the default applies.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) are anonymized by a daily sweep; aggregate stats are kept. `0` disables the sweep |
+| `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) and the truncated IP on organization audit entries are anonymized by a daily sweep; aggregate stats and the audit entries themselves are kept. `0` disables the sweep |
 
 Click analytics never store the full visitor IP: addresses are truncated at
 collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
@@ -332,17 +332,18 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only) |
+| GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only). Pinned links first, then newest first. Filters: `folder_id`, `tag_id`, `search`. Pages with `limit` (default and maximum 1000) and `offset`; the body is a JSON array and the `X-Total-Count` response header carries how many links match, ignoring `limit`/`offset` |
 | POST | `/links` | Create new link. Without an `Authorization` header the link is anonymous; a header that does not authenticate (expired, revoked or unknown token) is a 401, not an anonymous link |
-| PUT | `/links/{id}` | Update link |
+| PUT | `/links/{id}` | Update link. Only the fields you send change; `null` counts as not sent, so clear a field with its flag: `remove_expiration`, `remove_starts_at`, `remove_max_clicks`, `remove_password`, `remove_folder`. An empty `title` or `notes` clears it. A burn-after-reading link always has a click cap (1 unless you set another): turning burn off removes the cap it implied, and `remove_max_clicks` on a burn link turns burn off |
+| POST | `/links/{id}/clone` | Copy a link under a new code: destination, password, schedule, click cap, burn-after-reading, interstitial, folder, tags and routing rules. Clicks start at zero and the copy is not pinned |
 | DELETE | `/links/{id}` | Delete link (organization links: org admins and above, or the creator while still an editor) |
 | GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
 | GET / PUT | `/links/{id}/rules` | List or replace smart-routing rules (requires `ENABLE_CONDITIONAL_ROUTING`) |
 | GET | `/links/{id}/stats` | Get link analytics |
 | POST | `/links/bulk` | Create multiple links |
 | POST | `/links/bulk/delete` | Delete multiple links |
-| POST | `/links/bulk/update` | Update multiple links |
-| GET | `/links/export` | Export links as CSV (`?org_id=` for an organization's links, members only) |
+| POST | `/links/bulk/update` | Update multiple links: `folder_id` or `remove_folder`, `expires_at` or `remove_expiration`. Links you may not edit are skipped, and so are links whose new `expires_at` would not be after their own `starts_at` |
+| GET | `/links/export` | Export links as CSV, UTF-8 with a byte order mark and RFC 3339 timestamps (`?org_id=` for an organization's links, members only). A database error is a 500, never a header-only file |
 
 ### Redirects
 
@@ -368,17 +369,23 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | POST | `/orgs` | Create organization |
 | GET | `/orgs/{org_id}` | Get organization |
 | PUT | `/orgs/{org_id}` | Update organization |
-| DELETE | `/orgs/{org_id}` | Delete organization (owner only) |
+| DELETE | `/orgs/{org_id}` | Delete organization (owner only; needs a sign-in session, an API key gets 403) |
 | GET | `/orgs/{org_id}/members` | List members |
 | POST | `/orgs/{org_id}/members` | Invite member by email (`role`: admin, editor, viewer) |
 | PUT | `/orgs/{org_id}/members/{member_id}` | Change a member's role |
 | DELETE | `/orgs/{org_id}/members/{member_id}` | Remove member |
-| POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only, body: `{"new_owner_user_id": <id>}`) |
+| POST | `/orgs/{org_id}/leave` | Leave an organization (any member except the owner, who gets 409 until ownership is transferred or the organization deleted). Links you created stay with the organization |
+| POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only; needs a sign-in session, an API key gets 403; body: `{"new_owner_user_id": <id>}`) |
 | GET | `/orgs/{org_id}/audit` | View audit log (admin+) |
 
 An account that owns organizations with other members cannot be deleted
 (HTTP 409 with the list of blocking orgs) until ownership is transferred or
 the organization is deleted — one person leaving can't wipe a shared team.
+
+Deleting an organization (or an admin hard-deleting a user) removes the links
+for good, but their short codes stay reserved: a retired code is never issued
+again, as a custom alias or as a random code, so an old printed link can't end
+up pointing at someone else's page.
 
 ### Folders
 
@@ -389,7 +396,7 @@ the organization is deleted — one person leaving can't wipe a shared team.
 | GET | `/folders/{id}` | Get folder |
 | PUT | `/folders/{id}` | Update folder |
 | DELETE | `/folders/{id}` | Delete folder |
-| GET | `/folders/{id}/links` | Get links in folder |
+| GET | `/folders/{id}/links` | Get links in folder, newest first. Takes `limit` (default and maximum 1000) and `offset`; `X-Total-Count` carries the folder's total |
 | POST | `/folders/{id}/links` | Move links to folder |
 
 ### Tags
@@ -400,7 +407,7 @@ the organization is deleted — one person leaving can't wipe a shared team.
 | POST | `/tags` | Create tag |
 | PUT | `/tags/{id}` | Update tag |
 | DELETE | `/tags/{id}` | Delete tag |
-| GET | `/tags/{id}/links` | Get links with tag |
+| GET | `/tags/{id}/links` | Get links with tag, newest first. Takes `limit` (default and maximum 1000) and `offset`; `X-Total-Count` carries the tag's total |
 | POST | `/links/{id}/tags` | Add tags to link |
 | DELETE | `/links/{id}/tags` | Remove tags from link |
 
@@ -586,7 +593,8 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
   behind an HTTPS proxy
 - URL sanitization and blocking
 - Visitor IPs truncated before storage (IPv4 /24, IPv6 /48); remaining
-  click identifiers anonymized after a configurable retention window
+  click identifiers, and the truncated address on organization audit entries,
+  anonymized after a configurable retention window
   (`ANALYTICS_PII_RETENTION_DAYS`, default ~13 months)
 
 ## Development

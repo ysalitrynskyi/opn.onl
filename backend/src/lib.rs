@@ -240,6 +240,24 @@ pub async fn ensure_admin_exists(db: &DatabaseConnection) {
     }
 }
 
+/// Warn at startup if live accounts share an email address that differs only by
+/// letter case or domain encoding. The migration that folded addresses leaves
+/// such accounts alone (merging them is the operator's call), so they can
+/// outlive it. Only the number is logged, never the addresses.
+pub async fn warn_on_email_case_collisions(db: &DatabaseConnection) {
+    match utils::email_domain_policy::count_email_case_collisions(db).await {
+        Ok(0) => {}
+        Ok(groups) => tracing::warn!(
+            groups,
+            "{groups} email address(es) are registered to more than one live account under \
+             spellings that differ only by letter case or domain encoding; sign-in uses the \
+             exact-spelling match, otherwise the oldest account. Search the admin user list \
+             for the address to resolve them"
+        ),
+        Err(e) => tracing::error!("Failed to check for email case collisions: {}", e),
+    }
+}
+
 /// Build the CORS layer. Restricts allowed origins to the configured
 /// FRONTEND_URL / BASE_URL; only falls back to permissive `Any` when neither is
 /// set (local development), since allowing any origin in production lets any
@@ -261,9 +279,10 @@ pub fn build_cors() -> CorsLayer {
 
     // `Access-Control-Allow-Headers: *` does not cover `Authorization` under the
     // Fetch spec (current engines tolerate it; the spec says they need not), so
-    // echo the headers a preflight asks for instead. And expose the rate-limit
-    // headers: on the split-origin deployment the app is cross-origin to the
-    // API, and without this the browser hides Retry-After from it.
+    // echo the headers a preflight asks for instead. And expose the headers the
+    // app reads: on the split-origin deployment the app is cross-origin to the
+    // API, and without this the browser hides Retry-After (and the
+    // X-Total-Count its link lists page by) from it.
     let layer = CorsLayer::new()
         .allow_methods(Any)
         .allow_headers(AllowHeaders::mirror_request())
@@ -271,6 +290,7 @@ pub fn build_cors() -> CorsLayer {
             axum::http::header::RETRY_AFTER,
             axum::http::HeaderName::from_static("x-ratelimit-limit"),
             axum::http::HeaderName::from_static("x-ratelimit-remaining"),
+            handlers::links::X_TOTAL_COUNT,
         ]);
     if origins.is_empty() {
         tracing::warn!(
@@ -462,6 +482,10 @@ pub fn build_router(app_state: AppState) -> Router {
             "/orgs/:org_id/members/:member_id",
             put(handlers::organizations::update_member_role)
                 .delete(handlers::organizations::remove_member),
+        )
+        .route(
+            "/orgs/:org_id/leave",
+            post(handlers::organizations::leave_organization),
         )
         .route(
             "/orgs/:org_id/transfer-ownership",
