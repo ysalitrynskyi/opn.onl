@@ -180,19 +180,21 @@ pub async fn ensure_admin_exists(db: &DatabaseConnection) {
 
     tracing::warn!("⚠ No admin users found! Promoting first user to admin...");
 
-    // Get the first user by ID (oldest user)
+    // The oldest account that can actually sign in. A disabled account promoted
+    // here would leave the instance exactly as admin-less as before.
     let first_user_result = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .order_by_asc(users::Column::Id)
         .one(db)
         .await;
 
     match first_user_result {
         Ok(Some(user)) => {
+            let user_id = user.id;
             tracing::info!(
-                "Found first user: {} (ID: {}, is_admin: {})",
-                user.email,
-                user.id,
+                "Found first user: ID {} (is_admin: {})",
+                user_id,
                 user.is_admin
             );
 
@@ -201,38 +203,35 @@ pub async fn ensure_admin_exists(db: &DatabaseConnection) {
                 return;
             }
 
-            let user_id = user.id;
-            let user_email = user.email.clone();
             let mut active_user: users::ActiveModel = user.into();
             active_user.is_admin = Set(true);
 
             match active_user.update(db).await {
-                Ok(updated) => {
-                    tracing::info!(
-                        "✓ Successfully promoted user {} (ID: {}) to admin",
-                        updated.email,
-                        user_id
-                    );
+                Ok(_) => {
+                    tracing::info!("✓ Successfully promoted user {} to admin", user_id);
 
                     // Verify the update worked
                     if let Ok(Some(verify)) = users::Entity::find_by_id(user_id).one(db).await {
                         if verify.is_admin {
-                            tracing::info!("✓ Verified: {} is now admin", verify.email);
+                            tracing::info!("✓ Verified: user {} is now admin", user_id);
                         } else {
                             tracing::error!(
-                                "✗ Verification failed: {} is still not admin!",
-                                verify.email
+                                "✗ Verification failed: user {} is still not admin!",
+                                user_id
                             );
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::error!("✗ Failed to promote user {} to admin: {}", user_email, e);
+                    tracing::error!("✗ Failed to promote user {} to admin: {}", user_id, e);
                 }
             }
         }
         Ok(None) => {
-            tracing::warn!("No users found despite count showing {} users", total_users);
+            tracing::warn!(
+                "No enabled user to promote among {} live users; every account is disabled",
+                total_users
+            );
         }
         Err(e) => {
             tracing::error!("✗ Database error while finding first user: {}", e);

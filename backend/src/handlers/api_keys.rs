@@ -44,6 +44,8 @@ pub struct ApiKeyInfo {
     pub id: i32,
     pub name: String,
     pub key_prefix: String,
+    /// When the key last authenticated a request, to within five minutes:
+    /// uses closer together than that do not move it.
     pub last_used_at: Option<String>,
     pub created_at: String,
 }

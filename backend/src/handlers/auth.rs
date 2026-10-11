@@ -1363,6 +1363,31 @@ pub async fn delete_account(
             }
         };
 
+        // An admin's deletion is decided by how many live admins there are, so
+        // two admins deleting at once must not each count the other. Lock every
+        // live admin row, in id order and before the caller's own row: a fixed
+        // order makes concurrent deletions queue rather than deadlock, and the
+        // one that waits counts after the first has committed.
+        if user.is_admin
+            && users::Entity::find()
+                .filter(users::Column::IsAdmin.eq(true))
+                .filter(users::Column::DeletedAt.is_null())
+                .order_by_asc(users::Column::Id)
+                .lock_exclusive()
+                .all(&txn)
+                .await
+                .is_err()
+        {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }),
+            )
+                .into_response();
+        }
+
         // Re-read under a row lock. Credential changes and passkey revocation use
         // the same lock, preventing a stale token_version write from surviving a
         // concurrent account deletion.

@@ -1116,8 +1116,15 @@ pub fn hash_api_key(key: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
+/// How stale `api_keys.last_used_at` may get before a request rewrites it. The
+/// value is a hint for the key's owner, not an audit trail; stamping every
+/// request put a write on the hottest authenticated path (and one every 30 s per
+/// open WebSocket/SSE connection signed in by key).
+const API_KEY_LAST_USED_REFRESH_MINUTES: i64 = 5;
+
 /// Resolve an `opn_` API key to its (non-deleted) owner; best-effort stamps
-/// `last_used_at`. Returns None for unknown/revoked keys or deleted owners.
+/// `last_used_at` (at most once per [`API_KEY_LAST_USED_REFRESH_MINUTES`]).
+/// Returns None for unknown/revoked keys or deleted owners.
 async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<i32> {
     use crate::entity::api_keys;
     // Instance kill-switch: when ENABLE_API_KEYS=false, keys stop authenticating.
@@ -1139,12 +1146,19 @@ async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<
         .one(db)
         .await
         .ok()??;
-    let am = api_keys::ActiveModel {
-        id: Set(rec.id),
-        last_used_at: Set(Some(chrono::Utc::now().naive_utc())),
-        ..Default::default()
-    };
-    let _ = am.update(db).await;
+    let now = chrono::Utc::now().naive_utc();
+    let refresh_after = chrono::Duration::minutes(API_KEY_LAST_USED_REFRESH_MINUTES);
+    if rec
+        .last_used_at
+        .is_none_or(|last| now - last >= refresh_after)
+    {
+        let am = api_keys::ActiveModel {
+            id: Set(rec.id),
+            last_used_at: Set(Some(now)),
+            ..Default::default()
+        };
+        let _ = am.update(db).await;
+    }
     Some(user.id)
 }
 
