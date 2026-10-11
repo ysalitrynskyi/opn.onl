@@ -1,6 +1,6 @@
-use sea_orm::{ConnectionTrait, DbErr, EntityTrait};
+use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter};
 
-use crate::entity::blocked_email_domains;
+use crate::entity::{blocked_email_domains, users};
 use crate::utils::url_policy::{domain_matches, is_reserved_hostname, normalize_hostname};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -78,6 +78,41 @@ pub async fn ensure_email_domain_allowed<C: ConnectionTrait>(
         Ok(None) => Ok(()),
         Err(_) => Err(EmailDomainRejection::Blocked(domain)),
     }
+}
+
+/// `ensure_email_domain_allowed` for the paths that let an existing account
+/// back in: login, password reset and passkey login.
+///
+/// Blocking a domain disables its non-admin accounts and leaves admins alone
+/// (`disable_users_for_email_domain` in `handlers/admin.rs`), because an admin
+/// has to stay able to unblock the domain. The same exemption applies here.
+/// Without it an admin on the domain keeps working only until the session
+/// token expires, and then can neither sign in, reset the password nor use a
+/// passkey. Only the "blocked" verdict is waived; a reserved or malformed
+/// domain still fails. Registration keeps the plain check.
+pub async fn ensure_sign_in_domain_allowed<C: ConnectionTrait>(
+    db: &C,
+    email: &str,
+) -> Result<(), EmailDomainRejection> {
+    let verdict = ensure_email_domain_allowed(db, email).await;
+    if matches!(verdict, Err(EmailDomainRejection::Blocked(_))) && is_live_admin(db, email).await {
+        return Ok(());
+    }
+    verdict
+}
+
+/// A failed lookup counts as "not an admin": the block then stands.
+async fn is_live_admin<C: ConnectionTrait>(db: &C, email: &str) -> bool {
+    users::Entity::find()
+        .filter(users::Column::Email.eq(email))
+        .filter(users::Column::IsAdmin.eq(true))
+        .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
+        .one(db)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 pub async fn user_email_domain_blocked<C: ConnectionTrait>(
