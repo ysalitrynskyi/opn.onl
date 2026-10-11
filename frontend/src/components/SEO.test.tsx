@@ -7,6 +7,7 @@ import { HelmetProvider } from 'react-helmet-async';
 import SEO from './SEO';
 import App from '../App';
 import { dropPrerenderedHeadTags, SEO_TAG_ATTRIBUTE } from '../utils/prerenderedHead';
+import { version } from '../../package.json';
 import { normalizeSiteUrl } from '../utils/siteUrl';
 import { buildSitemap, sitemapPages } from '../utils/sitemap';
 
@@ -24,6 +25,11 @@ const robots = () => all('meta[name="robots"]').map((m) => m.getAttribute('conte
 const jsonLdTypes = () =>
     [...document.querySelectorAll('script[type="application/ld+json"]')].map(
         (s) => JSON.parse(s.textContent || '{}')['@type'] as string,
+    );
+
+const jsonLd = () =>
+    [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) =>
+        JSON.parse(s.textContent || '{}'),
     );
 
 function renderSeo(ui: React.ReactElement) {
@@ -90,6 +96,18 @@ describe('SEO head tags', () => {
             'Is it free?',
             'Can I self-host?',
         ]);
+    });
+
+    it('claims no rating, and the version it names is the one being built', () => {
+        renderSeo(<SEO title="Pricing" url="/pricing" />);
+
+        const app = jsonLd().find((schema) => schema['@type'] === 'WebApplication');
+        expect(app).toBeDefined();
+        // No page shows a rating, and markup for one nobody can see is the kind
+        // search engines treat as spam.
+        expect(JSON.stringify(jsonLd())).not.toMatch(/aggregateRating|ratingValue|ratingCount|"Review"/);
+        expect(app.softwareVersion).toBe(version);
+        expect(app.softwareVersion).not.toBe('1.0.0');
     });
 
     it('marks every head tag it renders so a prerendered copy can be dropped', () => {

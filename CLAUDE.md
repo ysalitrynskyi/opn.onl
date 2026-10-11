@@ -96,7 +96,7 @@ Backend and frontend share one version number. Bumping it means editing exactly 
 |-------|------|
 | `backend/Cargo.toml` (`version`) | Source of truth for the backend. |
 | `backend/Cargo.lock` | Run `cargo update -p opn_onl_backend --offline` (or any cargo command) so the lock records the new version. |
-| `frontend/package.json` (`version`) | Metadata only — nothing reads it at runtime. Keep it in lockstep so an image tag means one thing. |
+| `frontend/package.json` (`version`) | Read at build time only, for the structured data's `softwareVersion` in `SEO.tsx`. Keep it in lockstep so an image tag means one thing. |
 | `README.md` | The "pin a release tag such as `:X.Y.Z`" example, so copy-pasters don't pin a stale tag. |
 
 Deliberately **not** a place to edit: the OpenAPI `info.version` (reads `CARGO_PKG_VERSION`, see the Backend notes), image tags and release-notes versions (CI derives both from the git tag).

@@ -856,7 +856,33 @@ pub struct LinkPageQuery {
 #[derive(Serialize, ToSchema)]
 pub struct BulkCreateLinkResponse {
     pub links: Vec<CreateLinkResponse>,
+    /// One message per URL that was not shortened, e.g. `<url>: <reason>`.
     pub errors: Vec<String>,
+    /// The same failures with the submitted URL as its own field, so a client
+    /// can tell which lines to keep without parsing the messages.
+    pub failed: Vec<BulkCreateFailure>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BulkCreateFailure {
+    /// The URL exactly as submitted.
+    pub url: String,
+    /// Same text as the matching entry in `errors`.
+    pub error: String,
+}
+
+/// Record a URL that bulk create turned down, in both response lists.
+fn record_bulk_failure(
+    errors: &mut Vec<String>,
+    failed: &mut Vec<BulkCreateFailure>,
+    url: &str,
+    message: String,
+) {
+    failed.push(BulkCreateFailure {
+        url: url.to_string(),
+        error: message.clone(),
+    });
+    errors.push(message);
 }
 
 #[derive(Serialize, ToSchema)]
@@ -899,6 +925,39 @@ pub struct LinkResponse {
     pub tags: Vec<TagInfo>,
 }
 
+impl LinkResponse {
+    /// A stored link as the API shows it. `GET /links` and `GET /links/{id}`
+    /// both build their items here, so the two cannot drift apart. The caller
+    /// passes the public base URLs because a list computes them once, not per
+    /// row.
+    fn from_model(l: &links::Model, tags: Vec<TagInfo>, base_url: &str, api_url: &str) -> Self {
+        Self {
+            id: l.id,
+            code: l.code.clone(),
+            short_url: format!("{}/{}", base_url, l.code),
+            api_url: format!("{}/{}", api_url, l.code),
+            original_url: l.original_url.clone(),
+            title: l.title.clone(),
+            click_count: l.click_count,
+            created_at: utc_rfc3339(l.created_at),
+            expires_at: l.expires_at.map(utc_rfc3339),
+            has_password: l.password_hash.is_some(),
+            notes: l.notes.clone(),
+            folder_id: l.folder_id,
+            org_id: l.org_id,
+            starts_at: l.starts_at.map(utc_rfc3339),
+            max_clicks: l.max_clicks,
+            burn_after_reading: l.burn_after_reading,
+            burned_at: l.burned_at.map(utc_rfc3339),
+            safe_link_interstitial: l.safe_link_interstitial,
+            bio_visible: l.bio_visible,
+            is_active: l.is_active(),
+            is_pinned: l.is_pinned,
+            tags,
+        }
+    }
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
@@ -912,6 +971,17 @@ pub struct SuccessResponse {
 #[derive(Deserialize, ToSchema)]
 pub struct VerifyPasswordRequest {
     pub password: String,
+}
+
+/// What a correct link password buys: a short-lived proof, carried in the URL
+/// the browser is sent to next.
+#[derive(Serialize, ToSchema)]
+pub struct VerifyPasswordResponse {
+    /// `GET /{code}?unlock=...`. Open it to be redirected; it is the normal
+    /// redirect, so caps, blocks and routing still apply.
+    pub redirect_url: String,
+    /// How long the `unlock` proof in `redirect_url` stays valid.
+    pub expires_in_seconds: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1776,8 +1846,10 @@ pub struct LinkPreviewResponse {
     pub safe_link_interstitial: bool,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct PreviewQuery {
+    /// Short-lived password proof issued by `POST /{code}/verify`. With it, the
+    /// preview describes a password-protected link's destination.
     unlock: Option<String>,
 }
 
@@ -1786,7 +1858,8 @@ pub struct PreviewQuery {
     get,
     path = "/{code}/preview",
     params(
-        ("code" = String, Path, description = "Short link code")
+        ("code" = String, Path, description = "Short link code"),
+        PreviewQuery
     ),
     responses(
         (status = 200, description = "Link preview", body = LinkPreviewResponse),
@@ -1945,7 +2018,7 @@ pub async fn preview_link(
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct RedirectQuery {
     /// Set to `1` after the visitor confirms the safe-link interstitial in the SPA.
     confirm: Option<String>,
@@ -2081,7 +2154,8 @@ fn unfurler_page() -> axum::response::Response {
     get,
     path = "/{code}",
     params(
-        ("code" = String, Path, description = "Short link code")
+        ("code" = String, Path, description = "Short link code"),
+        RedirectQuery
     ),
     responses(
         (status = 200, description = "A HEAD on a one-time or click-capped link, or a GET from a known link-preview bot: no destination, nothing consumed"),
@@ -2637,7 +2711,8 @@ fn record_click_buffered(
     ),
     request_body = VerifyPasswordRequest,
     responses(
-        (status = 200, description = "Password verified"),
+        (status = 200, description = "Password verified", body = VerifyPasswordResponse),
+        (status = 400, description = "The link does not require a password"),
         (status = 401, description = "Invalid password"),
         (status = 404, description = "Link not found"),
         (status = 410, description = "Link expired"),
@@ -2756,10 +2831,10 @@ pub async fn verify_link_password(
     );
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "redirect_url": redirect_url,
-            "expires_in_seconds": crate::utils::link_unlock::LINK_UNLOCK_TTL_SECONDS,
-        })),
+        Json(VerifyPasswordResponse {
+            redirect_url,
+            expires_in_seconds: crate::utils::link_unlock::LINK_UNLOCK_TTL_SECONDS,
+        }),
     )
         .into_response()
 }
@@ -2769,10 +2844,11 @@ pub async fn verify_link_password(
     get,
     path = "/links/{id}/qr",
     params(
-        ("id" = i32, Path, description = "Link ID")
+        ("id" = i32, Path, description = "Link ID"),
+        QrOptions
     ),
     responses(
-        (status = 200, description = "QR code image", content_type = "image/png"),
+        (status = 200, description = "QR code image: PNG, or SVG with `format=svg`", body = Vec<u8>, content_type = ["image/png", "image/svg+xml"]),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
@@ -2834,7 +2910,7 @@ pub async fn get_qr_code(
 
 /// Query options for branded QR rendering. All optional — an empty set renders
 /// the plain black/white PNG (byte-identical to the legacy behavior).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct QrOptions {
     /// Foreground (module) color as hex, with or without `#`, e.g. `2f37d8`.
     pub color: Option<String>,
@@ -3765,36 +3841,63 @@ pub async fn get_user_links(
 
     let base_url = get_base_url();
     let api_url = get_api_url();
-    let mut response = Vec::new();
-    for l in user_links {
-        let tags = tags_by_link.remove(&l.id).unwrap_or_default();
-        response.push(LinkResponse {
-            id: l.id,
-            code: l.code.clone(),
-            short_url: format!("{}/{}", base_url, l.code),
-            api_url: format!("{}/{}", api_url, l.code),
-            original_url: l.original_url.clone(),
-            title: l.title.clone(),
-            click_count: l.click_count,
-            created_at: utc_rfc3339(l.created_at),
-            expires_at: l.expires_at.map(utc_rfc3339),
-            has_password: l.password_hash.is_some(),
-            notes: l.notes.clone(),
-            folder_id: l.folder_id,
-            org_id: l.org_id,
-            starts_at: l.starts_at.map(utc_rfc3339),
-            max_clicks: l.max_clicks,
-            burn_after_reading: l.burn_after_reading,
-            burned_at: l.burned_at.map(utc_rfc3339),
-            safe_link_interstitial: l.safe_link_interstitial,
-            bio_visible: l.bio_visible,
-            is_active: l.is_active(),
-            is_pinned: l.is_pinned,
-            tags,
-        });
-    }
+    let response: Vec<LinkResponse> = user_links
+        .iter()
+        .map(|l| {
+            let tags = tags_by_link.remove(&l.id).unwrap_or_default();
+            LinkResponse::from_model(l, tags, &base_url, &api_url)
+        })
+        .collect();
 
     link_page(total, response).into_response()
+}
+
+/// Get one link
+///
+/// The same object an item of `GET /links` is. An organization link is
+/// readable by any current member, whoever created it. A missing, deleted or
+/// someone else's link is the same 403, so the answer does not reveal which
+/// ids exist.
+#[utoipa::path(
+    get,
+    path = "/links/{id}",
+    params(
+        ("id" = i32, Path, description = "Link ID")
+    ),
+    responses(
+        (status = 200, description = "The link", body = LinkResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "No such link, or the caller may not read it"),
+    ),
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
+)]
+pub async fn get_link(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
+        Some(id) => id,
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
+    };
+
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Read).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
+    };
+
+    let tags = get_link_tags(&state.db, link.id).await;
+    (
+        StatusCode::OK,
+        Json(LinkResponse::from_model(
+            &link,
+            tags,
+            &get_base_url(),
+            &get_api_url(),
+        )),
+    )
+        .into_response()
 }
 
 /// Delete a link
@@ -4451,6 +4554,7 @@ pub async fn bulk_create_links(
             Json(BulkCreateLinkResponse {
                 links: vec![],
                 errors: vec!["Authentication required for bulk link creation".to_string()],
+                failed: vec![],
             }),
         )
             .into_response();
@@ -4463,6 +4567,7 @@ pub async fn bulk_create_links(
             Json(BulkCreateLinkResponse {
                 links: vec![],
                 errors: vec!["Too many URLs in one request (max 500)".to_string()],
+                failed: vec![],
             }),
         )
             .into_response();
@@ -4483,6 +4588,7 @@ pub async fn bulk_create_links(
                 StatusCode::FORBIDDEN,
                 Json(BulkCreateLinkResponse {
                     links: vec![],
+                    failed: vec![],
                     errors: vec![
                         "Please verify your email address before creating links".to_string(),
                     ],
@@ -4494,6 +4600,7 @@ pub async fn bulk_create_links(
 
     let mut result_links = Vec::new();
     let mut errors = Vec::new();
+    let mut failed = Vec::new();
     let base_url = get_base_url();
     // Per-link rate key: charged once per URL below so a bulk request cannot
     // create more links than the single-create budget allows.
@@ -4547,10 +4654,15 @@ pub async fn bulk_create_links(
             .link_creation
             .check(&format!("create:{}", ip))
         {
-            errors.push(format!(
-                "{}: rate limit reached, try again in {}s",
-                url, retry_after_secs
-            ));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!(
+                    "{}: rate limit reached, try again in {}s",
+                    url, retry_after_secs
+                ),
+            );
             continue;
         }
 
@@ -4558,23 +4670,33 @@ pub async fn bulk_create_links(
         // (bad format, dangerous file type, raw IP, …) rather than a generic
         // message, so a bulk upload tells the user which links were rejected why.
         if let Err(e) = validate_url(&url) {
-            errors.push(format!("{}: {}", url, e));
+            record_bulk_failure(&mut errors, &mut failed, &url, format!("{}: {}", url, e));
             continue;
         }
         if destination_host(&url).is_some_and(|host| private_hosts.contains(&host)) {
-            errors.push(format!("{}: {}", url, PRIVATE_DESTINATION));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!("{}: {}", url, PRIVATE_DESTINATION),
+            );
             continue;
         }
 
         // Check if URL or domain is blocked
         if let Err(e) = check_blocked(&state.db, &url).await {
-            errors.push(format!("{}: {}", url, e));
+            record_bulk_failure(&mut errors, &mut failed, &url, format!("{}: {}", url, e));
             continue;
         }
 
         // Stop creating once the per-user cap is reached.
         if let Some(0) = remaining_budget {
-            errors.push(format!("{}: account link limit reached", url));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!("{}: account link limit reached", url),
+            );
             continue;
         }
 
@@ -4589,7 +4711,12 @@ pub async fn bulk_create_links(
             let txn = match state.db.begin().await {
                 Ok(txn) => txn,
                 Err(error) => {
-                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, error),
+                    );
                     break;
                 }
             };
@@ -4606,12 +4733,22 @@ pub async fn bulk_create_links(
                 Ok(true) => {}
                 Ok(false) => {
                     let _ = txn.rollback().await;
-                    errors.push(format!("{}: folder or organization access denied", url));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("{}: folder or organization access denied", url),
+                    );
                     break;
                 }
                 Err(error) => {
                     let _ = txn.rollback().await;
-                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, error),
+                    );
                     break;
                 }
             }
@@ -4640,7 +4777,12 @@ pub async fn bulk_create_links(
                         break;
                     }
                     Err(e) => {
-                        errors.push(format!("Failed to shorten {}: {}", url, e));
+                        record_bulk_failure(
+                            &mut errors,
+                            &mut failed,
+                            &url,
+                            format!("Failed to shorten {}: {}", url, e),
+                        );
                         break;
                     }
                 },
@@ -4650,13 +4792,18 @@ pub async fn bulk_create_links(
                         last_duplicate = Some(format!("Failed to shorten {}: {}", url, e));
                         continue;
                     }
-                    errors.push(format!("Failed to shorten {}: {}", url, e));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, e),
+                    );
                     break;
                 }
             }
         }
         if !created && let Some(msg) = last_duplicate {
-            errors.push(msg);
+            record_bulk_failure(&mut errors, &mut failed, &url, msg);
         }
     }
 
@@ -4665,6 +4812,7 @@ pub async fn bulk_create_links(
         Json(BulkCreateLinkResponse {
             links: result_links,
             errors,
+            failed,
         }),
     )
         .into_response()

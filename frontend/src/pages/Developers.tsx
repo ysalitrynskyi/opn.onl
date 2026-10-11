@@ -8,6 +8,9 @@ import {
 import SEO from '../components/SEO';
 
 const API_BASE = 'https://l.opn.onl';
+// Where the API says a short link lives: short_url is built from the frontend
+// origin, api_url from the API origin. Both redirect.
+const SHORT_BASE = 'https://opn.onl';
 const MCP_REPO = 'https://github.com/ysalitrynskyi/opn-mcp';
 const REGISTRY_URL = 'https://registry.modelcontextprotocol.io';
 const SWAGGER_URL = `${API_BASE}/swagger-ui`;
@@ -79,8 +82,10 @@ function Method({ verb }: { verb: keyof typeof METHOD_STYLES }) {
 /* ── Data ─────────────────────────────────────────────────── */
 const endpoints: { verb: keyof typeof METHOD_STYLES; path: string; desc: string }[] = [
     { verb: 'POST', path: '/links', desc: 'Shorten a URL — custom alias, password, expiry, click cap, routing.' },
-    { verb: 'GET', path: '/links', desc: 'List every link on your account, with live click counts.' },
-    { verb: 'PUT', path: '/links/:id', desc: 'Update a link — destination, limits or rules. The short code cannot be changed.' },
+    { verb: 'GET', path: '/links', desc: 'List your links with live click counts, up to 1,000 per page. Page with limit and offset; X-Total-Count is the total.' },
+    { verb: 'GET', path: '/links/:id', desc: 'Fetch one link — the same object the list returns.' },
+    { verb: 'PUT', path: '/links/:id', desc: 'Update a link — destination, password, expiry, schedule or click cap. The short code cannot be changed.' },
+    { verb: 'PUT', path: '/links/:id/rules', desc: 'Replace a link’s smart-routing rules.' },
     { verb: 'DELETE', path: '/links/:id', desc: 'Delete a link and stop its redirect.' },
     { verb: 'GET', path: '/links/:id/stats', desc: 'First-party click analytics — geo, device, referrer, timeline.' },
     { verb: 'GET', path: '/links/:id/qr', desc: 'Branded QR for a link — brand colour + logo, PNG or SVG.' },
@@ -100,10 +105,10 @@ curl -X POST ${API_BASE}/links \\
   -H "Content-Type: application/json" \\
   -d '{
         "original_url": "https://example.com/a/very/long/link",
-        "custom_code": "launch"
+        "custom_alias": "launch"
       }'
 
-# → { "short_url": "${API_BASE}/launch", "code": "launch" }`;
+# → { "short_url": "${SHORT_BASE}/launch", "code": "launch", ... }`;
 
 const MCP_CONFIG = `{
   "mcpServers": {
@@ -186,7 +191,7 @@ export default function Developers() {
 {'  '}-H <span className="text-emerald-300">"Authorization: Bearer opn_•••"</span> \{'\n'}
 {'  '}-H <span className="text-emerald-300">"Content-Type: application/json"</span> \{'\n'}
 {'  '}-d <span className="text-emerald-300">{'\'{"original_url":"https://example.com"}\''}</span>{'\n\n'}
-<span className="text-emerald-400">→</span> <span className="text-white/60">{'{ "short_url": "'}</span><span className="text-primary-300">{API_BASE}/abc123</span><span className="text-white/60">{'" }'}</span>
+<span className="text-emerald-400">→</span> <span className="text-white/60">{'{ "short_url": "'}</span><span className="text-primary-300">{SHORT_BASE}/abc123</span><span className="text-white/60">{'" }'}</span>
                                     </pre>
                                 </div>
                             </motion.div>
@@ -265,7 +270,7 @@ export default function Developers() {
                                 <ol className="mt-8 space-y-6">
                                     {[
                                         ['01', 'Create an API key', <>Open <Link to="/settings" className="text-primary-600 underline decoration-line2 underline-offset-2 hover:text-primary-700">Settings → API Keys</Link> and generate a token. It looks like <span className="font-mono text-[13px] text-ink">opn_…</span> and is shown once.</>],
-                                        ['02', 'Send it as a Bearer token', <>Pass <span className="font-mono text-[13px] text-ink">Authorization: Bearer opn_…</span> on every request. The same key works for every endpoint your account can reach.</>],
+                                        ['02', 'Send it as a Bearer token', <>Pass <span className="font-mono text-[13px] text-ink">Authorization: Bearer opn_…</span> on every request. A key reaches links, folders, tags, organizations and analytics; account security and admin calls need your sign-in session instead.</>],
                                         ['03', 'Shorten, measure, automate', <>Create links, read analytics and render QR codes straight from your code, CI or cron.</>],
                                     ].map(([n, title, body]) => (
                                         <li key={n as string} className="flex gap-5">

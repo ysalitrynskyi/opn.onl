@@ -117,6 +117,27 @@ async fn bulk_create_empty_urls_returns_no_links() {
 }
 
 #[tokio::test]
+async fn bulk_create_names_each_failed_url_in_its_own_field() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let good = format!("https://iana.org/bulk-ok-{}", unique_code());
+    let bad = "not a url at all";
+    let res = server
+        .post("/links/bulk")
+        .authorization_bearer(&token)
+        .json(&json!({ "urls": [good, bad] }))
+        .await;
+    assert_eq!(res.status_code(), 200, "bulk: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(body["links"].as_array().map(|a| a.len()), Some(1), "{body}");
+    let failed = body["failed"].as_array().expect("failed list");
+    assert_eq!(failed.len(), 1, "{body}");
+    assert_eq!(failed[0]["url"], bad);
+    // Same text as the legacy `errors` entry, which stays for older clients.
+    assert_eq!(failed[0]["error"], body["errors"][0]);
+}
+
+#[tokio::test]
 async fn health_check_requires_auth_and_rejects_invalid_urls() {
     let (server, db) = spawn_real_app().await;
     let token = register_verified(&server, &db).await;

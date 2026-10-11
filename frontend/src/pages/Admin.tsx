@@ -188,24 +188,31 @@ export default function Admin() {
         setter(message);
     };
 
+    // Actions can overlap, so an older answer must not replace a newer one.
+    const overviewLoadId = useRef(0);
     const loadOverview = useCallback(async () => {
+        const loadId = ++overviewLoadId.current;
         const [statsRes, activityRes] = await Promise.all([
             authFetch(API_ENDPOINTS.adminStats),
             authFetch(`${API_ENDPOINTS.adminActivity}?days=30`),
         ]);
+        if (loadId !== overviewLoadId.current) return true;
 
         if (statsRes.status === 403) {
             navigate('/dashboard');
             return false;
         }
-        if (statsRes.ok) {
-            setStats(await statsRes.json());
+        const statsBody = statsRes.ok ? await statsRes.json() : null;
+        const activityBody = activityRes.ok ? await activityRes.json() : null;
+        if (loadId !== overviewLoadId.current) return true;
+
+        if (statsBody) {
+            setStats(statsBody);
         } else {
             setError('Failed to load admin data');
         }
-        if (activityRes.ok) {
-            const data = await activityRes.json();
-            setActivity(data.days ?? []);
+        if (activityBody) {
+            setActivity(activityBody.days ?? []);
         }
         return true;
     }, [navigate]);
@@ -367,7 +374,9 @@ export default function Admin() {
                           : '';
                 const message = typeof successMessage === 'function' ? successMessage(data) : successMessage;
                 flash(setSuccess, `${data.message || message}${affectedSuffix}`);
-                await reload();
+                // Block, delete, restore and verify all move the overview's
+                // counts and the suspicious-links banner, whichever tab ran them.
+                await Promise.all([reload(), loadOverview().catch(() => undefined)]);
             } else {
                 flash(setError, data.message || 'Action failed');
             }
