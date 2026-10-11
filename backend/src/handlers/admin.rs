@@ -83,9 +83,20 @@ pub struct BackupResponse {
     pub message: String,
 }
 
+/// How often backups are taken without anyone asking, and how many the prune
+/// after each one leaves. Absent from a response when scheduled backups are off.
+#[derive(Serialize, ToSchema)]
+pub struct BackupScheduleInfo {
+    pub interval_hours: u32,
+    pub keep: usize,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct BackupListResponse {
+    /// Newest first.
     pub backups: Vec<String>,
+    /// `null` when scheduled backups are off (`BACKUP_INTERVAL_HOURS=0`).
+    pub schedule: Option<BackupScheduleInfo>,
 }
 
 /// Check if user is admin
@@ -1250,7 +1261,7 @@ pub async fn create_backup(State(state): State<AppState>, headers: HeaderMap) ->
     }
 }
 
-/// List available backups (admin only)
+/// List available backups, newest first, and the automatic backup schedule (admin only)
 #[utoipa::path(
     get,
     path = "/admin/backup",
@@ -1279,7 +1290,17 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
     }
 
     match state.backup.list_backups().await {
-        Ok(backups) => (StatusCode::OK, Json(BackupListResponse { backups })).into_response(),
+        Ok(backups) => (
+            StatusCode::OK,
+            Json(BackupListResponse {
+                backups,
+                schedule: state.backup.schedule().map(|schedule| BackupScheduleInfo {
+                    interval_hours: schedule.interval_hours,
+                    keep: schedule.keep,
+                }),
+            }),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(AdminResponse {
@@ -1291,15 +1312,16 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
     }
 }
 
-/// Clean up old backups (admin only)
+/// Delete all but the newest backups (admin only)
 #[utoipa::path(
     delete,
     path = "/admin/backup/cleanup/{keep_count}",
     params(
-        ("keep_count" = usize, Path, description = "Number of recent backups to keep")
+        ("keep_count" = usize, Path, description = "Number of recent backups to keep, at least 1")
     ),
     responses(
         (status = 200, description = "Old backups cleaned up", body = AdminResponse),
+        (status = 400, description = "keep_count is 0", body = AdminResponse),
         (status = 403, description = "Admin access required"),
         (status = 503, description = "Backup service not configured"),
     ),
@@ -1313,6 +1335,19 @@ pub async fn cleanup_backups(
 ) -> impl IntoResponse {
     if let Err(e) = require_admin(&state, &headers).await {
         return e.into_response();
+    }
+
+    // Zero would delete every backup, the one that could still restore the
+    // database included.
+    if keep_count == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "keep must be at least 1".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     if !state.backup.is_configured() {

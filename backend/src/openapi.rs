@@ -389,6 +389,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
             admin::BlockedEmailDomainResponse,
             admin::BackupResponse,
             admin::BackupListResponse,
+            admin::BackupScheduleInfo,
 
             // Rate limiting
             RateLimitResponse,
