@@ -447,7 +447,6 @@ const PUBLIC_OPERATIONS: &[(&str, &str)] = &[
     ("POST", "/auth/register"),
     ("POST", "/auth/login"),
     ("POST", "/auth/verify-email"),
-    ("POST", "/auth/resend-verification"),
     ("POST", "/auth/forgot-password"),
     ("POST", "/auth/reset-password"),
     ("GET", "/auth/settings"),
@@ -464,8 +463,10 @@ const PUBLIC_OPERATIONS: &[(&str, &str)] = &[
 ];
 
 /// Operations that work with or without credentials: `security` must hold the
-/// empty requirement `{}` next to the bearer ones.
-const OPTIONAL_AUTH_OPERATIONS: &[(&str, &str)] = &[("POST", "/links")];
+/// empty requirement `{}` next to the bearer ones. Resending the verification
+/// email answers the owner of the account specifically when they sign in.
+const OPTIONAL_AUTH_OPERATIONS: &[(&str, &str)] =
+    &[("POST", "/links"), ("POST", "/auth/resend-verification")];
 
 #[tokio::test]
 async fn protected_operations_declare_bearer_security() {
