@@ -17,6 +17,7 @@ use crate::entity::{
     api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events, links,
     org_members, organizations, passkeys, users,
 };
+use crate::utils::backup::is_automatic_backup;
 use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::{
     count_email_case_collisions, is_reserved_email_domain, normalize_email,
@@ -93,8 +94,11 @@ pub struct BackupScheduleInfo {
 
 #[derive(Serialize, ToSchema)]
 pub struct BackupListResponse {
-    /// Newest first.
+    /// Automatic and manual backups together, newest first.
     pub backups: Vec<String>,
+    /// The names in `backups` that the schedule took. The schedule's retention
+    /// only ever deletes these.
+    pub automatic: Vec<String>,
     /// `null` when scheduled backups are off (`BACKUP_INTERVAL_HOURS=0`).
     pub schedule: Option<BackupScheduleInfo>,
 }
@@ -1293,6 +1297,11 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
         Ok(backups) => (
             StatusCode::OK,
             Json(BackupListResponse {
+                automatic: backups
+                    .iter()
+                    .filter(|name| is_automatic_backup(name))
+                    .cloned()
+                    .collect(),
                 backups,
                 schedule: state.backup.schedule().map(|schedule| BackupScheduleInfo {
                     interval_hours: schedule.interval_hours,
@@ -1312,7 +1321,7 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
     }
 }
 
-/// Delete all but the newest backups (admin only)
+/// Delete all but the newest backups, automatic and manual counted together (admin only)
 #[utoipa::path(
     delete,
     path = "/admin/backup/cleanup/{keep_count}",

@@ -46,7 +46,7 @@ type BackupState =
     | { status: 'loading' }
     | { status: 'unconfigured' }
     | { status: 'error' }
-    | { status: 'ready'; backups: string[]; schedule: BackupSchedule | null };
+    | { status: 'ready'; backups: string[]; automatic: string[]; schedule: BackupSchedule | null };
 
 interface ActivityDay {
     date: string;
@@ -240,6 +240,7 @@ export default function Admin() {
             setBackupState({
                 status: 'ready',
                 backups: data.backups ?? [],
+                automatic: data.automatic ?? [],
                 schedule: data.schedule ?? null,
             });
         } else {
@@ -797,7 +798,14 @@ export default function Admin() {
                             Backup Management
                         </h3>
                         {backupState.status === 'ready' && (
-                            <p className="text-sm text-slate-600 mb-4">{describeSchedule(backupState.schedule)}</p>
+                            <div className="mb-4">
+                                <p className="text-sm text-slate-600">{describeSchedule(backupState.schedule)}</p>
+                                {backupState.schedule && (
+                                    <p className="text-xs text-slate-500">
+                                        Only automatic backups are deleted to stay within that number; backups you take by hand are kept.
+                                    </p>
+                                )}
+                            </div>
                         )}
                         {backupState.status === 'unconfigured' && (
                             <p className="text-sm text-slate-600 mb-4">
@@ -819,7 +827,12 @@ export default function Admin() {
                                 <div className="mt-4">
                                     <ul className="divide-y divide-slate-100 text-sm font-mono text-slate-700">
                                         {backupState.backups.slice(0, BACKUPS_SHOWN).map((name) => (
-                                            <li key={name} className="py-1.5">{name}</li>
+                                            <li key={name} className="py-1.5 flex items-center gap-2">
+                                                <span>{name}</span>
+                                                {backupState.automatic.includes(name) && (
+                                                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-sans text-xs text-slate-600">auto</span>
+                                                )}
+                                            </li>
                                         ))}
                                     </ul>
                                     {backupState.backups.length > BACKUPS_SHOWN && (

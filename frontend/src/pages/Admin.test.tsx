@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, wait } from '../test/test-utils';
+import { render, screen, waitFor, fireEvent, wait, within } from '../test/test-utils';
 import Admin from './Admin';
 import { mockToken } from '../test/test-utils';
 
@@ -478,16 +478,35 @@ describe('Admin Page', () => {
             }) as any;
         };
 
+        const backupName = /^backup_(auto_)?\d{8}_\d{6}\.sql\.gz$/;
+
         it('shows the automatic schedule and lists the backups newest first', async () => {
             mockBackupList(200, {
-                backups: ['backup_20261011_030000.sql.gz', 'backup_20261010_030000.sql.gz'],
+                backups: ['backup_20261011_030000.sql.gz', 'backup_auto_20261010_030000.sql.gz'],
+                automatic: ['backup_auto_20261010_030000.sql.gz'],
                 schedule: { interval_hours: 24, keep: 14 },
             });
             render(<Admin />);
 
             expect(await screen.findByText('Automatic: every 24 h, keeping 14')).toBeInTheDocument();
-            const names = (await screen.findAllByText(/^backup_\d{8}_\d{6}\.sql\.gz$/)).map((el) => el.textContent);
-            expect(names).toEqual(['backup_20261011_030000.sql.gz', 'backup_20261010_030000.sql.gz']);
+            const names = (await screen.findAllByText(backupName)).map((el) => el.textContent);
+            expect(names).toEqual(['backup_20261011_030000.sql.gz', 'backup_auto_20261010_030000.sql.gz']);
+        });
+
+        it('marks the automatic backups and says only they are pruned', async () => {
+            mockBackupList(200, {
+                backups: ['backup_20261011_030000.sql.gz', 'backup_auto_20261010_030000.sql.gz'],
+                automatic: ['backup_auto_20261010_030000.sql.gz'],
+                schedule: { interval_hours: 24, keep: 14 },
+            });
+            render(<Admin />);
+
+            const autoRow = (await screen.findByText('backup_auto_20261010_030000.sql.gz')).closest('li')!;
+            const manualRow = screen.getByText('backup_20261011_030000.sql.gz').closest('li')!;
+            expect(within(autoRow).getByText('auto')).toBeInTheDocument();
+            expect(within(manualRow).queryByText('auto')).not.toBeInTheDocument();
+            expect(screen.getAllByText('auto')).toHaveLength(1);
+            expect(screen.getByText(/only automatic backups are deleted/i)).toBeInTheDocument();
         });
 
         it('says so when automatic backups are off', async () => {
@@ -505,7 +524,7 @@ describe('Admin Page', () => {
             render(<Admin />);
 
             expect(await screen.findByText('and 4 older')).toBeInTheDocument();
-            expect(screen.getAllByText(/^backup_\d{8}_\d{6}\.sql\.gz$/)).toHaveLength(10);
+            expect(screen.getAllByText(backupName)).toHaveLength(10);
         });
 
         it('explains that backup storage is not configured and disables the button', async () => {

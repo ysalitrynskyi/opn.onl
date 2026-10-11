@@ -28,6 +28,17 @@ pub const DEFAULT_BACKUP_KEEP: usize = 14;
 /// is listed under.
 const BACKUP_PREFIX: &str = "backup_";
 
+/// Marks a backup the schedule took, as opposed to one an admin asked for.
+const AUTOMATIC_MARKER: &str = "auto_";
+
+/// Who asked for a backup. The schedule's prune only ever deletes `Automatic`
+/// ones, so a backup an admin took by hand is never lost to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackupKind {
+    Manual,
+    Automatic,
+}
+
 /// When scheduled backups run, and how many backups the prune after each one
 /// leaves behind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,14 +142,19 @@ impl BackupService {
         self.schedule
     }
 
-    /// Create a backup and upload to S3
+    /// Create a backup on request and upload it to S3. Retention for the
+    /// schedule never touches it.
     pub async fn create_backup(&self) -> Result<String, String> {
+        self.upload_backup(BackupKind::Manual).await
+    }
+
+    async fn upload_backup(&self, kind: BackupKind) -> Result<String, String> {
         let client = self
             .s3_client
             .as_ref()
             .ok_or("Backup service not configured")?;
 
-        let filename = backup_filename(Utc::now());
+        let filename = backup_filename(kind, Utc::now());
 
         info!("Creating database backup: {}", filename);
 
@@ -169,8 +185,8 @@ impl BackupService {
         Ok(filename)
     }
 
-    /// List available backups, newest first. Only objects named the way
-    /// `create_backup` names them are listed.
+    /// List available backups, automatic and manual together, newest first.
+    /// Only objects named the way backups are named are listed.
     pub async fn list_backups(&self) -> Result<Vec<String>, String> {
         let client = self
             .s3_client
@@ -209,21 +225,32 @@ impl BackupService {
         .map(newest_first)
     }
 
-    /// Delete all but the `keep_count` newest backups. Returns how many were
-    /// deleted. `keep_count` must be at least 1: 0 would delete every backup.
+    /// Delete all but the `keep_count` newest backups, automatic and manual
+    /// counted together. This is a deliberate admin action; the schedule uses
+    /// `cleanup_old_automatic_backups`. Returns how many were deleted.
+    /// `keep_count` must be at least 1: 0 would delete every backup.
     pub async fn cleanup_old_backups(&self, keep_count: usize) -> Result<usize, String> {
-        if keep_count == 0 {
-            return Err("keep must be at least 1".to_string());
-        }
+        require_keep(keep_count)?;
+        let to_delete = keys_to_prune(self.list_backups().await?, keep_count);
+        self.delete_backups(to_delete).await
+    }
+
+    /// Delete all but the `keep_count` newest automatic backups. Manual
+    /// backups are neither counted nor deleted.
+    pub async fn cleanup_old_automatic_backups(&self, keep_count: usize) -> Result<usize, String> {
+        require_keep(keep_count)?;
+        let to_delete = automatic_keys_to_prune(self.list_backups().await?, keep_count);
+        self.delete_backups(to_delete).await
+    }
+
+    async fn delete_backups(&self, keys: Vec<String>) -> Result<usize, String> {
         let client = self
             .s3_client
             .as_ref()
             .ok_or("Backup service not configured")?;
 
-        let to_delete = keys_to_prune(self.list_backups().await?, keep_count);
-
         let mut deleted_count = 0;
-        for key in &to_delete {
+        for key in &keys {
             match client
                 .delete_object()
                 .bucket(&self.bucket)
@@ -237,23 +264,24 @@ impl BackupService {
         }
 
         info!("Cleaned up {} old backups", deleted_count);
-        if deleted_count < to_delete.len() {
+        if deleted_count < keys.len() {
             return Err(format!(
                 "deleted {} of {} old backups; the rest could not be deleted",
                 deleted_count,
-                to_delete.len()
+                keys.len()
             ));
         }
         Ok(deleted_count)
     }
 
-    /// One scheduled pass: take a backup, then prune down to `keep`. The prune
-    /// only follows an upload that succeeded, so a failing dump never eats the
-    /// copies already in the bucket.
+    /// One scheduled pass: take an automatic backup, then prune the automatic
+    /// ones down to `keep`. The prune only follows an upload that succeeded, so
+    /// a failing dump never eats the copies already in the bucket, and it never
+    /// touches a backup taken by hand.
     pub async fn run_scheduled(&self, keep: usize) -> Result<ScheduledRun, String> {
-        let filename = self.create_backup().await?;
+        let filename = self.upload_backup(BackupKind::Automatic).await?;
         let pruned = self
-            .cleanup_old_backups(keep)
+            .cleanup_old_automatic_backups(keep)
             .await
             .map_err(|e| format!("{filename} was uploaded, but pruning old backups failed: {e}"))?;
         Ok(ScheduledRun { filename, pruned })
@@ -398,43 +426,82 @@ impl RunSlot {
     }
 }
 
-/// The object name for a backup taken at `at`. The timestamp is UTC and fixed
-/// width, so name order is age order.
-fn backup_filename(at: DateTime<Utc>) -> String {
-    format!("{BACKUP_PREFIX}{}.sql.gz", at.format("%Y%m%d_%H%M%S"))
+/// The object name for a backup taken at `at`: `backup_YYYYMMDD_HHMMSS.sql.gz`,
+/// or `backup_auto_YYYYMMDD_HHMMSS.sql.gz` for one the schedule took. The
+/// timestamp is UTC and fixed width.
+fn backup_filename(kind: BackupKind, at: DateTime<Utc>) -> String {
+    let marker = match kind {
+        BackupKind::Manual => "",
+        BackupKind::Automatic => AUTOMATIC_MARKER,
+    };
+    format!(
+        "{BACKUP_PREFIX}{marker}{}.sql.gz",
+        at.format("%Y%m%d_%H%M%S")
+    )
 }
 
-/// Whether `key` is a name `backup_filename` produces. A bucket can hold other
-/// objects under the same prefix, and those are not ours to list or delete.
-fn is_backup_key(key: &str) -> bool {
-    let Some(stamp) = key
-        .strip_prefix(BACKUP_PREFIX)
-        .and_then(|rest| rest.strip_suffix(".sql.gz"))
-    else {
-        return false;
+/// The kind and the `YYYYMMDD_HHMMSS` timestamp of a name `backup_filename`
+/// produces, or `None` for anything else. A bucket can hold other objects under
+/// the same prefix, and those are not ours to list or delete.
+fn parse_backup_key(key: &str) -> Option<(BackupKind, &str)> {
+    let rest = key.strip_prefix(BACKUP_PREFIX)?.strip_suffix(".sql.gz")?;
+    let (kind, stamp) = match rest.strip_prefix(AUTOMATIC_MARKER) {
+        Some(stamp) => (BackupKind::Automatic, stamp),
+        None => (BackupKind::Manual, rest),
     };
-    // YYYYMMDD_HHMMSS
-    stamp.len() == 15
+    let well_formed = stamp.len() == 15
         && stamp.bytes().enumerate().all(|(i, b)| {
             if i == 8 {
                 b == b'_'
             } else {
                 b.is_ascii_digit()
             }
-        })
+        });
+    well_formed.then_some((kind, stamp))
 }
 
-/// The backups among `keys`, newest first.
+fn is_backup_key(key: &str) -> bool {
+    parse_backup_key(key).is_some()
+}
+
+/// Whether `key` is a backup the schedule took.
+pub fn is_automatic_backup(key: &str) -> bool {
+    matches!(parse_backup_key(key), Some((BackupKind::Automatic, _)))
+}
+
+fn require_keep(keep: usize) -> Result<(), String> {
+    if keep == 0 {
+        return Err("keep must be at least 1".to_string());
+    }
+    Ok(())
+}
+
+/// The backups among `keys`, newest first. Automatic and manual names do not
+/// sort together as text, so this orders by the timestamp inside the name.
 fn newest_first(mut keys: Vec<String>) -> Vec<String> {
     keys.retain(|key| is_backup_key(key));
-    keys.sort_unstable_by(|a, b| b.cmp(a));
+    keys.sort_unstable_by(|a, b| {
+        let stamp = |key: &String| parse_backup_key(key).map(|(_, stamp)| stamp.to_owned());
+        stamp(b).cmp(&stamp(a)).then_with(|| b.cmp(a))
+    });
     keys
 }
 
-/// The backups to delete so that the `keep` newest remain.
+/// The backups to delete so that the `keep` newest remain, whoever took them.
 fn keys_to_prune(keys: Vec<String>, keep: usize) -> Vec<String> {
     let mut keys = newest_first(keys);
     keys.split_off(keep.min(keys.len()))
+}
+
+/// The automatic backups to delete so that the `keep` newest automatic ones
+/// remain. Manual backups are not counted and never returned.
+fn automatic_keys_to_prune(keys: Vec<String>, keep: usize) -> Vec<String> {
+    keys_to_prune(
+        keys.into_iter()
+            .filter(|key| is_automatic_backup(key))
+            .collect(),
+        keep,
+    )
 }
 
 /// Split a postgres URL into a password-free connection URI and the password.
@@ -778,9 +845,15 @@ mod tests {
         let at = DateTime::parse_from_rfc3339("2026-10-11T03:04:05Z")
             .unwrap()
             .with_timezone(&Utc);
-        let name = backup_filename(at);
+        let name = backup_filename(BackupKind::Manual, at);
         assert_eq!(name, "backup_20261011_030405.sql.gz");
         assert!(is_backup_key(&name));
+        assert!(!is_automatic_backup(&name));
+
+        let name = backup_filename(BackupKind::Automatic, at);
+        assert_eq!(name, "backup_auto_20261011_030405.sql.gz");
+        assert!(is_backup_key(&name));
+        assert!(is_automatic_backup(&name));
 
         for foreign in [
             "backup_pre-migration.sql.gz",
@@ -790,6 +863,10 @@ mod tests {
             "backup_2026101_1030405.sql.gz",
             "backup_20261011_03040.sql.gz",
             "backup_20261011_0304050.sql.gz",
+            "backup_auto_.sql.gz",
+            "backup_auto_20261011_03040.sql.gz",
+            "backup_auto_auto_20261011_030405.sql.gz",
+            "backup_automatic_20261011_030405.sql.gz",
             "backup_",
             "notes.txt",
             "dir/backup_20261011_030405.sql.gz",
@@ -855,6 +932,77 @@ mod tests {
             listed,
             ["04", "03", "02", "01"].map(|d| format!("backup_202610{d}_030000.sql.gz"))
         );
+    }
+
+    fn manual(day: u32) -> String {
+        format!("backup_202610{day:02}_030000.sql.gz")
+    }
+
+    fn automatic(day: u32) -> String {
+        format!("backup_auto_202610{day:02}_030000.sql.gz")
+    }
+
+    #[test]
+    fn listing_orders_automatic_and_manual_backups_by_time_not_by_name() {
+        // As text every `backup_auto_…` name sorts before every `backup_2…`
+        // name, whatever its date.
+        let listed = newest_first(vec![
+            manual(2),
+            automatic(5),
+            manual(7),
+            automatic(1),
+            automatic(6),
+            "backup_pre-migration.sql.gz".to_string(),
+        ]);
+        assert_eq!(
+            listed,
+            [
+                manual(7),
+                automatic(6),
+                automatic(5),
+                manual(2),
+                automatic(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_scheduled_prune_deletes_only_old_automatic_backups() {
+        // Manual backups are the oldest and the newest of the lot, and there
+        // are more of them than the keep count.
+        let keys = vec![
+            manual(1),
+            automatic(2),
+            automatic(3),
+            manual(4),
+            automatic(5),
+            automatic(6),
+            manual(7),
+            manual(8),
+            "backup_pre-migration.sql.gz".to_string(),
+        ];
+
+        let mut pruned = automatic_keys_to_prune(keys.clone(), 2);
+        pruned.sort();
+        assert_eq!(pruned, [automatic(2), automatic(3)]);
+
+        // Control: even with a keep count of 1 no manual backup is touched.
+        let mut pruned = automatic_keys_to_prune(keys.clone(), 1);
+        pruned.sort();
+        assert_eq!(pruned, [automatic(2), automatic(3), automatic(5)]);
+
+        // Control: when there are few enough automatic backups nothing goes,
+        // however many manual ones there are.
+        assert!(automatic_keys_to_prune(keys, 4).is_empty());
+        assert!(automatic_keys_to_prune(vec![manual(1), manual(2)], 1).is_empty());
+    }
+
+    #[test]
+    fn the_admin_cleanup_counts_both_kinds_together() {
+        let keys = vec![manual(1), automatic(2), manual(3), automatic(4), manual(5)];
+        let mut pruned = keys_to_prune(keys, 3);
+        pruned.sort();
+        assert_eq!(pruned, [manual(1), automatic(2)]);
     }
 
     /// A fake backup run that records how many are in flight at once and holds

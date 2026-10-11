@@ -164,7 +164,7 @@ export default function Privacy() {
                                     country, city, device type, browser, referrer) are retained for the lifetime
                                     of the link so your statistics keep working
                                 </li>
-                                <li><strong>Backups:</strong> Database backups are taken automatically on a schedule (daily by default) and only a fixed number of the most recent copies is kept (14 by default); deleted data ages out of backups as old copies are removed</li>
+                                <li><strong>Backups:</strong> Database backups are taken automatically on a schedule (daily by default) and only a fixed number of the most recent automatic copies is kept (14 by default); deleted data ages out of those as old copies are removed. A backup an administrator takes by hand is kept until an administrator deletes it</li>
                             </ul>
                             <h4 className="font-semibold text-slate-900 mb-2">Your rights</h4>
                             <p className="mb-4">

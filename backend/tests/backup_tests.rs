@@ -1,14 +1,16 @@
 //! Backup administration: listing, retention and the schedule an admin sees.
 //!
 //! The S3 side is a small in-process stand-in that keeps a list of keys, so
-//! the real `BackupService` list and delete calls run end to end. Nothing here
-//! starts `pg_dump` or talks to a real bucket.
+//! the real `BackupService` list, upload and delete calls run end to end. Nothing
+//! here talks to a real bucket, and where a scheduled run needs `pg_dump` a
+//! script that prints a line of SQL takes its place on `PATH`.
 
 mod common;
 
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
@@ -43,7 +45,13 @@ async fn lock_and_clear() -> tokio::sync::MutexGuard<'static, ()> {
 /// Keys the stand-in bucket holds. Deletes remove from it.
 type Keys = Arc<Mutex<Vec<String>>>;
 
-async fn bucket_request(State(keys): State<Keys>, method: Method, uri: Uri) -> Response {
+async fn bucket_request(
+    State(keys): State<Keys>,
+    method: Method,
+    uri: Uri,
+    // Read so the uploader is never left waiting on an unread request body.
+    _body: Bytes,
+) -> Response {
     let path = uri.path().trim_matches('/');
     if method == Method::GET && path == BUCKET {
         let prefix = uri
@@ -77,6 +85,16 @@ async fn bucket_request(State(keys): State<Keys>, method: Method, uri: Uri) -> R
             listed.len()
         );
         return ([(header::CONTENT_TYPE, "application/xml")], body).into_response();
+    }
+    if method == Method::PUT
+        && let Some(key) = path.strip_prefix(&format!("{BUCKET}/"))
+    {
+        let key = urlencoding::decode(key).unwrap().into_owned();
+        let mut keys = keys.lock().unwrap();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+        return StatusCode::OK.into_response();
     }
     if method == Method::DELETE
         && let Some(key) = path.strip_prefix(&format!("{BUCKET}/"))
@@ -153,6 +171,10 @@ async fn register_admin(server: &axum_test::TestServer, db: &DatabaseConnection)
 
 fn backup_name(day: u32) -> String {
     format!("backup_202610{day:02}_030000.sql.gz")
+}
+
+fn auto_name(day: u32) -> String {
+    format!("backup_auto_202610{day:02}_030000.sql.gz")
 }
 
 fn held(keys: &Keys) -> Vec<String> {
@@ -264,8 +286,10 @@ async fn the_list_is_newest_first_without_foreign_objects_and_reports_the_schedu
     start_bucket(&[
         &backup_name(2),
         "backup_pre-migration.sql.gz",
-        &backup_name(9),
+        &auto_name(9),
         &backup_name(5),
+        &auto_name(3),
+        &backup_name(7),
     ])
     .await;
     common::set_env("BACKUP_INTERVAL_HOURS", "6");
@@ -279,10 +303,19 @@ async fn the_list_is_newest_first_without_foreign_objects_and_reports_the_schedu
         .await;
     assert_eq!(res.status_code(), 200, "{}", res.text());
     let body: Value = res.json();
+    // Automatic and manual names do not sort together as text; the list is by
+    // time.
     assert_eq!(
         body["backups"],
-        json!([backup_name(9), backup_name(5), backup_name(2)])
+        json!([
+            auto_name(9),
+            backup_name(7),
+            backup_name(5),
+            auto_name(3),
+            backup_name(2)
+        ])
     );
+    assert_eq!(body["automatic"], json!([auto_name(9), auto_name(3)]));
     assert_eq!(body["schedule"], json!({ "interval_hours": 6, "keep": 5 }));
 }
 
@@ -340,4 +373,153 @@ async fn listing_without_backup_storage_is_503() {
         .authorization_bearer(&admin)
         .await;
     assert_eq!(res.status_code(), 503);
+}
+
+#[tokio::test]
+async fn the_admin_cleanup_counts_automatic_and_manual_backups_together() {
+    let _env = lock_and_clear().await;
+    let keys = start_bucket(&[
+        &backup_name(1),
+        &auto_name(2),
+        &backup_name(3),
+        &auto_name(4),
+        &backup_name(5),
+    ])
+    .await;
+    let (server, db) = app_from_env().await;
+    let admin = register_admin(&server, &db).await;
+
+    // The explicit endpoint is a deliberate admin action: it keeps the newest
+    // N whoever took them.
+    let res = server
+        .delete("/admin/backup/cleanup/3")
+        .authorization_bearer(&admin)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    let mut expected = vec![backup_name(3), auto_name(4), backup_name(5)];
+    expected.sort();
+    assert_eq!(held(&keys), expected);
+}
+
+/// A `pg_dump` on `PATH` that runs `script`, for as long as the value lives.
+#[cfg(unix)]
+struct FakePgDump {
+    dir: std::path::PathBuf,
+    old_path: Option<std::ffi::OsString>,
+}
+
+#[cfg(unix)]
+impl FakePgDump {
+    fn install(script: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("opn-fake-pg-dump-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("pg_dump");
+        std::fs::write(&exe, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![dir.clone()];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        common::set_env("PATH", std::env::join_paths(paths).unwrap());
+        Self { dir, old_path }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FakePgDump {
+    fn drop(&mut self) {
+        match &self.old_path {
+            Some(path) => common::set_env("PATH", path),
+            None => common::remove_env("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Backups from long before any test runs, so that a backup taken now is the
+/// newest. `month` 1..=12 of 2020.
+fn old_backup(automatic: bool, month: u32) -> String {
+    let marker = if automatic { "auto_" } else { "" };
+    format!("backup_{marker}2020{month:02}01_030000.sql.gz")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_scheduled_run_prunes_old_automatic_backups_and_never_a_manual_one() {
+    use opn_onl_backend::utils::BackupService;
+
+    let _env = lock_and_clear().await;
+    // Manual backups are the oldest and the newest here, and there are more of
+    // them than the keep count.
+    let manual = [
+        old_backup(false, 1),
+        old_backup(false, 4),
+        old_backup(false, 12),
+    ];
+    let keys = start_bucket(&[
+        &manual[0],
+        &old_backup(true, 2),
+        &old_backup(true, 3),
+        &manual[1],
+        &old_backup(true, 5),
+        &manual[2],
+        "backup_pre-migration.sql.gz",
+    ])
+    .await;
+    let _pg_dump = FakePgDump::install("echo '-- dump'");
+
+    let run = BackupService::new()
+        .await
+        .run_scheduled(2)
+        .await
+        .expect("scheduled run");
+
+    assert!(
+        run.filename.starts_with("backup_auto_"),
+        "the schedule names its backups: {}",
+        run.filename
+    );
+    assert_eq!(run.pruned, 2);
+    let mut expected = vec![
+        manual[0].clone(),
+        manual[1].clone(),
+        manual[2].clone(),
+        old_backup(true, 5),
+        run.filename.clone(),
+        "backup_pre-migration.sql.gz".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(
+        held(&keys),
+        expected,
+        "the new backup and the newest old automatic one remain; every manual backup is untouched"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_scheduled_run_whose_dump_fails_prunes_nothing() {
+    use opn_onl_backend::utils::BackupService;
+
+    let _env = lock_and_clear().await;
+    let seeded = [
+        old_backup(true, 1),
+        old_backup(true, 2),
+        old_backup(true, 3),
+        old_backup(false, 4),
+    ];
+    let keys = start_bucket(&[&seeded[0], &seeded[1], &seeded[2], &seeded[3]]).await;
+    let _pg_dump = FakePgDump::install("echo 'pg_dump: connection refused' >&2; exit 1");
+
+    let result = BackupService::new().await.run_scheduled(1).await;
+
+    assert!(result.is_err(), "{result:?}");
+    let mut expected = seeded.to_vec();
+    expected.sort();
+    assert_eq!(
+        held(&keys),
+        expected,
+        "a failed backup must not cost a copy"
+    );
 }
