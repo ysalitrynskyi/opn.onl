@@ -491,6 +491,47 @@ describe('Admin Page', () => {
             });
         });
 
+        it('shows the normalized spelling the server stored for a blocked URL, domain and email domain', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            const baseFetch = global.fetch as unknown as (url: string) => Promise<unknown>;
+            const stored: Record<string, Record<string, string>> = {
+                '/admin/blocked/links': { url: 'https://bad.com/page' },
+                '/admin/blocked/email-domains': { domain: 'xn--bcher-kva.de' },
+                '/admin/blocked/domains': { domain: 'xn--bcher-kva.de' },
+            };
+            global.fetch = vi.fn((url: string, init?: { method?: string }) => {
+                const endpoint = Object.keys(stored).find((path) => url.includes(path));
+                if (init?.method === 'POST' && endpoint) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ id: 7, ...stored[endpoint] }),
+                    });
+                }
+                return baseFetch(url);
+            }) as any;
+
+            render(<Admin />);
+            await openBlockedTab();
+
+            fireEvent.change(await screen.findByPlaceholderText(/example\.com\/malicious/i), {
+                target: { value: 'HTTPS://BAD.com:443/page/#top' },
+            });
+            fireEvent.click(screen.getAllByRole('button', { name: /^block$/i })[0]);
+            expect(await screen.findByText('URL blocked: https://bad.com/page')).toBeInTheDocument();
+
+            fireEvent.change(screen.getByPlaceholderText(/malicious-domain/i), {
+                target: { value: 'Bücher.de' },
+            });
+            fireEvent.click(screen.getAllByRole('button', { name: /^block$/i })[1]);
+            expect(await screen.findByText('Domain blocked: xn--bcher-kva.de')).toBeInTheDocument();
+
+            fireEvent.change(screen.getByPlaceholderText(/throwaway-mail/i), {
+                target: { value: 'user@bücher.de' },
+            });
+            fireEvent.click(screen.getAllByRole('button', { name: /^block$/i })[2]);
+            expect(await screen.findByText('Email domain blocked: xn--bcher-kva.de')).toBeInTheDocument();
+        });
+
         it('can add blocked domain', async () => {
             render(<Admin />);
             await openBlockedTab();

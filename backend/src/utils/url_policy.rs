@@ -74,6 +74,24 @@ pub fn normalize_hostname(host: &str) -> Option<String> {
     if h.is_empty() { None } else { Some(h) }
 }
 
+/// A host in the one spelling every block comparison uses: lower case, an
+/// internationalised name as punycode, no trailing dot. `bücher.de`,
+/// `BÜCHER.DE.` and `xn--bcher-kva.de` all come out as `xn--bcher-kva.de`.
+///
+/// Input the URL host parser rejects falls back to plain ASCII lower-casing, so
+/// a matcher built on this is never looser about what it normalises than the
+/// ASCII-only version it replaced.
+pub fn canonical_host(host: &str) -> Option<String> {
+    let trimmed = host.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return None;
+    }
+    match url::Host::parse(trimmed) {
+        Ok(parsed) => Some(parsed.to_string()),
+        Err(_) => normalize_hostname(trimmed),
+    }
+}
+
 pub fn normalize_domain_input(input: &str) -> Option<String> {
     let raw = input.trim();
     if raw.is_empty() {
@@ -88,19 +106,67 @@ pub fn normalize_domain_input(input: &str) -> Option<String> {
 
     url::Url::parse(&candidate)
         .ok()
-        .and_then(|url| url.host_str().map(normalize_hostname))
-        .flatten()
+        .and_then(|url| url.host_str().and_then(canonical_host))
 }
 
 pub fn domain_matches(blocked_domain: &str, host: &str) -> bool {
-    let Some(blocked) = normalize_hostname(blocked_domain) else {
-        return false;
-    };
-    let Some(host) = normalize_hostname(host) else {
+    let (Some(blocked), Some(host)) = (canonical_host(blocked_domain), canonical_host(host)) else {
         return false;
     };
 
     host == blocked || host.ends_with(&format!(".{blocked}"))
+}
+
+/// The one spelling in which the exact-URL blocklist stores a URL and looks one
+/// up, so a block cannot be dodged by retyping the URL:
+///
+/// * scheme and host lower case, an internationalised host as punycode, no
+///   trailing dot after the host;
+/// * default port, user info and fragment dropped;
+/// * trailing slashes dropped from the path, except that an empty path is `/`;
+/// * the query kept as parsed, except that an empty `?` is dropped.
+///
+/// Only `http` and `https` URLs have a canonical form.
+pub fn canonical_blocked_url(url: &str) -> Option<String> {
+    let mut parsed = url::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+
+    parsed.set_fragment(None);
+    parsed.set_username("").ok()?;
+    parsed.set_password(None).ok()?;
+    let host = canonical_host(parsed.host_str()?)?;
+    parsed.set_host(Some(&host)).ok()?;
+
+    let query = parsed.query().filter(|q| !q.is_empty()).map(str::to_owned);
+    parsed.set_query(None);
+    let path = match parsed.path().trim_end_matches('/') {
+        "" => "/".to_string(),
+        trimmed => trimmed.to_string(),
+    };
+    parsed.set_path(&path);
+
+    let mut canonical = parsed.to_string();
+    if let Some(query) = query {
+        canonical.push('?');
+        canonical.push_str(&query);
+    }
+    Some(canonical)
+}
+
+/// Stored blocklist entries that block `url`: the URL without its query, which
+/// blocks it whatever the query string, and the URL with its exact query, which
+/// blocks only that query. Empty when `url` has no canonical form.
+pub fn blocked_url_candidates(url: &str) -> Vec<String> {
+    let Some(canonical) = canonical_blocked_url(url) else {
+        return Vec::new();
+    };
+    // A `?` inside the path is percent-encoded, so the first one starts the query.
+    match canonical.split_once('?') {
+        Some((without_query, _)) => vec![without_query.to_string(), canonical],
+        None => vec![canonical],
+    }
 }
 
 pub fn is_reserved_hostname(host: &str) -> bool {
@@ -268,5 +334,134 @@ mod tests {
     #[test]
     fn accepts_normal_https() {
         assert!(validate_http_https_url("https://iana.org/me").is_ok());
+    }
+
+    #[test]
+    fn canonical_host_is_lower_case_punycode_without_trailing_dot() {
+        let punycode = Some("xn--bcher-kva.de".to_string());
+        for spelling in [
+            "bücher.de",
+            "BÜCHER.DE",
+            "bücher.de.",
+            "xn--bcher-kva.de",
+            "XN--BCHER-KVA.DE.",
+        ] {
+            assert_eq!(canonical_host(spelling), punycode, "{spelling}");
+        }
+        assert_eq!(canonical_host("Evil.COM."), Some("evil.com".to_string()));
+        assert_eq!(canonical_host("[::1]"), Some("[::1]".to_string()));
+        assert_eq!(canonical_host("1.2.3.4"), Some("1.2.3.4".to_string()));
+        assert_eq!(canonical_host(" . "), None);
+        assert_eq!(canonical_host(""), None);
+    }
+
+    #[test]
+    fn domain_matching_ignores_how_an_idn_is_spelled() {
+        assert!(domain_matches("xn--bcher-kva.de", "bücher.de"));
+        assert!(domain_matches("bücher.de", "xn--bcher-kva.de"));
+        assert!(domain_matches("BÜCHER.de.", "shop.xn--bcher-kva.de"));
+        assert!(!domain_matches("xn--bcher-kva.de", "notbücher.de"));
+        assert!(!domain_matches("bücher.de", "bücher.de.evil.org"));
+    }
+
+    #[test]
+    fn domain_input_normalizes_to_the_stored_spelling() {
+        let punycode = Some("xn--bcher-kva.de".to_string());
+        for input in [
+            "bücher.de",
+            "BÜCHER.DE.",
+            "https://Bücher.de/some/path",
+            "xn--bcher-kva.de",
+        ] {
+            assert_eq!(normalize_domain_input(input), punycode, "{input}");
+        }
+        assert_eq!(normalize_domain_input("  "), None);
+    }
+
+    #[test]
+    fn canonical_blocked_url_collapses_every_spelling_of_a_page() {
+        let page = Some("https://evil.org/phish".to_string());
+        for spelling in [
+            "https://evil.org/phish",
+            "https://evil.org/phish/",
+            "https://evil.org/phish//",
+            "https://evil.org/phish#frag",
+            "https://evil.org/phish/#frag",
+            "https://evil.org/phish?",
+            "HTTPS://EVIL.ORG/phish",
+            "https://evil.org:443/phish",
+            "https://evil.org./phish",
+            "https://user:pw@evil.org/phish",
+            "  https://evil.org/phish  ",
+            "https://evil.org/a/../phish",
+        ] {
+            assert_eq!(canonical_blocked_url(spelling), page, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn canonical_blocked_url_keeps_what_distinguishes_pages() {
+        let cases = [
+            ("https://evil.org", "https://evil.org/"),
+            ("https://evil.org/", "https://evil.org/"),
+            ("http://evil.org:80/x", "http://evil.org/x"),
+            ("http://evil.org:8080/x", "http://evil.org:8080/x"),
+            ("https://evil.org/Phish", "https://evil.org/Phish"),
+            ("https://evil.org/p?b=2&a=1#f", "https://evil.org/p?b=2&a=1"),
+            ("https://evil.org/p/?a=1", "https://evil.org/p?a=1"),
+            ("https://evil.org/?a=1", "https://evil.org/?a=1"),
+            ("https://BÜCHER.de/x", "https://xn--bcher-kva.de/x"),
+            ("https://evil.org/a%20b/", "https://evil.org/a%20b"),
+            ("https://evil.org/a%2Fb", "https://evil.org/a%2Fb"),
+            ("http://[::1]:80/x/", "http://[::1]/x"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                canonical_blocked_url(input).as_deref(),
+                Some(expected),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_blocked_url_is_idempotent() {
+        for input in [
+            "HTTPS://Bücher.DE:443/A%20b/?q=1#x",
+            "http://evil.org./p//",
+            "https://u@evil.org:8443/p/?",
+        ] {
+            let once = canonical_blocked_url(input).unwrap();
+            assert_eq!(canonical_blocked_url(&once), Some(once.clone()), "{input}");
+        }
+    }
+
+    #[test]
+    fn canonical_blocked_url_rejects_what_is_not_an_http_url() {
+        for input in [
+            "",
+            "evil.org/x",
+            "ftp://evil.org/x",
+            "javascript:alert(1)",
+            "https://",
+        ] {
+            assert_eq!(canonical_blocked_url(input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn blocked_url_candidates_split_query_from_page() {
+        assert_eq!(
+            blocked_url_candidates("https://Evil.org/p/?a=1#f"),
+            vec![
+                "https://evil.org/p".to_string(),
+                "https://evil.org/p?a=1".to_string()
+            ]
+        );
+        assert_eq!(
+            blocked_url_candidates("https://evil.org/p?"),
+            vec!["https://evil.org/p".to_string()]
+        );
+        assert!(blocked_url_candidates("not a url").is_empty());
     }
 }
