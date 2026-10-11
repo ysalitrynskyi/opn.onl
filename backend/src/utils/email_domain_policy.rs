@@ -203,6 +203,39 @@ pub async fn ensure_email_domain_allowed<C: ConnectionTrait>(
     }
 }
 
+/// `ensure_email_domain_allowed` for the paths that let an existing account
+/// back in: login, password reset and passkey login.
+///
+/// Blocking a domain disables its non-admin accounts and leaves admins alone
+/// (`disable_users_for_email_domain` in `handlers/admin.rs`), because an admin
+/// has to stay able to unblock the domain. The same exemption applies here.
+/// Without it an admin on the domain keeps working only until the session
+/// token expires, and then can neither sign in, reset the password nor use a
+/// passkey. Only the "blocked" verdict is waived; a reserved or malformed
+/// domain still fails. Registration keeps the plain check.
+pub async fn ensure_sign_in_domain_allowed<C: ConnectionTrait>(
+    db: &C,
+    email: &str,
+) -> Result<(), EmailDomainRejection> {
+    let verdict = ensure_email_domain_allowed(db, email).await;
+    if matches!(verdict, Err(EmailDomainRejection::Blocked(_))) && is_live_admin(db, email).await {
+        return Ok(());
+    }
+    verdict
+}
+
+/// A failed lookup counts as "not an admin": the block then stands.
+async fn is_live_admin<C: ConnectionTrait>(db: &C, email: &str) -> bool {
+    live_users_by_email(email)
+        .filter(users::Column::IsAdmin.eq(true))
+        .filter(users::Column::DisabledAt.is_null())
+        .one(db)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 pub async fn user_email_domain_blocked<C: ConnectionTrait>(
     db: &C,
     email: &str,

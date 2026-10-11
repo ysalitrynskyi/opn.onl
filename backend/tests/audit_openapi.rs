@@ -845,9 +845,10 @@ fn rejected_by_extractor(status: StatusCode, text: &str) -> bool {
 /// Calls every documented operation and compares its declared security with
 /// what the handler does: a protected operation refuses an anonymous call with
 /// 401 and a public one does not, and an `opn_` API key works exactly where
-/// `api_key` is listed. Bodies and query strings come from the document, so a
-/// misnamed field (the QA pass could not find the password-reset fields) shows
-/// up as an extractor rejection.
+/// `api_key` is listed. A refusal is a 401, or the 403 that names API keys,
+/// which organization delete and ownership transfer answer. Bodies and query
+/// strings come from the document, so a misnamed field (the QA pass could not
+/// find the password-reset fields) shows up as an extractor rejection.
 #[tokio::test]
 async fn documented_security_matches_the_handlers() {
     let (server, db) = spawn_app_without_rate_limits().await;
@@ -884,8 +885,9 @@ async fn documented_security_matches_the_handlers() {
         }
 
         if !requirements.is_empty() {
-            let (status, _) = call(&server, &spec, &method, &path, op, Some(&api_key)).await;
-            let refused = status == StatusCode::UNAUTHORIZED;
+            let (status, text) = call(&server, &spec, &method, &path, op, Some(&api_key)).await;
+            let refused = status == StatusCode::UNAUTHORIZED
+                || (status == StatusCode::FORBIDDEN && text.contains("API keys cannot"));
             if lists_api_key && refused {
                 wrong.push(format!(
                     "{method} {path}: lists api_key but refused an API key"

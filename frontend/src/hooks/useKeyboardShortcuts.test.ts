@@ -445,6 +445,78 @@ describe('useKeyboardShortcuts Hook', () => {
         });
     });
 
+    describe('Open Modals', () => {
+        let dialog: HTMLElement;
+
+        function openDialog(attributes: Record<string, string>) {
+            dialog = document.createElement('div');
+            Object.entries(attributes).forEach(([name, value]) => dialog.setAttribute(name, value));
+            const closeButton = document.createElement('button');
+            dialog.appendChild(closeButton);
+            document.body.appendChild(dialog);
+            return closeButton;
+        }
+
+        afterEach(() => {
+            dialog?.remove();
+        });
+
+        function press(target: HTMLElement, key: string) {
+            const event = new KeyboardEvent('keydown', { key, bubbles: true });
+            Object.defineProperty(event, 'target', { value: target, writable: false });
+            act(() => {
+                window.dispatchEvent(event);
+            });
+        }
+
+        it('ignores shortcuts while a modal dialog is open, even from a button inside it', () => {
+            const handler = vi.fn();
+            renderHook(() => useKeyboardShortcuts([{ key: 'n', handler, description: 'New item' }]));
+            const closeButton = openDialog({ role: 'dialog', 'aria-modal': 'true' });
+
+            press(closeButton, 'n');
+            press(document.body, 'n');
+
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it('runs shortcuts again once the modal is gone', () => {
+            const handler = vi.fn();
+            renderHook(() => useKeyboardShortcuts([{ key: 'n', handler, description: 'New item' }]));
+            openDialog({ role: 'dialog', 'aria-modal': 'true' });
+            dialog.remove();
+
+            press(document.body, 'n');
+
+            expect(handler).toHaveBeenCalledTimes(1);
+        });
+
+        it('still runs Escape while a modal dialog is open, so the page can close it', () => {
+            const close = vi.fn();
+            const newItem = vi.fn();
+            renderHook(() => useKeyboardShortcuts([
+                { key: 'n', handler: newItem, description: 'New item' },
+                { key: 'Escape', handler: close, description: 'Close' },
+            ]));
+            const closeButton = openDialog({ role: 'dialog', 'aria-modal': 'true' });
+
+            press(closeButton, 'Escape');
+
+            expect(close).toHaveBeenCalledTimes(1);
+            expect(newItem).not.toHaveBeenCalled();
+        });
+
+        it('does not count a dialog that is not modal, such as a banner', () => {
+            const handler = vi.fn();
+            renderHook(() => useKeyboardShortcuts([{ key: 'n', handler, description: 'New item' }]));
+            openDialog({ role: 'dialog', 'aria-label': 'Cookie notice' });
+
+            press(document.body, 'n');
+
+            expect(handler).toHaveBeenCalledTimes(1);
+        });
+    });
+
     describe('Shortcut Updates', () => {
         it('updates shortcuts when dependencies change', () => {
             const handler1 = vi.fn();

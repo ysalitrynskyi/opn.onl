@@ -486,6 +486,10 @@ pub fn build_router(app_state: AppState) -> Router {
                 .delete(handlers::organizations::remove_member),
         )
         .route(
+            "/orgs/:org_id/leave",
+            post(handlers::organizations::leave_organization),
+        )
+        .route(
             "/orgs/:org_id/transfer-ownership",
             post(handlers::organizations::transfer_ownership),
         )

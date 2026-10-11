@@ -1,6 +1,7 @@
 import { Helmet } from 'react-helmet-async';
 import { version as APP_VERSION } from '../../package.json';
 import { SEO_TAG_ATTRIBUTE } from '../utils/prerenderedHead';
+import { normalizeSiteUrl } from '../utils/siteUrl';
 
 interface SEOProps {
   title?: string;
@@ -16,7 +17,7 @@ interface SEOProps {
   breadcrumbs?: { name: string; url: string }[];
 }
 
-const BASE_URL = (import.meta.env.VITE_FRONTEND_URL || 'https://opn.onl').replace(/\/+$/, '');
+const BASE_URL = normalizeSiteUrl(import.meta.env.VITE_FRONTEND_URL);
 const DEFAULT_IMAGE = `${BASE_URL}/og-image.png`;
 const GITHUB_URL = 'https://github.com/ysalitrynskyi/opn.onl';
 

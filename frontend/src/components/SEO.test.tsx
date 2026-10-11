@@ -8,6 +8,12 @@ import SEO from './SEO';
 import App from '../App';
 import { dropPrerenderedHeadTags, SEO_TAG_ATTRIBUTE } from '../utils/prerenderedHead';
 import { version } from '../../package.json';
+import { normalizeSiteUrl } from '../utils/siteUrl';
+import { buildSitemap, sitemapPages } from '../utils/sitemap';
+
+// Whatever VITE_FRONTEND_URL the run has (a developer's .env sets it to the dev
+// server), the page's canonical has to be that host.
+const SITE = normalizeSiteUrl(import.meta.env.VITE_FRONTEND_URL);
 
 // React 19 hoists <title>, <meta> and <link> into document.head, so these tests
 // read the real head the browser would get.
@@ -43,15 +49,15 @@ describe('SEO head tags', () => {
 
         expect(document.title).toBe('Pricing | opn.onl');
         expect(all('meta[name="description"]')).toHaveLength(1);
-        expect(canonicals()).toEqual(['https://opn.onl/pricing']);
+        expect(canonicals()).toEqual([`${SITE}/pricing`]);
         expect(robots()).toEqual([]);
     });
 
     it('canonicalises the home page with the trailing slash its sitemap entry has', () => {
         renderSeo(<SEO />);
 
-        expect(canonicals()).toEqual(['https://opn.onl/']);
-        expect(all('meta[property="og:url"]').map((m) => m.getAttribute('content'))).toEqual(['https://opn.onl/']);
+        expect(canonicals()).toEqual([`${SITE}/`]);
+        expect(all('meta[property="og:url"]').map((m) => m.getAttribute('content'))).toEqual([`${SITE}/`]);
     });
 
     it('gives a noindex page noindex and no canonical pointing elsewhere', () => {
@@ -66,7 +72,7 @@ describe('SEO head tags', () => {
         renderSeo(<SEO title="Alice" url="/@alice" noIndex />);
 
         expect(robots()).toEqual(['noindex, nofollow']);
-        expect(canonicals()).toEqual(['https://opn.onl/@alice']);
+        expect(canonicals()).toEqual([`${SITE}/@alice`]);
     });
 
     it('emits a single FAQPage block that carries the questions', () => {
@@ -164,12 +170,13 @@ describe('index.html', () => {
 });
 
 describe('prerendered routes', () => {
-    const sitemap = readFileSync(resolve(process.cwd(), 'public/sitemap.xml'), 'utf8');
-    const sitemapUrls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
     const config = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
     const prerenderRoutes = [
         ...config.match(/const PRERENDER_ROUTES\s*=\s*\[([\s\S]*?)\]/)![1].matchAll(/['"]([^'"]+)['"]/g),
     ].map((m) => m[1]);
+    // The sitemap the build writes to dist/ (the same call vite.config.ts makes).
+    const sitemapUrls = () =>
+        [...buildSitemap(SITE, sitemapPages(prerenderRoutes)).matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
 
     it.each(prerenderRoutes)('%s has one canonical, equal to its sitemap entry', (route) => {
         render(
@@ -178,7 +185,7 @@ describe('prerendered routes', () => {
             </MemoryRouter>,
         );
 
-        const expected = sitemapUrls.find((u) => new URL(u).pathname === route);
+        const expected = sitemapUrls().find((u) => new URL(u).pathname === route);
         expect(expected).toBeDefined();
         expect(canonicals()).toEqual([expected]);
         expect(all('meta[name="description"]')).toHaveLength(1);

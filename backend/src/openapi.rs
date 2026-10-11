@@ -185,6 +185,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
         organizations::invite_member,
         organizations::update_member_role,
         organizations::remove_member,
+        organizations::leave_organization,
         organizations::transfer_ownership,
         organizations::get_audit_log,
 
@@ -298,6 +299,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
             links::LinkResponse,
             links::CreateLinkResponse,
             links::BulkCreateLinkResponse,
+            links::BulkCreateFailure,
             links::BulkDeleteResponse,
             links::BulkUpdateResponse,
             links::ErrorResponse,
