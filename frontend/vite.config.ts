@@ -1,10 +1,12 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import type { ResolvedConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import Prerenderer from '@prerenderer/rollup-plugin'
 import PuppeteerRenderer from '@prerenderer/renderer-puppeteer'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { normalizeSiteUrl } from './src/utils/siteUrl.ts'
+import { buildSitemap, sitemapPages, withSitemapDirective } from './src/utils/sitemap.ts'
 
 // Static routes to prerender (no auth required, mostly static content)
 const PRERENDER_ROUTES = [
@@ -25,6 +27,12 @@ const PRERENDER_ROUTES = [
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const isProduction = mode === 'production'
+
+  // The same value, resolved the same way, that SEO.tsx bakes into every
+  // canonical URL (process env first, then .env files). The sitemap has to
+  // agree with those canonicals, so it is derived here rather than committed.
+  const siteUrl = normalizeSiteUrl(loadEnv(mode, process.cwd(), 'VITE_').VITE_FRONTEND_URL)
+  let sitemapXml = ''
 
   // @prerenderer/rollup-plugin treats the root route "/" specially: it deletes
   // the bundle's index.html and re-emits it from the "/" render. In practice
@@ -84,6 +92,27 @@ export default defineConfig(({ mode }) => {
           }
         },
       }),
+      // sitemap.xml lists exactly the routes the prerenderer renders, under the
+      // configured site URL, and robots.txt points at it. Both used to be
+      // static files in public/ for one domain, which made every other domain's
+      // canonicals disagree with the sitemap (and failed verify-prerender).
+      {
+        name: 'generate-sitemap',
+        apply: 'build' as const,
+        configResolved(cfg: ResolvedConfig) {
+          resolvedOutDir = resolve(cfg.root, cfg.build.outDir)
+          // Fail on a bad site URL or a route without sitemap hints now, not
+          // after the minutes the prerender takes.
+          sitemapXml = buildSitemap(siteUrl, sitemapPages(PRERENDER_ROUTES))
+        },
+        writeBundle() {
+          writeFileSync(join(resolvedOutDir, 'sitemap.xml'), sitemapXml)
+          // public/robots.txt is already copied into the output by now.
+          const robotsPath = join(resolvedOutDir, 'robots.txt')
+          const robots = existsSync(robotsPath) ? readFileSync(robotsPath, 'utf8') : ''
+          writeFileSync(robotsPath, withSitemapDirective(robots, siteUrl))
+        },
+      },
       // Safety net: guarantee dist/index.html exists after the prerenderer runs.
       // Runs post-writeBundle (all files already on disk); if the prerenderer
       // dropped the root route's index.html, write the captured home render back.

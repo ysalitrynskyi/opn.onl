@@ -25,6 +25,7 @@ use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::link_owner::link_owner_is_active;
+use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::ilike_pattern;
 
@@ -870,7 +871,33 @@ pub struct LinkPageQuery {
 #[derive(Serialize, ToSchema)]
 pub struct BulkCreateLinkResponse {
     pub links: Vec<CreateLinkResponse>,
+    /// One message per URL that was not shortened, e.g. `<url>: <reason>`.
     pub errors: Vec<String>,
+    /// The same failures with the submitted URL as its own field, so a client
+    /// can tell which lines to keep without parsing the messages.
+    pub failed: Vec<BulkCreateFailure>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BulkCreateFailure {
+    /// The URL exactly as submitted.
+    pub url: String,
+    /// Same text as the matching entry in `errors`.
+    pub error: String,
+}
+
+/// Record a URL that bulk create turned down, in both response lists.
+fn record_bulk_failure(
+    errors: &mut Vec<String>,
+    failed: &mut Vec<BulkCreateFailure>,
+    url: &str,
+    message: String,
+) {
+    failed.push(BulkCreateFailure {
+        url: url.to_string(),
+        error: message.clone(),
+    });
+    errors.push(message);
 }
 
 #[derive(Serialize, ToSchema)]
@@ -946,6 +973,26 @@ fn generate_short_code() -> String {
         .take(6)
         .map(char::from)
         .collect()
+}
+
+/// The first code `next` produces that no link row holds (live or soft-deleted:
+/// the column is globally unique) and that was not retired. Callers pass the
+/// random generator; a test passes a scripted sequence. A failed lookup counts
+/// as free, as it did before retired codes existed: the insert's UNIQUE
+/// constraint still guards link rows.
+pub async fn unused_code<C: ConnectionTrait>(db: &C, mut next: impl FnMut() -> String) -> String {
+    loop {
+        let code = next();
+        let in_use = links::Entity::find()
+            .filter(links::Column::Code.eq(&code))
+            .one(db)
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !in_use && !retired_codes::is_retired(db, &code).await.unwrap_or(false) {
+            return code;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1508,13 +1555,19 @@ pub async fn create_link(
         // An alias previously used by a now-deleted link cannot be reused: the
         // global UNIQUE on links.code still holds that code, so an insert would
         // fail. Reject explicitly with a clear message rather than 500 later.
+        // A code whose link row was purged is reserved the same way, but only
+        // the retired_codes table remembers it.
         let exists_deleted = links::Entity::find()
             .filter(links::Column::Code.eq(&alias))
             .filter(links::Column::DeletedAt.is_not_null())
             .one(&state.db)
             .await
             .unwrap_or(None);
-        if exists_deleted.is_some() {
+        let retired = match retired_codes::is_retired(&state.db, &alias).await {
+            Ok(retired) => retired,
+            Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+        };
+        if exists_deleted.is_some() || retired {
             return (
                 StatusCode::CONFLICT,
                 Json(ErrorResponse {
@@ -1526,17 +1579,7 @@ pub async fn create_link(
 
         alias
     } else {
-        let mut code = generate_short_code();
-        while links::Entity::find()
-            .filter(links::Column::Code.eq(&code))
-            .one(&state.db)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            code = generate_short_code();
-        }
-        code
+        unused_code(&state.db, generate_short_code).await
     };
 
     let password_hash = if let Some(password) = link_password {
@@ -4487,6 +4530,7 @@ pub async fn bulk_create_links(
             Json(BulkCreateLinkResponse {
                 links: vec![],
                 errors: vec!["Authentication required for bulk link creation".to_string()],
+                failed: vec![],
             }),
         )
             .into_response();
@@ -4499,6 +4543,7 @@ pub async fn bulk_create_links(
             Json(BulkCreateLinkResponse {
                 links: vec![],
                 errors: vec!["Too many URLs in one request (max 500)".to_string()],
+                failed: vec![],
             }),
         )
             .into_response();
@@ -4519,6 +4564,7 @@ pub async fn bulk_create_links(
                 StatusCode::FORBIDDEN,
                 Json(BulkCreateLinkResponse {
                     links: vec![],
+                    failed: vec![],
                     errors: vec![
                         "Please verify your email address before creating links".to_string(),
                     ],
@@ -4530,6 +4576,7 @@ pub async fn bulk_create_links(
 
     let mut result_links = Vec::new();
     let mut errors = Vec::new();
+    let mut failed = Vec::new();
     let base_url = get_base_url();
     // Per-link rate key: charged once per URL below so a bulk request cannot
     // create more links than the single-create budget allows.
@@ -4583,10 +4630,15 @@ pub async fn bulk_create_links(
             .link_creation
             .check(&format!("create:{}", ip))
         {
-            errors.push(format!(
-                "{}: rate limit reached, try again in {}s",
-                url, retry_after_secs
-            ));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!(
+                    "{}: rate limit reached, try again in {}s",
+                    url, retry_after_secs
+                ),
+            );
             continue;
         }
 
@@ -4594,23 +4646,33 @@ pub async fn bulk_create_links(
         // (bad format, dangerous file type, raw IP, …) rather than a generic
         // message, so a bulk upload tells the user which links were rejected why.
         if let Err(e) = validate_url(&url) {
-            errors.push(format!("{}: {}", url, e));
+            record_bulk_failure(&mut errors, &mut failed, &url, format!("{}: {}", url, e));
             continue;
         }
         if destination_host(&url).is_some_and(|host| private_hosts.contains(&host)) {
-            errors.push(format!("{}: {}", url, PRIVATE_DESTINATION));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!("{}: {}", url, PRIVATE_DESTINATION),
+            );
             continue;
         }
 
         // Check if URL or domain is blocked
         if let Err(e) = check_blocked(&state.db, &url).await {
-            errors.push(format!("{}: {}", url, e));
+            record_bulk_failure(&mut errors, &mut failed, &url, format!("{}: {}", url, e));
             continue;
         }
 
         // Stop creating once the per-user cap is reached.
         if let Some(0) = remaining_budget {
-            errors.push(format!("{}: account link limit reached", url));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!("{}: account link limit reached", url),
+            );
             continue;
         }
 
@@ -4620,21 +4682,17 @@ pub async fn bulk_create_links(
         let mut created = false;
         let mut last_duplicate: Option<String> = None;
         for _ in 0..8 {
-            let mut code = generate_short_code();
-            while links::Entity::find()
-                .filter(links::Column::Code.eq(&code))
-                .one(&state.db)
-                .await
-                .unwrap_or(None)
-                .is_some()
-            {
-                code = generate_short_code();
-            }
+            let code = unused_code(&state.db, generate_short_code).await;
 
             let txn = match state.db.begin().await {
                 Ok(txn) => txn,
                 Err(error) => {
-                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, error),
+                    );
                     break;
                 }
             };
@@ -4651,12 +4709,22 @@ pub async fn bulk_create_links(
                 Ok(true) => {}
                 Ok(false) => {
                     let _ = txn.rollback().await;
-                    errors.push(format!("{}: folder or organization access denied", url));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("{}: folder or organization access denied", url),
+                    );
                     break;
                 }
                 Err(error) => {
                     let _ = txn.rollback().await;
-                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, error),
+                    );
                     break;
                 }
             }
@@ -4685,7 +4753,12 @@ pub async fn bulk_create_links(
                         break;
                     }
                     Err(e) => {
-                        errors.push(format!("Failed to shorten {}: {}", url, e));
+                        record_bulk_failure(
+                            &mut errors,
+                            &mut failed,
+                            &url,
+                            format!("Failed to shorten {}: {}", url, e),
+                        );
                         break;
                     }
                 },
@@ -4695,13 +4768,18 @@ pub async fn bulk_create_links(
                         last_duplicate = Some(format!("Failed to shorten {}: {}", url, e));
                         continue;
                     }
-                    errors.push(format!("Failed to shorten {}: {}", url, e));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, e),
+                    );
                     break;
                 }
             }
         }
         if !created && let Some(msg) = last_duplicate {
-            errors.push(msg);
+            record_bulk_failure(&mut errors, &mut failed, &url, msg);
         }
     }
 
@@ -4710,6 +4788,7 @@ pub async fn bulk_create_links(
         Json(BulkCreateLinkResponse {
             links: result_links,
             errors,
+            failed,
         }),
     )
         .into_response()
@@ -5201,16 +5280,7 @@ pub async fn clone_link(
         }
 
         // Generate new short code
-        let mut code = generate_short_code();
-        while links::Entity::find()
-            .filter(links::Column::Code.eq(&code))
-            .one(&state.db)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            code = generate_short_code();
-        }
+        let code = unused_code(&state.db, generate_short_code).await;
 
         // A burn link is its cap: the clone starts with the same cap and no
         // clicks, so it is a fresh one-time link. The two features follow the
@@ -5474,12 +5544,16 @@ pub async fn check_code_availability(
 
     // Consider deleted links too: their code is still held by the global UNIQUE
     // constraint on links.code, so it is not actually available for reuse.
+    // Purged links' codes are held by retired_codes instead.
     let exists = links::Entity::find()
         .filter(links::Column::Code.eq(code))
         .one(&state.db)
         .await
         .unwrap_or(None)
-        .is_some();
+        .is_some()
+        || retired_codes::is_retired(&state.db, code)
+            .await
+            .unwrap_or(false);
 
     if exists {
         (

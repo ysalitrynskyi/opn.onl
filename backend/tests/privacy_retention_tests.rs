@@ -4,7 +4,7 @@
 
 mod common;
 
-use opn_onl_backend::utils::privacy::scrub_expired_click_pii;
+use opn_onl_backend::utils::privacy::{scrub_expired_audit_ips, scrub_expired_click_pii};
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 use serde_json::json;
 
@@ -89,4 +89,72 @@ async fn retention_sweep_anonymizes_only_expired_click_identifiers() {
         .await
         .expect("second sweep failed");
     assert_eq!(affected, 0);
+}
+
+/// The truncated address on an organization audit entry follows the same
+/// retention window as click identifiers: past it the address is removed and
+/// the rest of the entry stays; inside it nothing changes.
+#[tokio::test]
+async fn retention_sweep_removes_expired_audit_log_addresses() {
+    let db = common::setup_test_db().await;
+
+    // The sweep goes by created_at alone, so the rows need no organization.
+    let mut ids = Vec::new();
+    for (age_days, ip) in [
+        (400, Some("203.0.113.0")),
+        (300, Some("198.51.100.0")),
+        (400, None),
+    ] {
+        let row = db
+            .query_one(Statement::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                "INSERT INTO audit_log (action, resource_type, details, ip_address, created_at) \
+                 VALUES ('update_role', 'member', '{\"new_role\":\"editor\"}', $1, \
+                         NOW() - make_interval(days => $2)) RETURNING id",
+                [ip.map(str::to_string).into(), age_days.into()],
+            ))
+            .await
+            .expect("failed to insert audit fixture")
+            .expect("insert returned no row");
+        ids.push(row.try_get::<i32>("", "id").unwrap());
+    }
+
+    scrub_expired_audit_ips(&db, 396)
+        .await
+        .expect("audit sweep failed");
+
+    let read = |id: i32| {
+        let db = db.clone();
+        async move {
+            let row = db
+                .query_one(Statement::from_sql_and_values(
+                    DatabaseBackend::Postgres,
+                    "SELECT ip_address, action, details::text AS details FROM audit_log WHERE id = $1",
+                    [id.into()],
+                ))
+                .await
+                .unwrap()
+                .unwrap();
+            (
+                row.try_get::<Option<String>>("", "ip_address").unwrap(),
+                row.try_get::<String>("", "action").unwrap(),
+                row.try_get::<Option<String>>("", "details").unwrap(),
+            )
+        }
+    };
+
+    let (expired_ip, action, details) = read(ids[0]).await;
+    assert_eq!(expired_ip, None, "the expired address must be removed");
+    assert_eq!(action, "update_role", "the entry itself stays");
+    assert!(details.unwrap().contains("editor"), "so do its details");
+
+    let (recent_ip, _, _) = read(ids[1]).await;
+    assert_eq!(
+        recent_ip.as_deref(),
+        Some("198.51.100.0"),
+        "an entry inside the window keeps its address"
+    );
+
+    let (never_had_one, _, _) = read(ids[2]).await;
+    assert_eq!(never_had_one, None);
 }

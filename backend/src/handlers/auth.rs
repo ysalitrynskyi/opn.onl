@@ -10,7 +10,8 @@ use crate::entity::{api_keys, passkeys, users};
 use crate::handlers::links::optional_user_id_from_header;
 use crate::utils::email::{EmailService, PasswordChange, generate_token, send_in_background};
 use crate::utils::email_domain_policy::{
-    ensure_email_domain_allowed, live_users_by_email, normalize_email,
+    ensure_email_domain_allowed, ensure_sign_in_domain_allowed, live_users_by_email,
+    normalize_email,
 };
 use crate::utils::email_limits::{MailDenied, MailKind};
 use crate::utils::jwt::{
@@ -324,7 +325,7 @@ pub async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let email = normalize_email(&payload.email);
-    if ensure_email_domain_allowed(&state.db, &email)
+    if ensure_sign_in_domain_allowed(&state.db, &email)
         .await
         .is_err()
     {
@@ -788,7 +789,7 @@ pub async fn forgot_password(
         let _ = verify_password("not-a-real-password", dummy_password_hash()).await;
     };
 
-    if ensure_email_domain_allowed(&state.db, &email)
+    if ensure_sign_in_domain_allowed(&state.db, &email)
         .await
         .is_err()
     {
@@ -910,7 +911,7 @@ pub async fn reset_password(
         .unwrap_or(None);
 
     if let Some(user) = user {
-        if ensure_email_domain_allowed(&txn, &user.email)
+        if ensure_sign_in_domain_allowed(&txn, &user.email)
             .await
             .is_err()
         {
