@@ -10,6 +10,8 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 use std::net::{IpAddr, Ipv6Addr};
 
+use super::account_purge::{account_purge_days, purge_expired_accounts};
+
 /// Default retention for per-visitor identifier columns (`ip_address`,
 /// `user_agent`) on click events: ~13 months, long enough for year-over-year
 /// analytics comparisons.
@@ -116,40 +118,84 @@ pub async fn purge_click_pii_for_user<C: ConnectionTrait>(
     Ok(res.rows_affected())
 }
 
-/// Spawn the daily retention sweep. First run happens at startup so a long
-/// gap between deploys can't accumulate over-retained identifiers.
+/// Spawn the daily retention sweeps: click and audit identifiers, and the
+/// final removal of accounts deleted past their grace window. First run
+/// happens at startup so a long gap between deploys can't accumulate
+/// over-retained data.
 pub fn spawn_retention_task(db: DatabaseConnection) {
-    let Some(days) = pii_retention_days() else {
-        tracing::info!("Analytics PII retention sweep disabled (ANALYTICS_PII_RETENTION_DAYS=0)");
-        return;
-    };
+    let pii_days = pii_retention_days();
+    let purge_days = account_purge_days();
 
-    tracing::info!(
-        "Analytics PII retention sweep enabled: anonymizing click identifiers older than {} days",
-        days
-    );
+    match pii_days {
+        Some(days) => tracing::info!(
+            "Analytics PII retention sweep enabled: anonymizing click identifiers older than {} days",
+            days
+        ),
+        None => {
+            tracing::info!(
+                "Analytics PII retention sweep disabled (ANALYTICS_PII_RETENTION_DAYS=0)"
+            )
+        }
+    }
+    match purge_days {
+        Some(days) => tracing::info!(
+            "Account purge enabled: removing accounts deleted more than {} days ago",
+            days
+        ),
+        None => tracing::info!(
+            "Account purge disabled (ACCOUNT_PURGE_DAYS=0): deleted accounts stay until an admin removes them"
+        ),
+    }
+    if pii_days.is_none() && purge_days.is_none() {
+        return;
+    }
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
         loop {
             interval.tick().await;
-            match scrub_expired_click_pii(&db, days).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(
-                    "Analytics PII retention sweep anonymized {} click events (older than {} days)",
-                    n,
-                    days
-                ),
-                Err(e) => tracing::error!("Analytics PII retention sweep failed: {}", e),
+            if let Some(days) = pii_days {
+                match scrub_expired_click_pii(&db, days).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(
+                        "Analytics PII retention sweep anonymized {} click events (older than {} days)",
+                        n,
+                        days
+                    ),
+                    Err(e) => tracing::error!("Analytics PII retention sweep failed: {}", e),
+                }
+                match scrub_expired_audit_ips(&db, days).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(
+                        "Retention sweep removed the IP address from {} audit log entries (older than {} days)",
+                        n,
+                        days
+                    ),
+                    Err(e) => tracing::error!("Audit log IP retention sweep failed: {}", e),
+                }
             }
-            match scrub_expired_audit_ips(&db, days).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(
-                    "Retention sweep removed the IP address from {} audit log entries (older than {} days)",
-                    n,
-                    days
-                ),
-                Err(e) => tracing::error!("Audit log IP retention sweep failed: {}", e),
+            if let Some(days) = purge_days {
+                match purge_expired_accounts(&db, days).await {
+                    Ok(report) => {
+                        if report.purged > 0 {
+                            tracing::info!(
+                                "Account purge removed {} accounts deleted more than {} days ago",
+                                report.purged,
+                                days
+                            );
+                        }
+                        if report.blocked > 0 {
+                            tracing::warn!(
+                                "Account purge kept {} deleted accounts that still own organizations with other members",
+                                report.blocked
+                            );
+                        }
+                        if report.failed > 0 {
+                            tracing::warn!("Account purge failed for {} accounts", report.failed);
+                        }
+                    }
+                    Err(e) => tracing::error!("Account purge failed: {}", e),
+                }
             }
         }
     });
