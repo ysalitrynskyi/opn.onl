@@ -222,6 +222,17 @@ async fn an_admin_on_a_blocked_domain_can_still_sign_in_and_recover_the_account(
         "the gate still applies to everyone else"
     );
 
+    // Passkey login (before the reset below: a reset removes the account's
+    // passkeys, as account recovery should).
+    assert!(
+        passkey_login_has_pending_state(&server, &peer_email).await,
+        "the admin's passkey login must start for real"
+    );
+    assert!(
+        !passkey_login_has_pending_state(&server, &control_email).await,
+        "a non-admin on the blocked domain still gets only the decoy"
+    );
+
     // Reset password with a token the user holds.
     let raw_token = format!("reset-{}", uuid::Uuid::new_v4());
     for id in [peer.id, control.id] {
@@ -246,14 +257,4 @@ async fn an_admin_on_a_blocked_domain_can_still_sign_in_and_recover_the_account(
         }
     }
     assert_eq!(login(&server, &peer_email, "a-new-password-1").await, 200);
-
-    // Passkey login.
-    assert!(
-        passkey_login_has_pending_state(&server, &peer_email).await,
-        "the admin's passkey login must start for real"
-    );
-    assert!(
-        !passkey_login_has_pending_state(&server, &control_email).await,
-        "a non-admin on the blocked domain still gets only the decoy"
-    );
 }

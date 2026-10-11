@@ -109,20 +109,22 @@ describe('Login Page', () => {
         get: vi.fn().mockResolvedValue(credential),
       },
     });
-    vi.mocked(global.fetch)
-      .mockResolvedValueOnce(mockFetchResponse({
-        options: {
-          publicKey: {
-            challenge: 'AQID',
-            allowCredentials: [{ id: 'BAUG', type: 'public-key' }],
+    vi.mocked(global.fetch).mockImplementation(((url: string) => {
+      if (url.includes('/passkey/login/start')) {
+        return mockFetchResponse({
+          options: {
+            publicKey: {
+              challenge: 'AQID',
+              allowCredentials: [{ id: 'BAUG', type: 'public-key' }],
+            },
           },
-        },
-      }) as any)
-      .mockResolvedValueOnce(mockFetchResponse({
-        token: mockToken,
-        email_verified: true,
-        is_admin: true,
-      }) as any);
+        });
+      }
+      if (url.includes('/passkey/login/finish')) {
+        return mockFetchResponse({ token: mockToken, email_verified: true, is_admin: true });
+      }
+      return mockFetchResponse({ passkeys_enabled: true });
+    }) as any);
 
     const { user } = render(<Login />);
     await user.type(screen.getByLabelText(/email address/i), 'admin@example.com');
@@ -131,6 +133,52 @@ describe('Login Page', () => {
     await waitFor(() => {
       expect(localStorage.setItem).toHaveBeenCalledWith('token', mockToken);
       expect(localStorage.setItem).toHaveBeenCalledWith('is_admin', 'true');
+    });
+  });
+
+  describe('passkey button', () => {
+    const passkeyButton = () => screen.queryByRole('button', { name: /sign in with passkey/i });
+
+    beforeEach(() => {
+      Object.defineProperty(window, 'PublicKeyCredential', {
+        configurable: true,
+        value: class PublicKeyCredentialMock {},
+      });
+    });
+
+    const settingsAnswer = (body: unknown) =>
+      vi.mocked(global.fetch).mockImplementation((() => mockFetchResponse(body)) as any);
+
+    it('is shown on an instance with passkeys enabled', async () => {
+      settingsAnswer({ passkeys_enabled: true });
+      render(<Login />);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/auth/settings'));
+      });
+      expect(passkeyButton()).toBeInTheDocument();
+    });
+
+    it('is hidden, with its hint, once the instance reports passkeys disabled', async () => {
+      settingsAnswer({ passkeys_enabled: false });
+      render(<Login />);
+
+      await waitFor(() => {
+        expect(passkeyButton()).not.toBeInTheDocument();
+      });
+      expect(screen.queryByText(/use your passkey/i)).not.toBeInTheDocument();
+      // The password form is all that is left, and it still works.
+      expect(screen.getByRole('button', { name: /^sign in$/i })).toBeInTheDocument();
+    });
+
+    it('stays when the settings cannot be read, since the password form does not depend on them', async () => {
+      vi.mocked(global.fetch).mockRejectedValue(new Error('offline'));
+      render(<Login />);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/auth/settings'));
+      });
+      expect(passkeyButton()).toBeInTheDocument();
     });
   });
 

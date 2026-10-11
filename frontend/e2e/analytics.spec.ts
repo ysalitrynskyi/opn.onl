@@ -219,9 +219,11 @@ test.describe('Analytics Page', () => {
     test('should display click trend chart', async ({ page, clicked: { stats } }) => {
         const chart = page.getByRole('heading', { name: 'Clicks over time' }).locator('..');
         await expect(chart.locator('svg.recharts-surface')).toBeVisible();
-        // One x-axis tick per UTC day with clicks, labelled like "Sep 30".
-        expect(stats.clicks_by_day.length).toBeGreaterThan(0);
-        for (const { date } of stats.clicks_by_day) {
+        // The series holds every UTC day of the period, zero where nothing was
+        // clicked; each day with clicks is labelled like "Sep 30" on the x-axis.
+        const clickDays = stats.clicks_by_day.filter(({ count }) => count > 0);
+        expect(clickDays.length).toBeGreaterThan(0);
+        for (const { date } of clickDays) {
             const label = new Date(`${date}T00:00:00Z`).toLocaleDateString('en-US', {
                 month: 'short',
                 day: 'numeric',

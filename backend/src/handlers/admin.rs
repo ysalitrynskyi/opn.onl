@@ -20,7 +20,9 @@ use crate::entity::{
 use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::is_reserved_email_domain;
 use crate::utils::time::utc_rfc3339;
-use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
+use crate::utils::url_policy::{
+    canonical_blocked_url, domain_matches, normalize_domain_input, normalize_hostname,
+};
 use crate::utils::validation::MAX_IDS_PER_REQUEST;
 
 /// Clamp pagination params: 1-based page, 1..=100 per_page (default 25).
@@ -263,14 +265,47 @@ fn email_matches_domain(email: &str, domain: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// SQL pre-filter for `email_matches_domain`: a superset of the addresses it accepts.
+fn email_may_match_domain(domain: &str) -> Condition {
+    let mut narrowed =
+        Condition::any().add(Expr::col(users::Column::Email).ilike(ilike_pattern(domain)));
+    if domain.split('.').any(|label| label.starts_with("xn--")) {
+        narrowed = narrowed.add(Expr::cust("octet_length(email) <> char_length(email)"));
+    }
+    narrowed
+}
+
 fn user_matches_email_domain(user: &users::Model, domain: &str) -> bool {
     email_matches_domain(&user.email, domain)
 }
 
+/// The domain an admin's input names: the part after the `@` of a full address,
+/// else the input itself, in the same lower-case punycode spelling that
+/// registration compares against.
 fn normalize_email_domain_input(input: &str) -> Option<String> {
-    crate::utils::email_domain_policy::email_domain(input)
-        .or_else(|| normalize_domain_input(input))
-        .or_else(|| normalize_hostname(input))
+    let domain =
+        crate::utils::email_domain_policy::email_domain(input).unwrap_or_else(|| input.to_string());
+    normalize_domain_input(&domain)
+}
+
+/// Refuse block targets that cannot be what the admin meant. A block covers the
+/// named domain and every subdomain, so a bare top-level name (`com`) would take
+/// down every site under it, and a wildcard is not a syntax the matcher knows: it
+/// would be stored, match nothing and still report success.
+fn check_domain_block_target(domain: &str) -> Result<(), String> {
+    if domain.contains('*') {
+        return Err(
+            "Wildcards are not supported. A block on a domain already covers all of its subdomains, so enter the domain without '*.'"
+                .to_string(),
+        );
+    }
+    let is_name = matches!(url::Host::parse(domain), Ok(url::Host::Domain(_)));
+    if is_name && !domain.contains('.') {
+        return Err(format!(
+            "'{domain}' is a single-label name, and a block covers every subdomain of it. Enter a full domain such as evil.org"
+        ));
+    }
+    Ok(())
 }
 
 /// Disable every live, enabled, non-admin user whose email domain is `domain` or
@@ -279,7 +314,10 @@ fn normalize_email_domain_input(input: &str) -> Option<String> {
 /// `block_email_domain` if their own address matches.
 ///
 /// The `ILIKE` only narrows what is read: the domain has to appear in the
-/// address, whatever the case. Exact matching stays in Rust
+/// address, whatever the case. An internationalised domain is the exception,
+/// because accounts registered before domains were compared as punycode can
+/// carry its Unicode spelling, which the punycode pattern never matches; those
+/// are the addresses with a multi-byte character. Exact matching stays in Rust
 /// (`email_matches_domain`, shared with the block check), a
 /// `BLOCK_CASCADE_BATCH` of users at a time, in id order.
 async fn disable_users_for_email_domain<C: ConnectionTrait>(
@@ -304,7 +342,7 @@ async fn disable_users_for_email_domain<C: ConnectionTrait>(
             .filter(users::Column::DeletedAt.is_null())
             .filter(users::Column::DisabledAt.is_null())
             .filter(users::Column::IsAdmin.eq(false))
-            .filter(Expr::col(users::Column::Email).ilike(ilike_pattern(domain)))
+            .filter(email_may_match_domain(domain))
             .filter(users::Column::Id.gt(after_id))
             .order_by_asc(users::Column::Id)
             .limit(BLOCK_CASCADE_BATCH)
@@ -1757,7 +1795,8 @@ pub async fn get_admin_stats(
     path = "/admin/blocked/links",
     request_body = BlockLinkRequest,
     responses(
-        (status = 201, description = "URL blocked", body = BlockedLinkResponse),
+        (status = 201, description = "URL blocked; the response carries the canonical form that was stored", body = BlockedLinkResponse),
+        (status = 400, description = "Not an http(s) URL"),
         (status = 403, description = "Admin access required"),
         (status = 409, description = "URL already blocked"),
     ),
@@ -1774,8 +1813,21 @@ pub async fn block_link(
         Err(e) => return e.into_response(),
     };
 
+    // Stored in canonical form so the block matches every spelling of the URL
+    // (see `canonical_blocked_url`); the response shows what was stored.
+    let Some(url) = canonical_blocked_url(&payload.url) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "Enter a full http(s) URL, such as https://evil.org/page".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
     let existing = blocked_links::Entity::find()
-        .filter(blocked_links::Column::Url.eq(&payload.url))
+        .filter(blocked_links::Column::Url.eq(&url))
         .one(&state.db)
         .await
         .ok()
@@ -1793,7 +1845,7 @@ pub async fn block_link(
     }
 
     let blocked = blocked_links::ActiveModel {
-        url: Set(payload.url.clone()),
+        url: Set(url.clone()),
         reason: Set(payload.reason.clone()),
         blocked_by: Set(Some(admin_id)),
         ..Default::default()
@@ -1919,7 +1971,8 @@ pub async fn unblock_link(
     path = "/admin/blocked/domains",
     request_body = BlockDomainRequest,
     responses(
-        (status = 201, description = "Domain blocked", body = BlockedDomainResponse),
+        (status = 201, description = "Domain blocked; the response carries the normalized domain that was stored", body = BlockedDomainResponse),
+        (status = 400, description = "Invalid domain, a wildcard, or a single-label name such as `com`"),
         (status = 403, description = "Admin access required"),
         (status = 409, description = "Domain already blocked"),
     ),
@@ -1946,6 +1999,16 @@ pub async fn block_domain(
         )
             .into_response();
     };
+    if let Err(message) = check_domain_block_target(&domain) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message,
+            }),
+        )
+            .into_response();
+    }
 
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
@@ -2139,8 +2202,8 @@ pub async fn unblock_domain(
     path = "/admin/blocked/email-domains",
     request_body = BlockEmailDomainRequest,
     responses(
-        (status = 201, description = "Email domain blocked", body = BlockedEmailDomainResponse),
-        (status = 400, description = "Invalid email domain, or block would disable the acting admin"),
+        (status = 201, description = "Email domain blocked; the response carries the normalized domain that was stored", body = BlockedEmailDomainResponse),
+        (status = 400, description = "Invalid email domain, a wildcard, a single-label name such as `com`, or block would disable the acting admin"),
         (status = 403, description = "Admin access required"),
         (status = 409, description = "Email domain already blocked"),
     ),
@@ -2167,6 +2230,16 @@ pub async fn block_email_domain(
         )
             .into_response();
     };
+    if let Err(message) = check_domain_block_target(&domain) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message,
+            }),
+        )
+            .into_response();
+    }
 
     if is_reserved_email_domain(&domain) {
         return (
