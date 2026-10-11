@@ -530,6 +530,62 @@ async fn the_contact_form_cannot_use_up_the_account_pool() {
     common::remove_env("ADMIN_EMAIL");
 }
 
+// ------------------------------------------------------------ contact address
+
+/// With no `ADMIN_EMAIL` the contact form says so instead of mailing the
+/// upstream project's mailbox (or the From address) and claiming success.
+#[tokio::test]
+async fn the_contact_form_mails_only_the_configured_address() {
+    let _env = CONTACT_ENV.lock().await;
+    let (server, _db) = mail_app(500).await;
+    let stub = smtp_stub();
+
+    for unset in [None, Some(""), Some("   ")] {
+        match unset {
+            None => common::remove_env("ADMIN_EMAIL"),
+            Some(blank) => common::set_env("ADMIN_EMAIL", blank),
+        }
+        let res = server.post("/contact").json(&contact_message()).await;
+        assert_eq!(
+            res.status_code(),
+            503,
+            "ADMIN_EMAIL={unset:?}: {}",
+            res.text()
+        );
+        let body: Value = res.json();
+        assert_eq!(body["success"], false);
+        assert!(
+            body["message"].as_str().unwrap().contains("not delivered"),
+            "{body}"
+        );
+    }
+    let strays = ["admin@opn.onl", "noreply@mail.test", "support@opn.onl"];
+    assert!(
+        stub.all()
+            .iter()
+            .all(|mail| !strays.contains(&mail.rcpt.as_str())),
+        "the message went to a default address: {:?}",
+        stub.all()
+    );
+
+    let owner = format!("owner-{}@contact.test", uuid::Uuid::new_v4());
+    common::set_env("ADMIN_EMAIL", &owner);
+    let res = server.post("/contact").json(&contact_message()).await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    let delivered = stub.to(&owner);
+    assert_eq!(
+        delivered.len(),
+        1,
+        "the configured address gets the message"
+    );
+    assert!(
+        delivered[0]
+            .data
+            .contains("Reply-To: visitor@visitors.test")
+    );
+    common::remove_env("ADMIN_EMAIL");
+}
+
 // ---------------------------------- a signed-in user asking for their own mail
 
 #[tokio::test]

@@ -205,7 +205,7 @@ the frontend yourself (`docker compose up -d --build` from Option 1, or
 | `SMTP_TLS` | starttls | TLS mode: `starttls`, `tls`, or `none` |
 | `SMTP_FROM_EMAIL` | noreply@opn.onl | From email address |
 | `SMTP_FROM_NAME` | opn.onl | From display name (commas and quotes are fine) |
-| `ADMIN_EMAIL` | admin@opn.onl | Admin email for contact form |
+| `ADMIN_EMAIL` | - | Where contact-form messages are delivered. There is no default: while it is unset the contact form answers `503` and mails nobody |
 | `EMAIL_RATE_LIMIT_PER_HOUR` | 500 | Most emails the instance sends per hour in total. Split 70% account mail (verification, password reset, welcome), 20% security notices (password changed) and 10% contact form, so a flood of one kind cannot starve the others |
 
 Without SMTP, verification, password-reset and password-changed emails are not sent, and the

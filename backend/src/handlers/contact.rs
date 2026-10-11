@@ -25,6 +25,14 @@ pub struct ContactResponse {
     pub message: String,
 }
 
+/// The address contact-form messages are delivered to: `ADMIN_EMAIL`.
+fn contact_recipient() -> Option<String> {
+    std::env::var("ADMIN_EMAIL")
+        .ok()
+        .map(|address| address.trim().to_string())
+        .filter(|address| !address.is_empty())
+}
+
 /// Send a contact form message to admin
 #[utoipa::path(
     post,
@@ -34,7 +42,7 @@ pub struct ContactResponse {
         (status = 200, description = "Message sent successfully", body = ContactResponse),
         (status = 400, description = "Validation error"),
         (status = 500, description = "Failed to send message"),
-        (status = 503, description = "Email is not configured on this instance; nothing was sent"),
+        (status = 503, description = "Email or the contact address (`ADMIN_EMAIL`) is not configured on this instance; nothing was sent"),
     ),
     tag = "Contact"
 )]
@@ -74,10 +82,22 @@ pub async fn send_contact_message(
         }
     };
 
-    // Get admin email from environment
-    let admin_email = std::env::var("ADMIN_EMAIL").unwrap_or_else(|_| {
-        std::env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "admin@opn.onl".to_string())
-    });
+    // Where messages go is the operator's decision. There is deliberately no
+    // fallback address: a default would send every visitor's message to
+    // whoever wrote the default, and tell the visitor it was delivered.
+    let Some(admin_email) = contact_recipient() else {
+        tracing::warn!("Contact form submission refused: ADMIN_EMAIL is not set");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ContactResponse {
+                success: false,
+                message: "This site has no contact address set up, so your message was not \
+                          delivered. Please reach the operator another way."
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    };
 
     // Build email content
     let subject = format!("[opn.onl Contact] {}: {}", payload.subject, payload.name);
