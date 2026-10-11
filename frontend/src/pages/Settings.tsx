@@ -351,14 +351,22 @@ export default function Settings() {
         setError('');
 
         try {
-            const res = await fetch(API_ENDPOINTS.resendVerification, {
+            // Signed in, so the server answers for this account specifically:
+            // sent, already verified, wait N minutes, or no email on this
+            // server. Anonymous callers only ever get "if the account exists".
+            const res = await authFetch(API_ENDPOINTS.resendVerification, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: profile?.email }),
             });
 
-            if (!res.ok) throw new Error('Failed to resend verification email');
-            setSuccess('Verification email sent!');
+            if (!res.ok) {
+                const body = await res.json().catch(() => null) as { error?: string; message?: string } | null;
+                // A 429's `error` is the generic "Too many requests"; its `message` says what to do.
+                const detail = (res.status === 429 ? body?.message : undefined) || body?.error || body?.message;
+                throw new Error(detail || 'Failed to resend verification email');
+            }
+            const body = await res.json().catch(() => null) as { message?: string } | null;
+            setSuccess(body?.message || 'Verification email sent');
         } catch (err) {
             setError(errorMessage(err));
         } finally {
