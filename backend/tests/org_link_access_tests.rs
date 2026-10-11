@@ -1222,3 +1222,102 @@ async fn a_visit_to_an_org_link_reaches_the_org_members() {
     let codes = owner.codes_until(&link.code).await;
     assert_eq!(codes, [link.code.as_str()]);
 }
+
+// ------------------------------------------------------------------ bio page
+
+#[tokio::test]
+async fn only_the_creator_decides_whether_an_org_link_is_on_their_bio_page() {
+    let team = Team::new().await;
+    let path = format!("/links/{}", team.link.id);
+
+    // Another editor may edit the link, but not put it on its creator's page.
+    let res = send(
+        "PUT",
+        &team.other_editor.token,
+        &path,
+        Some(json!({ "bio_visible": true })),
+    )
+    .await;
+    assert_eq!(
+        res.status_code(),
+        403,
+        "colleague sets bio_visible: {}",
+        res.text()
+    );
+    assert!(!row(&team.db, team.link.id).await.bio_visible);
+
+    // Echoing the current value (as the dashboard does on every save) is fine.
+    assert_eq!(
+        status(
+            "PUT",
+            &team.other_editor.token,
+            &path,
+            Some(json!({ "title": "Renamed", "bio_visible": false })),
+        )
+        .await,
+        200
+    );
+
+    // The creator may.
+    assert_eq!(
+        status(
+            "PUT",
+            &team.editor.token,
+            &path,
+            Some(json!({ "bio_visible": true }))
+        )
+        .await,
+        200
+    );
+    assert!(row(&team.db, team.link.id).await.bio_visible);
+}
+
+#[tokio::test]
+async fn a_removed_creator_bio_page_drops_the_org_links() {
+    let team = Team::new().await;
+    let username = format!("bio{}", unique_code().to_lowercase());
+    let mut editor: users::ActiveModel = users::Entity::find_by_id(team.editor.id)
+        .one(&team.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into();
+    editor.bio_username = Set(Some(username.clone()));
+    editor.bio_enabled = Set(true);
+    editor.update(&team.db).await.expect("enable bio");
+    for id in [team.link.id, team.personal.id] {
+        let mut link: links::ActiveModel = row(&team.db, id).await.into();
+        link.bio_visible = Set(true);
+        link.update(&team.db).await.expect("mark bio-visible");
+    }
+
+    let bio_codes = || async {
+        let res = app().await.get(&format!("/api/bio/{username}")).await;
+        assert_eq!(res.status_code(), 200, "bio page: {}", res.text());
+        res.json::<Value>()["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|l| l["code"].as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+    };
+
+    let before = bio_codes().await;
+    assert!(
+        before.contains(&team.link.code),
+        "org link listed: {before:?}"
+    );
+    assert!(before.contains(&team.personal.code));
+
+    team.remove_editor().await;
+
+    let after = bio_codes().await;
+    assert!(
+        !after.contains(&team.link.code),
+        "a former member's bio must not keep listing the org's links: {after:?}"
+    );
+    assert!(
+        after.contains(&team.personal.code),
+        "personal links stay: {after:?}"
+    );
+}

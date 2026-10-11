@@ -3768,6 +3768,20 @@ pub async fn update_link(
             .map(|v| v != "false")
             .unwrap_or(true);
         if link_in_bio_enabled && let Some(visible) = payload.bio_visible {
+            // A bio page lists its owner's links, so only the creator decides
+            // whether an organization link appears on theirs. Editors may
+            // change everything else; the dashboard echoes the current value
+            // on every save, which is not a change.
+            if visible != link.bio_visible && link.user_id != Some(user_id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Only the link's creator can choose whether it appears on their bio page"
+                            .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             active_link.bio_visible = Set(visible);
         }
 
