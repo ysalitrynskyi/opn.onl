@@ -856,7 +856,7 @@ export default function Dashboard() {
                                     {/* Title - full width */}
                                     <div>
                                         <label htmlFor="create-title" className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
-                                            Title (private, only visible to you)
+                                            Title (private unless the link is on your bio page)
                                         </label>
                                         <input
                                             id="create-title"

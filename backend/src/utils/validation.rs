@@ -70,6 +70,17 @@ pub fn check_name(label: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A value of more than `max` characters, as `field: must be at most N
+/// characters`, the wording `validation_error_message` gives a length rule.
+/// Characters, not bytes: a Cyrillic or CJK text takes two to four bytes per
+/// character, and the forms count what the person typed.
+pub fn check_max_chars(field: &str, value: &str, max: usize) -> Result<(), String> {
+    if value.chars().count() > max {
+        return Err(format!("{field}: must be at most {max} characters"));
+    }
+    Ok(())
+}
+
 /// Most ids a request body may list. Matches the `/links/bulk/*` endpoints,
 /// and keeps every `IN (...)` built from such a list far below the 65,535
 /// bind parameters one statement may carry.
@@ -188,6 +199,18 @@ mod tests {
         assert!(
             message.contains("password: Password must be at least 8 characters"),
             "{message}"
+        );
+    }
+
+    #[test]
+    fn length_limits_count_characters_not_bytes() {
+        // 300 Cyrillic letters are 600 bytes.
+        let cyrillic = "\u{436}".repeat(300);
+        assert!(check_max_chars("bio", &cyrillic, 500).is_ok());
+        assert!(check_max_chars("bio", &"x".repeat(500), 500).is_ok());
+        assert_eq!(
+            check_max_chars("bio", &"x".repeat(501), 500).unwrap_err(),
+            "bio: must be at most 500 characters"
         );
     }
 
