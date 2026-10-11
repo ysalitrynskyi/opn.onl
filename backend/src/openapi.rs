@@ -296,6 +296,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
             links::LinkResponse,
             links::CreateLinkResponse,
             links::BulkCreateLinkResponse,
+            links::BulkCreateFailure,
             links::BulkDeleteResponse,
             links::BulkUpdateResponse,
             links::ErrorResponse,

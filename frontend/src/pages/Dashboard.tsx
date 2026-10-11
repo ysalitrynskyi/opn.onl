@@ -214,7 +214,11 @@ export default function Dashboard() {
                 // Partly done: keep the modal open with only what failed in the
                 // box, so nothing has to be pasted again.
                 const created = Array.isArray(data.links) ? data.links.length : 0;
-                const { failures, remaining } = readBulkErrors(urls, errors);
+                const { failures, remaining } = readBulkErrors(
+                    urls,
+                    errors,
+                    Array.isArray(data.failed) ? data.failed : undefined,
+                );
                 setBulkUrls(remaining.join('\n'));
                 setBulkReport({
                     message: `Created ${created} ${pluralize(created, 'link')}. ${failures.length} failed.`,

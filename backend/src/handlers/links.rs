@@ -852,7 +852,33 @@ pub struct LinkPageQuery {
 #[derive(Serialize, ToSchema)]
 pub struct BulkCreateLinkResponse {
     pub links: Vec<CreateLinkResponse>,
+    /// One message per URL that was not shortened, e.g. `<url>: <reason>`.
     pub errors: Vec<String>,
+    /// The same failures with the submitted URL as its own field, so a client
+    /// can tell which lines to keep without parsing the messages.
+    pub failed: Vec<BulkCreateFailure>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BulkCreateFailure {
+    /// The URL exactly as submitted.
+    pub url: String,
+    /// Same text as the matching entry in `errors`.
+    pub error: String,
+}
+
+/// Record a URL that bulk create turned down, in both response lists.
+fn record_bulk_failure(
+    errors: &mut Vec<String>,
+    failed: &mut Vec<BulkCreateFailure>,
+    url: &str,
+    message: String,
+) {
+    failed.push(BulkCreateFailure {
+        url: url.to_string(),
+        error: message.clone(),
+    });
+    errors.push(message);
 }
 
 #[derive(Serialize, ToSchema)]
@@ -4260,6 +4286,7 @@ pub async fn bulk_create_links(
             Json(BulkCreateLinkResponse {
                 links: vec![],
                 errors: vec!["Authentication required for bulk link creation".to_string()],
+                failed: vec![],
             }),
         )
             .into_response();
@@ -4272,6 +4299,7 @@ pub async fn bulk_create_links(
             Json(BulkCreateLinkResponse {
                 links: vec![],
                 errors: vec!["Too many URLs in one request (max 500)".to_string()],
+                failed: vec![],
             }),
         )
             .into_response();
@@ -4292,6 +4320,7 @@ pub async fn bulk_create_links(
                 StatusCode::FORBIDDEN,
                 Json(BulkCreateLinkResponse {
                     links: vec![],
+                    failed: vec![],
                     errors: vec![
                         "Please verify your email address before creating links".to_string(),
                     ],
@@ -4303,6 +4332,7 @@ pub async fn bulk_create_links(
 
     let mut result_links = Vec::new();
     let mut errors = Vec::new();
+    let mut failed = Vec::new();
     let base_url = get_base_url();
     // Per-link rate key: charged once per URL below so a bulk request cannot
     // create more links than the single-create budget allows.
@@ -4356,10 +4386,15 @@ pub async fn bulk_create_links(
             .link_creation
             .check(&format!("create:{}", ip))
         {
-            errors.push(format!(
-                "{}: rate limit reached, try again in {}s",
-                url, retry_after_secs
-            ));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!(
+                    "{}: rate limit reached, try again in {}s",
+                    url, retry_after_secs
+                ),
+            );
             continue;
         }
 
@@ -4367,23 +4402,33 @@ pub async fn bulk_create_links(
         // (bad format, dangerous file type, raw IP, …) rather than a generic
         // message, so a bulk upload tells the user which links were rejected why.
         if let Err(e) = validate_url(&url) {
-            errors.push(format!("{}: {}", url, e));
+            record_bulk_failure(&mut errors, &mut failed, &url, format!("{}: {}", url, e));
             continue;
         }
         if destination_host(&url).is_some_and(|host| private_hosts.contains(&host)) {
-            errors.push(format!("{}: {}", url, PRIVATE_DESTINATION));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!("{}: {}", url, PRIVATE_DESTINATION),
+            );
             continue;
         }
 
         // Check if URL or domain is blocked
         if let Err(e) = check_blocked(&state.db, &url).await {
-            errors.push(format!("{}: {}", url, e));
+            record_bulk_failure(&mut errors, &mut failed, &url, format!("{}: {}", url, e));
             continue;
         }
 
         // Stop creating once the per-user cap is reached.
         if let Some(0) = remaining_budget {
-            errors.push(format!("{}: account link limit reached", url));
+            record_bulk_failure(
+                &mut errors,
+                &mut failed,
+                &url,
+                format!("{}: account link limit reached", url),
+            );
             continue;
         }
 
@@ -4407,7 +4452,12 @@ pub async fn bulk_create_links(
             let txn = match state.db.begin().await {
                 Ok(txn) => txn,
                 Err(error) => {
-                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, error),
+                    );
                     break;
                 }
             };
@@ -4424,12 +4474,22 @@ pub async fn bulk_create_links(
                 Ok(true) => {}
                 Ok(false) => {
                     let _ = txn.rollback().await;
-                    errors.push(format!("{}: folder or organization access denied", url));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("{}: folder or organization access denied", url),
+                    );
                     break;
                 }
                 Err(error) => {
                     let _ = txn.rollback().await;
-                    errors.push(format!("Failed to shorten {}: {}", url, error));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, error),
+                    );
                     break;
                 }
             }
@@ -4458,7 +4518,12 @@ pub async fn bulk_create_links(
                         break;
                     }
                     Err(e) => {
-                        errors.push(format!("Failed to shorten {}: {}", url, e));
+                        record_bulk_failure(
+                            &mut errors,
+                            &mut failed,
+                            &url,
+                            format!("Failed to shorten {}: {}", url, e),
+                        );
                         break;
                     }
                 },
@@ -4468,13 +4533,18 @@ pub async fn bulk_create_links(
                         last_duplicate = Some(format!("Failed to shorten {}: {}", url, e));
                         continue;
                     }
-                    errors.push(format!("Failed to shorten {}: {}", url, e));
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {}: {}", url, e),
+                    );
                     break;
                 }
             }
         }
         if !created && let Some(msg) = last_duplicate {
-            errors.push(msg);
+            record_bulk_failure(&mut errors, &mut failed, &url, msg);
         }
     }
 
@@ -4483,6 +4553,7 @@ pub async fn bulk_create_links(
         Json(BulkCreateLinkResponse {
             links: result_links,
             errors,
+            failed,
         }),
     )
         .into_response()

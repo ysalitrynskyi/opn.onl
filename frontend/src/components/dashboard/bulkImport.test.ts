@@ -52,4 +52,23 @@ describe('readBulkErrors', () => {
         expect(failures).toEqual([{ url: null, reason: 'Too many URLs in one request (max 500)' }]);
         expect(remaining).toEqual([]);
     });
+
+    it('prefers the structured failed list, whatever the messages say', () => {
+        const { failures, remaining } = readBulkErrors(
+            sent,
+            ['a message that names no URL at all'],
+            [
+                { url: 'https://c.example/3', error: 'Failed to shorten https://c.example/3: timeout: upstream' },
+                { url: 'https://a.example/1', error: 'https://a.example/1: blocked' },
+                { url: 'https://d.example/4', error: 'account link limit reached' },
+            ],
+        );
+
+        expect(failures).toEqual([
+            { url: 'https://c.example/3', reason: 'timeout: upstream' },
+            { url: 'https://a.example/1', reason: 'blocked' },
+            { url: 'https://d.example/4', reason: 'account link limit reached' },
+        ]);
+        expect(remaining).toEqual(['https://a.example/1', 'https://c.example/3', 'https://d.example/4']);
+    });
 });

@@ -20,12 +20,26 @@ export interface BulkOutcome {
 
 const SHORTEN_PREFIX = 'Failed to shorten ';
 
+/** One entry of the bulk response's `failed` list. */
+export interface BulkFailedEntry {
+    url: string;
+    error: string;
+}
+
 /**
- * The server answers a bulk request with one string per failure, either
- * `<url>: <reason>` or `Failed to shorten <url>: <reason>`, and does not name
- * the URLs that worked. So the failed ones are recovered from the messages.
+ * Which submitted URLs failed, and why. The server lists them in `failed` as
+ * `{url, error}`; a server from before that field only sends `errors`, one
+ * string per failure (`<url>: <reason>` or `Failed to shorten <url>: <reason>`),
+ * so the URLs are recovered from those messages instead.
  */
-export function readBulkErrors(submitted: string[], errors: string[]): BulkOutcome {
+export function readBulkErrors(
+    submitted: string[],
+    errors: string[],
+    failed?: BulkFailedEntry[],
+): BulkOutcome {
+    if (Array.isArray(failed)) {
+        return fromFailedList(submitted, failed);
+    }
     const sent = new Set(submitted);
     const failedCount = new Map<string, number>();
     const failures: BulkFailure[] = [];
@@ -42,13 +56,33 @@ export function readBulkErrors(submitted: string[], errors: string[]): BulkOutco
         }
     }
 
-    // A URL pasted twice is two lines; keep as many as failed.
-    const remaining = submitted.filter((url) => {
+    return { failures, remaining: keepFailed(submitted, failedCount) };
+}
+
+/** The submitted lines that failed, in order. A URL pasted twice is two lines;
+ * keep as many as failed. */
+function keepFailed(submitted: string[], failedCount: Map<string, number>): string[] {
+    return submitted.filter((url) => {
         const left = failedCount.get(url) ?? 0;
         if (left === 0) return false;
         failedCount.set(url, left - 1);
         return true;
     });
+}
 
-    return { failures, remaining };
+function fromFailedList(submitted: string[], failed: BulkFailedEntry[]): BulkOutcome {
+    const failedCount = new Map<string, number>();
+    const failures: BulkFailure[] = failed.map(({ url, error }) => {
+        failedCount.set(url, (failedCount.get(url) ?? 0) + 1);
+        return { url, reason: reasonWithoutUrl(url, error) };
+    });
+    return { failures, remaining: keepFailed(submitted, failedCount) };
+}
+
+/** The message minus the URL it starts with, which the list already shows. */
+function reasonWithoutUrl(url: string, error: string): string {
+    for (const prefix of [`${SHORTEN_PREFIX}${url}: `, `${url}: `]) {
+        if (error.startsWith(prefix)) return error.slice(prefix.length);
+    }
+    return error;
 }
