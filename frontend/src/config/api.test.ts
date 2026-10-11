@@ -9,6 +9,7 @@ import {
     shortLinkBase,
     shortLinkHost,
     responseError,
+    totalCount,
 } from './api';
 
 describe('API Configuration', () => {
@@ -338,5 +339,23 @@ describe('responseError', () => {
         expect(await responseError(json({ message: 'Try later' }), 'Failed')).toBe('Try later');
         expect(await responseError(json({}), 'Failed')).toBe('Failed');
         expect(await responseError(new Response('plain text', { status: 500 }), 'Failed')).toBe('Failed');
+    });
+});
+
+describe('totalCount', () => {
+    const withHeader = (value?: string) =>
+        new Response('[]', { headers: value === undefined ? {} : { 'X-Total-Count': value } });
+
+    it('reads the X-Total-Count header of a link list', () => {
+        expect(totalCount(withHeader('1050'))).toBe(1050);
+        expect(totalCount(withHeader('0'))).toBe(0);
+    });
+
+    it('is null when the header is missing or not a count', () => {
+        expect(totalCount(withHeader())).toBeNull();
+        expect(totalCount(withHeader(''))).toBeNull();
+        expect(totalCount(withHeader('many'))).toBeNull();
+        expect(totalCount(withHeader('-3'))).toBeNull();
+        expect(totalCount(withHeader('1.5'))).toBeNull();
     });
 });
