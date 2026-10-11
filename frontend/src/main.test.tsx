@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { waitFor } from '@testing-library/react';
+import { normalizeSiteUrl } from './utils/siteUrl';
 
 // The entry point, loaded the way the browser loads a prerendered page: the
 // HTML already holds the head tags of the route it was rendered for.
@@ -22,7 +23,7 @@ describe('main.tsx on a prerendered page', () => {
         expect(head.querySelectorAll('title')).toHaveLength(1);
         expect(head.querySelectorAll('meta[name="description"]')).toHaveLength(1);
         expect([...head.querySelectorAll('link[rel="canonical"]')].map((l) => l.getAttribute('href'))).toEqual([
-            'https://opn.onl/pricing',
+            `${normalizeSiteUrl(import.meta.env.VITE_FRONTEND_URL)}/pricing`,
         ]);
         expect(head.querySelectorAll('meta[name="theme-color"]')).toHaveLength(1);
     });
