@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
     API_BASE_URL,
     API_ENDPOINTS,
+    SessionExpiredError,
     getAuthHeaders,
     apiCall,
     authFetch,
@@ -210,6 +211,21 @@ describe('authFetch', () => {
         expect(localStorage.getItem('token')).toBe('new-token');
         expect(localStorage.getItem('is_admin')).toBe('true');
         expect(localStorage.removeItem).not.toHaveBeenCalled();
+    });
+
+    it('clears the rejected session and throws a SessionExpiredError', async () => {
+        vi.mocked(global.fetch).mockResolvedValue({ status: 401 } as Response);
+        localStorage.setItem('token', 'expired-token');
+        localStorage.setItem('is_admin', 'false');
+
+        const failure = await authFetch('https://api.test.com/links', { method: 'POST' }).catch(
+            (error: unknown) => error,
+        );
+
+        expect(failure).toBeInstanceOf(SessionExpiredError);
+        expect((failure as Error).message).toBe('Session expired. Please log in again.');
+        expect(localStorage.getItem('token')).toBeNull();
+        expect(localStorage.getItem('is_admin')).toBeNull();
     });
 });
 

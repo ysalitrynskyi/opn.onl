@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link as RouterLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ExternalLink, Lock, Clock, MousePointer, Globe, AlertTriangle, ArrowRight, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
+import { ExternalLink, Lock, Clock, MousePointer, Globe, AlertTriangle, ArrowRight, EyeOff, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
 import { API_ENDPOINTS, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 
@@ -14,6 +14,9 @@ interface LinkPreview {
     domain: string;
     has_password: boolean;
     is_expired: boolean;
+    /** False when the link is not live (used up, expired, not started, blocked). */
+    is_active?: boolean;
+    burn_after_reading?: boolean;
     created_at: string;
     click_count: number;
     reputation?: { verdict: string; source: string };
@@ -81,6 +84,15 @@ export default function Preview() {
         );
     }
 
+    // The API withholds the destination of a link that is not live, and of
+    // password-protected, one-time and randomly split links, so an empty
+    // original_url means there is nothing to show or open.
+    const inactive = preview.is_active === false || preview.is_expired;
+    const destinationShown = !inactive && Boolean(preview.original_url);
+    const hiddenReason = preview.burn_after_reading
+        ? 'One-time link: the destination stays hidden until it is opened, and it can be opened only once.'
+        : "This link's destination is not shown in advance.";
+
     const formattedDate = new Date(preview.created_at).toLocaleDateString('en-US', {
         year: 'numeric',
         month: 'long',
@@ -91,7 +103,11 @@ export default function Preview() {
         <div className="min-h-[60vh] flex items-center justify-center px-4 py-12">
             <SEO 
                 title={`Preview: ${preview.code}`}
-                description={`Link preview for ${preview.short_url} → ${preview.domain}`}
+                description={
+                    preview.domain
+                        ? `Link preview for ${preview.short_url} → ${preview.domain}`
+                        : `Link preview for ${preview.short_url}`
+                }
                 noIndex={true}
             />
             
@@ -115,34 +131,48 @@ export default function Preview() {
                     {/* Content */}
                     <div className="p-6 space-y-5">
                         {/* Destination URL */}
-                        <div>
-                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                                Destination
-                            </label>
-                            <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl">
-                                {/* Domain initial instead of a third-party favicon service:
-                                    fetching favicons from Google leaked the destination
-                                    domain and the visitor's IP to a third party. */}
-                                <div className="h-10 w-10 bg-white rounded-lg border border-slate-200 flex items-center justify-center flex-shrink-0">
-                                    <span className="text-sm font-bold text-slate-500 uppercase">
-                                        {preview.domain?.charAt(0) || '?'}
-                                    </span>
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                    <p className="font-medium text-slate-900 truncate">{preview.domain}</p>
-                                    <p className="text-sm text-slate-500 truncate">{preview.original_url}</p>
-                                </div>
-                                <a 
-                                    href={preview.original_url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    aria-label={`Open ${preview.domain} in a new tab`}
-                                    className="text-slate-500 hover:text-slate-700"
-                                >
-                                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                                </a>
+                        {!inactive && (
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                                    Destination
+                                </label>
+                                {destinationShown ? (
+                                    <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl">
+                                        {/* Domain initial instead of a third-party favicon service:
+                                            fetching favicons from Google leaked the destination
+                                            domain and the visitor's IP to a third party. */}
+                                        <div className="h-10 w-10 bg-white rounded-lg border border-slate-200 flex items-center justify-center flex-shrink-0">
+                                            <span className="text-sm font-bold text-slate-500 uppercase">
+                                                {preview.domain?.charAt(0) || '?'}
+                                            </span>
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="font-medium text-slate-900 truncate">{preview.domain}</p>
+                                            <p className="text-sm text-slate-500 truncate">{preview.original_url}</p>
+                                        </div>
+                                        <a
+                                            href={preview.original_url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            aria-label={`Open ${preview.domain} in a new tab`}
+                                            className="text-slate-500 hover:text-slate-700"
+                                        >
+                                            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                                        </a>
+                                    </div>
+                                ) : (
+                                    <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl">
+                                        <div className="h-10 w-10 bg-white rounded-lg border border-slate-200 flex items-center justify-center flex-shrink-0">
+                                            <EyeOff className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="font-medium text-slate-900">Destination hidden</p>
+                                            <p className="text-sm text-slate-500">{hiddenReason}</p>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
-                        </div>
+                        )}
 
                         {/* Stats */}
                         <div className="grid grid-cols-2 gap-4">
@@ -163,7 +193,7 @@ export default function Preview() {
                         </div>
 
                         {/* Warnings */}
-                        {(preview.has_password || preview.is_expired) && (
+                        {(preview.has_password || inactive) && (
                             <div className="space-y-2">
                                 {preview.has_password && (
                                     <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
@@ -171,17 +201,17 @@ export default function Preview() {
                                         This link is password protected
                                     </div>
                                 )}
-                                {preview.is_expired && (
+                                {inactive && (
                                     <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
                                         <Clock className="h-4 w-4 flex-shrink-0" />
-                                        This link has expired
+                                        {preview.is_expired ? 'This link has expired' : 'This link is no longer active'}
                                     </div>
                                 )}
                             </div>
                         )}
 
                         {/* Reputation */}
-                        {preview.reputation && (() => {
+                        {destinationShown && preview.reputation && (() => {
                             const v = preview.reputation.verdict;
                             const safe = v === 'safe';
                             const danger = v === 'malicious' || v === 'suspicious';
@@ -206,7 +236,7 @@ export default function Preview() {
 
                         {/* Actions */}
                         <div className="pt-2">
-                            {!preview.is_expired ? (
+                            {!inactive ? (
                                 <a
                                     href={`${API_URL}/${preview.code}`}
                                     className="w-full flex items-center justify-center gap-2 bg-primary-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-primary-700 transition-colors"
@@ -219,7 +249,7 @@ export default function Preview() {
                                     disabled
                                     className="w-full flex items-center justify-center gap-2 bg-slate-200 text-slate-500 px-6 py-3 rounded-xl font-medium cursor-not-allowed"
                                 >
-                                    Link Expired
+                                    {preview.is_expired ? 'Link Expired' : 'Link Unavailable'}
                                 </button>
                             )}
                         </div>

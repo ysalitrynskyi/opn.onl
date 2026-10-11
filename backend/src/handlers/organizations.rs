@@ -3,6 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
+use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
     QueryOrder, QuerySelect, Set, TransactionTrait,
@@ -158,8 +159,8 @@ pub(crate) async fn member_can_edit(
 /// to them. `blocking` orgs still have other live members, so the account
 /// cannot be deleted until ownership is transferred (or the org deliberately
 /// deleted). Soft-deleted users are ignored: they cannot log in or accept a
-/// transfer. `solo` orgs have no live member besides the owner and die with
-/// the account on hard delete.
+/// transfer. `solo` orgs have no live member besides the owner: they are purged
+/// on hard delete, and their links are taken down on soft delete.
 pub(crate) struct OwnedOrgsSplit {
     pub blocking: Vec<organizations::Model>,
     pub solo: Vec<organizations::Model>,
@@ -205,6 +206,30 @@ pub(crate) async fn split_owned_orgs<C: ConnectionTrait>(
         }
     }
     Ok(OwnedOrgsSplit { blocking, solo })
+}
+
+/// Take down the live links of organizations whose only member is a user being
+/// soft-deleted. Soft delete is an UPDATE, so those links would otherwise keep
+/// redirecting for a team nobody can log in to manage. Stamped with the
+/// caller's account-deletion timestamp so restoring the account can revive
+/// exactly this cascade. Returns the codes whose cached redirects must be
+/// dropped once the transaction commits.
+pub(crate) async fn soft_delete_solo_org_links<C: ConnectionTrait>(
+    db: &C,
+    solo: &[organizations::Model],
+    deleted_at: chrono::NaiveDateTime,
+) -> Result<Vec<String>, sea_orm::DbErr> {
+    if solo.is_empty() {
+        return Ok(Vec::new());
+    }
+    let org_ids: Vec<i32> = solo.iter().map(|org| org.id).collect();
+    let taken_down = links::Entity::update_many()
+        .col_expr(links::Column::DeletedAt, Expr::value(deleted_at))
+        .filter(links::Column::OrgId.is_in(org_ids))
+        .filter(links::Column::DeletedAt.is_null())
+        .exec_with_returning(db)
+        .await?;
+    Ok(taken_down.into_iter().map(|link| link.code).collect())
 }
 
 /// JSON body for refusing an account deletion because the user still owns

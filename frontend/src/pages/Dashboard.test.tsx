@@ -159,6 +159,25 @@ describe('Dashboard Page', () => {
     });
   });
 
+  it('keeps the URL being created when the session ended while the page was open', async () => {
+    sessionStorage.clear();
+    vi.mocked(global.fetch).mockImplementation((_url, init) => {
+      if (init?.method === 'POST') {
+        return mockFetchError('Invalid or expired credentials', 401) as any;
+      }
+      return mockFetchResponse([]) as any;
+    });
+
+    const { user } = render(<Dashboard />);
+    await user.type(await screen.findByPlaceholderText(/example.com/i), 'https://test.com/long');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    expect(await screen.findByText(/session expired\. please log in again/i)).toBeInTheDocument();
+    expect(screen.queryByText(/network error/i)).not.toBeInTheDocument();
+    expect(localStorage.removeItem).toHaveBeenCalledWith('token');
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBe('https://test.com/long');
+  });
+
   it('uses the local calendar date as the create expiration minimum, not UTC', async () => {
     vi.mocked(global.fetch).mockResolvedValue(mockFetchResponse([]) as any);
     const year = vi.spyOn(Date.prototype, 'getFullYear').mockReturnValue(2026);
