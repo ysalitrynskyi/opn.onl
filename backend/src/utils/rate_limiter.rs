@@ -425,6 +425,18 @@ fn is_redirect_path(path: &str) -> bool {
     }
 }
 
+/// The short code a redirect-style path addresses, as the router's `Path`
+/// extractor will see it: the first segment, percent-decoded once. `/%61bc`
+/// and `/abc` are the same link, so they must be the same rate-limit bucket.
+fn route_code(path: &str) -> String {
+    let raw = path.split('/').find(|s| !s.is_empty()).unwrap_or("unknown");
+    // Invalid UTF-8 is rejected by the extractor before any password is
+    // checked, so the raw segment is a fine key for it.
+    urlencoding::decode(raw)
+        .map(|decoded| decoded.into_owned())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
 /// Auth API routes are `/auth` and `/auth/...` only. A short code that merely
 /// begins with "auth" (`/auth-sale`) is a redirect, not a login attempt.
 fn is_auth_path(path: &str) -> bool {
@@ -487,10 +499,9 @@ pub async fn rate_limit_middleware(
         {
             limited @ RateLimitResult::Limited { .. } => limited,
             RateLimitResult::Allowed { .. } => {
-                let code = path.split('/').find(|s| !s.is_empty()).unwrap_or("unknown");
                 limiters
                     .password_verify
-                    .check(&format!("pwverify:{}:{}", ip, code))
+                    .check(&format!("pwverify:{}:{}", ip, route_code(path)))
             }
         }
     } else if is_auth_path(path) && req.method() == axum::http::Method::POST {
@@ -660,6 +671,71 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "different codes must still consume one shared per-IP bcrypt budget"
         );
+    }
+
+    /// `/%61bc/verify` reaches the handler as the code `abc`, so it has to spend
+    /// the same per-code budget as `/abc/verify`. Keyed on the raw path it got a
+    /// fresh bucket per spelling, and the 5-a-minute guess limit became the much
+    /// larger per-IP one.
+    #[tokio::test]
+    async fn password_code_budget_is_shared_by_every_spelling_of_the_code() {
+        use axum::{Router, middleware, routing::post};
+
+        let limiters = Arc::new(RateLimiters {
+            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            general: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            auth: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
+            password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+        });
+        let app = Router::new()
+            .route("/:code/verify", post(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limiters,
+                rate_limit_middleware,
+            ));
+        let server = axum_test::TestServer::new(app).unwrap();
+
+        assert_eq!(
+            server.post("/abcde/verify").await.status_code(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            server.post("/%61bcde/verify").await.status_code(),
+            StatusCode::OK
+        );
+        for spelling in [
+            "/abcde/verify",
+            "/a%62cde/verify",
+            "/%61%62%63%64%65/verify",
+        ] {
+            assert_eq!(
+                server.post(spelling).await.status_code(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{spelling} must share the budget of /abcde/verify"
+            );
+        }
+
+        // Control: a different link keeps its own budget.
+        assert_eq!(
+            server.post("/vwxyz/verify").await.status_code(),
+            StatusCode::OK
+        );
+    }
+
+    #[test]
+    fn route_code_is_the_decoded_first_segment() {
+        assert_eq!(route_code("/abc/verify"), "abc");
+        assert_eq!(route_code("/%61bc/verify"), "abc");
+        assert_eq!(route_code("/a%2Fb/verify"), "a/b");
+        // Decoded once, like the extractor: %2561 is the literal text %61.
+        assert_eq!(route_code("/%2561/verify"), "%61");
+        assert_eq!(route_code("/"), "unknown");
+        // Not UTF-8 once decoded: keep the raw text rather than panic.
+        assert_eq!(route_code("/%ff/verify"), "%ff");
     }
 
     fn generous_limiters(auth: RateLimiter) -> Arc<RateLimiters> {
