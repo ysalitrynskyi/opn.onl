@@ -9,7 +9,7 @@ import {
     Eye, ArrowRight, Flame, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, SessionExpiredError, authFetch, shortLinkBase } from '../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch, shortLinkBase, totalCount } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -40,11 +40,32 @@ interface AppSettings {
 
 const LINKS_PER_PAGE = 20;
 const SPARKLINE_BATCH_SIZE = 80;
+// Links are loaded from the server a page at a time; LINKS_PER_PAGE is how many
+// of the loaded ones show at once. MAX_PAGE_SIZE is the server's own cap.
+const PAGE_SIZE = 100;
+const MAX_PAGE_SIZE = 1000;
+const SEARCH_DEBOUNCE_MS = 300;
+
+function linksUrl(limit: number, offset: number, search: string) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (offset > 0) params.set('offset', String(offset));
+    if (search) params.set('search', search);
+    return `${API_ENDPOINTS.links}?${params}`;
+}
 
 const ease = [0.16, 1, 0.3, 1] as const;
 
 export default function Dashboard() {
     const [links, setLinks] = useState<LinkData[]>([]);
+    // How many links match what `links` was fetched with (all of the account's,
+    // or those matching `activeSearch`). More than `links.length` means the
+    // server holds the rest.
+    const [total, setTotal] = useState(0);
+    const [activeSearch, setActiveSearch] = useState('');
+    // How many links the account has, searched or not.
+    const [accountTotal, setAccountTotal] = useState(0);
+    const [accountClicks, setAccountClicks] = useState<number | null>(null);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [loading, setLoading] = useState(true);
     const [newUrl, setNewUrl] = useState('');
     const [alias, setAlias] = useState('');
@@ -84,6 +105,9 @@ export default function Dashboard() {
     const navigate = useNavigate();
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
+    const accountClicksRequested = useRef(false);
+    // The list as it is now, for requests that finish after a later render.
+    const listRef = useRef({ loaded: 0, search: '' });
     // IDs removed locally while a fetchLinks was in flight. Stale responses
     // must not fold these back in when they merge newly created rows.
     const droppedLinkIds = useRef(new Set<number>());
@@ -202,13 +226,17 @@ export default function Dashboard() {
         }
     };
 
+    // The term the server is asked for; it ignores surrounding spaces, so the
+    // filter below must too or the two would disagree on what matches.
+    const searchTerm = searchQuery.trim();
+
     // Filter and sort links
     const filteredLinks = useMemo(() => {
         let result = [...links];
 
         // Search filter
-        if (searchQuery) {
-            const query = searchQuery.toLowerCase();
+        if (searchTerm) {
+            const query = searchTerm.toLowerCase();
             result = result.filter(link =>
                 link.code.toLowerCase().includes(query) ||
                 link.original_url.toLowerCase().includes(query) ||
@@ -234,7 +262,7 @@ export default function Dashboard() {
         });
 
         return result;
-    }, [links, searchQuery, sortBy, sortOrder]);
+    }, [links, searchTerm, sortBy, sortOrder]);
 
     // Pagination
     const totalPages = Math.ceil(filteredLinks.length / LINKS_PER_PAGE);
@@ -256,10 +284,16 @@ export default function Dashboard() {
         }
     }, [totalPages, currentPage]);
 
-    const fetchLinks = async () => {
+    // Reload the list, keeping the search it was fetched with unless `search`
+    // names another one. A reload asks for as many links as are showing, so
+    // saving an edit does not fold away pages the user loaded; a new search
+    // starts again from the first page.
+    const fetchLinks = async (search = listRef.current.search) => {
         const requestId = ++linksFetchId.current;
+        const showing = search === listRef.current.search ? listRef.current.loaded : 0;
+        const limit = Math.min(MAX_PAGE_SIZE, Math.max(PAGE_SIZE, showing));
         try {
-            const res = await authFetch(API_ENDPOINTS.links);
+            const res = await authFetch(linksUrl(limit, 0, search));
             if (res.ok) {
                 const data: LinkData[] = await res.json();
                 if (requestId !== linksFetchId.current) {
@@ -276,7 +310,11 @@ export default function Dashboard() {
                     });
                     return;
                 }
+                const count = totalCount(res) ?? data.length;
                 setLinks(data);
+                setTotal(count);
+                setActiveSearch(search);
+                if (!search) setAccountTotal(count);
             } else {
                 const data = await res.json().catch(() => null) as { error?: string } | null;
                 if (requestId !== linksFetchId.current) return;
@@ -292,6 +330,56 @@ export default function Dashboard() {
             }
         }
     };
+
+    // Append the next page of the list being shown.
+    const loadMore = async () => {
+        if (loadingMore) return;
+        setLoadingMore(true);
+        const requestId = linksFetchId.current;
+        const wasOnLastPage = currentPage === totalPages;
+        try {
+            const res = await authFetch(linksUrl(PAGE_SIZE, links.length, activeSearch));
+            if (!res.ok) {
+                setError('Failed to load more links. Please try again.');
+                return;
+            }
+            const data: LinkData[] = await res.json();
+            // A reload, delete or pin that ran meanwhile changed the list this
+            // page was cut for; appending it could repeat or skip links.
+            if (requestId !== linksFetchId.current) return;
+            setLinks(prev => {
+                // Links created since the first page push the later ones down,
+                // so the page can start with rows that are already here.
+                const have = new Set(prev.map(l => l.id));
+                const fresh = data.filter(l => !have.has(l.id) && !droppedLinkIds.current.has(l.id));
+                return fresh.length === 0 ? prev : [...prev, ...fresh];
+            });
+            const count = totalCount(res) ?? links.length + data.length;
+            setTotal(count);
+            if (!activeSearch) setAccountTotal(count);
+            // Land on the first of the new links instead of looking unchanged.
+            if (wasOnLastPage) setCurrentPage(p => p + 1);
+        } catch (error) {
+            logger.error('Failed to load more links', error);
+            setError('Failed to load more links. Please try again.');
+        } finally {
+            setLoadingMore(false);
+        }
+    };
+
+    useEffect(() => {
+        listRef.current = { loaded: links.length, search: activeSearch };
+    }, [links.length, activeSearch]);
+
+    // With every link loaded the search box filters them as the user types.
+    // With more on the server it asks the server (after a pause, not on each
+    // key), or the links that are not loaded could never be found.
+    useEffect(() => {
+        if (loading || searchTerm === activeSearch) return;
+        if (searchTerm && !activeSearch && links.length >= total) return;
+        const timer = setTimeout(() => fetchLinks(searchTerm), SEARCH_DEBOUNCE_MS);
+        return () => clearTimeout(timer);
+    }, [loading, searchTerm, activeSearch, links.length, total]);
 
     // Fetch sparkline data for the given links. Batch ids so a large account
     // cannot blow typical request-line limits (~8KB) with one query string.
@@ -348,6 +436,34 @@ export default function Dashboard() {
         });
         fetchSparklines(ids.filter(id => !(id in sparklineDataRef.current)));
     }, [linkIdsKey, fetchSparklines]);
+
+    // The rows on hand are the whole account only when the server has nothing
+    // more to give. Then their totals are exact. Otherwise they say nothing
+    // about the account: the link count is the server's, the click count is the
+    // one Settings shows, and "active" is unknown, so it is left out.
+    const shownTotal = Math.max(total, links.length);
+    const hasMore = links.length < shownTotal;
+    const unloaded = shownTotal - links.length;
+    const accountLoaded = !activeSearch && !hasMore;
+    const linkCount = accountLoaded ? links.length : accountTotal;
+    const totalClicks = accountLoaded ? links.reduce((sum, link) => sum + link.click_count, 0) : accountClicks;
+    const activeLinks = accountLoaded ? links.filter(l => l.is_active).length : null;
+
+    const needsAccountClicks = !loading && !accountLoaded;
+    useEffect(() => {
+        if (!needsAccountClicks || accountClicksRequested.current) return;
+        accountClicksRequested.current = true;
+        (async () => {
+            try {
+                const res = await authFetch(API_ENDPOINTS.userProfile);
+                if (!res.ok) return;
+                const profile = await res.json();
+                if (typeof profile?.total_clicks === 'number') setAccountClicks(profile.total_clicks);
+            } catch (error) {
+                logger.error('Failed to fetch account totals', error);
+            }
+        })();
+    }, [needsAccountClicks]);
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -444,6 +560,8 @@ export default function Dashboard() {
                 droppedLinkIds.current.add(id);
                 linksFetchId.current += 1;
                 setLinks(prev => prev.filter(l => l.id !== id));
+                setTotal(t => Math.max(0, t - 1));
+                setAccountTotal(t => Math.max(0, t - 1));
             } else {
                 setError('Failed to delete link');
             }
@@ -571,8 +689,6 @@ export default function Dashboard() {
         }
     };
 
-    const totalClicks = links.reduce((sum, link) => sum + link.click_count, 0);
-    const activeLinks = links.filter(l => l.is_active).length;
     const validBulkUrlCount = bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length;
 
     if (loading) {
@@ -671,16 +787,20 @@ export default function Dashboard() {
                     <div className="flex items-center gap-4 mt-3 text-sm text-muted">
                         <span className="inline-flex items-center gap-1.5">
                             <Link2 className="h-4 w-4 text-faint" />
-                            {links.length} {pluralize(links.length, 'link')}
+                            {linkCount.toLocaleString()} {pluralize(linkCount, 'link')}
                         </span>
-                        <span className="inline-flex items-center gap-1.5">
-                            <Zap className="h-4 w-4 text-success" />
-                            {activeLinks} active
-                        </span>
-                        <span className="inline-flex items-center gap-1.5">
-                            <MousePointer className="h-4 w-4 text-faint" />
-                            {totalClicks.toLocaleString()} {pluralize(totalClicks, 'click')}
-                        </span>
+                        {activeLinks !== null && (
+                            <span className="inline-flex items-center gap-1.5">
+                                <Zap className="h-4 w-4 text-success" />
+                                {activeLinks} active
+                            </span>
+                        )}
+                        {totalClicks !== null && (
+                            <span className="inline-flex items-center gap-1.5">
+                                <MousePointer className="h-4 w-4 text-faint" />
+                                {totalClicks.toLocaleString()} {pluralize(totalClicks, 'click')}
+                            </span>
+                        )}
                     </div>
                 </div>
                 <div className="flex gap-2">
@@ -942,7 +1062,7 @@ export default function Dashboard() {
             </div>
 
             {/* Search and Filter */}
-            {links.length > 0 && (
+            {(links.length > 0 || accountTotal > 0) && (
                 <div className="mb-6 flex flex-col sm:flex-row gap-3">
                     <div className="relative flex-1">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-faint" />
@@ -983,7 +1103,7 @@ export default function Dashboard() {
                     <AnimatePresence mode="popLayout">
                         {paginatedLinks.map((link, index) => {
                             // Calculate link number (bottom to top, 1 = oldest)
-                            const linkNumber = filteredLinks.length - ((currentPage - 1) * LINKS_PER_PAGE + index);
+                            const linkNumber = filteredLinks.length + unloaded - ((currentPage - 1) * LINKS_PER_PAGE + index);
                             const mainUrl = `${shortLinkBase()}/${link.code}`;
                             const apiUrl = link.api_url || link.short_url; // Use api_url from backend
 
@@ -1170,31 +1290,53 @@ export default function Dashboard() {
                 </div>
 
                 {/* Pagination */}
-                {totalPages > 1 && (
-                    <div className="flex items-center justify-between pt-5 mt-1">
-                        <p className="text-sm text-faint">
-                            Showing {((currentPage - 1) * LINKS_PER_PAGE) + 1}-{Math.min(currentPage * LINKS_PER_PAGE, filteredLinks.length)} of {filteredLinks.length}
+                {(totalPages > 1 || hasMore) && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-5 mt-1">
+                        <p className="text-sm text-faint" aria-live="polite">
+                            {hasMore ? (
+                                <>
+                                    Showing {links.length.toLocaleString()} of {shownTotal.toLocaleString()} links
+                                    {(sortBy !== 'date' || sortOrder !== 'desc') && '. Sorting covers the links loaded so far.'}
+                                </>
+                            ) : (
+                                <>
+                                    Showing {((currentPage - 1) * LINKS_PER_PAGE) + 1}-{Math.min(currentPage * LINKS_PER_PAGE, filteredLinks.length)} of {filteredLinks.length}
+                                </>
+                            )}
                         </p>
                         <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                                disabled={currentPage === 1}
-                                aria-label="Previous page"
-                                className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                <ChevronLeft className="h-4 w-4" />
-                            </button>
-                            <span className="px-3 py-1 font-mono text-sm font-medium text-ink tabular-nums">
-                                {currentPage} / {totalPages}
-                            </span>
-                            <button
-                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                                disabled={currentPage === totalPages}
-                                aria-label="Next page"
-                                className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                <ChevronRight className="h-4 w-4" />
-                            </button>
+                            {totalPages > 1 && (
+                                <>
+                                    <button
+                                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                        disabled={currentPage === 1}
+                                        aria-label="Previous page"
+                                        className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        <ChevronLeft className="h-4 w-4" />
+                                    </button>
+                                    <span className="px-3 py-1 font-mono text-sm font-medium text-ink tabular-nums">
+                                        {currentPage} / {totalPages}
+                                    </span>
+                                    <button
+                                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                        disabled={currentPage === totalPages}
+                                        aria-label="Next page"
+                                        className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        <ChevronRight className="h-4 w-4" />
+                                    </button>
+                                </>
+                            )}
+                            {hasMore && (
+                                <button
+                                    onClick={loadMore}
+                                    disabled={loadingMore}
+                                    className="rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {loadingMore ? 'Loading…' : 'Load more'}
+                                </button>
+                            )}
                         </div>
                     </div>
                 )}
@@ -1205,7 +1347,7 @@ export default function Dashboard() {
                     </div>
                 )}
 
-                {links.length === 0 && !error && (
+                {links.length === 0 && accountTotal === 0 && !error && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}

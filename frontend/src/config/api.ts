@@ -201,6 +201,15 @@ export async function authFetch(
     return response;
 }
 
+// How many rows a link list matched, ignoring its `limit` and `offset`: the
+// `X-Total-Count` header, since the body is a bare array. Null when the header
+// is absent (an older server) or not a count.
+export function totalCount(response: Response): number | null {
+    const raw = response.headers?.get('X-Total-Count');
+    const count = raw ? Number(raw) : NaN;
+    return Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
 // The API's error text from a failed response: `{"error": "..."}` (or a
 // `message`), else the fallback. Never shows a raw JSON body to the user.
 export async function responseError(response: Response, fallback: string): Promise<string> {
