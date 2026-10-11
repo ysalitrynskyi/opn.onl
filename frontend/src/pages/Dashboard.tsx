@@ -102,6 +102,7 @@ export default function Dashboard() {
     const [showBulkImport, setShowBulkImport] = useState(false);
     const [bulkUrls, setBulkUrls] = useState('');
     const [bulkImporting, setBulkImporting] = useState(false);
+    const [cloningIds, setCloningIds] = useState<ReadonlySet<number>>(new Set());
     const navigate = useNavigate();
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
@@ -111,6 +112,8 @@ export default function Dashboard() {
     // IDs removed locally while a fetchLinks was in flight. Stale responses
     // must not fold these back in when they merge newly created rows.
     const droppedLinkIds = useRef(new Set<number>());
+    // Links whose clone request has not been answered yet.
+    const cloningInFlight = useRef(new Set<number>());
 
     useEffect(() => {
         const token = safeLocalStorage.getItem('token');
@@ -635,6 +638,12 @@ export default function Dashboard() {
     };
 
     const handleClone = async (link: LinkData) => {
+        // A second click before the first answer would make a second copy (and
+        // spend a second creation token). The ref answers at once; the state
+        // is what disables the button.
+        if (cloningInFlight.current.has(link.id)) return;
+        cloningInFlight.current.add(link.id);
+        setCloningIds(new Set(cloningInFlight.current));
         try {
             const res = await authFetch(API_ENDPOINTS.linkClone(link.id), {
                 method: 'POST',
@@ -649,6 +658,9 @@ export default function Dashboard() {
             }
         } catch {
             toast('Network error', 'error');
+        } finally {
+            cloningInFlight.current.delete(link.id);
+            setCloningIds(new Set(cloningInFlight.current));
         }
     };
 
@@ -1242,7 +1254,8 @@ export default function Dashboard() {
                                             </button>
                                             <button
                                                 onClick={() => handleClone(link)}
-                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                                disabled={cloningIds.has(link.id)}
+                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink disabled:cursor-wait disabled:opacity-50"
                                                 title="Clone"
                                                 aria-label={`Clone link ${link.code}`}
                                             >

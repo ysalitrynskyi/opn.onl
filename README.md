@@ -325,15 +325,16 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 |--------|----------|-------------|
 | GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only). Pinned links first, then newest first. Filters: `folder_id`, `tag_id`, `search`. Pages with `limit` (default and maximum 1000) and `offset`; the body is a JSON array and the `X-Total-Count` response header carries how many links match, ignoring `limit`/`offset` |
 | POST | `/links` | Create new link. Without an `Authorization` header the link is anonymous; a header that does not authenticate (expired, revoked or unknown token) is a 401, not an anonymous link |
-| PUT | `/links/{id}` | Update link |
+| PUT | `/links/{id}` | Update link. Only the fields you send change; `null` counts as not sent, so clear a field with its flag: `remove_expiration`, `remove_starts_at`, `remove_max_clicks`, `remove_password`, `remove_folder`. An empty `title` or `notes` clears it. A burn-after-reading link always has a click cap (1 unless you set another): turning burn off removes the cap it implied, and `remove_max_clicks` on a burn link turns burn off |
+| POST | `/links/{id}/clone` | Copy a link under a new code: destination, password, schedule, click cap, burn-after-reading, interstitial, folder, tags and routing rules. Clicks start at zero and the copy is not pinned |
 | DELETE | `/links/{id}` | Delete link (organization links: org admins and above, or the creator while still an editor) |
 | GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
 | GET / PUT | `/links/{id}/rules` | List or replace smart-routing rules (requires `ENABLE_CONDITIONAL_ROUTING`) |
 | GET | `/links/{id}/stats` | Get link analytics |
 | POST | `/links/bulk` | Create multiple links |
 | POST | `/links/bulk/delete` | Delete multiple links |
-| POST | `/links/bulk/update` | Update multiple links |
-| GET | `/links/export` | Export links as CSV (`?org_id=` for an organization's links, members only) |
+| POST | `/links/bulk/update` | Update multiple links: `folder_id` or `remove_folder`, `expires_at` or `remove_expiration`. Links you may not edit are skipped, and so are links whose new `expires_at` would not be after their own `starts_at` |
+| GET | `/links/export` | Export links as CSV, UTF-8 with a byte order mark and RFC 3339 timestamps (`?org_id=` for an organization's links, members only). A database error is a 500, never a header-only file |
 
 ### Redirects
 
