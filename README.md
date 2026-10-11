@@ -153,7 +153,7 @@ docker-compose logs -f
 
 ```bash
 curl https://api.opn.onl/health
-# {"status":"healthy","version":"1.4.0","database":"connected","redis":"connected",...}
+# {"status":"healthy","version":"1.5.0","database":"connected","redis":"connected",...}
 ```
 
 ### Option 2: Portainer (Pre-built Images)
@@ -164,7 +164,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 2. Choose the appropriate file for your architecture:
    - `docker-compose.portainer.amd64.yml` - Intel/AMD servers
    - `docker-compose.portainer.arm64.yml` - ARM servers (Raspberry Pi, Apple Silicon, etc.)
-3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.4.0`):
+3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.5.0`):
    ```
    BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
    FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
