@@ -9,8 +9,18 @@ interface ShortcutHandler {
     description: string;
 }
 
+// Every modal in the app declares itself like this. While one is open the page
+// behind it is inert, so a shortcut must not steal focus from it.
+const OPEN_MODAL_SELECTOR = '[role="dialog"][aria-modal="true"]';
+
 export function useKeyboardShortcuts(shortcuts: ShortcutHandler[]) {
     const handleKeyDown = useCallback((event: KeyboardEvent) => {
+        // Escape is how a modal is dismissed, so it still reaches the page's
+        // handler, which decides what to close.
+        if (event.key !== 'Escape' && document.querySelector(OPEN_MODAL_SELECTOR)) {
+            return;
+        }
+
         // Don't trigger shortcuts when typing in inputs. Escape still closes
         // modals / clears search while a field is focused.
         const target = event.target;
