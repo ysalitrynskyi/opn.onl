@@ -78,6 +78,9 @@ interface AdminUser {
     email_verified: boolean;
     created_at: string;
     deleted_at: string | null;
+    // When the deleted account is removed for good (no restore after);
+    // null if it is not deleted or the operator disabled the purge.
+    purge_at: string | null;
     disabled_at: string | null;
     disabled_reason: string | null;
     disabled_by: number | null;
@@ -828,7 +831,14 @@ export default function Admin() {
                                         </td>
                                         <td className="px-4 py-3">
                                             {user.deleted_at ? (
-                                                <Badge color="red">Deleted</Badge>
+                                                <>
+                                                    <Badge color="red">Deleted</Badge>
+                                                    {user.purge_at && (
+                                                        <div className="mt-1 text-xs text-slate-500">
+                                                            Permanently removed on {formatDate(user.purge_at)}
+                                                        </div>
+                                                    )}
+                                                </>
                                             ) : user.disabled_at ? (
                                                 <Badge color="red" title={user.disabled_reason ?? 'Disabled'}>Disabled</Badge>
                                             ) : user.email_verified ? (

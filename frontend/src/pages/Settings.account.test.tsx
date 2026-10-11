@@ -276,6 +276,82 @@ describe('Settings account correctness', () => {
         });
     });
 
+    describe('Deleting the account', () => {
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        const reporting = (days: number | null) => (call: Call) =>
+            call.url.includes('/auth/settings') ? reply({ ...appSettings, account_purge_days: days }) : undefined;
+
+        async function openDeleteForm() {
+            const { user } = render(<Settings />);
+            await user.click(await screen.findByRole('button', { name: 'Delete Account' }));
+            return user;
+        }
+
+        it('says what happens and quotes the removal window the server reports', async () => {
+            installApi(reporting(14));
+            await openDeleteForm();
+
+            expect(screen.getByText('Your account closes as soon as you confirm.')).toBeInTheDocument();
+            expect(screen.getByText(/short links stop working right away/)).toBeInTheDocument();
+            expect(
+                screen.getByText(/permanently removed 14 days after you delete the account/),
+            ).toBeInTheDocument();
+            expect(screen.getByText(/only an administrator can restore it/)).toBeInTheDocument();
+            // Not a number baked into the page, and not the old, false promise.
+            expect(screen.queryByText(/30 days/)).not.toBeInTheDocument();
+            expect(screen.queryByText(/All your links and data will be permanently deleted/)).not.toBeInTheDocument();
+        });
+
+        it('says "1 day" for a one-day window', async () => {
+            installApi(reporting(1));
+            await openDeleteForm();
+
+            expect(screen.getByText(/permanently removed 1 day after you delete the account/)).toBeInTheDocument();
+        });
+
+        it('does not name a date when the operator keeps deleted accounts', async () => {
+            installApi(reporting(null));
+            await openDeleteForm();
+
+            expect(screen.getByText(/stays on the server until an administrator removes it/)).toBeInTheDocument();
+            expect(screen.queryByText(/permanently removed \d+ day/)).not.toBeInTheDocument();
+        });
+
+        it('repeats the same facts in the final confirmation, and sends nothing when declined', async () => {
+            const calls = installApi(reporting(14));
+            const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+            const user = await openDeleteForm();
+
+            await user.type(screen.getByLabelText('Confirm password'), 'password123');
+            await user.click(screen.getByRole('button', { name: 'Delete My Account' }));
+
+            expect(confirm).toHaveBeenCalledTimes(1);
+            const question = String(confirm.mock.calls[0][0]);
+            expect(question).toContain('links stop working right away');
+            expect(question).toContain('permanently removed 14 days after you delete the account');
+            expect(question).not.toContain('This cannot be undone');
+            expect(calls.some((c) => c.url.includes('/auth/delete-account'))).toBe(false);
+        });
+
+        it('deletes once the user confirms', async () => {
+            const calls = installApi(reporting(14));
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            const user = await openDeleteForm();
+
+            await user.type(screen.getByLabelText('Confirm password'), 'password123');
+            await user.click(screen.getByRole('button', { name: 'Delete My Account' }));
+
+            await waitFor(() => expect(calls.some((c) => c.url.includes('/auth/delete-account'))).toBe(true));
+            const sent = calls.find((c) => c.url.includes('/auth/delete-account'))!;
+            expect(sent.method).toBe('POST');
+            expect(sent.body).toEqual({ email: profile.email, password: 'password123' });
+            await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/'));
+        });
+    });
+
     describe('Copying a new API key', () => {
         const key = 'opn_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd';
 

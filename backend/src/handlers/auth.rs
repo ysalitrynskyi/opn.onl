@@ -1276,6 +1276,10 @@ pub struct DeleteAccountRequest {
 }
 
 /// Delete own account (self-service, if enabled)
+///
+/// The account is closed immediately: sign-in and its links stop working. The
+/// data is kept for `ACCOUNT_PURGE_DAYS` (default 30) so an admin can restore
+/// the account, then removed permanently.
 #[utoipa::path(
     post,
     path = "/auth/delete-account",
@@ -1621,6 +1625,10 @@ pub async fn delete_account(
 #[derive(Serialize, ToSchema)]
 pub struct AppSettingsResponse {
     pub account_deletion_enabled: bool,
+    /// Days after deleting an account until its data is permanently removed.
+    /// `null` when the operator keeps deleted accounts until an admin removes
+    /// them (`ACCOUNT_PURGE_DAYS=0`).
+    pub account_purge_days: Option<i32>,
     pub custom_aliases_enabled: bool,
     pub max_links_per_user: Option<i32>,
     pub passkeys_enabled: bool,
@@ -1690,6 +1698,7 @@ pub async fn get_app_settings() -> impl IntoResponse {
         StatusCode::OK,
         Json(AppSettingsResponse {
             account_deletion_enabled,
+            account_purge_days: crate::utils::account_purge::account_purge_days(),
             custom_aliases_enabled,
             max_links_per_user,
             passkeys_enabled,

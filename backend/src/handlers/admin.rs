@@ -675,6 +675,85 @@ pub async fn delete_user(
         .into_response()
 }
 
+/// Why [`hard_delete_user_in`] removed nothing. The caller rolls back.
+pub(crate) enum HardDeleteError {
+    /// No such user.
+    NotFound,
+    /// The user owns organizations that still have other live members.
+    OwnsOrganizations(Vec<organizations::Model>),
+    /// A delete was refused, most likely by the `owner_id` ON DELETE RESTRICT
+    /// FK because the user (re)gained an organization concurrently.
+    Conflict(DbErr),
+    /// The ownership check itself failed.
+    Db(DbErr),
+}
+
+/// Remove a user and everything that hangs off them, inside `txn`; the caller
+/// commits. Shared by the admin hard delete and the retention purge of
+/// soft-deleted accounts, so both keep the same invariants.
+///
+/// Orgs the user owns: ones with other members block the deletion (ownership
+/// must be transferred first); solo orgs die with the account. Checked inside
+/// the transaction so a concurrent invite/transfer can't slip between check
+/// and delete; the owner_id ON DELETE RESTRICT FK is the final backstop either
+/// way.
+pub(crate) async fn hard_delete_user_in(
+    txn: &DatabaseTransaction,
+    user_id: i32,
+) -> Result<(), HardDeleteError> {
+    let split = crate::handlers::organizations::split_owned_orgs(txn, user_id)
+        .await
+        .map_err(HardDeleteError::Db)?;
+    if !split.blocking.is_empty() {
+        return Err(HardDeleteError::OwnsOrganizations(split.blocking));
+    }
+
+    let result = async {
+        for org in &split.solo {
+            crate::handlers::organizations::purge_organization(txn, org.id).await?;
+        }
+
+        // Organization links belong to the team, not their original creator.
+        // `fk-link-user_id` is ON DELETE CASCADE, so the creator FK must
+        // leave this user before the row is removed or those org links (and
+        // their click history) die with the account. Reassign to the org
+        // owner rather than NULL: list/update/delete/clone/pin all key off
+        // `user_id == caller`, and an org always has an owner. Remaining
+        // rows here cannot be in orgs this user owns (solo orgs were purged
+        // above; orgs with other members blocked the delete).
+        links::Entity::update_many()
+            .col_expr(
+                links::Column::UserId,
+                Expr::cust(
+                    "(SELECT owner_id FROM organizations WHERE organizations.id = links.org_id)",
+                ),
+            )
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_not_null())
+            .exec(txn)
+            .await?;
+
+        // Personal links (and their click_events / link_tags via cascade).
+        // Their short codes are retired first: once the rows are gone nothing
+        // else keeps the codes from being claimed by someone else.
+        crate::utils::retired_codes::retire_personal_codes(txn, user_id).await?;
+        links::Entity::delete_many()
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::OrgId.is_null())
+            .exec(txn)
+            .await?;
+
+        users::Entity::delete_by_id(user_id).exec(txn).await
+    }
+    .await;
+
+    match result {
+        Ok(res) if res.rows_affected > 0 => Ok(()),
+        Ok(_) => Err(HardDeleteError::NotFound),
+        Err(e) => Err(HardDeleteError::Conflict(e)),
+    }
+}
+
 /// Hard delete a user (admin only, use with caution)
 #[utoipa::path(
     delete,
@@ -727,80 +806,8 @@ pub async fn hard_delete_user(
         }
     };
 
-    // Orgs the user owns: ones with other members block the deletion
-    // (ownership must be transferred first); solo orgs die with the account.
-    // Checked inside the transaction so a concurrent invite/transfer can't
-    // slip between check and delete; the owner_id ON DELETE RESTRICT FK is
-    // the final backstop either way.
-    let split = match crate::handlers::organizations::split_owned_orgs(&txn, user_id).await {
-        Ok(split) => split,
-        Err(_) => {
-            let _ = txn.rollback().await;
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AdminResponse {
-                    success: false,
-                    message: "Failed to delete user".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if !split.blocking.is_empty() {
-        let _ = txn.rollback().await;
-        let slugs: Vec<&str> = split.blocking.iter().map(|o| o.slug.as_str()).collect();
-        return (StatusCode::CONFLICT, Json(AdminResponse {
-            success: false,
-            message: format!(
-                "User {} still owns organizations with other members: {}. Transfer ownership or delete them first.",
-                user_id,
-                slugs.join(", ")
-            ),
-        })).into_response();
-    }
-
-    let result = async {
-        for org in &split.solo {
-            crate::handlers::organizations::purge_organization(&txn, org.id).await?;
-        }
-
-        // Organization links belong to the team, not their original creator.
-        // `fk-link-user_id` is ON DELETE CASCADE, so the creator FK must
-        // leave this user before the row is removed or those org links (and
-        // their click history) die with the account. Reassign to the org
-        // owner rather than NULL: list/update/delete/clone/pin all key off
-        // `user_id == caller`, and an org always has an owner. Remaining
-        // rows here cannot be in orgs this user owns (solo orgs were purged
-        // above; orgs with other members blocked the delete).
-        links::Entity::update_many()
-            .col_expr(
-                links::Column::UserId,
-                Expr::cust(
-                    "(SELECT owner_id FROM organizations WHERE organizations.id = links.org_id)",
-                ),
-            )
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::OrgId.is_not_null())
-            .exec(&txn)
-            .await?;
-
-        // Personal links (and their click_events / link_tags via cascade).
-        // Their short codes are retired first: once the rows are gone nothing
-        // else keeps the codes from being claimed by someone else.
-        crate::utils::retired_codes::retire_personal_codes(&txn, user_id).await?;
-        links::Entity::delete_many()
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::OrgId.is_null())
-            .exec(&txn)
-            .await?;
-
-        users::Entity::delete_by_id(user_id).exec(&txn).await
-    }
-    .await;
-
-    match result {
-        Ok(res) if res.rows_affected > 0 => {
+    match hard_delete_user_in(&txn, user_id).await {
+        Ok(()) => {
             if txn.commit().await.is_err() {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -823,7 +830,7 @@ pub async fn hard_delete_user(
             )
                 .into_response()
         }
-        Ok(_) => {
+        Err(HardDeleteError::NotFound) => {
             let _ = txn.rollback().await;
             (
                 StatusCode::NOT_FOUND,
@@ -834,7 +841,30 @@ pub async fn hard_delete_user(
             )
                 .into_response()
         }
-        Err(_) => {
+        Err(HardDeleteError::OwnsOrganizations(blocking)) => {
+            let _ = txn.rollback().await;
+            let slugs: Vec<&str> = blocking.iter().map(|o| o.slug.as_str()).collect();
+            (StatusCode::CONFLICT, Json(AdminResponse {
+                success: false,
+                message: format!(
+                    "User {} still owns organizations with other members: {}. Transfer ownership or delete them first.",
+                    user_id,
+                    slugs.join(", ")
+                ),
+            })).into_response()
+        }
+        Err(HardDeleteError::Db(_)) => {
+            let _ = txn.rollback().await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(HardDeleteError::Conflict(_)) => {
             let _ = txn.rollback().await;
             // Most likely the owner_id RESTRICT FK: the user (re)gained an
             // organization concurrently. Surface it as a conflict rather
@@ -1625,6 +1655,10 @@ pub struct AdminUserResponse {
     pub email_verified: bool,
     pub created_at: String,
     pub deleted_at: Option<String>,
+    /// When a deleted account is removed for good and can no longer be
+    /// restored. Absent for live accounts, and when the purge is disabled
+    /// (`ACCOUNT_PURGE_DAYS=0`).
+    pub purge_at: Option<String>,
     pub disabled_at: Option<String>,
     pub disabled_reason: Option<String>,
     pub disabled_by: Option<i32>,
@@ -2617,6 +2651,7 @@ pub async fn get_all_users(
         orgs_owned_counts.extend(rows);
     }
 
+    let purge_days = crate::utils::account_purge::account_purge_days();
     let responses: Vec<AdminUserResponse> = users_page
         .into_iter()
         .map(|u| {
@@ -2629,6 +2664,11 @@ pub async fn get_all_users(
                 email_verified: u.email_verified,
                 created_at: utc_rfc3339(u.created_at),
                 deleted_at: u.deleted_at.map(utc_rfc3339),
+                purge_at: u
+                    .deleted_at
+                    .zip(purge_days)
+                    .and_then(|(at, days)| crate::utils::account_purge::purge_due_at(at, days))
+                    .map(utc_rfc3339),
                 disabled_at: u.disabled_at.map(utc_rfc3339),
                 disabled_reason: u.disabled_reason,
                 disabled_by: u.disabled_by,

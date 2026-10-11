@@ -1,3 +1,4 @@
+pub mod account_purge;
 pub mod backup;
 pub mod cache;
 pub mod click_buffer;
