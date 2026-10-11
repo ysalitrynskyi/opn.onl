@@ -201,7 +201,10 @@ fn detect_device(ua: &str) -> String {
 
     // Bots first: Googlebot smartphone also says "Mobile", and a link-preview
     // fetcher is no visitor at all.
-    if is_link_unfurler(ua) || BOT_TOKENS.iter().any(|token| ua_lower.contains(token)) {
+    // "bot" is broad on purpose (Googlebot, AhrefsBot, PetalBot, ...), so names
+    // that merely contain it are taken out first: CUBOT is a phone maker.
+    let bot_scan = ua_lower.replace("cubot", "");
+    if is_link_unfurler(ua) || BOT_TOKENS.iter().any(|token| bot_scan.contains(token)) {
         return "Bot".to_string();
     }
 
@@ -232,6 +235,18 @@ fn detect_device(ua: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phone_brand_that_contains_bot_is_not_a_bot() {
+        let cubot = "Mozilla/5.0 (Linux; Android 9; CUBOT X19) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+        assert_eq!(detect_device(cubot), "Mobile");
+        assert_eq!(
+            detect_device(
+                "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+            ),
+            "Bot"
+        );
+    }
 
     #[test]
     fn test_browser_detection() {
