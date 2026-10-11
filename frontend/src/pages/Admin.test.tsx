@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { act } from '@testing-library/react';
 import { render, screen, waitFor, fireEvent, wait } from '../test/test-utils';
 import Admin from './Admin';
 import { mockToken } from '../test/test-utils';
@@ -420,6 +421,127 @@ describe('Admin Page', () => {
                     expect.anything(),
                 );
             });
+        });
+    });
+
+    describe('Overview after an admin action', () => {
+        const baseFetch = () => global.fetch as unknown as (url: string, init?: RequestInit) => Promise<unknown>;
+        const ok = (payload: unknown) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+        const statsRequests = () =>
+            vi.mocked(global.fetch).mock.calls.filter(([url]) => String(url).includes('/admin/stats')).length;
+
+        it('shows the new counts and suspicious-links banner once a link is deleted', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            const base = baseFetch();
+            let liveStats = mockStats;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.includes('/admin/stats')) return ok(liveStats);
+                if (init?.method === 'DELETE' && url.includes('/admin/links/12')) {
+                    liveStats = { ...mockStats, total_links: 4999, suspicious_links_count: 1 };
+                    return ok({ message: 'Link deleted' });
+                }
+                return base(url, init);
+            }) as any;
+
+            render(<Admin />);
+            expect(await screen.findByText('2 suspicious links live')).toBeInTheDocument();
+            expect(screen.getByText('5,000')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('button', { name: /^links$/i }));
+            const deleteButtons = await screen.findAllByRole('button', { name: /^delete$/i });
+            fireEvent.click(deleteButtons[1]);
+            await screen.findByText('Link deleted');
+
+            fireEvent.click(screen.getByRole('button', { name: /^overview$/i }));
+            expect(await screen.findByText('1 suspicious link live')).toBeInTheDocument();
+            expect(screen.getByText('4,999')).toBeInTheDocument();
+        });
+
+        it('shows the new blocked count once a URL is blocked from the Blocked Content tab', async () => {
+            const base = baseFetch();
+            let liveStats = mockStats;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.includes('/admin/stats')) return ok(liveStats);
+                if (init?.method === 'POST' && url.includes('/admin/blocked/links')) {
+                    liveStats = { ...mockStats, blocked_links_count: 26 };
+                    return ok({ id: 9, url: 'https://bad.com/page' });
+                }
+                return base(url, init);
+            }) as any;
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /blocked content/i }));
+            fireEvent.change(await screen.findByPlaceholderText(/example\.com\/malicious/i), {
+                target: { value: 'https://bad.com/page' },
+            });
+            fireEvent.click(screen.getAllByRole('button', { name: /^block$/i })[0]);
+            await screen.findByText('URL blocked: https://bad.com/page');
+
+            fireEvent.click(screen.getByRole('button', { name: /^overview$/i }));
+            expect(await screen.findByText('26')).toBeInTheDocument();
+        });
+
+        it('does not reload the overview when the action fails', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            const base = baseFetch();
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (init?.method === 'DELETE' && url.includes('/admin/links/10')) {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 500,
+                        json: () => Promise.resolve({ message: 'Could not delete the link' }),
+                    });
+                }
+                return base(url, init);
+            }) as any;
+
+            render(<Admin />);
+            await screen.findByText('2 suspicious links live');
+            fireEvent.click(screen.getByRole('button', { name: /^links$/i }));
+            const deleteButtons = await screen.findAllByRole('button', { name: /^delete$/i });
+            const before = statsRequests();
+            fireEvent.click(deleteButtons[0]);
+            await screen.findByText('Could not delete the link');
+
+            expect(statsRequests()).toBe(before);
+        });
+
+        it('keeps the newest overview when an older request answers last', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            const base = baseFetch();
+            const answers: Array<(stats: typeof mockStats) => void> = [];
+            let initial = true;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.includes('/admin/stats')) {
+                    if (initial) {
+                        initial = false;
+                        return ok(mockStats);
+                    }
+                    return new Promise((resolve) => {
+                        answers.push((stats) => resolve({ ok: true, json: () => Promise.resolve(stats) }));
+                    });
+                }
+                if (init?.method === 'DELETE') return ok({ message: 'Link deleted' });
+                return base(url, init);
+            }) as any;
+
+            render(<Admin />);
+            await screen.findByText('2 suspicious links live');
+            fireEvent.click(screen.getByRole('button', { name: /^links$/i }));
+
+            fireEvent.click((await screen.findAllByRole('button', { name: /^delete$/i }))[0]);
+            await waitFor(() => expect(answers).toHaveLength(1));
+            fireEvent.click((await screen.findAllByRole('button', { name: /^delete$/i }))[1]);
+            await waitFor(() => expect(answers).toHaveLength(2));
+            fireEvent.click(screen.getByRole('button', { name: /^overview$/i }));
+
+            // The second request answers first, with the newer numbers.
+            await act(async () => answers[1]({ ...mockStats, total_links: 4998 }));
+            expect(await screen.findByText('4,998')).toBeInTheDocument();
+            await act(async () => answers[0]({ ...mockStats, total_links: 4999 }));
+
+            expect(screen.getByText('4,998')).toBeInTheDocument();
+            expect(screen.queryByText('4,999')).not.toBeInTheDocument();
         });
     });
 
