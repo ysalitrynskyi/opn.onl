@@ -640,12 +640,9 @@ The E2E suite needs the backend running on a fresh database; see
 
 ### Database Migrations
 
-```bash
-cd backend
-# Migrations run automatically on startup
-# To run manually:
-cargo run -- migrate
-```
+Migrations run automatically every time the backend starts (`cargo run`, or the container), and
+the test suite runs them on its first connection. There is no separate migrate command: the
+binary takes no arguments.
 
 ## Troubleshooting
 
