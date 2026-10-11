@@ -14,7 +14,9 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{folders, links, org_members};
-use crate::handlers::links::get_tags_by_link_ids;
+use crate::handlers::links::{
+    LinkPage, LinkPageQuery, get_tags_by_link_ids, link_page, page_links,
+};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_id_list, check_name, check_optional_color};
 
@@ -628,10 +630,16 @@ pub async fn move_links_to_folder(
     get,
     path = "/folders/{folder_id}/links",
     params(
-        ("folder_id" = i32, Path, description = "Folder ID")
+        ("folder_id" = i32, Path, description = "Folder ID"),
+        LinkPageQuery
     ),
     responses(
-        (status = 200, description = "Non-deleted links in folder"),
+        (
+            status = 200,
+            description = "Non-deleted links in folder, newest first (limit defaults to 1000, maximum 1000)",
+            body = Vec<LinkResponse>,
+            headers(("X-Total-Count" = u64, description = "How many links the folder holds, ignoring `limit` and `offset`"))
+        ),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),
@@ -643,8 +651,8 @@ pub async fn get_folder_links(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(folder_id): Path<i32>,
-) -> Result<Json<Vec<crate::handlers::links::LinkResponse>>, (StatusCode, Json<serde_json::Value>)>
-{
+    Query(page): Query<LinkPageQuery>,
+) -> Result<LinkPage, (StatusCode, Json<serde_json::Value>)> {
     let user_id = get_user_id_from_header(&state.db, &headers)
         .await
         .ok_or_else(|| {
@@ -678,13 +686,23 @@ pub async fn get_folder_links(
         ));
     }
 
-    // Same 1000-row cap as GET /links. This route is not used by the
-    // dashboard's client-side pager, but an unbounded folder can still be large.
-    let links_list = links::Entity::find()
+    let folder_links = links::Entity::find()
         .filter(links::Column::FolderId.eq(folder_id))
-        .filter(links::Column::DeletedAt.is_null())
+        .filter(links::Column::DeletedAt.is_null());
+
+    let total = folder_links.clone().count(&state.db).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Database error"})),
+        )
+    })?;
+
+    // Same paging as GET /links; `id` keeps rows created in the same instant
+    // in one order across pages.
+    let folder_links = folder_links
         .order_by_desc(links::Column::CreatedAt)
-        .limit(1000)
+        .order_by_desc(links::Column::Id);
+    let links_list = page_links(folder_links, page.limit, page.offset)
         .all(&state.db)
         .await
         .map_err(|_| {
@@ -736,5 +754,5 @@ pub async fn get_folder_links(
         });
     }
 
-    Ok(Json(responses))
+    Ok(link_page(total, responses))
 }

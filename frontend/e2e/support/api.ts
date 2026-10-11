@@ -13,6 +13,16 @@ import { expect, type APIRequestContext, type Page } from '@playwright/test';
 /** Backend origin. No path prefix: routes are /auth/*, /links/*, /admin/*. */
 export const API_URL = (process.env.E2E_API_URL || 'http://localhost:3000').replace(/\/$/, '');
 
+/**
+ * Whether `url` is a page of the link list. The dashboard asks for
+ * `/links?limit=100`, so comparing whole URLs with `${API_URL}/links` (as
+ * `page.route` and `waitForResponse` do) would miss it.
+ */
+export function isLinkListUrl(url: string | URL): boolean {
+    const { origin, pathname } = new URL(url);
+    return origin + pathname === `${API_URL}/links`;
+}
+
 /** Frontend origin the specs navigate to. */
 export const WEB_URL = (
     process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${process.env.E2E_WEB_PORT || '5173'}`

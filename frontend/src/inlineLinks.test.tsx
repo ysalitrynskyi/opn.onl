@@ -85,7 +85,8 @@ describe('links in running text are underlined', () => {
         localStorage.setItem('token', 'test-token');
         vi.mocked(fetch).mockImplementation(async (input) => {
             const url = String(input);
-            if (url.endsWith('/links')) {
+            // The dashboard asks for a page: /links?limit=100.
+            if (url.split('?')[0].endsWith('/links')) {
                 return json([{
                     id: 1, code: 'abc123', original_url: 'https://example.com/long', short_url: 'http://localhost:3000/abc123',
                     title: null, click_count: 3, created_at: '2026-01-01T00:00:00Z', expires_at: null,

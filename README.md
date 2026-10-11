@@ -323,7 +323,7 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only) |
+| GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only). Pinned links first, then newest first. Filters: `folder_id`, `tag_id`, `search`. Pages with `limit` (default and maximum 1000) and `offset`; the body is a JSON array and the `X-Total-Count` response header carries how many links match, ignoring `limit`/`offset` |
 | POST | `/links` | Create new link. Without an `Authorization` header the link is anonymous; a header that does not authenticate (expired, revoked or unknown token) is a 401, not an anonymous link |
 | PUT | `/links/{id}` | Update link. Only the fields you send change; `null` counts as not sent, so clear a field with its flag: `remove_expiration`, `remove_starts_at`, `remove_max_clicks`, `remove_password`, `remove_folder`. An empty `title` or `notes` clears it. A burn-after-reading link always has a click cap (1 unless you set another): turning burn off removes the cap it implied, and `remove_max_clicks` on a burn link turns burn off |
 | POST | `/links/{id}/clone` | Copy a link under a new code: destination, password, schedule, click cap, burn-after-reading, interstitial, folder, tags and routing rules. Clicks start at zero and the copy is not pinned |
@@ -381,7 +381,7 @@ the organization is deleted — one person leaving can't wipe a shared team.
 | GET | `/folders/{id}` | Get folder |
 | PUT | `/folders/{id}` | Update folder |
 | DELETE | `/folders/{id}` | Delete folder |
-| GET | `/folders/{id}/links` | Get links in folder |
+| GET | `/folders/{id}/links` | Get links in folder, newest first. Takes `limit` (default and maximum 1000) and `offset`; `X-Total-Count` carries the folder's total |
 | POST | `/folders/{id}/links` | Move links to folder |
 
 ### Tags
@@ -392,7 +392,7 @@ the organization is deleted — one person leaving can't wipe a shared team.
 | POST | `/tags` | Create tag |
 | PUT | `/tags/{id}` | Update tag |
 | DELETE | `/tags/{id}` | Delete tag |
-| GET | `/tags/{id}/links` | Get links with tag |
+| GET | `/tags/{id}/links` | Get links with tag, newest first. Takes `limit` (default and maximum 1000) and `offset`; `X-Total-Count` carries the tag's total |
 | POST | `/links/{id}/tags` | Add tags to link |
 | DELETE | `/links/{id}/tags` | Remove tags from link |
 

@@ -45,8 +45,12 @@ test('a visitor signs up, is verified, signs in, shortens a link and sees its cl
 
     // The page's API calls are cross-origin, so each non-simple one is preceded
     // by an OPTIONS preflight to the same URL; match on the method as well.
+    // Without the query string: the list is asked for as `/links?limit=100`.
     const apiResponse = (method: string, path: string) =>
-        page.waitForResponse((r) => r.request().method() === method && r.url() === `${API_URL}${path}`);
+        page.waitForResponse((r) => {
+            const { origin, pathname } = new URL(r.url());
+            return r.request().method() === method && origin + pathname === `${API_URL}${path}`;
+        });
     // The dashboard and analytics pages are lazy chunks that load their data on
     // mount. Waiting for that data (no timeout but the test's) rather than for
     // the first element keeps a slow first compile from failing an assertion.

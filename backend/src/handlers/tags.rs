@@ -16,6 +16,7 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::{link_tags, links, org_members, tags};
 use crate::handlers::link_access::{LinkAction, authorize_link};
+use crate::handlers::links::{LinkPage, LinkPageQuery, link_page, page_links};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_id_list, check_name, check_optional_color};
 
@@ -801,10 +802,16 @@ pub async fn remove_tags_from_link(
     get,
     path = "/tags/{tag_id}/links",
     params(
-        ("tag_id" = i32, Path, description = "Tag ID")
+        ("tag_id" = i32, Path, description = "Tag ID"),
+        LinkPageQuery
     ),
     responses(
-        (status = 200, description = "Non-deleted links with this tag, each with its tags"),
+        (
+            status = 200,
+            description = "Non-deleted links with this tag, each with its tags, newest first (limit defaults to 1000, maximum 1000)",
+            body = Vec<LinkResponse>,
+            headers(("X-Total-Count" = u64, description = "How many links carry the tag, ignoring `limit` and `offset`"))
+        ),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Tag not found"),
@@ -817,8 +824,8 @@ pub async fn get_links_by_tag(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(tag_id): Path<i32>,
-) -> Result<Json<Vec<crate::handlers::links::LinkResponse>>, (StatusCode, Json<serde_json::Value>)>
-{
+    Query(page): Query<LinkPageQuery>,
+) -> Result<LinkPage, (StatusCode, Json<serde_json::Value>)> {
     let user_id = get_user_id_from_header(&state.db, &headers)
         .await
         .ok_or_else(|| {
@@ -862,12 +869,27 @@ pub async fn get_links_by_tag(
             .filter(links::Column::UserId.eq(user_id)),
     };
 
-    let links_list = links_query.all(&state.db).await.map_err(|_| {
+    let total = links_query.clone().count(&state.db).await.map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "Database error"})),
         )
     })?;
+
+    // Same paging as GET /links; `id` keeps rows created in the same instant
+    // in one order across pages.
+    let links_query = links_query
+        .order_by_desc(links::Column::CreatedAt)
+        .order_by_desc(links::Column::Id);
+    let links_list = page_links(links_query, page.limit, page.offset)
+        .all(&state.db)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?;
 
     let link_ids: Vec<i32> = links_list.iter().map(|l| l.id).collect();
     let mut tags_by_link = crate::handlers::links::get_tags_by_link_ids(&state.db, &link_ids)
@@ -905,5 +927,5 @@ pub async fn get_links_by_tag(
         })
         .collect();
 
-    Ok(Json(responses))
+    Ok(link_page(total, responses))
 }
