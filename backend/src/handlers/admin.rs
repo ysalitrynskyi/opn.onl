@@ -959,7 +959,10 @@ pub async fn restore_user(
         let _ = txn.rollback().await;
         // The address was registered again after this account was deleted, and
         // the live-email unique index refuses a second account holding it.
-        if err.to_string().contains("duplicate key value") {
+        if matches!(
+            err.sql_err(),
+            Some(sea_orm::SqlErr::UniqueConstraintViolation(_))
+        ) {
             return (
                 StatusCode::CONFLICT,
                 Json(AdminResponse {
