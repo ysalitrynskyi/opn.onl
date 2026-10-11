@@ -70,6 +70,35 @@ pub fn check_name(label: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A value of more than `max` characters, as `field: must be at most N
+/// characters`, the wording `validation_error_message` gives a length rule.
+/// Characters, not bytes: a Cyrillic or CJK text takes two to four bytes per
+/// character, and the forms count what the person typed.
+pub fn check_max_chars(field: &str, value: &str, max: usize) -> Result<(), String> {
+    if value.chars().count() > max {
+        return Err(format!("{field}: must be at most {max} characters"));
+    }
+    Ok(())
+}
+
+/// Most ids a request body may list. Matches the `/links/bulk/*` endpoints,
+/// and keeps every `IN (...)` built from such a list far below the 65,535
+/// bind parameters one statement may carry.
+pub const MAX_IDS_PER_REQUEST: usize = 500;
+
+/// An id list from a request body: rejected when it is longer than
+/// `MAX_IDS_PER_REQUEST` as sent (repeats count), otherwise returned without
+/// repeats in first-seen order so a row is acted on, and counted, once.
+pub fn check_id_list(ids: Vec<i32>) -> Result<Vec<i32>, String> {
+    if ids.len() > MAX_IDS_PER_REQUEST {
+        return Err(format!(
+            "Too many items in one request (max {MAX_IDS_PER_REQUEST})"
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    Ok(ids.into_iter().filter(|id| seen.insert(*id)).collect())
+}
+
 /// `#rgb` or `#rrggbb`, which is what the colour inputs send. The value is
 /// rendered straight into a style attribute, so nothing else is stored.
 pub fn check_hex_color(color: &str) -> Result<(), String> {
@@ -160,6 +189,28 @@ mod tests {
             message.contains("password: Password must be at least 8 characters"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn length_limits_count_characters_not_bytes() {
+        // 300 Cyrillic letters are 600 bytes.
+        let cyrillic = "\u{436}".repeat(300);
+        assert!(check_max_chars("bio", &cyrillic, 500).is_ok());
+        assert!(check_max_chars("bio", &"x".repeat(500), 500).is_ok());
+        assert_eq!(
+            check_max_chars("bio", &"x".repeat(501), 500).unwrap_err(),
+            "bio: must be at most 500 characters"
+        );
+    }
+
+    #[test]
+    fn id_lists_are_capped_as_sent_and_deduplicated() {
+        assert_eq!(check_id_list(vec![3, 1, 3, 2, 1]).unwrap(), vec![3, 1, 2]);
+        assert_eq!(check_id_list(Vec::new()).unwrap(), Vec::<i32>::new());
+        assert!(check_id_list(vec![7; MAX_IDS_PER_REQUEST]).is_ok());
+        // Over the cap is refused even when every entry is the same id.
+        let err = check_id_list(vec![7; MAX_IDS_PER_REQUEST + 1]).unwrap_err();
+        assert_eq!(err, "Too many items in one request (max 500)");
     }
 
     #[test]

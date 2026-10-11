@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -97,6 +97,8 @@ export default function Settings() {
     const [newKeyName, setNewKeyName] = useState('');
     const [createdApiKey, setCreatedApiKey] = useState<string | null>(null);
     const [creatingKey, setCreatingKey] = useState(false);
+    const [copyFailed, setCopyFailed] = useState(false);
+    const createdKeyRef = useRef<HTMLElement>(null);
 
     useEffect(() => {
         const token = safeLocalStorage.getItem('token');
@@ -172,7 +174,7 @@ export default function Settings() {
             });
 
             if (!startRes.ok) {
-                throw new Error('Failed to start passkey registration');
+                throw new Error(await responseError(startRes, 'Failed to start passkey registration'));
             }
 
             const { options } = await startRes.json();
@@ -217,7 +219,7 @@ export default function Settings() {
             });
 
             if (!finishRes.ok) {
-                throw new Error('Failed to finish passkey registration');
+                throw new Error(await responseError(finishRes, 'Failed to finish passkey registration'));
             }
 
             setSuccess('Passkey registered successfully!');
@@ -241,6 +243,14 @@ export default function Settings() {
             if (!res.ok) {
                 const data = await res.json();
                 throw new Error(data.error || 'Failed to delete passkey');
+            }
+
+            // Deleting a passkey revokes every older session, this one
+            // included. Keep the replacement token, or the reload below is
+            // rejected and the user is sent to /login.
+            const data = await res.json().catch(() => null) as { token?: string } | null;
+            if (data?.token) {
+                safeLocalStorage.setItem('token', data.token);
             }
 
             setSuccess('Passkey deleted successfully');
@@ -351,14 +361,22 @@ export default function Settings() {
         setError('');
 
         try {
-            const res = await fetch(API_ENDPOINTS.resendVerification, {
+            // Signed in, so the server answers for this account specifically:
+            // sent, already verified, wait N minutes, or no email on this
+            // server. Anonymous callers only ever get "if the account exists".
+            const res = await authFetch(API_ENDPOINTS.resendVerification, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: profile?.email }),
             });
 
-            if (!res.ok) throw new Error('Failed to resend verification email');
-            setSuccess('Verification email sent!');
+            if (!res.ok) {
+                const body = await res.json().catch(() => null) as { error?: string; message?: string } | null;
+                // A 429's `error` is the generic "Too many requests"; its `message` says what to do.
+                const detail = (res.status === 429 ? body?.message : undefined) || body?.error || body?.message;
+                throw new Error(detail || 'Failed to resend verification email');
+            }
+            const body = await res.json().catch(() => null) as { message?: string } | null;
+            setSuccess(body?.message || 'Verification email sent');
         } catch (err) {
             setError(errorMessage(err));
         } finally {
@@ -400,16 +418,17 @@ export default function Settings() {
         setError('');
 
         try {
-            if (website && !isSafeHttpUrl(website)) {
+            if (website.trim() && !isSafeHttpUrl(website)) {
                 throw new Error('Website must be an http or https URL');
             }
+            // An empty string clears a field; a missing key leaves it as it is.
             const res = await authFetch(API_ENDPOINTS.updateProfile, {
                 method: 'PUT',
                 body: JSON.stringify({
-                    display_name: displayName || undefined,
-                    bio: bio || undefined,
-                    website: website || undefined,
-                    location: location || undefined,
+                    display_name: displayName,
+                    bio,
+                    website,
+                    location,
                 }),
             });
 
@@ -471,6 +490,7 @@ export default function Settings() {
             }
             const data = await res.json();
             setCreatedApiKey(data.key);
+            setCopyFailed(false);
             setNewKeyName('');
             setSuccess("API key created — copy it now, it won't be shown again.");
             // Do not refetch: fetchData sets loading and can null profile,
@@ -488,6 +508,29 @@ export default function Settings() {
             setError(errorMessage(err));
         } finally {
             setCreatingKey(false);
+        }
+    };
+
+    const handleCopyApiKey = async () => {
+        if (!createdApiKey) return;
+        try {
+            // Throws when there is no clipboard API (a page served over plain
+            // HTTP has none) and when the browser refuses the write.
+            await navigator.clipboard.writeText(createdApiKey);
+            setCopyFailed(false);
+            setSuccess('Copied to clipboard');
+        } catch {
+            // The key is shown once. Select it so Ctrl/Cmd+C still works, and
+            // say it was not copied.
+            const key = createdKeyRef.current;
+            if (key) {
+                const range = document.createRange();
+                range.selectNodeContents(key);
+                const selection = window.getSelection();
+                selection?.removeAllRanges();
+                selection?.addRange(range);
+            }
+            setCopyFailed(true);
         }
     };
 
@@ -662,6 +705,7 @@ export default function Settings() {
                                             onChange={(e) => setWebsite(e.target.value)}
                                             className={inputClass}
                                             placeholder="https://example.com"
+                                            maxLength={2048}
                                         />
                                     </div>
                                     <div>
@@ -774,7 +818,8 @@ export default function Settings() {
                                 </div>
                                 <button
                                     onClick={handleRegisterPasskey}
-                                    disabled={registeringPasskey}
+                                    disabled={registeringPasskey || !profile.email_verified}
+                                    aria-describedby={profile.email_verified ? undefined : 'passkey-verify-hint'}
                                     className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
                                 >
                                     {registeringPasskey ? (
@@ -785,6 +830,11 @@ export default function Settings() {
                                     Add Passkey
                                 </button>
                             </div>
+                            {!profile.email_verified && (
+                                <p id="passkey-verify-hint" className="mt-3 text-xs text-warning">
+                                    Verify your email to add a passkey.
+                                </p>
+                            )}
                         </div>
                         <div className="divide-y divide-line">
                             {passkeys.length === 0 ? (
@@ -996,15 +1046,20 @@ export default function Settings() {
                                 <div className="rounded-lg border border-primary-200 bg-primary-50/60 p-4">
                                     <p className="text-sm font-medium text-ink mb-2">Your new API key — copy it now, it won't be shown again:</p>
                                     <div className="flex items-center gap-2">
-                                        <code className="flex-1 break-all rounded-md border border-line2 bg-surface px-3 py-2 font-mono text-xs text-ink">{createdApiKey}</code>
+                                        <code ref={createdKeyRef} className="flex-1 select-all break-all rounded-md border border-line2 bg-surface px-3 py-2 font-mono text-xs text-ink">{createdApiKey}</code>
                                         <button
                                             type="button"
-                                            onClick={() => { navigator.clipboard?.writeText(createdApiKey); setSuccess('Copied to clipboard'); }}
+                                            onClick={handleCopyApiKey}
                                             className="rounded-lg border border-line2 px-3 py-2 text-sm text-muted transition-colors hover:text-ink hover:border-ink/30"
                                         >
                                             Copy
                                         </button>
                                     </div>
+                                    {copyFailed && (
+                                        <p role="alert" className="mt-2 text-xs text-danger">
+                                            Could not copy automatically. The key is selected: press Ctrl+C (Cmd+C on a Mac) to copy it.
+                                        </p>
+                                    )}
                                 </div>
                             )}
 

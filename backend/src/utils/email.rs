@@ -1,97 +1,33 @@
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::MultiPart,
+    Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::{Mailbox, MultiPart},
     transport::smtp::authentication::Credentials,
 };
-use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-/// Global email rate limiter to prevent abuse and control costs
-/// Uses a sliding window approach: tracks emails sent in the current hour
-struct GlobalEmailRateLimiter {
-    /// Number of emails sent in the current hour window
-    count: AtomicU64,
-    /// Start of the current hour window (Unix timestamp)
-    window_start: Mutex<u64>,
-    /// Maximum emails per hour (configurable via EMAIL_RATE_LIMIT_PER_HOUR)
-    limit: u64,
+use super::email_limits::{MailDenied, MailKind, Pools, TriggerLimiter, loggable_domain};
+
+/// Hourly mail budget when `EMAIL_RATE_LIMIT_PER_HOUR` is unset or invalid.
+const DEFAULT_HOURLY_LIMIT: u64 = 500;
+
+/// How the password changed, which decides what the security notice can say
+/// was revoked. A reset is account recovery, so it also removes the API keys
+/// and passkeys; a change made while signed in leaves them in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasswordChange {
+    Reset,
+    Change,
 }
-
-impl GlobalEmailRateLimiter {
-    fn new() -> Self {
-        let limit = std::env::var("EMAIL_RATE_LIMIT_PER_HOUR")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(500); // Default: 500 emails per hour
-
-        info!("Email rate limit configured: {} emails/hour", limit);
-
-        Self {
-            count: AtomicU64::new(0),
-            window_start: Mutex::new(Self::current_hour()),
-            limit,
-        }
-    }
-
-    fn current_hour() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            / 3600
-    }
-
-    /// Try to acquire a permit to send an email
-    /// Returns Ok(()) if allowed, Err with message if rate limited
-    fn try_acquire(&self) -> Result<(), String> {
-        let current_hour = Self::current_hour();
-
-        // Check if we need to reset the window
-        {
-            let mut window = self.window_start.lock();
-            if *window < current_hour {
-                // New hour, reset counter
-                *window = current_hour;
-                self.count.store(0, Ordering::SeqCst);
-                info!("Email rate limit window reset");
-            }
-        }
-
-        // Try to increment counter
-        let current = self.count.fetch_add(1, Ordering::SeqCst);
-
-        if current >= self.limit {
-            // We're over the limit, decrement back
-            self.count.fetch_sub(1, Ordering::SeqCst);
-            warn!(
-                "Email rate limit exceeded: {}/{} emails this hour",
-                current, self.limit
-            );
-            Err(format!(
-                "Email rate limit exceeded ({}/hour). Please try again later.",
-                self.limit
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Get current usage stats
-    fn stats(&self) -> (u64, u64) {
-        (self.count.load(Ordering::SeqCst), self.limit)
-    }
-}
-
-/// Global singleton for email rate limiting
-static EMAIL_RATE_LIMITER: once_cell::sync::Lazy<GlobalEmailRateLimiter> =
-    once_cell::sync::Lazy::new(GlobalEmailRateLimiter::new);
 
 pub struct EmailService {
     mailer: Option<AsyncSmtpTransport<Tokio1Executor>>,
     from_email: String,
     from_name: String,
     frontend_url: String,
+    /// Instance-wide hourly budget, split by kind of mail.
+    pools: Pools,
+    /// Per-recipient and per-client limits on mail a request can trigger.
+    triggers: TriggerLimiter,
 }
 
 impl Default for EmailService {
@@ -216,35 +152,76 @@ impl EmailService {
             None
         };
 
+        let hourly_limit = std::env::var("EMAIL_RATE_LIMIT_PER_HOUR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_HOURLY_LIMIT);
+        let pools = Pools::from_total(hourly_limit);
+        let (account, security, contact) = pools.sizes();
+        info!(
+            "Email rate limit configured: {} emails/hour (account {}, security notices {}, contact form {})",
+            hourly_limit, account, security, contact
+        );
+
         Self {
             mailer,
             from_email,
             from_name,
             frontend_url,
+            pools,
+            triggers: TriggerLimiter::new(),
         }
+    }
+
+    /// Replace the hourly budget (`EMAIL_RATE_LIMIT_PER_HOUR`) of this service.
+    pub fn with_hourly_limit(mut self, total: u64) -> Self {
+        self.pools = Pools::from_total(total);
+        self
     }
 
     pub fn is_configured(&self) -> bool {
         self.mailer.is_some()
     }
 
-    async fn send_email(&self, to: &str, subject: &str, body: &EmailBody) -> Result<(), String> {
-        self.send_email_internal(to, subject, body, None).await
+    /// Ask to send one mail of `kind` to `recipient` because of a request from
+    /// `client` (its [`ClientKey`](super::rate_limiter::ClientKey)). `Ok`
+    /// spends the recipient's and the client's allowance; the caller then
+    /// sends. `Err` means send nothing, and leave any token already mailed to
+    /// that address as it is.
+    ///
+    /// Also refuses while the pool the mail would draw on is spent, so a
+    /// request that cannot be served does not replace a working link.
+    pub fn reserve(&self, kind: MailKind, recipient: &str, client: &str) -> Result<(), MailDenied> {
+        self.pools.check(kind)?;
+        self.triggers.try_acquire(kind, recipient, client)
     }
 
-    pub async fn send_email_with_reply_to(
+    async fn send_email(
+        &self,
+        kind: MailKind,
+        to: &str,
+        subject: &str,
+        body: &EmailBody,
+    ) -> Result<(), String> {
+        self.send_email_internal(kind, to, subject, body, None)
+            .await
+    }
+
+    /// Mail a contact-form message, with the visitor's address as Reply-To.
+    pub async fn send_contact_email(
         &self,
         to: &str,
         subject: &str,
         body: &EmailBody,
         reply_to: &str,
     ) -> Result<(), String> {
-        self.send_email_internal(to, subject, body, Some(reply_to))
+        self.send_email_internal(MailKind::Contact, to, subject, body, Some(reply_to))
             .await
     }
 
     async fn send_email_internal(
         &self,
+        kind: MailKind,
         to: &str,
         subject: &str,
         body: &EmailBody,
@@ -252,11 +229,23 @@ impl EmailService {
     ) -> Result<(), String> {
         let mailer = self.mailer.as_ref().ok_or("Email service not configured")?;
 
-        // Check global rate limit before sending
-        EMAIL_RATE_LIMITER.try_acquire()?;
-
-        let (used, limit) = EMAIL_RATE_LIMITER.stats();
-        info!("Sending email to {} ({}/{} this hour)", to, used, limit);
+        // The pool this kind of mail draws on, so a flood of one kind cannot
+        // use up what another needs.
+        let (used, limit) = self.pools.try_acquire(kind).map_err(|_| {
+            format!(
+                "Email rate limit exceeded for {} mail ({}/hour in total). Please try again later.",
+                kind.label(),
+                self.pools.total()
+            )
+        })?;
+        // The domain only: addresses do not belong in logs.
+        info!(
+            "Sending {} email to a {} address ({}/{} of its pool this hour)",
+            kind.label(),
+            loggable_domain(to),
+            used,
+            limit
+        );
 
         let email = self.build_message(to, subject, body, reply_to)?;
 
@@ -278,11 +267,7 @@ impl EmailService {
         reply_to: Option<&str>,
     ) -> Result<Message, String> {
         let mut builder = Message::builder()
-            .from(
-                format!("{} <{}>", self.from_name, self.from_email)
-                    .parse()
-                    .map_err(|e| format!("Invalid from address: {}", e))?,
-            )
+            .from(self.sender()?)
             .to(to
                 .parse()
                 .map_err(|e| format!("Invalid to address: {}", e))?)
@@ -302,6 +287,21 @@ impl EmailService {
                 body.html.clone(),
             ))
             .map_err(|e| format!("Failed to build email: {}", e))
+    }
+
+    /// The sender as a mailbox. The display name is set on the mailbox rather
+    /// than spliced into an address string, so a name such as `Acme, Inc.`
+    /// is quoted instead of being rejected by the address grammar.
+    fn sender(&self) -> Result<Mailbox, String> {
+        let address: Address = self
+            .from_email
+            .parse()
+            .map_err(|e| format!("Invalid from address: {}", e))?;
+        let name = self.from_name.trim();
+        Ok(Mailbox::new(
+            (!name.is_empty()).then(|| name.to_string()),
+            address,
+        ))
     }
 
     fn verification_email(&self, token: &str) -> EmailBody {
@@ -344,16 +344,24 @@ impl EmailService {
         )
     }
 
-    fn password_changed_email(&self, changed_at: &str) -> EmailBody {
+    fn password_changed_email(&self, change: PasswordChange, changed_at: &str) -> EmailBody {
         let url = format!("{}/forgot-password", self.frontend_url);
-        let when = format!("The password for your opn.onl account was changed on {changed_at}.");
+        let (verb, revoked, advice) = match change {
+            PasswordChange::Reset => (
+                "reset",
+                "Every signed-in session was signed out, and all API keys and passkeys on the account were removed. Create new ones in Settings if you need them.",
+                "If you made this change, you don't need to do anything. If you didn't, reset your password again now:",
+            ),
+            PasswordChange::Change => (
+                "changed",
+                "Your other signed-in sessions were signed out. Your API keys and passkeys were not changed.",
+                "If you made this change, you don't need to do anything. If you didn't, reset your password now, which also removes all API keys and passkeys:",
+            ),
+        };
+        let when = format!("The password for your opn.onl account was {verb} on {changed_at}.");
         EmailBody::new(
             "Your password was changed",
-            &[
-                &when,
-                "Sessions signed in with the old password have been signed out.",
-                "If you made this change, you don't need to do anything. If you didn't, reset your password now:",
-            ],
+            &[&when, revoked, advice],
             Some(("Reset Password", &url)),
             &[],
             "You get this email whenever the password on your account changes.",
@@ -362,6 +370,7 @@ impl EmailService {
 
     pub async fn send_verification_email(&self, to: &str, token: &str) -> Result<(), String> {
         self.send_email(
+            MailKind::Verification,
             to,
             "Verify your email - opn.onl",
             &self.verification_email(token),
@@ -371,6 +380,7 @@ impl EmailService {
 
     pub async fn send_password_reset_email(&self, to: &str, token: &str) -> Result<(), String> {
         self.send_email(
+            MailKind::PasswordReset,
             to,
             "Reset your password - opn.onl",
             &self.password_reset_email(token),
@@ -379,18 +389,29 @@ impl EmailService {
     }
 
     pub async fn send_welcome_email(&self, to: &str) -> Result<(), String> {
-        self.send_email(to, "Welcome to opn.onl!", &self.welcome_email())
-            .await
+        self.send_email(
+            MailKind::Welcome,
+            to,
+            "Welcome to opn.onl!",
+            &self.welcome_email(),
+        )
+        .await
     }
 
     /// Security notice after a password change or reset. If the owner did not
-    /// make the change, this is how they find out.
-    pub async fn send_password_changed_email(&self, to: &str) -> Result<(), String> {
+    /// make the change, this is how they find out, so it says what was and
+    /// was not revoked for the way the password changed.
+    pub async fn send_password_changed_email(
+        &self,
+        to: &str,
+        change: PasswordChange,
+    ) -> Result<(), String> {
         let changed_at = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
         self.send_email(
+            MailKind::PasswordChanged,
             to,
             "Your password was changed - opn.onl",
-            &self.password_changed_email(&changed_at),
+            &self.password_changed_email(change, &changed_at),
         )
         .await
     }
@@ -465,12 +486,6 @@ impl EmailBody {
     }
 }
 
-impl Clone for EmailService {
-    fn clone(&self) -> Self {
-        Self::new()
-    }
-}
-
 pub fn generate_token() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
@@ -485,7 +500,7 @@ pub fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailService, generate_token};
+    use super::{EmailService, PasswordChange, Pools, TriggerLimiter, generate_token};
 
     fn service() -> EmailService {
         EmailService {
@@ -493,6 +508,8 @@ mod tests {
             from_email: "noreply@opn.example".to_string(),
             from_name: "opn.onl".to_string(),
             frontend_url: "https://opn.example".to_string(),
+            pools: Pools::from_total(500),
+            triggers: TriggerLimiter::new(),
         }
     }
 
@@ -512,7 +529,7 @@ mod tests {
             ),
             (svc.welcome_email(), "https://opn.example/dashboard"),
             (
-                svc.password_changed_email("2026-09-30 12:00 UTC"),
+                svc.password_changed_email(PasswordChange::Change, "2026-09-30 12:00 UTC"),
                 "https://opn.example/forgot-password",
             ),
         ];
@@ -542,6 +559,106 @@ mod tests {
             assert!(raw.contains("text/html"), "{raw}");
         }
         assert!(bodies[3].0.text.contains("2026-09-30 12:00 UTC"));
+    }
+
+    /// The notice is the one place a person learns what a password change
+    /// revoked, so it must not claim more or less than the change did.
+    #[test]
+    fn the_password_notice_matches_what_each_kind_of_change_revoked() {
+        let svc = service();
+        let reset = svc
+            .password_changed_email(PasswordChange::Reset, "2026-09-30 12:00 UTC")
+            .text;
+        assert!(
+            reset.contains("was reset on 2026-09-30 12:00 UTC"),
+            "{reset}"
+        );
+        assert!(
+            reset.contains("all API keys and passkeys on the account were removed"),
+            "{reset}"
+        );
+        assert!(!reset.contains("were not changed"), "{reset}");
+
+        let change = svc
+            .password_changed_email(PasswordChange::Change, "2026-09-30 12:00 UTC")
+            .text;
+        assert!(
+            change.contains("was changed on 2026-09-30 12:00 UTC"),
+            "{change}"
+        );
+        assert!(
+            change.contains("other signed-in sessions were signed out"),
+            "{change}"
+        );
+        assert!(
+            change.contains("API keys and passkeys were not changed"),
+            "{change}"
+        );
+        assert!(!change.contains("were removed"), "{change}");
+    }
+
+    /// The display name the From header carries, whether the writer left it
+    /// plain, quoted it, or sent it as an RFC 2047 encoded word.
+    fn from_display_name(raw: &str) -> String {
+        use base64::Engine as _;
+        let line = raw
+            .lines()
+            .find_map(|line| line.strip_prefix("From: "))
+            .expect("From header");
+        let name = line.split(" <").next().expect("name part");
+        match name
+            .strip_prefix("=?utf-8?b?")
+            .and_then(|rest| rest.strip_suffix("?="))
+        {
+            Some(encoded) => String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .expect("base64"),
+            )
+            .expect("utf-8"),
+            None => name
+                .strip_prefix('"')
+                .and_then(|quoted| quoted.strip_suffix('"'))
+                .unwrap_or(name)
+                .replace("\\\"", "\""),
+        }
+    }
+
+    /// `SMTP_FROM_NAME="Acme, Inc."` used to fail the address grammar, and
+    /// every email (password reset included) then failed with "Invalid from
+    /// address".
+    #[test]
+    fn a_sender_name_with_special_characters_is_quoted_not_rejected() {
+        for name in [
+            "Acme, Inc.",
+            "Acme <Support>",
+            "Say \"hi\"",
+            "Caf\u{e9}, Cr\u{e8}me",
+            "opn.onl",
+        ] {
+            let mut svc = service();
+            svc.from_name = name.to_string();
+            let message = svc
+                .build_message("user@opn.example", "Subject", &svc.welcome_email(), None)
+                .unwrap_or_else(|e| panic!("sender name {name:?}: {e}"));
+            let raw = String::from_utf8(message.formatted()).expect("utf-8");
+            assert!(
+                raw.contains("<noreply@opn.example>"),
+                "sender name {name:?}: {raw}"
+            );
+            assert_eq!(from_display_name(&raw), name, "{raw}");
+        }
+    }
+
+    #[test]
+    fn an_empty_sender_name_sends_the_bare_address() {
+        let mut svc = service();
+        svc.from_name = "  ".to_string();
+        let message = svc
+            .build_message("user@opn.example", "Subject", &svc.welcome_email(), None)
+            .expect("message builds");
+        let raw = String::from_utf8(message.formatted()).expect("utf-8");
+        assert!(raw.contains("From: noreply@opn.example"), "{raw}");
     }
 
     #[test]

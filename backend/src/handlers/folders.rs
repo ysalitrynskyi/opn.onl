@@ -3,8 +3,9 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ use crate::handlers::links::{
     LinkPage, LinkPageQuery, get_tags_by_link_ids, link_page, page_links,
 };
 use crate::utils::time::utc_rfc3339;
-use crate::utils::validation::{check_name, check_optional_color};
+use crate::utils::validation::{check_id_list, check_name, check_optional_color};
 
 // ============= DTOs =============
 
@@ -52,6 +53,7 @@ pub struct FolderResponse {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct MoveLinkToFolderRequest {
+    /// Link IDs to move. At most 500; duplicates are ignored.
     pub link_ids: Vec<i32>,
 }
 
@@ -530,7 +532,8 @@ pub async fn delete_folder(
     ),
     request_body = MoveLinkToFolderRequest,
     responses(
-        (status = 200, description = "Links moved (`{\"moved\": N}`)"),
+        (status = 200, description = "Links moved (`{\"moved\": N}`); ids the caller cannot move are skipped and not counted"),
+        (status = 400, description = "More than 500 link ids"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Folder not found"),
@@ -552,6 +555,13 @@ pub async fn move_links_to_folder(
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
         })?;
+
+    let link_ids = check_id_list(payload.link_ids).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        )
+    })?;
 
     // Verify folder exists and user has access
     let folder = folders::Entity::find_by_id(folder_id)
@@ -579,33 +589,30 @@ pub async fn move_links_to_folder(
         ));
     }
 
-    let mut moved_count = 0;
-    for link_id in payload.link_ids {
-        let link = links::Entity::find_by_id(link_id)
-            .filter(links::Column::DeletedAt.is_null())
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten();
-
-        if let Some(link) = link {
-            // Never cross personal/organization boundaries. For an org folder,
-            // `can_edit_folder` already proved current edit membership in this
-            // exact org; creator `user_id` is intentionally irrelevant.
-            let link_access = link.org_id == folder.org_id
-                && match link.org_id {
-                    Some(_) => true,
-                    None => link.user_id == Some(user_id),
-                };
-
-            if link_access {
-                let mut link: links::ActiveModel = link.into();
-                link.folder_id = Set(Some(folder_id));
-                let _ = link.update(&state.db).await;
-                moved_count += 1;
-            }
-        }
-    }
+    // One statement for the whole list. The scope filter keeps a move inside
+    // the folder's own side of the personal/organization boundary: for an org
+    // folder `can_edit_folder` already proved current edit membership in this
+    // exact org, so the creator `user_id` is intentionally irrelevant there.
+    let in_scope = match folder.org_id {
+        Some(org_id) => Condition::all().add(links::Column::OrgId.eq(org_id)),
+        None => Condition::all()
+            .add(links::Column::OrgId.is_null())
+            .add(links::Column::UserId.eq(user_id)),
+    };
+    let moved_count = links::Entity::update_many()
+        .col_expr(links::Column::FolderId, Expr::value(folder_id))
+        .filter(links::Column::Id.is_in(link_ids))
+        .filter(links::Column::DeletedAt.is_null())
+        .filter(in_scope)
+        .exec(&state.db)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to move links"})),
+            )
+        })?
+        .rows_affected;
 
     Ok(Json(serde_json::json!({
         "moved": moved_count

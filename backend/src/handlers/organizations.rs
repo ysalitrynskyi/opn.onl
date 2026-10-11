@@ -13,9 +13,7 @@ use std::collections::HashMap;
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::entity::{
-    audit_log, click_events, folders, link_tags, links, org_members, organizations, tags, users,
-};
+use crate::entity::{audit_log, folders, links, org_members, organizations, tags, users};
 use crate::utils::email_domain_policy::normalize_email;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_name, check_slug};
@@ -248,28 +246,15 @@ pub(crate) fn ownership_conflict_body(blocking: &[organizations::Model]) -> serd
 
 /// Delete an organization and all of its data: links (with click events and
 /// tag assignments), folders, tags, audit log, memberships, then the org row.
+///
+/// Click events and tag assignments leave with their links through the
+/// `ON DELETE CASCADE` foreign keys. Do not collect the link ids to delete
+/// them by id instead: an organization can hold more links than one statement
+/// has bind parameters for.
 pub(crate) async fn purge_organization<C: ConnectionTrait>(
     db: &C,
     org_id: i32,
 ) -> Result<(), sea_orm::DbErr> {
-    let link_ids: Vec<i32> = links::Entity::find()
-        .select_only()
-        .column(links::Column::Id)
-        .filter(links::Column::OrgId.eq(org_id))
-        .into_tuple()
-        .all(db)
-        .await?;
-
-    if !link_ids.is_empty() {
-        click_events::Entity::delete_many()
-            .filter(click_events::Column::LinkId.is_in(link_ids.clone()))
-            .exec(db)
-            .await?;
-        link_tags::Entity::delete_many()
-            .filter(link_tags::Column::LinkId.is_in(link_ids))
-            .exec(db)
-            .await?;
-    }
     links::Entity::delete_many()
         .filter(links::Column::OrgId.eq(org_id))
         .exec(db)

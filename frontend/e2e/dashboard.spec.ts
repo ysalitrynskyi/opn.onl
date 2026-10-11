@@ -261,7 +261,7 @@ test.describe('Dashboard Page', () => {
         await openDashboard(page);
         const toggle = page.getByRole('button', { name: 'Advanced options' });
         const fields = [
-            page.getByLabel('Title (private, only visible to you)'),
+            page.getByLabel('Title (private unless the link is on your bio page)'),
             page.getByLabel('Password Protection'),
             page.getByLabel('Expiration', { exact: true }),
             page.getByLabel('Expiration time'),
