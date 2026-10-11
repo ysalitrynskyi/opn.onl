@@ -269,8 +269,10 @@ pub async fn get_public_bio(
     let base_url =
         std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
 
+    // Organization links stay on the page only while their creator still
+    // belongs to the organization.
     let link_models = links::Entity::find()
-        .filter(links::Column::UserId.eq(user.id))
+        .filter(crate::handlers::link_access::own_links(user.id))
         .filter(links::Column::DeletedAt.is_null())
         .filter(links::Column::BioVisible.eq(true))
         .order_by_asc(links::Column::BioPosition)

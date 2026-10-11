@@ -13,6 +13,7 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{link_tags, links, org_members, tags};
+use crate::handlers::link_access::{LinkAction, authorize_link};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_name, check_optional_color};
 
@@ -96,10 +97,9 @@ async fn can_edit_link(
     link: &links::Model,
     user_id: i32,
 ) -> bool {
-    match link.org_id {
-        Some(org_id) => crate::handlers::organizations::member_can_edit(db, org_id, user_id).await,
-        None => link.user_id == Some(user_id),
-    }
+    authorize_link(db, user_id, link, LinkAction::Write)
+        .await
+        .is_ok()
 }
 
 /// Tags and links cannot cross personal/organization ownership boundaries.
