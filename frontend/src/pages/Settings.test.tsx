@@ -199,6 +199,83 @@ describe('Settings Page', () => {
         });
     });
 
+    describe('Resend verification', () => {
+        function unverifiedAccount(resend: { status: number; body: unknown }) {
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ ...mockUserProfile, email_verified: false }),
+                    });
+                }
+                if (url.includes('/auth/resend-verification')) {
+                    return Promise.resolve({
+                        ok: resend.status >= 200 && resend.status < 300,
+                        status: resend.status,
+                        json: () => Promise.resolve(resend.body),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(url.includes('/auth/settings') ? mockAppSettings : {}),
+                });
+            }) as any;
+        }
+
+        async function clickResend() {
+            render(<Settings />);
+            fireEvent.click(await screen.findByRole('button', { name: 'Resend' }));
+        }
+
+        it('asks as the signed-in user and shows what the server says was sent', async () => {
+            unverifiedAccount({ status: 200, body: { message: 'Verification email sent' } });
+            await clickResend();
+
+            expect(await screen.findByText('Verification email sent')).toBeInTheDocument();
+            expect(global.fetch).toHaveBeenCalledWith(
+                expect.stringContaining('/auth/resend-verification'),
+                expect.objectContaining({
+                    method: 'POST',
+                    headers: expect.objectContaining({ Authorization: `Bearer ${mockToken}` }),
+                }),
+            );
+        });
+
+        it('says so when the server cannot send email, instead of claiming it did', async () => {
+            unverifiedAccount({
+                status: 503,
+                body: { error: 'This server is not set up to send email, so no verification email can be sent.' },
+            });
+            await clickResend();
+
+            expect(await screen.findByText(/not set up to send email/i)).toBeInTheDocument();
+            expect(screen.queryByText(/verification email sent/i)).not.toBeInTheDocument();
+        });
+
+        it('shows the wait when an email was sent a moment ago', async () => {
+            unverifiedAccount({
+                status: 429,
+                body: {
+                    error: 'Too many requests',
+                    retry_after: 240,
+                    message: 'A verification email was sent to this address a moment ago. Try again in 4 minutes.',
+                },
+            });
+            await clickResend();
+
+            expect(await screen.findByText(/sent to this address a moment ago/i)).toBeInTheDocument();
+            expect(screen.queryByText(/^Too many requests$/)).not.toBeInTheDocument();
+            expect(screen.queryByText(/verification email sent!?$/i)).not.toBeInTheDocument();
+        });
+
+        it('falls back to a plain message when the failure has no body', async () => {
+            unverifiedAccount({ status: 502, body: null });
+            await clickResend();
+
+            expect(await screen.findByText('Failed to resend verification email')).toBeInTheDocument();
+        });
+    });
+
     describe('Passkeys Section', () => {
         it('displays passkeys section when enabled', async () => {
             render(<Settings />);

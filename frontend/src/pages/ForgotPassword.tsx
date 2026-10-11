@@ -21,6 +21,19 @@ export default function ForgotPassword() {
         body: JSON.stringify({ email }),
       });
 
+      if (!response.ok) {
+        // The generic answer is only for a request that was accepted. A 429
+        // means no email was requested at all, and saying "check your email"
+        // would send the person to wait for one that is not coming.
+        setStatus('error');
+        setMessage(
+          response.status === 429
+            ? 'Too many attempts. Please wait a few minutes and try again.'
+            : 'We could not process your request. Please try again later.'
+        );
+        return;
+      }
+
       const data = await response.json();
       setStatus('success');
       setMessage(data.message || 'If an account exists, a password reset email has been sent.');
