@@ -3588,16 +3588,9 @@ pub async fn get_user_links(
 
     // Filter by tag
     if let Some(tag_id) = query.tag_id {
-        let link_tag_ids: Vec<i32> = link_tags::Entity::find()
-            .filter(link_tags::Column::TagId.eq(tag_id))
-            .all(&state.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|lt| lt.link_id)
-            .collect();
-
-        link_query = link_query.filter(links::Column::Id.is_in(link_tag_ids));
+        link_query = link_query.filter(
+            links::Column::Id.in_subquery(crate::handlers::tags::link_ids_with_tag(tag_id)),
+        );
     }
 
     let link_query = link_query.order_by_desc(links::Column::CreatedAt);

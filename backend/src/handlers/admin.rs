@@ -21,6 +21,7 @@ use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::is_reserved_email_domain;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
+use crate::utils::validation::MAX_IDS_PER_REQUEST;
 
 /// Clamp pagination params: 1-based page, 1..=100 per_page (default 25).
 fn clamp_pagination(page: Option<u64>, per_page: Option<u64>) -> (u64, u64) {
@@ -195,30 +196,6 @@ async fn invalidate_cache_for_url(state: &AppState, url: &str) {
     }
 }
 
-/// Purge cached redirect entries whose target host matches a now-blocked domain
-/// (or a subdomain of it), so the block takes effect immediately.
-async fn invalidate_cache_for_domain(state: &AppState, domain: &str) {
-    let cache = match &state.redis_cache {
-        Some(c) => c,
-        None => return,
-    };
-    let all = links::Entity::find()
-        .filter(links::Column::DeletedAt.is_null())
-        .all(&state.db)
-        .await
-        .unwrap_or_default();
-    for l in all {
-        if let Ok(u) = url::Url::parse(&l.original_url)
-            && let Some(h) = u.host_str()
-        {
-            let h = h.trim_end_matches('.').to_lowercase();
-            if h == domain || h.ends_with(&format!(".{}", domain)) {
-                let _ = cache.invalidate_link(&l.code).await;
-            }
-        }
-    }
-}
-
 fn url_matches_domain(url: &str, domain: &str) -> bool {
     url::Url::parse(url)
         .ok()
@@ -226,44 +203,68 @@ fn url_matches_domain(url: &str, domain: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Rows read, and ids bound in one `UPDATE`, per round trip when a block is
+/// applied to existing rows. Keeps memory and bind parameters constant however
+/// many rows a domain covers (one statement binds at most 65,535).
+const BLOCK_CASCADE_BATCH: u64 = 1_000;
+
+/// Soft-delete every live link whose destination host is `domain` or one of its
+/// subdomains and return their codes. The host comes from `Url::parse`
+/// (IDNA, percent-decoding, IPv4 forms), which SQL cannot reproduce, so the
+/// match runs in Rust over the live links one `BLOCK_CASCADE_BATCH` at a time,
+/// in id order.
 async fn soft_disable_links_for_domain<C: ConnectionTrait>(
     db: &C,
     domain: &str,
 ) -> Result<Vec<String>, DbErr> {
-    let matching = links::Entity::find()
-        .filter(links::Column::DeletedAt.is_null())
-        .all(db)
-        .await?
-        .into_iter()
-        .filter(|link| url_matches_domain(&link.original_url, domain))
-        .collect::<Vec<_>>();
+    let deleted_at = Utc::now().naive_utc();
+    let mut codes = Vec::new();
+    let mut after_id = 0;
+    loop {
+        let batch: Vec<(i32, String, String)> = links::Entity::find()
+            .select_only()
+            .column(links::Column::Id)
+            .column(links::Column::Code)
+            .column(links::Column::OriginalUrl)
+            .filter(links::Column::DeletedAt.is_null())
+            .filter(links::Column::Id.gt(after_id))
+            .order_by_asc(links::Column::Id)
+            .limit(BLOCK_CASCADE_BATCH)
+            .into_tuple()
+            .all(db)
+            .await?;
+        let Some((last_id, _, _)) = batch.last() else {
+            break;
+        };
+        after_id = *last_id;
 
-    if matching.is_empty() {
-        return Ok(Vec::new());
+        let (ids, batch_codes): (Vec<i32>, Vec<String>) = batch
+            .into_iter()
+            .filter(|(_, _, url)| url_matches_domain(url, domain))
+            .map(|(id, code, _)| (id, code))
+            .unzip();
+        if ids.is_empty() {
+            continue;
+        }
+
+        links::Entity::update_many()
+            .col_expr(links::Column::DeletedAt, Expr::value(deleted_at))
+            .filter(links::Column::Id.is_in(ids))
+            .exec(db)
+            .await?;
+        codes.extend(batch_codes);
     }
-
-    let ids = matching.iter().map(|link| link.id).collect::<Vec<_>>();
-    let codes = matching
-        .into_iter()
-        .map(|link| link.code)
-        .collect::<Vec<_>>();
-
-    links::Entity::update_many()
-        .col_expr(
-            links::Column::DeletedAt,
-            Expr::value(Utc::now().naive_utc()),
-        )
-        .filter(links::Column::Id.is_in(ids))
-        .exec(db)
-        .await?;
-
     Ok(codes)
 }
 
-fn user_matches_email_domain(user: &users::Model, domain: &str) -> bool {
-    crate::utils::email_domain_policy::email_domain(&user.email)
+fn email_matches_domain(email: &str, domain: &str) -> bool {
+    crate::utils::email_domain_policy::email_domain(email)
         .map(|email_domain| domain_matches(domain, &email_domain))
         .unwrap_or(false)
+}
+
+fn user_matches_email_domain(user: &users::Model, domain: &str) -> bool {
+    email_matches_domain(&user.email, domain)
 }
 
 fn normalize_email_domain_input(input: &str) -> Option<String> {
@@ -272,82 +273,111 @@ fn normalize_email_domain_input(input: &str) -> Option<String> {
         .or_else(|| normalize_hostname(input))
 }
 
+/// Disable every live, enabled, non-admin user whose email domain is `domain` or
+/// one of its subdomains and return their ids. Admins must remain able to
+/// unblock the domain; the caller is also refused earlier in
+/// `block_email_domain` if their own address matches.
+///
+/// The `ILIKE` only narrows what is read: the domain has to appear in the
+/// address, whatever the case. Exact matching stays in Rust
+/// (`email_matches_domain`, shared with the block check), a
+/// `BLOCK_CASCADE_BATCH` of users at a time, in id order.
 async fn disable_users_for_email_domain<C: ConnectionTrait>(
     db: &C,
     domain: &str,
     admin_id: i32,
     reason: Option<&str>,
 ) -> Result<Vec<i32>, DbErr> {
-    let matching = users::Entity::find()
-        .filter(users::Column::DeletedAt.is_null())
-        .filter(users::Column::DisabledAt.is_null())
-        .all(db)
-        .await?
-        .into_iter()
-        .filter(|user| user_matches_email_domain(user, domain))
-        // Admins must remain able to unblock the domain. The caller is also
-        // refused earlier in `block_email_domain` if their own address matches.
-        .filter(|user| !user.is_admin)
-        .collect::<Vec<_>>();
-
-    if matching.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let ids = matching.iter().map(|user| user.id).collect::<Vec<_>>();
+    let disabled_at = Utc::now().naive_utc();
     let disabled_reason = reason
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.to_string())
         .unwrap_or_else(|| format!("Email domain {domain} blocked by admin"));
 
-    users::Entity::update_many()
-        .col_expr(
-            users::Column::DisabledAt,
-            Expr::value(Utc::now().naive_utc()),
-        )
-        .col_expr(users::Column::DisabledReason, Expr::value(disabled_reason))
-        .col_expr(users::Column::DisabledBy, Expr::value(admin_id))
-        .col_expr(
-            users::Column::TokenVersion,
-            Expr::col(users::Column::TokenVersion).add(1),
-        )
-        .filter(users::Column::Id.is_in(ids.clone()))
-        .exec(db)
-        .await?;
+    let mut disabled_ids = Vec::new();
+    let mut after_id = 0;
+    loop {
+        let batch: Vec<(i32, String)> = users::Entity::find()
+            .select_only()
+            .column(users::Column::Id)
+            .column(users::Column::Email)
+            .filter(users::Column::DeletedAt.is_null())
+            .filter(users::Column::DisabledAt.is_null())
+            .filter(users::Column::IsAdmin.eq(false))
+            .filter(Expr::col(users::Column::Email).ilike(ilike_pattern(domain)))
+            .filter(users::Column::Id.gt(after_id))
+            .order_by_asc(users::Column::Id)
+            .limit(BLOCK_CASCADE_BATCH)
+            .into_tuple()
+            .all(db)
+            .await?;
+        let Some((last_id, _)) = batch.last() else {
+            break;
+        };
+        after_id = *last_id;
 
-    Ok(ids)
+        let ids: Vec<i32> = batch
+            .into_iter()
+            .filter(|(_, email)| email_matches_domain(email, domain))
+            .map(|(id, _)| id)
+            .collect();
+        if ids.is_empty() {
+            continue;
+        }
+
+        users::Entity::update_many()
+            .col_expr(users::Column::DisabledAt, Expr::value(disabled_at))
+            .col_expr(
+                users::Column::DisabledReason,
+                Expr::value(disabled_reason.clone()),
+            )
+            .col_expr(users::Column::DisabledBy, Expr::value(admin_id))
+            .col_expr(
+                users::Column::TokenVersion,
+                Expr::col(users::Column::TokenVersion).add(1),
+            )
+            .filter(users::Column::Id.is_in(ids.clone()))
+            .exec(db)
+            .await?;
+        disabled_ids.extend(ids);
+    }
+    Ok(disabled_ids)
 }
 
 /// Purge cached redirects of every link that stops serving because its owner
 /// was just disabled: their personal links, and every link of an org they own
 /// (org links answer to the org's owner, whoever created them).
 async fn invalidate_cache_for_owners(state: &AppState, user_ids: &[i32]) {
-    if state.redis_cache.is_none() || user_ids.is_empty() {
+    if state.redis_cache.is_none() {
         return;
     }
-    let owned_orgs = sea_orm::sea_query::Query::select()
-        .column(organizations::Column::Id)
-        .from(organizations::Entity)
-        .and_where(organizations::Column::OwnerId.is_in(user_ids.iter().copied()))
-        .to_owned();
-    let codes = links::Entity::find()
-        .select_only()
-        .column(links::Column::Code)
-        .filter(links::Column::DeletedAt.is_null())
-        .filter(
-            Condition::any()
-                .add(
-                    Condition::all()
-                        .add(links::Column::UserId.is_in(user_ids.iter().copied()))
-                        .add(links::Column::OrgId.is_null()),
-                )
-                .add(links::Column::OrgId.in_subquery(owned_orgs)),
-        )
-        .into_tuple::<String>()
-        .all(&state.db)
-        .await
-        .unwrap_or_default();
-    crate::handlers::links::invalidate_cached_codes(state, &codes).await;
+    // Chunked: a domain block can disable more users than one statement has
+    // bind parameters for.
+    for owners in user_ids.chunks(BLOCK_CASCADE_BATCH as usize) {
+        let owned_orgs = sea_orm::sea_query::Query::select()
+            .column(organizations::Column::Id)
+            .from(organizations::Entity)
+            .and_where(organizations::Column::OwnerId.is_in(owners.iter().copied()))
+            .to_owned();
+        let codes = links::Entity::find()
+            .select_only()
+            .column(links::Column::Code)
+            .filter(links::Column::DeletedAt.is_null())
+            .filter(
+                Condition::any()
+                    .add(
+                        Condition::all()
+                            .add(links::Column::UserId.is_in(owners.iter().copied()))
+                            .add(links::Column::OrgId.is_null()),
+                    )
+                    .add(links::Column::OrgId.in_subquery(owned_orgs)),
+            )
+            .into_tuple::<String>()
+            .all(&state.db)
+            .await
+            .unwrap_or_default();
+        crate::handlers::links::invalidate_cached_codes(state, &codes).await;
+    }
 }
 
 /// Soft delete a user (admin only)
@@ -1995,7 +2025,6 @@ pub async fn block_domain(
             .into_response();
     }
 
-    invalidate_cache_for_domain(&state, &domain).await;
     crate::handlers::links::invalidate_cached_codes(&state, &affected_codes).await;
 
     (
@@ -2881,7 +2910,7 @@ pub async fn admin_restore_link(
 
 #[derive(Deserialize, ToSchema)]
 pub struct BulkLinkIdsRequest {
-    /// Link IDs to act on.
+    /// Link IDs to act on. At most 500.
     pub ids: Vec<i32>,
 }
 
@@ -2900,7 +2929,7 @@ pub struct BulkLinkActionResponse {
     request_body = BulkLinkIdsRequest,
     responses(
         (status = 200, description = "Links deleted", body = BulkLinkActionResponse),
-        (status = 400, description = "No IDs provided"),
+        (status = 400, description = "No IDs provided, or more than 500"),
         (status = 403, description = "Admin access required"),
     ),
     tag = "Admin",
@@ -2920,6 +2949,16 @@ pub async fn admin_bulk_delete_links(
             Json(AdminResponse {
                 success: false,
                 message: "No link IDs provided".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if payload.ids.len() > MAX_IDS_PER_REQUEST {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: format!("Too many items in one request (max {MAX_IDS_PER_REQUEST})"),
             }),
         )
             .into_response();
@@ -2980,7 +3019,7 @@ pub async fn admin_bulk_delete_links(
     request_body = BulkLinkIdsRequest,
     responses(
         (status = 200, description = "Links restored", body = BulkLinkActionResponse),
-        (status = 400, description = "No IDs provided"),
+        (status = 400, description = "No IDs provided, or more than 500"),
         (status = 403, description = "Admin access required"),
     ),
     tag = "Admin",
@@ -3000,6 +3039,16 @@ pub async fn admin_bulk_restore_links(
             Json(AdminResponse {
                 success: false,
                 message: "No link IDs provided".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if payload.ids.len() > MAX_IDS_PER_REQUEST {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: format!("Too many items in one request (max {MAX_IDS_PER_REQUEST})"),
             }),
         )
             .into_response();
@@ -3171,7 +3220,6 @@ pub async fn admin_block_domain_from_link(
             .into_response();
     }
 
-    invalidate_cache_for_domain(&state, &domain).await;
     crate::handlers::links::invalidate_cached_codes(&state, &affected_codes).await;
 
     (
