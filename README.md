@@ -372,6 +372,11 @@ An account that owns organizations with other members cannot be deleted
 (HTTP 409 with the list of blocking orgs) until ownership is transferred or
 the organization is deleted — one person leaving can't wipe a shared team.
 
+Deleting an organization (or an admin hard-deleting a user) removes the links
+for good, but their short codes stay reserved: a retired code is never issued
+again, as a custom alias or as a random code, so an old printed link can't end
+up pointing at someone else's page.
+
 ### Folders
 
 | Method | Endpoint | Description |

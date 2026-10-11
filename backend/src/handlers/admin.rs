@@ -756,6 +756,9 @@ pub async fn hard_delete_user(
             .await?;
 
         // Personal links (and their click_events / link_tags via cascade).
+        // Their short codes are retired first: once the rows are gone nothing
+        // else keeps the codes from being claimed by someone else.
+        crate::utils::retired_codes::retire_personal_codes(&txn, user_id).await?;
         links::Entity::delete_many()
             .filter(links::Column::UserId.eq(user_id))
             .filter(links::Column::OrgId.is_null())

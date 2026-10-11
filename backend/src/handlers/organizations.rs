@@ -18,6 +18,7 @@ use crate::handlers::links::{Authentication, authenticate_from_header};
 use crate::utils::email_domain_policy::normalize_email;
 use crate::utils::privacy::anonymize_ip;
 use crate::utils::rate_limiter::ClientKey;
+use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_name, check_slug};
 
@@ -286,6 +287,8 @@ pub(crate) fn ownership_conflict_body(blocking: &[organizations::Model]) -> serd
 
 /// Delete an organization and all of its data: links (with click events and
 /// tag assignments), folders, tags, audit log, memberships, then the org row.
+/// The short codes the links held are retired first, so nobody can claim one
+/// and receive the old links' traffic.
 ///
 /// Click events and tag assignments leave with their links through the
 /// `ON DELETE CASCADE` foreign keys. Do not collect the link ids to delete
@@ -295,6 +298,8 @@ pub(crate) async fn purge_organization<C: ConnectionTrait>(
     db: &C,
     org_id: i32,
 ) -> Result<(), sea_orm::DbErr> {
+    retired_codes::retire_org_codes(db, org_id).await?;
+
     links::Entity::delete_many()
         .filter(links::Column::OrgId.eq(org_id))
         .exec(db)
