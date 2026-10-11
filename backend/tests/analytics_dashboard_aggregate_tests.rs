@@ -189,5 +189,9 @@ async fn dashboard_with_no_links_returns_zero_aggregates() {
     assert_eq!(body["clicks_this_month"].as_i64(), Some(0));
     assert_eq!(body["top_countries"].as_array().map(|a| a.len()), Some(0));
     assert_eq!(body["top_browsers"].as_array().map(|a| a.len()), Some(0));
-    assert_eq!(body["clicks_by_day"].as_array().map(|a| a.len()), Some(0));
+    // The series still covers the 30-day window (today and the 30 days before
+    // it), all zero, so a chart of a new account is flat rather than missing.
+    let days = body["clicks_by_day"].as_array().expect("clicks_by_day");
+    assert_eq!(days.len(), 31, "{days:?}");
+    assert!(days.iter().all(|day| day["count"] == 0), "{days:?}");
 }

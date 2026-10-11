@@ -28,6 +28,30 @@ fn clamp_stats_days(days: Option<i64>) -> i64 {
         .clamp(MIN_STATS_DAYS, MAX_STATS_DAYS)
 }
 
+/// One entry per UTC day from `first` through today, zero where no click
+/// landed. A series with only the days that had clicks makes a chart's
+/// categorical axis join days that are weeks apart.
+fn zero_filled_days(
+    first: chrono::NaiveDate,
+    clicks: &HashMap<chrono::NaiveDate, i64>,
+) -> Vec<DayStats> {
+    let today = chrono::Utc::now().date_naive();
+    // A click stamped after "today" (clock skew between instances) keeps its day.
+    let last = clicks
+        .keys()
+        .copied()
+        .max()
+        .map_or(today, |newest| newest.max(today));
+    first
+        .iter_days()
+        .take_while(|day| *day <= last)
+        .map(|day| DayStats {
+            date: day.format("%Y-%m-%d").to_string(),
+            count: clicks.get(&day).copied().unwrap_or(0),
+        })
+        .collect()
+}
+
 /// Aggregated geo bucket value: (latitude, longitude, city, country, hit count).
 type GeoAggregate = (f64, f64, Option<String>, Option<String>, i64);
 
@@ -52,6 +76,9 @@ pub struct LinkStatsResponse {
     /// cap, so country/city/day percentages describe the newest sample.
     pub truncated: bool,
     pub unique_visitors: i32,
+    /// One entry per UTC day, oldest first, from the day the window opens
+    /// through today (days without clicks have `count` 0). On a truncated
+    /// response the series starts at the oldest click in the sample.
     pub clicks_by_day: Vec<DayStats>,
     pub clicks_by_country: Vec<CountryStats>,
     pub clicks_by_city: Vec<CityStats>,
@@ -79,6 +106,9 @@ pub struct CountryStats {
 #[derive(Serialize, ToSchema)]
 pub struct CityStats {
     pub city: String,
+    /// Country the city is in. Cities are counted per city and country, so
+    /// the same name in two countries is two entries. `None` for clicks
+    /// without a resolved city.
     pub country: Option<String>,
     pub count: i64,
     pub percentage: f64,
@@ -143,6 +173,8 @@ pub struct DashboardStats {
     pub clicks_this_week: i64,
     pub clicks_this_month: i64,
     pub top_links: Vec<TopLink>,
+    /// One entry per UTC day for the last 30 days through today, oldest first;
+    /// days without clicks have `count` 0.
     pub clicks_by_day: Vec<DayStats>,
     pub top_countries: Vec<CountryStats>,
     pub top_browsers: Vec<BrowserStats>,
@@ -246,17 +278,17 @@ pub async fn get_link_stats(
         events.iter().filter_map(|e| e.ip_address.clone()).collect();
     let unique_visitors = unique_ips.len() as i32;
 
-    // Clicks by day
-    let mut clicks_by_day_map: HashMap<String, i64> = HashMap::new();
+    // Clicks by day, zero-filled. A truncated sample reaches back only to its
+    // oldest event; the days before that were not loaded, not quiet.
+    let mut clicks_per_day: HashMap<chrono::NaiveDate, i64> = HashMap::new();
     for event in &events {
-        let date = event.created_at.format("%Y-%m-%d").to_string();
-        *clicks_by_day_map.entry(date).or_insert(0) += 1;
+        *clicks_per_day.entry(event.created_at.date()).or_insert(0) += 1;
     }
-    let mut clicks_by_day: Vec<DayStats> = clicks_by_day_map
-        .into_iter()
-        .map(|(date, count)| DayStats { date, count })
-        .collect();
-    clicks_by_day.sort_by(|a, b| a.date.cmp(&b.date));
+    let first_day = match events.last() {
+        Some(oldest) if truncated => oldest.created_at,
+        _ => start_date,
+    };
+    let clicks_by_day = zero_filled_days(first_day.date(), &clicks_per_day);
 
     // Clicks by country
     let mut country_map: HashMap<String, i64> = HashMap::new();
@@ -276,16 +308,20 @@ pub async fn get_link_stats(
         })
         .collect();
 
-    // Clicks by city
-    let mut city_map: HashMap<String, (i64, Option<String>)> = HashMap::new();
+    // Clicks by city. A city name alone is ambiguous (Paris, France or Texas),
+    // so cities are keyed by city and country; clicks without a city share one
+    // "Unknown" row whatever their country.
+    let mut city_map: HashMap<(String, Option<String>), i64> = HashMap::new();
     for event in &events {
-        let city = event.city.clone().unwrap_or_else(|| "Unknown".to_string());
-        let entry = city_map.entry(city).or_insert((0, event.country.clone()));
-        entry.0 += 1;
+        let key = match &event.city {
+            Some(city) => (city.clone(), event.country.clone()),
+            None => ("Unknown".to_string(), None),
+        };
+        *city_map.entry(key).or_insert(0) += 1;
     }
     let clicks_by_city: Vec<CityStats> = city_map
         .into_iter()
-        .map(|(city, (count, country))| CityStats {
+        .map(|((city, country), count)| CityStats {
             city,
             country,
             count,
@@ -477,14 +513,15 @@ async fn dashboard_clicks_by_day(
     link_ids: &[i32],
     month_start: chrono::NaiveDateTime,
 ) -> Vec<DayStats> {
+    let first_day = month_start.date();
     if link_ids.is_empty() {
-        return vec![];
+        return zero_filled_days(first_day, &HashMap::new());
     }
     let sql = format!(
-        "SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::bigint AS cnt \
+        "SELECT created_at::date AS day, COUNT(*)::bigint AS cnt \
          FROM click_events \
          WHERE link_id IN ({}) AND created_at >= $1 \
-         GROUP BY 1 ORDER BY 1",
+         GROUP BY 1",
         sql_int_list(link_ids)
     );
     let rows = db
@@ -495,13 +532,15 @@ async fn dashboard_clicks_by_day(
         ))
         .await
         .unwrap_or_default();
-    rows.into_iter()
+    let clicks_per_day: HashMap<chrono::NaiveDate, i64> = rows
+        .into_iter()
         .filter_map(|row| {
-            let date = row.try_get::<String>("", "day").ok()?;
+            let day = row.try_get::<chrono::NaiveDate>("", "day").ok()?;
             let count = row.try_get::<i64>("", "cnt").ok()?;
-            Some(DayStats { date, count })
+            Some((day, count))
         })
-        .collect()
+        .collect();
+    zero_filled_days(first_day, &clicks_per_day)
 }
 
 async fn dashboard_grouped_label_counts(
