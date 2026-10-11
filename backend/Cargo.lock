@@ -2787,6 +2787,7 @@ name = "migration"
 version = "1.0.1"
 dependencies = [
  "sea-orm-migration",
+ "url",
 ]
 
 [[package]]

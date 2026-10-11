@@ -36,6 +36,13 @@ mod m20220101_000033_links_click_count_bigint;
 mod m20220101_000034_idx_org_members_user_id;
 mod m20220101_000035_partial_live_link_indexes;
 mod m20220101_000036_idx_created_at_admin_activity;
+mod m20220101_000039_canonicalise_blocklists;
+
+// Public so the backend's tests can pin its blocklist canonicalisation to the
+// frozen copy this migration applies to existing rows.
+pub use m20220101_000039_canonicalise_blocklists::{
+    canonical_blocked_url, canonical_host, canonicalise_blocklists,
+};
 
 pub struct Migrator;
 
@@ -79,6 +86,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000034_idx_org_members_user_id::Migration),
             Box::new(m20220101_000035_partial_live_link_indexes::Migration),
             Box::new(m20220101_000036_idx_created_at_admin_activity::Migration),
+            Box::new(m20220101_000039_canonicalise_blocklists::Migration),
         ]
     }
 }
