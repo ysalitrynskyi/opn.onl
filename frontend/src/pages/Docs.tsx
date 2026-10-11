@@ -223,7 +223,12 @@ export default function Docs() {
                                 <li><code className="bg-slate-100 px-1 rounded">remove_expiration</code> - Clear <code className="bg-slate-100 px-1 rounded">expires_at</code></li>
                                 <li><code className="bg-slate-100 px-1 rounded">remove_starts_at</code> - Clear <code className="bg-slate-100 px-1 rounded">starts_at</code></li>
                                 <li><code className="bg-slate-100 px-1 rounded">remove_max_clicks</code> - Clear <code className="bg-slate-100 px-1 rounded">max_clicks</code></li>
+                                <li><code className="bg-slate-100 px-1 rounded">remove_folder</code> - Take the link out of its folder</li>
                             </ul>
+                            <p className="text-sm text-slate-600">
+                                An empty <code className="bg-slate-100 px-1 rounded">title</code> or{' '}
+                                <code className="bg-slate-100 px-1 rounded">notes</code> clears it.
+                            </p>
                             <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
                                 <code className="text-green-400 text-sm whitespace-pre">{`{ "remove_expiration": true, "title": "Renamed" }`}</code>
                             </div>
