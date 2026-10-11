@@ -41,6 +41,7 @@ fn click_for(user_id: i32, code: &str) -> ClickEvent {
         link_id: 1,
         link_code: code.to_string(),
         user_id: Some(user_id),
+        org_id: None,
         click_count: 7,
         country: Some("US".to_string()),
         city: Some("NYC".to_string()),

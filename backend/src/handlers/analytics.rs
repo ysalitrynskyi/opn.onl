@@ -11,6 +11,7 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{click_events, links};
+use crate::handlers::link_access::{LinkAction, authorize_link, own_links};
 use crate::handlers::links::get_user_id_from_header;
 use crate::utils::time::utc_rfc3339;
 
@@ -206,30 +207,8 @@ pub async fn get_link_stats(
         }
     };
 
-    // Check ownership - must own the link directly, or be member of the org that owns it
-    let has_access = if link.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = link.org_id {
-        // Check if user is member of this organization
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-
-    if !has_access {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
-        )
-            .into_response();
+    if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Read).await {
+        return denied.into_response();
     }
 
     // Get time range. Clamp so a huge/negative `days` cannot panic inside
@@ -616,9 +595,10 @@ pub async fn get_dashboard_stats(
         }
     };
 
-    // Get user's links (exclude deleted)
+    // The caller's own links (exclude deleted). A link of an organization they
+    // have left no longer counts: it is not theirs to read any more.
     let user_links = links::Entity::find()
-        .filter(links::Column::UserId.eq(user_id))
+        .filter(own_links(user_id))
         .filter(links::Column::DeletedAt.is_null())
         .all(&state.db)
         .await
@@ -725,29 +705,8 @@ pub async fn get_realtime_clicks(
         }
     };
 
-    // Ownership: must own the link, or be a member of the org that owns it.
-    let has_access = if link.user_id == Some(user_id) {
-        true
-    } else if let Some(org_id) = link.org_id {
-        use crate::entity::org_members;
-        org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    } else {
-        false
-    };
-
-    if !has_access {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
-        )
-            .into_response();
+    if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Read).await {
+        return denied.into_response();
     }
 
     (

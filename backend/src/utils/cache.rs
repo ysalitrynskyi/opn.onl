@@ -14,6 +14,8 @@ pub struct CachedLink {
     pub max_clicks: Option<i32>,
     pub click_count: i64,
     pub user_id: Option<i32>,
+    /// Owning organization, if any. Realtime click events are routed by it.
+    pub org_id: Option<i32>,
     /// When true, redirect must go through the frontend interstitial first.
     pub safe_link_interstitial: bool,
 }
@@ -29,6 +31,7 @@ impl CachedLink {
             "max_clicks": self.max_clicks,
             "click_count": self.click_count,
             "user_id": self.user_id,
+            "org_id": self.org_id,
             "safe_link_interstitial": self.safe_link_interstitial,
         })
         .to_string()
@@ -45,6 +48,7 @@ impl CachedLink {
             max_clicks: json["max_clicks"].as_i64().map(|n| n as i32),
             click_count: json["click_count"].as_i64()?,
             user_id: json["user_id"].as_i64().map(|n| n as i32),
+            org_id: json["org_id"].as_i64().map(|n| n as i32),
             safe_link_interstitial: json["safe_link_interstitial"].as_bool().unwrap_or(false),
         })
     }
@@ -261,6 +265,7 @@ mod tests {
             max_clicks: None,
             click_count: 0,
             user_id: Some(1),
+            org_id: Some(2),
             safe_link_interstitial: false,
         }
     }
@@ -272,6 +277,7 @@ mod tests {
         assert_eq!(decoded.id, original.id);
         assert_eq!(decoded.original_url, original.original_url);
         assert_eq!(decoded.user_id, original.user_id);
+        assert_eq!(decoded.org_id, original.org_id);
     }
 
     #[tokio::test]

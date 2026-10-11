@@ -312,17 +312,17 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/links` | List user's links |
+| GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only) |
 | POST | `/links` | Create new link |
 | PUT | `/links/{id}` | Update link |
-| DELETE | `/links/{id}` | Delete link |
+| DELETE | `/links/{id}` | Delete link (organization links: org admins and above, or the creator while still an editor) |
 | GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
 | GET / PUT | `/links/{id}/rules` | List or replace smart-routing rules (requires `ENABLE_CONDITIONAL_ROUTING`) |
 | GET | `/links/{id}/stats` | Get link analytics |
 | POST | `/links/bulk` | Create multiple links |
 | POST | `/links/bulk/delete` | Delete multiple links |
 | POST | `/links/bulk/update` | Update multiple links |
-| GET | `/links/export` | Export links as CSV |
+| GET | `/links/export` | Export links as CSV (`?org_id=` for an organization's links, members only) |
 
 ### Redirects
 

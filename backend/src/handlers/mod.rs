@@ -5,6 +5,7 @@ pub mod auth;
 pub mod bio;
 pub mod contact;
 pub mod folders;
+pub mod link_access;
 pub mod links;
 pub mod organizations;
 pub mod passkeys;

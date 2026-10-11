@@ -16,6 +16,9 @@ use validator::Validate;
 use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::json_error;
+use crate::handlers::link_access::{
+    CallerAccess, LinkAction, authorize_link, listed_links, live_link_for, readable_links,
+};
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
@@ -113,6 +116,7 @@ async fn cached_link_is_still_plain(
         || current.burn_after_reading
         || current.safe_link_interstitial
         || current.user_id != cached.user_id
+        || current.org_id != cached.org_id
         || current.expires_at.map(|value| value.and_utc().timestamp()) != cached.expires_at
         || current.starts_at.map(|value| value.and_utc().timestamp()) != cached.starts_at
     {
@@ -789,6 +793,8 @@ mod links_limit_tests {
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct LinksQuery {
     pub folder_id: Option<i32>,
+    /// List every link of this organization instead of the caller's own.
+    /// Any current member may; others get an empty list.
     pub org_id: Option<i32>,
     pub tag_id: Option<i32>,
     pub search: Option<String>,
@@ -1941,6 +1947,7 @@ pub async fn redirect_link(
                                 cached.id,
                                 &code,
                                 cached.user_id,
+                                cached.org_id,
                                 ClickAccounting::Buffered {
                                     db_click_count: cached.click_count,
                                 },
@@ -2186,6 +2193,7 @@ pub async fn redirect_link(
                 link.id,
                 &code,
                 link.user_id,
+                link.org_id,
                 accounting,
                 &headers,
             );
@@ -2208,6 +2216,7 @@ pub async fn redirect_link(
                 max_clicks: link.max_clicks,
                 click_count: link.click_count,
                 user_id: link.user_id,
+                org_id: link.org_id,
                 safe_link_interstitial: link.safe_link_interstitial,
             };
             if let Err(error) = cache
@@ -2228,6 +2237,7 @@ pub async fn redirect_link(
             link.id,
             &code,
             link.user_id,
+            link.org_id,
             accounting,
             &headers,
         );
@@ -2279,12 +2289,14 @@ async fn consume_capped_click(db: &DatabaseConnection, link_id: i32) -> Result<O
 }
 
 /// Helper function to record a click event using the click buffer
+#[allow(clippy::too_many_arguments)]
 fn record_click_buffered(
     click_buffer: &crate::utils::ClickBuffer,
     ws_state: Option<&crate::handlers::websocket::WsState>,
     link_id: i32,
     link_code: &str,
     user_id: Option<i32>,
+    org_id: Option<i32>,
     accounting: ClickAccounting,
     headers: &HeaderMap,
 ) {
@@ -2348,6 +2360,7 @@ fn record_click_buffered(
             link_id,
             link_code: link_code.to_string(),
             user_id,
+            org_id,
             click_count: new_click_count,
             country: geo.country,
             city: geo.city,
@@ -2530,28 +2543,8 @@ pub async fn get_qr_code(
         .unwrap_or(None);
 
     if let Some(link) = link {
-        // Verify ownership (allow if user owns the link or it belongs to their org)
-        let has_access = if link.user_id == Some(user_id) {
-            true
-        } else if let Some(org_id) = link.org_id {
-            use crate::entity::org_members;
-            org_members::Entity::find()
-                .filter(org_members::Column::OrgId.eq(org_id))
-                .filter(org_members::Column::UserId.eq(user_id))
-                .one(&state.db)
-                .await
-                .ok()
-                .flatten()
-                .is_some()
-        } else {
-            false
-        };
-
-        if !has_access {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                "You don't have permission to access this link",
-            );
+        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Read).await {
+            return denied.into_response();
         }
 
         let url = format!("{}/{}", get_base_url(), link.code);
@@ -3180,34 +3173,6 @@ pub struct RoutingRulesSavedResponse {
 
 const MAX_ROUTING_RULES: usize = 20;
 
-/// Return the link if `user_id` owns it directly or via its organization.
-async fn link_for_owner(db: &DatabaseConnection, id: i32, user_id: i32) -> Option<links::Model> {
-    let link = links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(db)
-        .await
-        .ok()
-        .flatten()?;
-    if link.user_id == Some(user_id) {
-        return Some(link);
-    }
-    if let Some(org_id) = link.org_id {
-        use crate::entity::org_members;
-        let is_member = org_members::Entity::find()
-            .filter(org_members::Column::OrgId.eq(org_id))
-            .filter(org_members::Column::UserId.eq(user_id))
-            .one(db)
-            .await
-            .ok()
-            .flatten()
-            .is_some();
-        if is_member {
-            return Some(link);
-        }
-    }
-    None
-}
-
 /// List the routing rules for a link.
 #[utoipa::path(
     get,
@@ -3230,11 +3195,8 @@ pub async fn get_routing_rules(
         Some(id) => id,
         None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
-    if link_for_owner(&state.db, id, user_id).await.is_none() {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "You don't have permission to access this link",
-        );
+    if let Err(denied) = live_link_for(&state.db, id, user_id, LinkAction::Read).await {
+        return denied.into_response();
     }
     let rules = crate::entity::routing_rules::Entity::find()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
@@ -3283,29 +3245,12 @@ pub async fn replace_routing_rules(
         Some(id) => id,
         None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
-    let link = match link_for_owner(&state.db, id, user_id).await {
-        Some(l) => l,
-        None => {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                "You don't have permission to modify this link",
-            );
-        }
+    // Viewers can read the rules (get_routing_rules) but must not rewrite where
+    // the link redirects.
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Write).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
     };
-
-    // For an org-owned link, a member who is not the direct owner may rewrite
-    // routing destinations only if their role grants edit rights. Viewers can
-    // read the rules (get_routing_rules) but must not mutate them — mirrors the
-    // member_can_edit gate used by folders.rs / tags.rs.
-    if let Some(org_id) = link.org_id
-        && link.user_id != Some(user_id)
-        && !crate::handlers::organizations::member_can_edit(&state.db, org_id, user_id).await
-    {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "You don't have permission to modify this link",
-        );
-    }
 
     if payload.rules.len() > MAX_ROUTING_RULES {
         return json_error(
@@ -3396,7 +3341,7 @@ pub async fn replace_routing_rules(
     path = "/links",
     params(LinksQuery),
     responses(
-        (status = 200, description = "The caller's non-deleted links (limit defaults to 1000, maximum 1000)", body = Vec<LinkResponse>),
+        (status = 200, description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member (limit defaults to 1000, maximum 1000)", body = Vec<LinkResponse>),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "Links",
@@ -3421,17 +3366,12 @@ pub async fn get_user_links(
     };
 
     let mut link_query = links::Entity::find()
-        .filter(links::Column::UserId.eq(user_id))
+        .filter(listed_links(user_id, query.org_id))
         .filter(links::Column::DeletedAt.is_null());
 
     // Filter by folder
     if let Some(folder_id) = query.folder_id {
         link_query = link_query.filter(links::Column::FolderId.eq(folder_id));
-    }
-
-    // Filter by organization
-    if let Some(org_id) = query.org_id {
-        link_query = link_query.filter(links::Column::OrgId.eq(org_id));
     }
 
     // Search by URL, code, title, or notes. `contains` becomes LIKE '%…%' / ILIKE, which
@@ -3551,14 +3491,8 @@ pub async fn delete_link(
         .unwrap_or(None);
 
     if let Some(link) = link {
-        if link.user_id != Some(user_id) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(ErrorResponse {
-                    error: "You don't have permission to delete this link".to_string(),
-                }),
-            )
-                .into_response();
+        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Delete).await {
+            return denied.into_response();
         }
 
         if link.deleted_at.is_some() {
@@ -3659,14 +3593,8 @@ pub async fn update_link(
         .unwrap_or(None);
 
     if let Some(link) = link {
-        if link.user_id != Some(user_id) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(ErrorResponse {
-                    error: "You don't have permission to update this link".to_string(),
-                }),
-            )
-                .into_response();
+        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Write).await {
+            return denied.into_response();
         }
 
         let mut active_link: links::ActiveModel = link.clone().into();
@@ -4239,7 +4167,14 @@ pub async fn bulk_create_links(
         .into_response()
 }
 
-/// Bulk delete links
+/// Drop repeated ids so a bulk request cannot count the same row twice.
+fn unique_ids(ids: Vec<i32>) -> Vec<i32> {
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter().filter(|id| seen.insert(*id)).collect()
+}
+
+/// Bulk delete links. Ids the caller may not delete are skipped, and `deleted`
+/// counts only the links actually removed.
 #[utoipa::path(
     post,
     path = "/links/bulk/delete",
@@ -4279,10 +4214,16 @@ pub async fn bulk_delete_links(
             .into_response();
     }
 
+    let access = match CallerAccess::load(&state.db, user_id).await {
+        Ok(access) => access,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+
     let mut deleted = 0u64;
     let mut invalidated: Vec<String> = Vec::new();
 
-    for id in payload.ids {
+    // Ids the caller may not delete are skipped; `deleted` counts rows changed.
+    for id in unique_ids(payload.ids) {
         let link = links::Entity::find_by_id(id)
             .one(&state.db)
             .await
@@ -4290,7 +4231,7 @@ pub async fn bulk_delete_links(
             .flatten();
 
         if let Some(link) = link
-            && link.user_id == Some(user_id)
+            && access.can(&link, LinkAction::Delete)
             && link.deleted_at.is_none()
         {
             // Soft delete instead of hard delete
@@ -4323,7 +4264,8 @@ pub async fn bulk_delete_links(
     (StatusCode::OK, Json(BulkDeleteResponse { deleted })).into_response()
 }
 
-/// Bulk update links
+/// Bulk update links. Ids the caller may not edit are skipped, and `updated`
+/// counts only the links actually changed.
 #[utoipa::path(
     post,
     path = "/links/bulk/update",
@@ -4363,10 +4305,16 @@ pub async fn bulk_update_links(
             .into_response();
     }
 
+    let access = match CallerAccess::load(&state.db, user_id).await {
+        Ok(access) => access,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+
     let mut updated = 0u64;
     let mut invalidated: Vec<String> = Vec::new();
 
-    for id in payload.ids {
+    // Ids the caller may not edit are skipped; `updated` counts rows changed.
+    for id in unique_ids(payload.ids) {
         let link = links::Entity::find_by_id(id)
             .one(&state.db)
             .await
@@ -4374,7 +4322,7 @@ pub async fn bulk_update_links(
             .flatten();
 
         if let Some(link) = link
-            && link.user_id == Some(user_id)
+            && access.can(&link, LinkAction::Write)
             && link.deleted_at.is_none()
         {
             let code = link.code.clone();
@@ -4437,10 +4385,18 @@ pub async fn bulk_update_links(
     (StatusCode::OK, Json(BulkUpdateResponse { updated })).into_response()
 }
 
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ExportLinksQuery {
+    /// Export every link of this organization instead of the caller's own.
+    /// Any current member may; others get a header-only file.
+    pub org_id: Option<i32>,
+}
+
 /// Export links to CSV
 #[utoipa::path(
     get,
     path = "/links/export",
+    params(ExportLinksQuery),
     responses(
         (status = 200, description = "CSV file", content_type = "text/csv"),
         (status = 401, description = "Unauthorized"),
@@ -4451,6 +4407,7 @@ pub async fn bulk_update_links(
 pub async fn export_links_csv(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<ExportLinksQuery>,
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
@@ -4458,7 +4415,7 @@ pub async fn export_links_csv(
     };
 
     let user_links = links::Entity::find()
-        .filter(links::Column::UserId.eq(user_id))
+        .filter(listed_links(user_id, query.org_id))
         .filter(links::Column::DeletedAt.is_null())
         .order_by_desc(links::Column::CreatedAt)
         .all(&state.db)
@@ -4575,15 +4532,10 @@ pub async fn clone_link(
         .unwrap_or(None);
 
     if let Some(link) = link {
-        // Verify ownership
-        if link.user_id != Some(user_id) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(ErrorResponse {
-                    error: "You don't have permission to clone this link".to_string(),
-                }),
-            )
-                .into_response();
+        // The clone is created in the source link's organization, so the caller
+        // needs the same standing there as for creating a link in it.
+        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Clone).await {
+            return denied.into_response();
         }
 
         // Re-check the destination. A link stored before this rule, or written
@@ -4747,14 +4699,8 @@ pub async fn toggle_pin(
         .unwrap_or(None);
 
     if let Some(link) = link {
-        if link.user_id != Some(user_id) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(ErrorResponse {
-                    error: "You don't have permission to pin this link".to_string(),
-                }),
-            )
-                .into_response();
+        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Write).await {
+            return denied.into_response();
         }
 
         let new_pin_status = !link.is_pinned;
@@ -5131,10 +5077,10 @@ pub async fn get_sparklines(
             .into_response();
     }
 
-    // Verify user owns these links
+    // Keep only the links the caller may read; the rest are silently omitted.
     let user_links = links::Entity::find()
         .filter(links::Column::Id.is_in(link_ids.clone()))
-        .filter(links::Column::UserId.eq(user_id))
+        .filter(readable_links(user_id))
         .filter(links::Column::DeletedAt.is_null())
         .all(&state.db)
         .await
