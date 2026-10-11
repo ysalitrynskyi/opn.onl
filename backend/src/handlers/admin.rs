@@ -18,7 +18,7 @@ use crate::entity::{
     org_members, organizations, passkeys, users,
 };
 use crate::utils::decode_jwt;
-use crate::utils::email_domain_policy::is_reserved_email_domain;
+use crate::utils::email_domain_policy::{count_email_case_collisions, is_reserved_email_domain};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
 
@@ -1542,6 +1542,10 @@ pub struct AdminStatsResponse {
     pub disabled_users_count: i64,
     /// Live (non-deleted) links whose destination trips the abuse heuristic.
     pub suspicious_links_count: i64,
+    /// Email addresses held by more than one live account, the spellings
+    /// differing only by letter case. Such accounts are never merged
+    /// automatically; search the user list for the address to find them.
+    pub email_case_collisions: u64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1694,6 +1698,13 @@ pub async fn get_admin_stats(
         .await
         .unwrap_or(0) as i64;
 
+    let email_case_collisions = count_email_case_collisions(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to count email case collisions: {}", e);
+            0
+        });
+
     (
         StatusCode::OK,
         Json(AdminStatsResponse {
@@ -1713,6 +1724,7 @@ pub async fn get_admin_stats(
             blocked_email_domains_count,
             disabled_users_count,
             suspicious_links_count,
+            email_case_collisions,
         }),
     )
         .into_response()

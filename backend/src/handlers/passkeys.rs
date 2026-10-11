@@ -15,7 +15,9 @@ use webauthn_rs::prelude::*;
 use crate::AppState;
 use crate::entity::{passkeys, users};
 use crate::handlers::json_error;
-use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
+use crate::utils::email_domain_policy::{
+    ensure_email_domain_allowed, live_users_by_email, normalize_email,
+};
 use crate::utils::jwt::create_jwt;
 use crate::utils::time::utc_rfc3339;
 
@@ -537,9 +539,7 @@ pub async fn login_start(
         return decoy_login_start(&username);
     }
 
-    let user = users::Entity::find()
-        .filter(users::Column::Email.eq(&username))
-        .filter(users::Column::DeletedAt.is_null())
+    let user = live_users_by_email(&payload.username)
         .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
