@@ -6,6 +6,7 @@ import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { localIsoDate } from '../../utils/localIsoDate';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
 import RoutingRulesEditor from './RoutingRulesEditor';
+import { rulesPayload, rulesSignature, sortByPriority } from './routingRules';
 
 interface EditModalProps {
     link: LinkData;
@@ -39,6 +40,11 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(link.safe_link_interstitial ?? false);
     const [bioVisible, setBioVisible] = useState(link.bio_visible ?? false);
     const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
+    // Saving replaces every stored rule, so rules are only ever sent once the
+    // stored ones have been read: an unread list looks the same as "no rules".
+    const [rulesLoad, setRulesLoad] = useState<'loading' | 'loaded' | 'failed'>('loading');
+    const [loadedSignature, setLoadedSignature] = useState('');
+    const [rulesAttempt, setRulesAttempt] = useState(0);
     const [showRouting, setShowRouting] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState('');
@@ -51,17 +57,26 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
         (async () => {
             try {
                 const res = await authFetch(API_ENDPOINTS.linkRules(link.id));
-                if (res.ok && !cancelled) {
-                    const data = await res.json();
-                    if (Array.isArray(data) && data.length) {
-                        setRoutingRules(data);
-                        setShowRouting(true);
-                    }
-                }
-            } catch { /* non-fatal: editor starts empty */ }
+                if (!res.ok) throw new Error(`Routing rules request failed (${res.status})`);
+                const data: unknown = await res.json();
+                if (!Array.isArray(data)) throw new Error('Unexpected routing rules response');
+                if (cancelled) return;
+                const loaded = sortByPriority(data as RoutingRule[]);
+                setRoutingRules(loaded);
+                setLoadedSignature(rulesSignature(loaded));
+                setRulesLoad('loaded');
+                if (loaded.length) setShowRouting(true);
+            } catch {
+                if (!cancelled) setRulesLoad('failed');
+            }
         })();
         return () => { cancelled = true; };
-    }, [routingEnabled, link.id]);
+    }, [routingEnabled, link.id, rulesAttempt]);
+
+    const retryRulesLoad = () => {
+        setRulesLoad('loading');
+        setRulesAttempt(n => n + 1);
+    };
 
     const handleSave = async () => {
         setSaving(true);
@@ -87,11 +102,11 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
         try {
             await onSave(link.id, payload);
 
-            if (routingEnabled) {
-                const rules = routingRules.filter(r => r.destination_url.trim());
+            const rules = routingRules.filter(r => r.destination_url.trim());
+            if (routingEnabled && rulesLoad === 'loaded' && rulesSignature(rules) !== loadedSignature) {
                 const response = await authFetch(API_ENDPOINTS.linkRules(link.id), {
                     method: 'PUT',
-                    body: JSON.stringify({ rules }),
+                    body: JSON.stringify({ rules: rulesPayload(rules) }),
                 });
                 if (!response.ok) {
                     throw new Error(await responseError(response, 'Failed to update routing rules'));
@@ -258,7 +273,8 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                             <button
                                 type="button"
                                 onClick={() => setShowRouting(v => !v)}
-                                className="flex w-full items-center justify-between text-sm font-medium text-muted transition-colors hover:text-ink"
+                                disabled={rulesLoad === 'failed'}
+                                className="flex w-full items-center justify-between text-sm font-medium text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-muted"
                             >
                                 <span className="inline-flex items-center gap-1.5">
                                     <Route className="h-3.5 w-3.5 text-primary-600" />
@@ -266,9 +282,24 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                                 </span>
                                 <ChevronDown className={`h-4 w-4 transition-transform ${showRouting ? 'rotate-180' : ''}`} />
                             </button>
-                            {showRouting && (
+                            {rulesLoad === 'failed' && (
+                                <div role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+                                    <p>
+                                        Couldn't load this link's routing rules, so they can't be edited right now.
+                                        The rules it has stay as they are and your other changes still save.
+                                    </p>
+                                    <button type="button" onClick={retryRulesLoad} className="mt-1 font-medium underline">
+                                        Try again
+                                    </button>
+                                </div>
+                            )}
+                            {showRouting && rulesLoad !== 'failed' && (
                                 <div className="mt-3">
-                                    <RoutingRulesEditor rules={routingRules} onChange={setRoutingRules} />
+                                    {rulesLoad === 'loading' ? (
+                                        <p className="text-xs text-faint">Loading routing rules…</p>
+                                    ) : (
+                                        <RoutingRulesEditor rules={routingRules} onChange={setRoutingRules} />
+                                    )}
                                 </div>
                             )}
                         </div>

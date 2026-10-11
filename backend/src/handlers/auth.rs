@@ -8,7 +8,7 @@ use validator::Validate;
 use crate::AppState;
 use crate::entity::{api_keys, passkeys, users};
 use crate::handlers::links::optional_user_id_from_header;
-use crate::utils::email::{EmailService, generate_token};
+use crate::utils::email::{EmailService, PasswordChange, generate_token};
 use crate::utils::email_domain_policy::{
     ensure_email_domain_allowed, live_users_by_email, normalize_email,
 };
@@ -18,7 +18,7 @@ use crate::utils::jwt::{
 };
 use crate::utils::rate_limiter::{ClientKey, too_many_requests};
 use crate::utils::time::utc_rfc3339;
-use crate::utils::validation::validation_error_message;
+use crate::utils::validation::{check_max_chars, validation_error_message};
 use axum::http::HeaderMap;
 
 #[derive(Deserialize, Validate, ToSchema)]
@@ -952,6 +952,7 @@ pub async fn reset_password(
             )
                 .into_response();
         };
+        let account_id = user.id;
         let account_email = user.email.clone();
         let mut active_user: users::ActiveModel = user.into();
         active_user.password_hash = Set(hashed_password);
@@ -959,7 +960,23 @@ pub async fn reset_password(
         active_user.password_reset_expires = Set(None);
         active_user.token_version = Set(next_token_version);
 
-        if active_user.update(&txn).await.is_err() {
+        // A reset is account recovery: the person may have lost control of the
+        // account, so a key or passkey added in the meantime must not outlive
+        // the old password. (Changing the password while signed in keeps them.)
+        let recovered = async {
+            active_user.update(&txn).await?;
+            api_keys::Entity::delete_many()
+                .filter(api_keys::Column::UserId.eq(account_id))
+                .exec(&txn)
+                .await?;
+            passkeys::Entity::delete_many()
+                .filter(passkeys::Column::UserId.eq(account_id))
+                .exec(&txn)
+                .await?;
+            Ok::<(), DbErr>(())
+        }
+        .await;
+        if recovered.is_err() {
             let _ = txn.rollback().await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -979,7 +996,7 @@ pub async fn reset_password(
                 .into_response();
         }
 
-        notify_password_changed(&state, account_email);
+        notify_password_changed(&state, account_email, PasswordChange::Reset);
 
         return (
             StatusCode::OK,
@@ -1002,12 +1019,12 @@ pub async fn reset_password(
 
 /// Email the account owner that their password changed, without holding the
 /// response on SMTP. Skipped when email is not configured.
-fn notify_password_changed(state: &AppState, email: String) {
+fn notify_password_changed(state: &AppState, email: String, change: PasswordChange) {
     if let Some(service) = state.email_service.clone()
         && service.is_configured()
     {
         tokio::spawn(async move {
-            if let Err(e) = service.send_password_changed_email(&email).await {
+            if let Err(e) = service.send_password_changed_email(&email, change).await {
                 tracing::error!("Failed to send password-changed email: {}", e);
             }
         });
@@ -1197,7 +1214,7 @@ pub async fn change_password(
                 .into_response();
         }
 
-        notify_password_changed(&state, token_email.clone());
+        notify_password_changed(&state, token_email.clone(), PasswordChange::Change);
 
         // Return a fresh token carrying the new version so the current session
         // stays valid; the bump just revoked the client's existing token, and
@@ -1689,6 +1706,16 @@ pub struct UserProfileResponse {
     pub bio_theme: Option<String>,
 }
 
+/// How much of each profile field the server keeps, in characters. The
+/// Settings form uses the same numbers for `maxLength`.
+const MAX_DISPLAY_NAME_CHARS: usize = 100;
+const MAX_BIO_CHARS: usize = 500;
+const MAX_LOCATION_CHARS: usize = 100;
+/// The same cap a link's destination has.
+const MAX_PROFILE_URL_CHARS: usize = 2048;
+
+/// Every field is optional: an absent key leaves the stored value alone, and
+/// an empty (or whitespace-only) string clears it.
 #[derive(Deserialize, ToSchema)]
 pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
@@ -1696,6 +1723,17 @@ pub struct UpdateProfileRequest {
     pub website: Option<String>,
     pub avatar_url: Option<String>,
     pub location: Option<String>,
+}
+
+/// A profile text field as stored. A blank value means "cleared" and is
+/// NULL, whichever field it is, so the public bio page and the API never
+/// disagree about whether something is set.
+fn profile_text(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 /// Get current user profile
@@ -1789,7 +1827,7 @@ pub async fn get_current_user(
     request_body = UpdateProfileRequest,
     responses(
         (status = 200, description = "Profile updated", body = UserProfileResponse),
-        (status = 400, description = "Invalid bio, website, or avatar URL"),
+        (status = 400, description = "A field is too long, or the website or avatar URL is not an http(s) URL"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "User not found"),
     ),
@@ -1824,53 +1862,48 @@ pub async fn update_profile(
         let mut active_user: users::ActiveModel = user.clone().into();
 
         if let Some(name) = payload.display_name {
-            active_user.display_name = Set(Some(name));
+            if let Err(e) = check_max_chars("display_name", &name, MAX_DISPLAY_NAME_CHARS) {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            }
+            active_user.display_name = Set(profile_text(name));
         }
         if let Some(bio) = payload.bio {
-            // Validate bio length (max 500 chars)
-            if bio.len() > 500 {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Bio must be 500 characters or less".to_string(),
-                    }),
-                )
-                    .into_response();
+            if let Err(e) = check_max_chars("bio", &bio, MAX_BIO_CHARS) {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
-            active_user.bio = Set(Some(bio));
+            active_user.bio = Set(profile_text(bio));
         }
         if let Some(website) = payload.website {
+            if let Err(e) = check_max_chars("website", &website, MAX_PROFILE_URL_CHARS) {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            }
+            let website = profile_text(website);
             // http(s) only — Url::parse alone accepts javascript:/data: (stored XSS).
-            if !website.is_empty()
-                && let Err(e) = crate::utils::url_policy::validate_http_https_url(&website)
+            if let Some(url) = &website
+                && let Err(e) = crate::utils::url_policy::validate_http_https_url(url)
             {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
-            active_user.website = Set(if website.is_empty() {
-                None
-            } else {
-                Some(website)
-            });
+            active_user.website = Set(website);
         }
         if let Some(avatar) = payload.avatar_url {
+            if let Err(e) = check_max_chars("avatar_url", &avatar, MAX_PROFILE_URL_CHARS) {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            }
+            let avatar = profile_text(avatar);
             // Same policy as website: only fetchable http(s) public URLs.
-            if !avatar.is_empty()
-                && let Err(e) = crate::utils::url_policy::validate_http_https_url(&avatar)
+            if let Some(url) = &avatar
+                && let Err(e) = crate::utils::url_policy::validate_http_https_url(url)
             {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
-            active_user.avatar_url = Set(if avatar.is_empty() {
-                None
-            } else {
-                Some(avatar)
-            });
+            active_user.avatar_url = Set(avatar);
         }
         if let Some(location) = payload.location {
-            active_user.location = Set(if location.is_empty() {
-                None
-            } else {
-                Some(location)
-            });
+            if let Err(e) = check_max_chars("location", &location, MAX_LOCATION_CHARS) {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            }
+            active_user.location = Set(profile_text(location));
         }
 
         match active_user.update(&state.db).await {

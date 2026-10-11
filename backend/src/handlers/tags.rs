@@ -3,6 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
+use sea_orm::sea_query::SelectStatement;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
@@ -15,7 +16,7 @@ use crate::AppState;
 use crate::entity::{link_tags, links, org_members, tags};
 use crate::handlers::link_access::{LinkAction, authorize_link};
 use crate::utils::time::utc_rfc3339;
-use crate::utils::validation::{check_name, check_optional_color};
+use crate::utils::validation::{check_id_list, check_name, check_optional_color};
 
 // ============= DTOs =============
 
@@ -50,12 +51,13 @@ pub struct TagResponse {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AddTagsToLinkRequest {
-    /// Tag IDs to attach. At most 50 are considered; duplicates are ignored.
+    /// Tag IDs to attach. At most 500; duplicates are ignored.
     pub tag_ids: Vec<i32>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RemoveTagsFromLinkRequest {
+    /// Tag IDs to detach. At most 500; duplicates are ignored.
     pub tag_ids: Vec<i32>,
 }
 
@@ -112,24 +114,24 @@ fn tag_matches_link_scope(tag: &tags::Model, link: &links::Model, user_id: i32) 
     }
 }
 
+/// The ids of every link carrying a tag, as a subquery for `links.id IN (...)`.
+/// A tag can sit on more links than one statement has bind parameters for, so
+/// the ids are never loaded and bound.
+pub(crate) fn link_ids_with_tag(tag_id: i32) -> SelectStatement {
+    sea_orm::sea_query::Query::select()
+        .column(link_tags::Column::LinkId)
+        .from(link_tags::Entity)
+        .and_where(link_tags::Column::TagId.eq(tag_id))
+        .to_owned()
+}
+
 /// Count links carrying a tag, excluding soft-deleted links so the reported
 /// `link_count` matches what the tag's link listing actually shows. Counting
 /// raw `link_tags` rows over-counts, since deleting a link is a soft delete that
 /// leaves its tag rows in place.
 async fn count_active_tagged_links(db: &sea_orm::DatabaseConnection, tag_id: i32) -> i64 {
-    let link_ids: Vec<i32> = link_tags::Entity::find()
-        .filter(link_tags::Column::TagId.eq(tag_id))
-        .all(db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|lt| lt.link_id)
-        .collect();
-    if link_ids.is_empty() {
-        return 0;
-    }
     links::Entity::find()
-        .filter(links::Column::Id.is_in(link_ids))
+        .filter(links::Column::Id.in_subquery(link_ids_with_tag(tag_id)))
         .filter(links::Column::DeletedAt.is_null())
         .count(db)
         .await
@@ -554,6 +556,7 @@ pub async fn delete_tag(
     request_body = AddTagsToLinkRequest,
     responses(
         (status = 200, description = "Tags added (`{\"added\": N}`)"),
+        (status = 400, description = "More than 500 tag ids"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
@@ -575,6 +578,13 @@ pub async fn add_tags_to_link(
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
         })?;
+
+    let tag_ids = check_id_list(payload.tag_ids).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        )
+    })?;
 
     // Verify link exists, not deleted, and user has access
     let link = links::Entity::find_by_id(link_id)
@@ -600,15 +610,6 @@ pub async fn add_tags_to_link(
             Json(serde_json::json!({"error": "Access denied"})),
         ));
     }
-
-    const MAX_TAGS_PER_ATTACH: usize = 50;
-    let mut seen = HashSet::new();
-    let tag_ids: Vec<i32> = payload
-        .tag_ids
-        .into_iter()
-        .take(MAX_TAGS_PER_ATTACH)
-        .filter(|id| seen.insert(*id))
-        .collect();
 
     let mut added_count = 0;
     if !tag_ids.is_empty() {
@@ -667,6 +668,7 @@ pub async fn add_tags_to_link(
     request_body = RemoveTagsFromLinkRequest,
     responses(
         (status = 200, description = "Tags removed (`{\"removed\": N}`)"),
+        (status = 400, description = "More than 500 tag ids"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
@@ -688,6 +690,13 @@ pub async fn remove_tags_from_link(
                 Json(serde_json::json!({"error": "Unauthorized"})),
             )
         })?;
+
+    let tag_ids = check_id_list(payload.tag_ids).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        )
+    })?;
 
     // Verify link exists, not deleted, and user has access
     let link = links::Entity::find_by_id(link_id)
@@ -714,28 +723,37 @@ pub async fn remove_tags_from_link(
         ));
     }
 
+    // Only tags the link could carry are touched, whatever ids were sent.
     let mut removed_count = 0;
-    for tag_id in payload.tag_ids {
-        let tag = tags::Entity::find_by_id(tag_id)
-            .one(&state.db)
+    if !tag_ids.is_empty() {
+        let in_scope: Vec<i32> = tags::Entity::find()
+            .filter(tags::Column::Id.is_in(tag_ids))
+            .all(&state.db)
             .await
-            .ok()
-            .flatten();
-        if !tag
-            .as_ref()
-            .is_some_and(|tag| tag_matches_link_scope(tag, &link, user_id))
-        {
-            continue;
-        }
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Database error"})),
+                )
+            })?
+            .into_iter()
+            .filter(|tag| tag_matches_link_scope(tag, &link, user_id))
+            .map(|tag| tag.id)
+            .collect();
 
-        let result = link_tags::Entity::delete_many()
-            .filter(link_tags::Column::LinkId.eq(link_id))
-            .filter(link_tags::Column::TagId.eq(tag_id))
-            .exec(&state.db)
-            .await;
-
-        if let Ok(res) = result {
-            removed_count += res.rows_affected;
+        if !in_scope.is_empty() {
+            removed_count = link_tags::Entity::delete_many()
+                .filter(link_tags::Column::LinkId.eq(link_id))
+                .filter(link_tags::Column::TagId.is_in(in_scope))
+                .exec(&state.db)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "Failed to remove tags"})),
+                    )
+                })?
+                .rows_affected;
         }
     }
 
@@ -799,22 +817,8 @@ pub async fn get_links_by_tag(
         ));
     }
 
-    // Get link IDs with this tag
-    let link_tags_list = link_tags::Entity::find()
-        .filter(link_tags::Column::TagId.eq(tag_id))
-        .all(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database error"})),
-            )
-        })?;
-
-    let link_ids: Vec<i32> = link_tags_list.iter().map(|lt| lt.link_id).collect();
-
     let mut links_query = links::Entity::find()
-        .filter(links::Column::Id.is_in(link_ids))
+        .filter(links::Column::Id.in_subquery(link_ids_with_tag(tag_id)))
         .filter(links::Column::DeletedAt.is_null());
     links_query = match tag.org_id {
         Some(org_id) => links_query.filter(links::Column::OrgId.eq(org_id)),

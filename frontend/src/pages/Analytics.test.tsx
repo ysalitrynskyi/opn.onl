@@ -464,6 +464,130 @@ describe('Analytics Page', () => {
         });
     });
 
+    describe('Sampled stats', () => {
+        // The backend analyses at most the newest 50,000 clicks of a period and
+        // sets `truncated`; everything except `total_clicks` then describes them.
+        const sampledStats = {
+            ...mockLinkStats,
+            truncated: true,
+            total_clicks: 412345,
+            unique_visitors: 9000,
+            clicks_by_day: [
+                { date: '2024-01-02', count: 20000 },
+                { date: '2024-01-03', count: 30000 },
+            ],
+        };
+
+        function respondWith(stats: object) {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve(stats),
+            });
+        }
+
+        function card(title: string): HTMLElement {
+            const found = screen.getByText(title).closest('.bg-surface');
+            expect(found).not.toBeNull();
+            return found as HTMLElement;
+        }
+
+        it('says the figures cover only the most recent clicks, and how many clicks there are in all', async () => {
+            respondWith(sampledStats);
+            render(<Analytics />);
+
+            const notice = await screen.findByRole('status');
+            expect(notice).toHaveTextContent('Based on the most recent 50,000 clicks');
+            expect(notice).toHaveTextContent('412,345 clicks in all');
+        });
+
+        it('labels which header figure counts every click and which the sample', async () => {
+            respondWith(sampledStats);
+            render(<Analytics />);
+
+            await screen.findByRole('status');
+            expect(within(card('Total Clicks')).getByText('412,345')).toBeInTheDocument();
+            expect(within(card('Total Clicks')).getByText('All clicks in this period')).toBeInTheDocument();
+            expect(within(card('Unique Visitors')).getByText('9,000')).toBeInTheDocument();
+            expect(within(card('Unique Visitors')).getByText('Most recent 50,000')).toBeInTheDocument();
+        });
+
+        it('shows no notice or card labels when the whole period was analysed', async () => {
+            respondWith({ ...mockLinkStats, truncated: false });
+            render(<Analytics />);
+
+            await screen.findByText('Total Clicks');
+            expect(screen.queryByRole('status')).not.toBeInTheDocument();
+            expect(screen.queryByText(/most recent/i)).not.toBeInTheDocument();
+            expect(screen.queryByText('All clicks in this period')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('Cities', () => {
+        it('names the country so two cities of the same name are told apart', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    clicks_by_city: [
+                        { city: 'Paris', country: 'France', count: 40, percentage: 40 },
+                        { city: 'Paris', country: 'United States', count: 10, percentage: 10 },
+                        { city: 'Unknown', country: null, count: 50, percentage: 50 },
+                    ],
+                    recent_clicks: [],
+                }),
+            });
+            render(<Analytics />);
+
+            const heading = await screen.findByRole('heading', { name: 'Top Cities' });
+            const table = heading.parentElement as HTMLElement;
+            expect(within(table).getByText('Paris, France')).toBeInTheDocument();
+            expect(within(table).getByText('Paris, United States')).toBeInTheDocument();
+            expect(within(table).getByText('Unknown')).toBeInTheDocument();
+        });
+    });
+
+    describe('Clicks over time', () => {
+        it('is drawn when the period has clicks, even if most days are zero', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    clicks_by_day: [
+                        { date: '2024-01-01', count: 3 },
+                        { date: '2024-01-02', count: 0 },
+                        { date: '2024-01-03', count: 5 },
+                    ],
+                }),
+            });
+            render(<Analytics />);
+
+            expect(await screen.findByRole('heading', { name: 'Clicks over time' })).toBeInTheDocument();
+        });
+
+        it('is left out for a period without clicks, although the days come back zero-filled', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    total_clicks: 0,
+                    clicks_by_day: [
+                        { date: '2024-01-01', count: 0 },
+                        { date: '2024-01-02', count: 0 },
+                    ],
+                    recent_clicks: [],
+                }),
+            });
+            render(<Analytics />);
+
+            expect(await screen.findByRole('heading', { name: 'No clicks yet' })).toBeInTheDocument();
+            expect(screen.queryByRole('heading', { name: 'Clicks over time' })).not.toBeInTheDocument();
+        });
+    });
+
     describe('Short link host', () => {
         afterEach(() => {
             vi.unstubAllEnvs();

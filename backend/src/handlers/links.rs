@@ -3339,12 +3339,20 @@ mod ssrf_tests {
 /// A single routing rule as accepted from the API.
 #[derive(Deserialize, ToSchema)]
 pub struct RoutingRuleInput {
+    /// 0-1000; the lowest priority with a matching rule wins. Rules that share
+    /// a priority split traffic by `weight`. Defaults to the rule's position in
+    /// the list, so rules sent without one are "first match wins".
     pub priority: Option<i32>,
+    /// One of Mobile, Tablet, Desktop, Bot. Blank matches any device.
     pub match_device: Option<String>,
+    /// Operating-system prefix such as iOS or Windows. Blank matches any.
     pub match_os: Option<String>,
+    /// ISO 3166-1 alpha-2 country code. Blank matches any.
     pub match_country: Option<String>,
+    /// Primary language code such as en. Blank matches any.
     pub match_lang: Option<String>,
     pub destination_url: String,
+    /// 1-1000, default 1. Relative share among rules with the same priority.
     pub weight: Option<i32>,
 }
 
@@ -3371,6 +3379,53 @@ pub struct RoutingRulesSavedResponse {
 }
 
 const MAX_ROUTING_RULES: usize = 20;
+const MAX_ROUTING_PRIORITY: i32 = 1000;
+const MAX_ROUTING_WEIGHT: i32 = 1000;
+
+/// A rule's non-URL fields, checked and in the shape that is stored.
+struct ValidRoutingRule {
+    priority: i32,
+    weight: i32,
+    device: Option<String>,
+    os: Option<String>,
+    country: Option<String>,
+    lang: Option<String>,
+}
+
+/// `position` is the rule's index in the request: an omitted priority defaults
+/// to it so that the list order is the evaluation order.
+fn validate_routing_rule(
+    position: usize,
+    rule: &RoutingRuleInput,
+) -> Result<ValidRoutingRule, String> {
+    use crate::utils::routing::{
+        normalize_country, normalize_device, normalize_lang, normalize_os,
+    };
+
+    let n = position + 1;
+    let priority = rule.priority.unwrap_or(position as i32);
+    if !(0..=MAX_ROUTING_PRIORITY).contains(&priority) {
+        return Err(format!(
+            "Rule {n}: priority must be between 0 and {MAX_ROUTING_PRIORITY}"
+        ));
+    }
+    let weight = rule.weight.unwrap_or(1);
+    if !(1..=MAX_ROUTING_WEIGHT).contains(&weight) {
+        return Err(format!(
+            "Rule {n}: weight must be between 1 and {MAX_ROUTING_WEIGHT}"
+        ));
+    }
+    let field =
+        |checked: Result<Option<String>, String>| checked.map_err(|e| format!("Rule {n}: {e}"));
+    Ok(ValidRoutingRule {
+        priority,
+        weight,
+        device: field(normalize_device(rule.match_device.as_deref()))?,
+        os: field(normalize_os(rule.match_os.as_deref()))?,
+        country: field(normalize_country(rule.match_country.as_deref()))?,
+        lang: field(normalize_lang(rule.match_lang.as_deref()))?,
+    })
+}
 
 /// List the routing rules for a link.
 #[utoipa::path(
@@ -3397,9 +3452,12 @@ pub async fn get_routing_rules(
     if let Err(denied) = live_link_for(&state.db, id, user_id, LinkAction::Read).await {
         return denied.into_response();
     }
+    // Rules that share a priority come back in the order they were saved, so
+    // the editor shows the list the way it was written.
     let rules = crate::entity::routing_rules::Entity::find()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
         .order_by_asc(crate::entity::routing_rules::Column::Priority)
+        .order_by_asc(crate::entity::routing_rules::Column::Id)
         .all(&state.db)
         .await
         .unwrap_or_default();
@@ -3427,7 +3485,7 @@ pub async fn get_routing_rules(
     request_body = ReplaceRoutingRulesRequest,
     responses(
         (status = 200, description = "Routing rules replaced", body = RoutingRulesSavedResponse),
-        (status = 400, description = "Too many rules, or a destination URL is invalid or blocked"),
+        (status = 400, description = "Too many rules, an invalid priority, weight or match condition, or a destination URL that is invalid or blocked"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
     ),
@@ -3461,9 +3519,14 @@ pub async fn replace_routing_rules(
         );
     }
 
-    // Validate every destination (format + blocklist) before persisting anything.
-    let mut validated: Vec<(String, &RoutingRuleInput)> = Vec::with_capacity(payload.rules.len());
-    for rule in &payload.rules {
+    // Validate every rule (fields, then destination format + blocklist) before
+    // persisting anything.
+    let mut validated: Vec<(String, ValidRoutingRule)> = Vec::with_capacity(payload.rules.len());
+    for (position, rule) in payload.rules.iter().enumerate() {
+        let fields = match validate_routing_rule(position, rule) {
+            Ok(fields) => fields,
+            Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+        };
         let url = match validate_url(&rule.destination_url) {
             Ok(u) => u,
             Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
@@ -3477,7 +3540,7 @@ pub async fn replace_routing_rules(
                 "A destination URL is blocked".to_string(),
             );
         }
-        validated.push((url, rule));
+        validated.push((url, fields));
     }
 
     let txn = match state.db.begin().await {
@@ -3496,13 +3559,13 @@ pub async fn replace_routing_rules(
     for (url, rule) in &validated {
         let am = crate::entity::routing_rules::ActiveModel {
             link_id: Set(id),
-            priority: Set(rule.priority.unwrap_or(0)),
-            match_device: Set(rule.match_device.clone().filter(|s| !s.is_empty())),
-            match_os: Set(rule.match_os.clone().filter(|s| !s.is_empty())),
-            match_country: Set(rule.match_country.clone().filter(|s| !s.is_empty())),
-            match_lang: Set(rule.match_lang.clone().filter(|s| !s.is_empty())),
+            priority: Set(rule.priority),
+            match_device: Set(rule.device.clone()),
+            match_os: Set(rule.os.clone()),
+            match_country: Set(rule.country.clone()),
+            match_lang: Set(rule.lang.clone()),
             destination_url: Set(url.clone()),
-            weight: Set(rule.weight.unwrap_or(1).max(1)),
+            weight: Set(rule.weight),
             ..Default::default()
         };
         if am.insert(&txn).await.is_err() {
@@ -3589,16 +3652,9 @@ pub async fn get_user_links(
 
     // Filter by tag
     if let Some(tag_id) = query.tag_id {
-        let link_tag_ids: Vec<i32> = link_tags::Entity::find()
-            .filter(link_tags::Column::TagId.eq(tag_id))
-            .all(&state.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|lt| lt.link_id)
-            .collect();
-
-        link_query = link_query.filter(links::Column::Id.is_in(link_tag_ids));
+        link_query = link_query.filter(
+            links::Column::Id.in_subquery(crate::handlers::tags::link_ids_with_tag(tag_id)),
+        );
     }
 
     let link_query = link_query.order_by_desc(links::Column::CreatedAt);
