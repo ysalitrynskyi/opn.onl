@@ -7,7 +7,9 @@ use sea_orm::{
 };
 
 use crate::entity::{blocked_email_domains, users};
-use crate::utils::url_policy::{domain_matches, is_reserved_hostname, normalize_hostname};
+use crate::utils::url_policy::{
+    canonical_host, domain_matches, is_reserved_hostname, normalize_hostname,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EmailDomainRejection {
@@ -149,9 +151,12 @@ pub async fn count_email_case_collisions<C: ConnectionTrait>(db: &C) -> Result<u
     Ok(groups)
 }
 
+/// The domain of an address in the spelling blocks are stored and compared in
+/// (lower-case punycode), whichever way the address spells an internationalised
+/// domain.
 pub fn email_domain(email: &str) -> Option<String> {
     let (_, domain) = email.trim().rsplit_once('@')?;
-    normalize_hostname(domain)
+    canonical_host(domain)
 }
 
 pub fn is_reserved_email_domain(domain: &str) -> bool {
@@ -171,7 +176,7 @@ pub async fn blocked_email_domain<C: ConnectionTrait>(
     db: &C,
     domain: &str,
 ) -> Result<Option<blocked_email_domains::Model>, DbErr> {
-    let Some(domain) = normalize_hostname(domain) else {
+    let Some(domain) = canonical_host(domain) else {
         return Ok(None);
     };
 
@@ -243,6 +248,15 @@ mod tests {
         // Not a domain name: kept as typed, lowercased, never percent-decoded.
         assert_eq!(normalize_email("a@Exa%6Dple.com"), "a@exa%6dple.com");
         assert_eq!(normalize_email("a@[::1]"), "a@[::1]");
+    }
+
+    #[test]
+    fn email_domain_is_lower_case_punycode_whatever_the_spelling() {
+        let punycode = Some("xn--bcher-kva.de".to_string());
+        assert_eq!(email_domain("x@bücher.de"), punycode);
+        assert_eq!(email_domain("x@BÜCHER.DE."), punycode);
+        assert_eq!(email_domain("x@xn--bcher-kva.de"), punycode);
+        assert_eq!(email_domain("x@XN--BCHER-KVA.DE"), punycode);
     }
 
     #[test]

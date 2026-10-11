@@ -14,5 +14,5 @@ path = "src/lib.rs"
 # pulls rsa (RUSTSEC-2023-0071, no fix). This crate only runs Postgres
 # migrations inside the server.
 sea-orm-migration = { version = "1.0", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
-# The IDNA conversion the backend's normalize_email uses, for the email-folding migration.
+# Host and URL parsing for the blocklist canonicalisation and email-folding migrations.
 url = "2.5.7"

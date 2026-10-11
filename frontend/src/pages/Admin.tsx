@@ -351,7 +351,7 @@ export default function Admin() {
 
     const doAction = async (
         action: () => Promise<Response>,
-        successMessage: string,
+        successMessage: string | ((data: Record<string, unknown>) => string),
         reload: () => Promise<unknown> | void,
     ) => {
         setError('');
@@ -365,7 +365,8 @@ export default function Admin() {
                         : typeof data.affected_users === 'number'
                           ? ` (${data.affected_users} user${data.affected_users === 1 ? '' : 's'} disabled)`
                           : '';
-                flash(setSuccess, `${data.message || successMessage}${affectedSuffix}`);
+                const message = typeof successMessage === 'function' ? successMessage(data) : successMessage;
+                flash(setSuccess, `${data.message || message}${affectedSuffix}`);
                 await reload();
             } else {
                 flash(setError, data.message || 'Action failed');
@@ -499,6 +500,11 @@ export default function Admin() {
         setActiveTab('links');
     };
 
+    // The server stores a normalized spelling of what was typed (lower-case,
+    // punycode, no fragment, ...). Show that, so the admin sees what is blocked.
+    const blockedMessage = (what: string, field: 'url' | 'domain') => (data: Record<string, unknown>) =>
+        typeof data[field] === 'string' ? `${what} blocked: ${data[field]}` : `${what} blocked successfully`;
+
     const blockUrl = () => {
         if (!newBlockedUrl.trim()) return;
         doAction(
@@ -509,7 +515,7 @@ export default function Admin() {
                     reason: newBlockedUrlReason.trim() || null,
                 }),
             }),
-            'URL blocked successfully',
+            blockedMessage('URL', 'url'),
             () => {
                 setNewBlockedUrl('');
                 setNewBlockedUrlReason('');
@@ -536,7 +542,7 @@ export default function Admin() {
                     reason: newBlockedDomainReason.trim() || null,
                 }),
             }),
-            'Domain blocked successfully',
+            blockedMessage('Domain', 'domain'),
             () => {
                 setNewBlockedDomain('');
                 setNewBlockedDomainReason('');
@@ -563,7 +569,7 @@ export default function Admin() {
                     reason: newBlockedEmailDomainReason.trim() || null,
                 }),
             }),
-            'Email domain blocked successfully',
+            blockedMessage('Email domain', 'domain'),
             () => {
                 setNewBlockedEmailDomain('');
                 setNewBlockedEmailDomainReason('');

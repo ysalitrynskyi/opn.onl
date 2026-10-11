@@ -597,7 +597,9 @@ async fn migration_adds_the_unique_index_when_nothing_collides() {
     insert_user(db, "Idn.Pair@b\u{fc}cher.de", PASSWORD, 5, false).await;
     insert_user(db, "idn.pair@xn--bcher-kva.de", PASSWORD, 4, false).await;
 
-    Migrator::up(db, None).await.expect("migrate to latest");
+    // Exactly this migration (036 -> 037), so `down(1)` below undoes it and not
+    // a later one.
+    Migrator::up(db, Some(1)).await.expect("migrate to 037");
 
     assert_eq!(stored_email(db, folded).await, "mixed.case@users.opn.onl");
     assert_eq!(stored_email(db, gone).await, "Gone.Person@users.opn.onl");
