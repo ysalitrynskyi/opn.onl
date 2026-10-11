@@ -14,7 +14,7 @@ const faqs = [
             },
             {
                 q: "Do I need an account to shorten links?",
-                a: "While you can use opn.onl without an account, creating one unlocks powerful features like analytics tracking, custom aliases, password protection, link expiration, and the ability to manage all your links in one place."
+                a: "On the website, yes: the home page asks you to sign up or log in before it creates a link. An account is also what gives you analytics tracking, custom aliases, password protection, link expiration, and the ability to manage all your links in one place. The API can create a basic link without an account, but nobody owns it afterwards, so it can't be listed, edited or deleted later."
             },
             {
                 q: "How do I create a shortened link?",
@@ -27,7 +27,7 @@ const faqs = [
         questions: [
             {
                 q: "Can I customize my short URL?",
-                a: "Yes! Registered users can create custom aliases for their links (e.g., opn.onl/my-brand). Custom aliases must be between 3-20 characters and can only contain letters, numbers, and hyphens."
+                a: "Yes! Registered users can create custom aliases for their links (e.g., opn.onl/my-brand). By default a custom alias is 5 to 25 characters of letters, numbers, hyphens and underscores, and it can't start or end with a hyphen or underscore. Whoever runs an instance can change the length limits."
             },
             {
                 q: "Do links expire?",
