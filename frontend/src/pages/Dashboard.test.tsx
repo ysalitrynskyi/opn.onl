@@ -6,6 +6,10 @@ import Dashboard from './Dashboard';
 import { mockFetchError, mockFetchResponse, mockToken, mockLink } from '../test/test-utils';
 import { ToastContainer } from '../components/Toast';
 
+// The list is asked for a page at a time (`/links?limit=100`), so match on the
+// path and not on how the URL ends.
+const isLinkList = (url: string) => url.split('?')[0].endsWith('/links');
+
 describe('Dashboard Page', () => {
   beforeEach(() => {
     vi.mocked(global.fetch).mockReset();
@@ -245,7 +249,7 @@ describe('Dashboard Page', () => {
 
   it('counts one link and one click in the singular', async () => {
     mockDashboardFetch((requestUrl) => {
-      if (requestUrl.endsWith('/links')) {
+      if (isLinkList(requestUrl)) {
         return mockFetchResponse([{ ...mockLink, click_count: 1 }]);
       }
       return mockFetchResponse([]);
@@ -417,7 +421,7 @@ describe('Dashboard Page', () => {
           json: () => Promise.resolve({}),
         });
       }
-      if (requestUrl.endsWith('/links') && options?.method !== 'POST') {
+      if (isLinkList(requestUrl) && options?.method !== 'POST') {
         linksGets += 1;
         if (linksGets === 1) {
           return mockFetchResponse([linkA, linkB]);
@@ -471,7 +475,7 @@ describe('Dashboard Page', () => {
       if (requestUrl.includes('/links/sparklines')) {
         return mockFetchResponse({ sparklines: [] });
       }
-      if (requestUrl.endsWith('/links')) {
+      if (isLinkList(requestUrl)) {
         return mockFetchResponse(many);
       }
       return mockFetchResponse([]);
@@ -540,7 +544,7 @@ describe('Dashboard Page', () => {
         account = account.filter((l) => l.id !== id);
         return mockFetchResponse({}) as any;
       }
-      if (requestUrl.endsWith('/links')) {
+      if (isLinkList(requestUrl)) {
         return mockFetchResponse(account) as any;
       }
       return mockFetchResponse([]) as any;
@@ -556,7 +560,7 @@ describe('Dashboard Page', () => {
   /** How many times the link list itself has been loaded. */
   const linkListLoads = () =>
     vi.mocked(global.fetch).mock.calls.filter(
-      ([url, options]) => String(url).endsWith('/links') && !(options as RequestInit | undefined)?.method,
+      ([url, options]) => isLinkList(String(url)) && !(options as RequestInit | undefined)?.method,
     ).length;
 
   const sparkSvgs = () => document.querySelectorAll('svg[width="70"]');
@@ -644,7 +648,7 @@ describe('Dashboard Page', () => {
 
   it('does not treat a failed links fetch as an empty account', async () => {
     mockDashboardFetch((requestUrl) => {
-      if (requestUrl.endsWith('/links')) {
+      if (isLinkList(requestUrl)) {
         return mockFetchError('Database down', 500);
       }
       return mockFetchResponse([]);
@@ -718,7 +722,7 @@ describe('Dashboard Page', () => {
         currentLinks = [linkA, cloned];
         return mockFetchResponse(cloned);
       }
-      if (requestUrl.endsWith('/links')) {
+      if (isLinkList(requestUrl)) {
         return mockFetchResponse(currentLinks);
       }
       return mockFetchResponse(currentLinks);

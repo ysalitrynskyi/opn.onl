@@ -36,6 +36,7 @@ mod m20220101_000033_links_click_count_bigint;
 mod m20220101_000034_idx_org_members_user_id;
 mod m20220101_000035_partial_live_link_indexes;
 mod m20220101_000036_idx_created_at_admin_activity;
+mod m20220101_000037_fold_user_email_case;
 mod m20220101_000038_retired_codes;
 mod m20220101_000039_canonicalise_blocklists;
 
@@ -87,6 +88,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000034_idx_org_members_user_id::Migration),
             Box::new(m20220101_000035_partial_live_link_indexes::Migration),
             Box::new(m20220101_000036_idx_created_at_admin_activity::Migration),
+            Box::new(m20220101_000037_fold_user_email_case::Migration),
             Box::new(m20220101_000038_retired_codes::Migration),
             Box::new(m20220101_000039_canonicalise_blocklists::Migration),
         ]

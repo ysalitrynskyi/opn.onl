@@ -99,6 +99,17 @@ pub fn check_id_list(ids: Vec<i32>) -> Result<Vec<i32>, String> {
     Ok(ids.into_iter().filter(|id| seen.insert(*id)).collect())
 }
 
+/// Wrap user-supplied search text for a substring `LIKE`/`ILIKE`, escaping the
+/// wildcards (`%`, `_`) and the escape character itself so the text matches
+/// literally. Postgres' default `LIKE` escape character is the backslash.
+pub fn ilike_pattern(search: &str) -> String {
+    let escaped = search
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{}%", escaped)
+}
+
 /// `#rgb` or `#rrggbb`, which is what the colour inputs send. The value is
 /// rendered straight into a style attribute, so nothing else is stored.
 pub fn check_hex_color(color: &str) -> Result<(), String> {
@@ -211,6 +222,15 @@ mod tests {
         // Over the cap is refused even when every entry is the same id.
         let err = check_id_list(vec![7; MAX_IDS_PER_REQUEST + 1]).unwrap_err();
         assert_eq!(err, "Too many items in one request (max 500)");
+    }
+
+    #[test]
+    fn search_text_is_matched_literally() {
+        assert_eq!(ilike_pattern("plain"), "%plain%");
+        assert_eq!(ilike_pattern("100%"), "%100\\%%");
+        assert_eq!(ilike_pattern("a_b"), "%a\\_b%");
+        assert_eq!(ilike_pattern("a\\b"), "%a\\\\b%");
+        assert_eq!(ilike_pattern(""), "%%");
     }
 
     #[test]

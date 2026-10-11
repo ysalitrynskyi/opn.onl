@@ -15,7 +15,7 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::{audit_log, folders, links, org_members, organizations, tags, users};
 use crate::handlers::links::{Authentication, authenticate_from_header};
-use crate::utils::email_domain_policy::normalize_email;
+use crate::utils::email_domain_policy::live_users_by_email;
 use crate::utils::privacy::anonymize_ip;
 use crate::utils::rate_limiter::ClientKey;
 use crate::utils::retired_codes;
@@ -978,12 +978,9 @@ pub async fn invite_member(
         ));
     }
 
-    // Find user by email. Registration stores normalize_email (trimmed, domain
-    // lowercased), so the invite lookup must use the same form or a real user 404s.
-    let email = normalize_email(&payload.email);
-    let invite_user = users::Entity::find()
-        .filter(users::Column::Email.eq(&email))
-        .filter(users::Column::DeletedAt.is_null())
+    // Find user by email. Addresses are folded to lowercase, so the invite
+    // lookup compares case-insensitively or a real user typed in another case 404s.
+    let invite_user = live_users_by_email(&payload.email)
         .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await

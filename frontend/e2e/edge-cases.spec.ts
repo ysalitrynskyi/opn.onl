@@ -7,6 +7,7 @@ import {
     clientIpHeader,
     createLink,
     createUser,
+    isLinkListUrl,
     signIn,
     type TestUser,
 } from './support/api';
@@ -262,7 +263,7 @@ test.describe('Dead or missing session', () => {
         test(`${kind} is discarded and the visitor lands on sign-in`, async ({ page, request }) => {
             await seedTokenOnce(page, await token(request));
             const listed = page.waitForResponse(
-                (res) => res.url() === `${API_URL}/links` && res.request().method() === 'GET',
+                (res) => isLinkListUrl(res.url()) && res.request().method() === 'GET',
             );
 
             await page.goto('/dashboard');
@@ -288,7 +289,7 @@ test.describe('Links request slow or failing', () => {
         let pending = 0;
         let release!: () => void;
         const held = new Promise<void>((resolve) => (release = resolve));
-        await page.route(`${API_URL}/links`, async (route) => {
+        await page.route(isLinkListUrl, async (route) => {
             if (route.request().method() === 'GET') {
                 pending += 1;
                 await held;
@@ -310,7 +311,7 @@ test.describe('Links request slow or failing', () => {
 
     test('a network failure shows an error instead of an empty account', async ({ page, request }) => {
         const user = await createUser(request);
-        await page.route(`${API_URL}/links`, (route) =>
+        await page.route(isLinkListUrl, (route) =>
             route.request().method() === 'GET' ? route.abort('failed') : route.continue(),
         );
         await openDashboard(page, user);
@@ -321,7 +322,7 @@ test.describe('Links request slow or failing', () => {
 
     test('a server error shows the message from the response body', async ({ page, request }) => {
         const user = await createUser(request);
-        await page.route(`${API_URL}/links`, (route) =>
+        await page.route(isLinkListUrl, (route) =>
             route.request().method() === 'GET'
                 ? route.fulfill({ status: 500, json: { error: 'Database error' } })
                 : route.continue(),
@@ -335,7 +336,7 @@ test.describe('Links request slow or failing', () => {
     test('an error page that is not JSON falls back to a generic message', async ({ page, request }) => {
         const user = await createUser(request);
         // What a reverse proxy returns while the backend is down.
-        await page.route(`${API_URL}/links`, (route) =>
+        await page.route(isLinkListUrl, (route) =>
             route.request().method() === 'GET'
                 ? route.fulfill({
                       status: 503,
@@ -471,6 +472,34 @@ test.describe('Unusual data', () => {
         await expect(next).toBeDisabled();
     });
 
+    test('links past the first hundred load on request, counted from the server', async ({ page, request }) => {
+        const user = await createUser(request);
+        // A bulk request takes at most a hundred URLs.
+        for (const [from, to] of [[0, 100], [100, 130]]) {
+            const urls = Array.from({ length: to - from }, (_, i) => `https://www.iana.org/domains/more-${from + i}`);
+            const bulk = await api(request, 'post', '/links/bulk', user.token, { urls });
+            expect(bulk.status()).toBe(200);
+            expect((await bulk.json()).links).toHaveLength(to - from);
+        }
+
+        await openDashboard(page, user);
+
+        // The total comes from the X-Total-Count header, which the browser
+        // can only read because the API is cross-origin and exposes it.
+        await expect(page.getByText('130 links', { exact: true })).toBeVisible();
+        await expect(page.getByText('Showing 100 of 130 links')).toBeVisible();
+        await expect(page.getByText('1 / 5', { exact: true })).toBeVisible();
+        // Clicks are the account's, from /auth/me, not the sum of the loaded page.
+        await expect(page.getByText('0 clicks', { exact: true })).toBeVisible();
+
+        await page.getByRole('button', { name: 'Load more' }).click();
+
+        await expect(page.getByText('1 / 7', { exact: true })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Load more' })).toHaveCount(0);
+        await expect(page.getByText('Showing 1-20 of 130')).toBeVisible();
+        await expect(page.getByText('130 links', { exact: true })).toBeVisible();
+    });
+
     test('a link with no clicks shows zero counts', async ({ page, request }) => {
         const user = await createUser(request);
         const link = await createLink(request, user.token, { original_url: 'https://www.iana.org/numbers' });
@@ -487,7 +516,7 @@ test.describe('Unusual data', () => {
         const link = await createLink(request, user.token, { original_url: 'https://www.iana.org/protocols' });
         // Ten million real clicks are impractical to produce, so the real list
         // response is fetched and only this link's count is raised.
-        await page.route(`${API_URL}/links`, async (route) => {
+        await page.route(isLinkListUrl, async (route) => {
             if (route.request().method() !== 'GET') return route.continue();
             const response = await route.fetch();
             const links = await response.json();
@@ -567,7 +596,7 @@ test.describe('Create form state', () => {
         let release!: () => void;
         const held = new Promise<void>((resolve) => (release = resolve));
         // Hold the create request so the extra clicks land while it is in flight.
-        await page.route(`${API_URL}/links`, async (route) => {
+        await page.route(isLinkListUrl, async (route) => {
             if (route.request().method() === 'POST') {
                 posts += 1;
                 await held;
@@ -591,7 +620,7 @@ test.describe('Create form state', () => {
         let pending = 0;
         let release!: () => void;
         const held = new Promise<void>((resolve) => (release = resolve));
-        await page.route(`${API_URL}/links`, async (route) => {
+        await page.route(isLinkListUrl, async (route) => {
             if (route.request().method() === 'POST') {
                 pending += 1;
                 await held;
