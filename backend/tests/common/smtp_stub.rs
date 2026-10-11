@@ -8,9 +8,11 @@
 //! started it because the other tests in the binary share it.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 /// One message the server accepted.
 #[derive(Clone, Debug)]
@@ -102,13 +104,38 @@ pub fn decode_quoted_printable(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Mail to one address that the server takes in but does not finish accepting
+/// until [`MailHold::release`] is called, as a mail server that is slow or
+/// unreachable would.
+pub struct MailHold(Arc<Semaphore>);
+
+impl MailHold {
+    /// Let the held mail, and any later mail to the address, through.
+    pub fn release(&self) {
+        self.0.add_permits(1 << 20);
+    }
+}
+
 #[derive(Clone)]
 pub struct SmtpStub {
     pub port: u16,
     mails: Arc<Mutex<Vec<Delivered>>>,
+    holds: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
 }
 
 impl SmtpStub {
+    /// Stall delivery to `address` until the returned hold is released. A
+    /// request that waits for SMTP then never finishes, which a test can tell
+    /// from one that does not wait, without measuring time.
+    pub fn hold_mail_for(&self, address: &str) -> MailHold {
+        let gate = Arc::new(Semaphore::new(0));
+        self.holds
+            .lock()
+            .unwrap()
+            .insert(address.to_lowercase(), gate.clone());
+        MailHold(gate)
+    }
+
     /// Every message accepted so far, oldest first.
     pub fn all(&self) -> Vec<Delivered> {
         self.mails.lock().unwrap().clone()
@@ -142,8 +169,10 @@ pub fn smtp_stub() -> &'static SmtpStub {
     static STUB: OnceLock<SmtpStub> = OnceLock::new();
     STUB.get_or_init(|| {
         let mails: Arc<Mutex<Vec<Delivered>>> = Arc::default();
+        let holds: Arc<Mutex<HashMap<String, Arc<Semaphore>>>> = Arc::default();
         let (port_tx, port_rx) = std::sync::mpsc::channel();
         let recorded = mails.clone();
+        let held = holds.clone();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -159,7 +188,7 @@ pub fn smtp_stub() -> &'static SmtpStub {
                     let Ok((socket, _)) = listener.accept().await else {
                         return;
                     };
-                    tokio::spawn(serve(socket, recorded.clone()));
+                    tokio::spawn(serve(socket, recorded.clone(), held.clone()));
                 }
             });
         });
@@ -172,11 +201,15 @@ pub fn smtp_stub() -> &'static SmtpStub {
         crate::common::set_env("SMTP_TLS", "none");
         crate::common::set_env("SMTP_FROM_EMAIL", "noreply@mail.test");
         crate::common::set_env("FRONTEND_URL", "https://app.test");
-        SmtpStub { port, mails }
+        SmtpStub { port, mails, holds }
     })
 }
 
-async fn serve(socket: tokio::net::TcpStream, mails: Arc<Mutex<Vec<Delivered>>>) {
+async fn serve(
+    socket: tokio::net::TcpStream,
+    mails: Arc<Mutex<Vec<Delivered>>>,
+    holds: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+) {
     let (reader, mut writer) = socket.into_split();
     let mut reader = BufReader::new(reader);
     let _ = writer.write_all(b"220 stub ESMTP\r\n").await;
@@ -218,6 +251,10 @@ async fn serve(socket: tokio::net::TcpStream, mails: Arc<Mutex<Vec<Delivered>>>)
                     break;
                 }
                 data.push_str(&line);
+            }
+            let hold = holds.lock().unwrap().get(&rcpt.to_lowercase()).cloned();
+            if let Some(gate) = hold {
+                let _ = gate.acquire().await;
             }
             mails.lock().unwrap().push(Delivered {
                 rcpt: std::mem::take(&mut rcpt),
