@@ -438,7 +438,9 @@ pub fn build_router(app_state: AppState) -> Router {
         )
         .route(
             "/links/:id",
-            put(handlers::links::update_link).delete(handlers::links::delete_link),
+            get(handlers::links::get_link)
+                .put(handlers::links::update_link)
+                .delete(handlers::links::delete_link),
         )
         .route("/links/:id/qr", get(handlers::links::get_qr_code))
         .route("/links/:id/clone", post(handlers::links::clone_link))
