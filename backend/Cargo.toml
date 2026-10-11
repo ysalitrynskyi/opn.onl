@@ -47,7 +47,6 @@ sha2 = "0.10"
 qrcode = "0.14.1"
 image = "0.25.9"
 maxminddb = "0.32"
-user-agent-parser = "0.3"
 urlencoding = "2.1"
 
 # Rate limiting

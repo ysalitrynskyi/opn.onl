@@ -356,10 +356,18 @@ mod tests {
             "null referer is Direct (the unknown-dimension event plus the UK click)"
         );
 
+        // The default 30-day window: every day from 30 days ago through today,
+        // zero where nothing was clicked. Clicks landed today (3) and yesterday (1).
         let days = body["clicks_by_day"].as_array().unwrap();
-        assert_eq!(days.len(), 2, "today + yesterday: {body}");
+        assert_eq!(days.len(), 31, "one entry per day of the window: {body}");
         let day_total: i64 = days.iter().filter_map(|d| d["count"].as_i64()).sum();
         assert_eq!(day_total, 4);
+        let nonzero: Vec<i64> = days
+            .iter()
+            .filter_map(|d| d["count"].as_i64())
+            .filter(|count| *count > 0)
+            .collect();
+        assert_eq!(nonzero, vec![1, 3], "yesterday, then today: {body}");
 
         let geo = body["geo_data"].as_array().unwrap();
         assert_eq!(

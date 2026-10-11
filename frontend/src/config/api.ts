@@ -354,6 +354,8 @@ export interface LinkStats {
     code: string;
     original_url: string;
     total_clicks: number;
+    /** True when the period held more clicks than the server analyses; everything but `total_clicks` then covers only the most recent ones. */
+    truncated: boolean;
     unique_visitors: number;
     clicks_by_day: DayStats[];
     clicks_by_country: CountryStats[];
