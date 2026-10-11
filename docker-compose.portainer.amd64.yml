@@ -10,6 +10,14 @@ version: '3.8'
 #   BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
 #   FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
 
+# Docker keeps every line a container prints, forever, unless told otherwise.
+# Rotate the json-file logs so they cannot fill the disk the database lives on.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   db:
     image: postgres:15-alpine
@@ -72,10 +80,16 @@ services:
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      # Not behind Cloudflare? Set REAL_IP_HEADER=none. An empty value does not
+      # disable it: compose substitutes the Cloudflare default for empty.
       REAL_IP_HEADER: ${REAL_IP_HEADER:-cf-connecting-ip}
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
-      RUST_LOG: ${RUST_LOG:-info,tower_http=debug}
+      # Open /ws and /sse connections one account may hold at once (0 = no limit).
+      WS_MAX_CONNECTIONS_PER_USER: ${WS_MAX_CONNECTIONS_PER_USER:-5}
+      RUST_LOG: ${RUST_LOG:-info,tower_http=info}
       LOG_DIR: /app/logs
+      # Daily log files kept in the logs volume (0 keeps them all).
+      LOG_MAX_FILES: ${LOG_MAX_FILES:-14}
       REDIS_URL: redis://redis:6379
       REDIS_CACHE_TTL: ${REDIS_CACHE_TTL:-300}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -133,6 +147,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    logging: *default-logging
     networks:
       - opn-network
 
@@ -155,6 +170,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+    logging: *default-logging
     networks:
       - opn-network
 
