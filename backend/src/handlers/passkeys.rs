@@ -771,7 +771,7 @@ pub async fn list_passkeys(
             id: pk.id,
             name: pk.name.unwrap_or_else(|| format!("Passkey {}", pk.id)),
             created_at: utc_rfc3339(pk.created_at),
-            last_used: pk.last_used.map(|lu| lu.to_string()),
+            last_used: pk.last_used.map(utc_rfc3339),
         })
         .collect();
 
@@ -789,13 +789,21 @@ pub struct DeletePasskeyRequest {
     pub passkey_id: i32,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct DeletePasskeyResponse {
+    pub message: String,
+    /// A fresh session token. Deleting a passkey signs out every session
+    /// issued before it, the caller's included; this one replaces theirs.
+    pub token: String,
+}
+
 /// Delete a passkey
 #[utoipa::path(
     post,
     path = "/auth/passkey/delete",
     request_body = DeletePasskeyRequest,
     responses(
-        (status = 200, description = "Passkey deleted"),
+        (status = 200, description = "Passkey deleted; the response carries a fresh token for the caller's session", body = DeletePasskeyResponse),
         (status = 400, description = "Cannot delete the account's only login method"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Passkey not found"),
@@ -891,6 +899,20 @@ pub async fn delete_passkey(
         )
             .into_response();
     };
+    // The bump below signs out every session issued before it, this caller's
+    // included, so hand back a token for the new version. Minted before the
+    // commit: if it cannot be, nothing is deleted and the session survives.
+    let token = match create_jwt(user.id, &user.email, next_token_version) {
+        Ok(token) => token,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to delete passkey"})),
+            )
+                .into_response();
+        }
+    };
     let mut active_user: users::ActiveModel = user.into();
     active_user.token_version = Set(next_token_version);
     let result = async {
@@ -918,9 +940,10 @@ pub async fn delete_passkey(
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "message": "Passkey deleted successfully"
-        })),
+        Json(DeletePasskeyResponse {
+            message: "Passkey deleted successfully".to_string(),
+            token,
+        }),
     )
         .into_response()
 }
