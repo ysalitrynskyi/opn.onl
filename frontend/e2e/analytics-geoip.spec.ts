@@ -83,8 +83,9 @@ const PLACES = [GERMANY, LONDON, LONDON, NEW_YORK, NEW_YORK, NEW_YORK];
  * `stats` as get_link_stats would have returned it had GeoIP resolved recent
  * click i to places[i]: the per-click fields set, and the country, city and map
  * aggregates rebuilt the way the handler builds them (each bucket's share of
- * all loaded clicks, a click without a city counted under "Unknown" with the
- * country of the newest such click, map points clustered at two decimals).
+ * all loaded clicks, cities counted per city and country, a click without a
+ * city counted under "Unknown" with no country, map points clustered at two
+ * decimals).
  */
 function locate(stats: LinkStats, places: Place[]): LinkStats {
     const clicks = stats.recent_clicks.map((click, i) => ({
@@ -95,15 +96,20 @@ function locate(stats: LinkStats, places: Place[]): LinkStats {
     const share = (count: number) => (count / Math.max(clicks.length, 1)) * 100;
 
     const countries = new Map<string, number>();
-    const cities = new Map<string, { count: number; country: string | null }>();
+    const cities = new Map<string, { city: string; country: string | null; count: number }>();
     const points = new Map<string, GeoPoint>();
     clicks.forEach((click, i) => {
         const country = click.country ?? 'Unknown';
         countries.set(country, (countries.get(country) ?? 0) + 1);
 
-        const city = cities.get(click.city ?? 'Unknown') ?? { count: 0, country: click.country };
+        const cityKey = click.city === null ? 'Unknown' : `${click.city}, ${click.country}`;
+        const city = cities.get(cityKey) ?? {
+            city: click.city ?? 'Unknown',
+            country: click.city === null ? null : click.country,
+            count: 0,
+        };
         city.count += 1;
-        cities.set(click.city ?? 'Unknown', city);
+        cities.set(cityKey, city);
 
         const { latitude, longitude } = places[i];
         const key = `${Math.trunc(latitude * 100)},${Math.trunc(longitude * 100)}`;
@@ -115,7 +121,7 @@ function locate(stats: LinkStats, places: Place[]): LinkStats {
     return {
         ...stats,
         clicks_by_country: [...countries].map(([country, count]) => ({ country, count, percentage: share(count) })),
-        clicks_by_city: [...cities].map(([city, { count, country }]) => ({
+        clicks_by_city: [...cities.values()].map(({ city, country, count }) => ({
             city,
             country,
             count,
@@ -270,8 +276,8 @@ test.describe('GeoIP Analytics', () => {
         test('should display city breakdown', async ({ page }) => {
             // The click resolved to Germany alone has no city.
             await expectBreakdown(page, 'Top Cities', [
-                ['New York', '3', '50.0%'],
-                ['London', '2', '33.3%'],
+                ['New York, United States', '3', '50.0%'],
+                ['London, United Kingdom', '2', '33.3%'],
                 ['Unknown', '1', '16.7%'],
             ]);
         });
