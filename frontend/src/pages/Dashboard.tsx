@@ -16,9 +16,9 @@ import { toast } from '../components/Toast';
 import ShareModal from '../components/ShareModal';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import Sparkline from '../components/Sparkline';
-import LinkPreviewCard from '../components/LinkPreviewCard';
 import EditModal from '../components/dashboard/EditModal';
 import QRModal from '../components/dashboard/QRModal';
+import PreviewModal from '../components/dashboard/PreviewModal';
 import BulkImportModal, { type BulkReport } from '../components/dashboard/BulkImportModal';
 import { parseBulkUrls, readBulkErrors } from '../components/dashboard/bulkImport';
 import Skeleton from '../components/dashboard/Skeleton';
@@ -54,8 +54,6 @@ function linksUrl(limit: number, offset: number, search: string) {
     if (search) params.set('search', search);
     return `${API_ENDPOINTS.links}?${params}`;
 }
-
-const ease = [0.16, 1, 0.3, 1] as const;
 
 export default function Dashboard() {
     const [links, setLinks] = useState<LinkData[]>([]);
@@ -161,13 +159,21 @@ export default function Dashboard() {
         {
             key: 'Escape',
             handler: () => {
-                if (editingLink || qrLink || shareLink) {
-                    setEditingLink(null);
-                    setQrLink(null);
+                // One modal per press, topmost first: the bulk-import modal
+                // renders after the rest, so it paints over any of them.
+                if (showBulkImport) {
+                    setShowBulkImport(false);
+                } else if (previewLink) {
+                    setPreviewLink(null);
+                } else if (shareLink) {
                     setShareLink(null);
-                    return;
+                } else if (qrLink) {
+                    setQrLink(null);
+                } else if (editingLink) {
+                    setEditingLink(null);
+                } else {
+                    setSearchQuery('');
                 }
-                setSearchQuery('');
             },
             description: 'Close modal / Clear search',
         },
@@ -746,53 +752,11 @@ export default function Dashboard() {
                     />
                 )}
                 {previewLink && (
-                    <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="fixed inset-0 bg-ink/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-                        onClick={() => setPreviewLink(null)}
-                    >
-                        <motion.div
-                            initial={{ scale: 0.97, opacity: 0, y: 8 }}
-                            animate={{ scale: 1, opacity: 1, y: 0 }}
-                            exit={{ scale: 0.97, opacity: 0, y: 8 }}
-                            transition={{ duration: 0.18, ease }}
-                            className="bg-surface rounded-2xl border border-line2 shadow-lift max-w-md w-full p-6"
-                            onClick={e => e.stopPropagation()}
-                        >
-                            <div className="flex items-center justify-between mb-5">
-                                <h3 className="font-display text-lg font-bold text-ink tracking-tight">Link preview</h3>
-                                <button onClick={() => setPreviewLink(null)} aria-label="Close" className="text-faint transition-colors hover:text-ink">
-                                    <X className="h-5 w-5" />
-                                </button>
-                            </div>
-                            <div className="mb-4">
-                                <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint mb-2">Short URL</p>
-                                <code className="rounded-md bg-paper border border-line px-2 py-1 font-mono text-sm text-primary-600">
-                                    {previewLink.short_url}
-                                </code>
-                            </div>
-                            <div className="mb-4">
-                                <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint mb-2">Destination preview</p>
-                                <LinkPreviewCard url={previewLink.original_url} />
-                            </div>
-                            {sparklineData[previewLink.id] && (
-                                <div className="border-t border-line pt-4">
-                                    <p className="font-mono text-xs uppercase tracking-[0.14em] text-faint mb-2">Clicks (last 7 days)</p>
-                                    <div className="rounded-lg border border-line bg-paper p-3">
-                                        <Sparkline
-                                            data={sparklineData[previewLink.id].data}
-                                            labels={sparklineData[previewLink.id].labels}
-                                            width={320}
-                                            height={60}
-                                            strokeWidth={2}
-                                        />
-                                    </div>
-                                </div>
-                            )}
-                        </motion.div>
-                    </motion.div>
+                    <PreviewModal
+                        link={previewLink}
+                        sparkline={sparklineData[previewLink.id]}
+                        onClose={() => setPreviewLink(null)}
+                    />
                 )}
             </AnimatePresence>
 

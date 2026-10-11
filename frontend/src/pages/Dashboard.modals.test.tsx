@@ -194,3 +194,92 @@ describe('Dashboard bulk import', () => {
         expect(within(dialog).queryByRole('list')).not.toBeInTheDocument();
     });
 });
+
+describe('Dashboard shortcuts and Escape with a modal open', () => {
+    beforeEach(() => {
+        localStorage.setItem('token', 'test-token');
+        serve();
+    });
+
+    it('ignores n while the bulk-import modal is open, and works again once it is closed', async () => {
+        const { user } = render(<Dashboard />);
+        await user.click(await screen.findByRole('button', { name: /bulk import/i }));
+        expect(await screen.findByRole('dialog', { name: 'Bulk import URLs' })).toBeInTheDocument();
+
+        await user.keyboard('n');
+
+        expect(createInput()).not.toHaveFocus();
+
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        await user.keyboard('n');
+        expect(createInput()).toHaveFocus();
+    });
+
+    it('ignores / while the edit modal is open, and works again once it is closed', async () => {
+        const { user } = render(<Dashboard />);
+        await user.click(await screen.findByRole('button', { name: 'Edit link code1' }));
+        expect(await screen.findByRole('heading', { name: 'Edit link' })).toBeInTheDocument();
+
+        await user.keyboard('/');
+
+        expect(searchInput()).not.toHaveFocus();
+
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        await user.keyboard('/');
+        expect(searchInput()).toHaveFocus();
+    });
+
+    it('ignores n and / while the link preview is open', async () => {
+        const { user } = render(<Dashboard />);
+        await user.click(await screen.findByRole('button', { name: 'Preview destination for code1' }));
+        expect(await screen.findByRole('dialog', { name: 'Link preview' })).toBeInTheDocument();
+
+        await user.keyboard('n');
+        await user.keyboard('/');
+
+        expect(createInput()).not.toHaveFocus();
+        expect(searchInput()).not.toHaveFocus();
+    });
+
+    it('closes only the topmost modal on each Escape', async () => {
+        const { user } = render(<Dashboard />);
+        await user.click(await screen.findByRole('button', { name: /bulk import/i }));
+        expect(await screen.findByRole('dialog', { name: 'Bulk import URLs' })).toBeInTheDocument();
+        // The edit modal opens as well, the way a second dialog would on a real page.
+        await user.click(screen.getByRole('button', { name: 'Edit link code1' }));
+        expect(await screen.findByRole('heading', { name: 'Edit link' })).toBeInTheDocument();
+
+        await user.keyboard('{Escape}');
+
+        await waitFor(() => {
+            expect(screen.queryByRole('dialog', { name: 'Bulk import URLs' })).not.toBeInTheDocument();
+        });
+        expect(screen.getByRole('heading', { name: 'Edit link' })).toBeInTheDocument();
+
+        await user.keyboard('{Escape}');
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    });
+
+    it('closes the bulk-import modal and the link preview on Escape without clearing the search', async () => {
+        const { user } = render(<Dashboard />);
+        await user.type(await screen.findByPlaceholderText(/search links/i), 'code1');
+
+        await user.click(screen.getByRole('button', { name: /bulk import/i }));
+        expect(await screen.findByRole('dialog', { name: 'Bulk import URLs' })).toBeInTheDocument();
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(searchInput()).toHaveValue('code1');
+
+        await user.click(screen.getByRole('button', { name: 'Preview destination for code1' }));
+        expect(await screen.findByRole('dialog', { name: 'Link preview' })).toBeInTheDocument();
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(searchInput()).toHaveValue('code1');
+
+        await user.keyboard('{Escape}');
+        expect(searchInput()).toHaveValue('');
+    });
+});
