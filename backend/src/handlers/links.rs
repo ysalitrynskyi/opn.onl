@@ -32,18 +32,21 @@ async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), Stri
     validate_url(url)?;
 
     let parsed_url = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
-    // Normalized host: lowercase + strip trailing dot (defeats simple casing / FQDN-dot bypass).
+    // Same host spelling the blocked domains are stored in (lower-case punycode,
+    // no trailing dot), so casing and FQDN-dot variants cannot dodge a block.
     let host = parsed_url
         .host_str()
-        .unwrap_or("")
-        .trim_end_matches('.')
-        .to_lowercase();
+        .and_then(crate::utils::url_policy::canonical_host)
+        .unwrap_or_default();
 
-    // Exact-URL block. Also check the trailing-slash-trimmed form so a "/" tweak can't bypass.
-    let mut url_candidates = vec![url.to_string()];
-    let trimmed = url.trim_end_matches('/').to_string();
-    if !url_candidates.contains(&trimmed) {
-        url_candidates.push(trimmed);
+    // Exact-URL block. Entries are stored in canonical form (see
+    // `url_policy::canonical_blocked_url`), so compare the canonical form of
+    // this URL: scheme/host case, default port, fragment, trailing slash and an
+    // empty query cannot dodge a block. An entry without a query blocks the URL
+    // with any query; an entry with one blocks only that exact query.
+    let url_candidates = crate::utils::url_policy::blocked_url_candidates(url);
+    if url_candidates.is_empty() {
+        return Err("Invalid URL".to_string());
     }
     let blocked_url = blocked_links::Entity::find()
         .filter(blocked_links::Column::Url.is_in(url_candidates))
@@ -65,7 +68,7 @@ async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), Stri
     // those candidates against the indexed, normalized `domain` column instead of
     // loading and scanning the whole table on every uncached redirect. Stored
     // domains are normalized on write (see admin::block_domain) and by migration
-    // m20220101_000028, so the candidates compare directly.
+    // m20220101_000028 and m20220101_000039, so the candidates compare directly.
     if !host.is_empty() {
         let mut candidates: Vec<String> = Vec::new();
         let mut suffix = host.as_str();
