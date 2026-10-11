@@ -241,17 +241,18 @@ pub async fn ensure_admin_exists(db: &DatabaseConnection) {
 }
 
 /// Warn at startup if live accounts share an email address that differs only by
-/// letter case. The migration that folded addresses to lowercase leaves such
-/// accounts alone (merging them is the operator's call), so they can outlive it.
-/// Only the number is logged, never the addresses.
+/// letter case or domain encoding. The migration that folded addresses leaves
+/// such accounts alone (merging them is the operator's call), so they can
+/// outlive it. Only the number is logged, never the addresses.
 pub async fn warn_on_email_case_collisions(db: &DatabaseConnection) {
     match utils::email_domain_policy::count_email_case_collisions(db).await {
         Ok(0) => {}
         Ok(groups) => tracing::warn!(
             groups,
-            "{groups} email address(es) are registered to more than one live account, differing \
-             only by letter case; sign-in uses the exact-case match, otherwise the oldest account. \
-             Search the admin user list for the address to resolve them"
+            "{groups} email address(es) are registered to more than one live account under \
+             spellings that differ only by letter case or domain encoding; sign-in uses the \
+             exact-spelling match, otherwise the oldest account. Search the admin user list \
+             for the address to resolve them"
         ),
         Err(e) => tracing::error!("Failed to check for email case collisions: {}", e),
     }

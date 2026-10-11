@@ -701,7 +701,7 @@ export default function Admin() {
                             <AlertTriangle className="h-6 w-6 text-amber-600 shrink-0" />
                             <div>
                                 <div className="font-semibold text-amber-900">
-                                    {stats.email_case_collisions.toLocaleString()} email {pluralize(stats.email_case_collisions, 'address is', 'addresses are')} registered to more than one account, differing only by letter case
+                                    {stats.email_case_collisions.toLocaleString()} email {pluralize(stats.email_case_collisions, 'address is', 'addresses are')} registered to more than one account, in spellings that differ only by letter case or domain encoding
                                 </div>
                                 <div className="text-sm text-amber-800">
                                     Search the Users tab for the address and resolve the duplicates. Until then, sign-in uses the account whose spelling matches exactly, otherwise the oldest.

@@ -78,8 +78,9 @@ pub struct ErrorResponse {
 
 /// Register a new user
 ///
-/// The address is stored in lowercase and is unique regardless of letter case:
-/// registering `Bob@x.com` while `bob@x.com` exists answers `409`.
+/// The address is stored in lowercase, a Unicode domain as punycode, and is
+/// unique regardless of letter case: registering `Bob@x.com` while `bob@x.com`
+/// exists answers `409`.
 #[utoipa::path(
     post,
     path = "/auth/register",

@@ -18,7 +18,9 @@ use crate::entity::{
     org_members, organizations, passkeys, users,
 };
 use crate::utils::decode_jwt;
-use crate::utils::email_domain_policy::{count_email_case_collisions, is_reserved_email_domain};
+use crate::utils::email_domain_policy::{
+    count_email_case_collisions, is_reserved_email_domain, normalize_email,
+};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
 
@@ -908,7 +910,11 @@ pub async fn restore_user(
     };
 
     let result = async {
+        // Back among the live accounts the address is folded like every other,
+        // so lookups and the unique index see it in its canonical form.
+        let folded_email = normalize_email(&user.email);
         let mut active_user: users::ActiveModel = user.into();
+        active_user.email = Set(folded_email);
         active_user.deleted_at = Set(None);
         active_user.token_version = Set(next_token_version);
         active_user.update(&txn).await?;
@@ -1543,8 +1549,9 @@ pub struct AdminStatsResponse {
     /// Live (non-deleted) links whose destination trips the abuse heuristic.
     pub suspicious_links_count: i64,
     /// Email addresses held by more than one live account, the spellings
-    /// differing only by letter case. Such accounts are never merged
-    /// automatically; search the user list for the address to find them.
+    /// differing only by letter case (or, for a Unicode domain, by its
+    /// encoding). Such accounts are never merged automatically; search the
+    /// user list for the address to find them.
     pub email_case_collisions: u64,
 }
 

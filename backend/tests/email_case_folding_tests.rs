@@ -308,22 +308,107 @@ async fn org_invites_match_the_address_in_any_case() {
 }
 
 #[tokio::test]
-async fn a_blocked_email_domain_still_matches_a_mixed_case_address() {
+async fn a_blocked_email_domain_matches_whatever_the_spelling() {
     let (server, db) = spawn_real_app().await;
     let (admin_token, admin_id) = register(&server, &mixed_email()).await;
     promote_admin(&db, admin_id).await;
-    let domain = format!("blocked-{}.iana.org", unique_code().to_lowercase());
-    let res = server
-        .post("/admin/blocked/email-domains")
-        .authorization_bearer(&admin_token)
-        .json(&json!({ "domain": domain }))
-        .await;
-    assert_eq!(res.status_code(), 201, "block domain: {}", res.text());
+    let block = |domain: String| {
+        let (server, token) = (&server, admin_token.clone());
+        async move {
+            let res = server
+                .post("/admin/blocked/email-domains")
+                .authorization_bearer(&token)
+                .json(&json!({ "domain": domain }))
+                .await;
+            assert_eq!(res.status_code(), 201, "block domain: {}", res.text());
+        }
+    };
 
+    let domain = format!("blocked-{}.iana.org", unique_code().to_lowercase());
+    block(domain.clone()).await;
     let (status, body) =
         try_register(&server, &format!("Some.Body@{}", domain.to_uppercase())).await;
     assert_eq!(status, 400, "blocked domain in capitals: {body}");
     assert_eq!(body["error"], "This email domain is blocked");
+
+    // A block entered with a Unicode label is stored as punycode, and catches
+    // the address typed in Unicode as well.
+    let label = unique_code().to_lowercase();
+    block(format!("b\u{fc}cher-{label}.iana.org")).await;
+    let (status, body) = try_register(
+        &server,
+        &format!("Some.Body@B\u{dc}CHER-{}.IANA.ORG", label.to_uppercase()),
+    )
+    .await;
+    assert_eq!(status, 400, "blocked Unicode domain: {body}");
+    assert_eq!(body["error"], "This email domain is blocked");
+}
+
+#[tokio::test]
+async fn unicode_and_punycode_spellings_of_a_domain_are_one_account() {
+    let (server, db) = spawn_real_app().await;
+    let local = format!("idn.{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let unicode = format!("{local}@b\u{fc}cher.de");
+    let punycode = format!("{local}@xn--bcher-kva.de");
+
+    let (status, body) = try_register(&server, &unicode).await;
+    assert_eq!(status, 201, "register: {body}");
+    assert_eq!(body["email"], punycode.as_str());
+    let user_id = body["user_id"].as_i64().unwrap();
+    assert_eq!(stored_email(&db, user_id as i32).await, punycode);
+
+    for variant in [
+        punycode.clone(),
+        format!("{local}@B\u{dc}CHER.de"),
+        format!("{}@XN--BCHER-KVA.DE", local.to_uppercase()),
+    ] {
+        let (status, body) = try_register(&server, &variant).await;
+        assert_eq!(status, 409, "{variant:?} while {unicode:?} exists: {body}");
+    }
+
+    // One account, reachable under every spelling.
+    let (server, _) = spawn_real_app().await;
+    for typed in [&unicode, &punycode, &format!("{local}@B\u{dc}CHER.de")] {
+        let (status, body) = login(&server, typed, PASSWORD).await;
+        assert_eq!(status, 200, "login as {typed:?}: {body}");
+        assert_eq!(body["user_id"].as_i64(), Some(user_id));
+    }
+    assert_eq!(live_rows_for(&db, &punycode).await, 1);
+}
+
+#[tokio::test]
+async fn restoring_an_account_folds_its_address() {
+    let (server, db) = spawn_real_app().await;
+    let (admin_token, admin_id) = register(&server, &mixed_email()).await;
+    promote_admin(&db, admin_id).await;
+    let hex = &uuid::Uuid::new_v4().simple().to_string()[..8];
+
+    // Deleted before addresses were folded: mixed case, Unicode domain.
+    let deleted = format!("Gone.{hex}@B\u{fc}cher.de");
+    let id = insert_user(&db, &deleted, PASSWORD, 30, true).await;
+    let res = server
+        .post(&format!("/admin/users/{id}/restore"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "restore: {}", res.text());
+    let folded = format!("gone.{hex}@xn--bcher-kva.de");
+    assert_eq!(stored_email(&db, id).await, folded);
+
+    let (server, _) = spawn_real_app().await;
+    let (status, body) = login(&server, &folded, PASSWORD).await;
+    assert_eq!(status, 200, "login after restore: {body}");
+    assert_eq!(body["user_id"].as_i64(), Some(id as i64));
+
+    // The address was registered again in the meantime, in another case:
+    // refused like any other restore onto a taken address.
+    let taken = format!("Taken.{hex}@users.opn.onl");
+    let old = insert_user(&db, &taken, PASSWORD, 30, true).await;
+    insert_user(&db, &taken.to_lowercase(), PASSWORD, 1, false).await;
+    let res = server
+        .post(&format!("/admin/users/{old}/restore"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(res.status_code(), 409, "restore onto a taken address");
 }
 
 #[tokio::test]
@@ -436,6 +521,16 @@ async fn migration_folds_live_addresses_and_leaves_collisions_alone() {
     // namesake a collision.
     let gone = insert_user(db, "Gone.Person@users.opn.onl", PASSWORD, 9, true).await;
     let namesake = insert_user(db, "gone.person@users.opn.onl", PASSWORD, 3, false).await;
+    // Unicode domains are folded to punycode when nothing else holds the
+    // address, in either spelling...
+    let idn_solo = insert_user(db, "Idn.Solo@B\u{fc}cher.de", PASSWORD, 5, false).await;
+    // ...and left alone when something does.
+    let idn_pair_unicode = insert_user(db, "Idn.Pair@b\u{fc}cher.de", PASSWORD, 5, false).await;
+    let idn_pair_ascii = insert_user(db, "idn.pair@xn--bcher-kva.de", PASSWORD, 4, false).await;
+    let idn_twin_a = insert_user(db, "Idn.Twin@b\u{fc}cher.de", PASSWORD, 5, false).await;
+    let idn_twin_b = insert_user(db, "IDN.TWIN@B\u{dc}CHER.de", PASSWORD, 4, false).await;
+    let idn_mixed_ascii = insert_user(db, "Idn.Mixed@Xn--Bcher-Kva.de", PASSWORD, 5, false).await;
+    let idn_mixed_unicode = insert_user(db, "idn.mixed@b\u{fc}cher.de", PASSWORD, 4, false).await;
 
     Migrator::up(db, None).await.expect("migrate to latest");
 
@@ -452,6 +547,35 @@ async fn migration_folds_live_addresses_and_leaves_collisions_alone() {
         stored_email(db, namesake).await,
         "gone.person@users.opn.onl"
     );
+    assert_eq!(
+        stored_email(db, idn_solo).await,
+        "idn.solo@xn--bcher-kva.de"
+    );
+    assert_eq!(
+        stored_email(db, idn_pair_unicode).await,
+        "Idn.Pair@b\u{fc}cher.de"
+    );
+    assert_eq!(
+        stored_email(db, idn_pair_ascii).await,
+        "idn.pair@xn--bcher-kva.de"
+    );
+    assert_eq!(
+        stored_email(db, idn_twin_a).await,
+        "Idn.Twin@b\u{fc}cher.de"
+    );
+    assert_eq!(
+        stored_email(db, idn_twin_b).await,
+        "IDN.TWIN@B\u{dc}CHER.de"
+    );
+    // The ASCII half of a pair is only lowercased; the Unicode half stays.
+    assert_eq!(
+        stored_email(db, idn_mixed_ascii).await,
+        "idn.mixed@xn--bcher-kva.de"
+    );
+    assert_eq!(
+        stored_email(db, idn_mixed_unicode).await,
+        "idn.mixed@b\u{fc}cher.de"
+    );
     assert!(
         !index_exists(db, LOWER_INDEX).await,
         "the unique index cannot be built while two live accounts collide"
@@ -466,12 +590,30 @@ async fn migration_adds_the_unique_index_when_nothing_collides() {
     let folded = insert_user(db, "Mixed.Case@users.opn.onl", PASSWORD, 5, false).await;
     let gone = insert_user(db, "Gone.Person@users.opn.onl", PASSWORD, 9, true).await;
     insert_user(db, "gone.person@users.opn.onl", PASSWORD, 3, false).await;
+    let idn_solo = insert_user(db, "Idn.Solo@B\u{fc}cher.de", PASSWORD, 5, false).await;
+    let idn_gone = insert_user(db, "Idn.Gone@b\u{fc}cher.de", PASSWORD, 5, true).await;
+    // A Unicode address that cannot be folded differs textually from its
+    // punycode twin, so it does not keep the index from being built.
+    insert_user(db, "Idn.Pair@b\u{fc}cher.de", PASSWORD, 5, false).await;
+    insert_user(db, "idn.pair@xn--bcher-kva.de", PASSWORD, 4, false).await;
 
     Migrator::up(db, None).await.expect("migrate to latest");
 
     assert_eq!(stored_email(db, folded).await, "mixed.case@users.opn.onl");
     assert_eq!(stored_email(db, gone).await, "Gone.Person@users.opn.onl");
+    assert_eq!(
+        stored_email(db, idn_solo).await,
+        "idn.solo@xn--bcher-kva.de"
+    );
+    assert_eq!(stored_email(db, idn_gone).await, "Idn.Gone@b\u{fc}cher.de");
     assert!(index_exists(db, LOWER_INDEX).await);
+    assert_eq!(
+        opn_onl_backend::utils::email_domain_policy::count_email_case_collisions(db)
+            .await
+            .unwrap(),
+        1,
+        "the Unicode/punycode pair is the one collision left"
+    );
 
     // The index now refuses a live case-variant, from any writer...
     let refused = db
@@ -509,6 +651,10 @@ async fn accounts_that_collide_are_reported_and_resolved_predictably() {
     // A deleted namesake and an unrelated address do not count.
     insert_user(db, "Dup.Person@Users.Opn.Onl", PASSWORD, 9, true).await;
     insert_user(db, "other@users.opn.onl", PASSWORD, 3, false).await;
+    // The same address as Unicode and as punycode is a collision of its own.
+    let idn_unicode =
+        insert_user(db, "Idn.Pair@b\u{fc}cher.de", "unicode-password", 5, false).await;
+    let idn_ascii = insert_user(db, "idn.pair@xn--bcher-kva.de", "ascii-password", 4, false).await;
 
     let stats = async || {
         let res = admin_app
@@ -518,7 +664,7 @@ async fn accounts_that_collide_are_reported_and_resolved_predictably() {
         assert_eq!(res.status_code(), 200, "stats: {}", res.text());
         res.json::<Value>()
     };
-    assert_eq!(stats().await["email_case_collisions"], 1);
+    assert_eq!(stats().await["email_case_collisions"], 2);
 
     // The admin finds every account behind the address with a lowercase query.
     let res = admin_app
@@ -557,19 +703,31 @@ async fn accounts_that_collide_are_reported_and_resolved_predictably() {
     let (status, _) = login(&app, "dup.person@users.opn.onl", "newer-password").await;
     assert_eq!(status, 401);
 
+    // The Unicode-domain account is reachable under the spelling it signed up
+    // with, the other one under punycode.
+    let (status, body) = login(&app, "Idn.Pair@b\u{fc}cher.de", "unicode-password").await;
+    assert_eq!(status, 200, "Unicode spelling: {body}");
+    assert_eq!(body["user_id"].as_i64(), Some(idn_unicode as i64));
+    let (status, body) = login(&app, "idn.pair@xn--bcher-kva.de", "ascii-password").await;
+    assert_eq!(status, 200, "punycode spelling: {body}");
+    assert_eq!(body["user_id"].as_i64(), Some(idn_ascii as i64));
+
     // A new sign-up cannot add a third account, whatever the index says.
     let signup_app = scratch.app().await;
     let (status, body) = try_register(&signup_app, "dup.person@users.opn.onl").await;
     assert_eq!(status, 409, "third spelling: {body}");
 
-    // Resolving the collision (an admin deletes one account) clears the report.
-    db.execute(pg(
-        "UPDATE users SET deleted_at = now() WHERE id = $1",
-        vec![newer.into()],
-    ))
-    .await
-    .expect("delete one account");
-    assert_eq!(stats().await["email_case_collisions"], 0);
+    // Resolving a collision (an admin deletes one account) clears it from the
+    // report.
+    for (id, left) in [(newer, 1), (idn_ascii, 0)] {
+        db.execute(pg(
+            "UPDATE users SET deleted_at = now() WHERE id = $1",
+            vec![id.into()],
+        ))
+        .await
+        .expect("delete one account");
+        assert_eq!(stats().await["email_case_collisions"], left);
+    }
 
     // The startup check runs against the same data without failing.
     opn_onl_backend::warn_on_email_case_collisions(db).await;

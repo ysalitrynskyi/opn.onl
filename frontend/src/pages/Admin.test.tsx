@@ -443,7 +443,7 @@ describe('Admin Page', () => {
 
             const warning = await screen.findByRole('status');
             expect(warning).toHaveTextContent(/3 email addresses are registered to more than one account/i);
-            expect(warning).toHaveTextContent(/differing only by letter case/i);
+            expect(warning).toHaveTextContent(/differ only by letter case or domain encoding/i);
         });
 
         it('uses the singular for one address', async () => {
