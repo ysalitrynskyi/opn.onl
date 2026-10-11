@@ -102,6 +102,39 @@ describe('Home Page', () => {
     });
   });
 
+  it('keeps the pasted URL and says why when the stored session is rejected', async () => {
+    // A returning visitor whose token has expired or been revoked. The server
+    // now answers 401 (it used to hand back an ownerless link), authFetch
+    // clears the token and sends them to /login.
+    sessionStorage.clear();
+    vi.mocked(localStorage.getItem).mockReturnValue(mockToken);
+    vi.mocked(global.fetch).mockResolvedValue(
+      mockFetchError('Invalid or expired credentials', 401) as any
+    );
+
+    const { user } = render(<Home />);
+    await user.type(screen.getByPlaceholderText(/your-very-long-link/i), 'https://example.com/test');
+    await user.click(screen.getByRole('button', { name: /shorten/i }));
+
+    expect(await screen.findByText(/session expired\. please log in again/i)).toBeInTheDocument();
+    expect(screen.queryByText(/network error/i)).not.toBeInTheDocument();
+    expect(localStorage.removeItem).toHaveBeenCalledWith('token');
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBe('https://example.com/test');
+  });
+
+  it('does not stash the URL when the request fails for another reason', async () => {
+    sessionStorage.clear();
+    vi.mocked(localStorage.getItem).mockReturnValue(mockToken);
+    vi.mocked(global.fetch).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    const { user } = render(<Home />);
+    await user.type(screen.getByPlaceholderText(/your-very-long-link/i), 'https://example.com/test');
+    await user.click(screen.getByRole('button', { name: /shorten/i }));
+
+    expect(await screen.findByText(/network error/i)).toBeInTheDocument();
+    expect(sessionStorage.getItem('opn.pendingUrl')).toBeNull();
+  });
+
   it('shows error on API failure', async () => {
     vi.mocked(localStorage.getItem).mockReturnValue(mockToken);
     vi.mocked(global.fetch).mockResolvedValue(mockFetchError('Invalid URL') as any);

@@ -9,7 +9,7 @@ import {
     Eye, ArrowRight, Flame, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, authFetch, shortLinkBase } from '../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch, shortLinkBase } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -22,7 +22,7 @@ import QRModal from '../components/dashboard/QRModal';
 import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
-import { takePendingUrl } from '../utils/pendingUrl';
+import { savePendingUrl, takePendingUrl } from '../utils/pendingUrl';
 import { safeLocalStorage } from '../utils/storage';
 import { localIsoDate } from '../utils/localIsoDate';
 import { pluralize } from '../utils/plural';
@@ -400,7 +400,14 @@ export default function Dashboard() {
             }
         } catch (error) {
             logger.error('Failed to create link', error);
-            setError('Network error. Please try again.');
+            if (error instanceof SessionExpiredError) {
+                // The session ended while the page was open. authFetch is
+                // sending the user to /login; the URL comes back with them.
+                savePendingUrl(newUrl);
+                setError(error.message);
+            } else {
+                setError('Network error. Please try again.');
+            }
         } finally {
             setCreating(false);
         }
