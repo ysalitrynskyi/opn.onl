@@ -1,5 +1,6 @@
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::MultiPart,
+    Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::{Mailbox, MultiPart},
     transport::smtp::authentication::Credentials,
 };
 use parking_lot::Mutex;
@@ -278,11 +279,7 @@ impl EmailService {
         reply_to: Option<&str>,
     ) -> Result<Message, String> {
         let mut builder = Message::builder()
-            .from(
-                format!("{} <{}>", self.from_name, self.from_email)
-                    .parse()
-                    .map_err(|e| format!("Invalid from address: {}", e))?,
-            )
+            .from(self.sender()?)
             .to(to
                 .parse()
                 .map_err(|e| format!("Invalid to address: {}", e))?)
@@ -302,6 +299,21 @@ impl EmailService {
                 body.html.clone(),
             ))
             .map_err(|e| format!("Failed to build email: {}", e))
+    }
+
+    /// The sender as a mailbox. The display name is set on the mailbox rather
+    /// than spliced into an address string, so a name such as `Acme, Inc.`
+    /// is quoted instead of being rejected by the address grammar.
+    fn sender(&self) -> Result<Mailbox, String> {
+        let address: Address = self
+            .from_email
+            .parse()
+            .map_err(|e| format!("Invalid from address: {}", e))?;
+        let name = self.from_name.trim();
+        Ok(Mailbox::new(
+            (!name.is_empty()).then(|| name.to_string()),
+            address,
+        ))
     }
 
     fn verification_email(&self, token: &str) -> EmailBody {
@@ -542,6 +554,70 @@ mod tests {
             assert!(raw.contains("text/html"), "{raw}");
         }
         assert!(bodies[3].0.text.contains("2026-09-30 12:00 UTC"));
+    }
+
+    /// The display name the From header carries, whether the writer left it
+    /// plain, quoted it, or sent it as an RFC 2047 encoded word.
+    fn from_display_name(raw: &str) -> String {
+        use base64::Engine as _;
+        let line = raw
+            .lines()
+            .find_map(|line| line.strip_prefix("From: "))
+            .expect("From header");
+        let name = line.split(" <").next().expect("name part");
+        match name
+            .strip_prefix("=?utf-8?b?")
+            .and_then(|rest| rest.strip_suffix("?="))
+        {
+            Some(encoded) => String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .expect("base64"),
+            )
+            .expect("utf-8"),
+            None => name
+                .strip_prefix('"')
+                .and_then(|quoted| quoted.strip_suffix('"'))
+                .unwrap_or(name)
+                .replace("\\\"", "\""),
+        }
+    }
+
+    /// `SMTP_FROM_NAME="Acme, Inc."` used to fail the address grammar, and
+    /// every email (password reset included) then failed with "Invalid from
+    /// address".
+    #[test]
+    fn a_sender_name_with_special_characters_is_quoted_not_rejected() {
+        for name in [
+            "Acme, Inc.",
+            "Acme <Support>",
+            "Say \"hi\"",
+            "Caf\u{e9}, Cr\u{e8}me",
+            "opn.onl",
+        ] {
+            let mut svc = service();
+            svc.from_name = name.to_string();
+            let message = svc
+                .build_message("user@opn.example", "Subject", &svc.welcome_email(), None)
+                .unwrap_or_else(|e| panic!("sender name {name:?}: {e}"));
+            let raw = String::from_utf8(message.formatted()).expect("utf-8");
+            assert!(
+                raw.contains("<noreply@opn.example>"),
+                "sender name {name:?}: {raw}"
+            );
+            assert_eq!(from_display_name(&raw), name, "{raw}");
+        }
+    }
+
+    #[test]
+    fn an_empty_sender_name_sends_the_bare_address() {
+        let mut svc = service();
+        svc.from_name = "  ".to_string();
+        let message = svc
+            .build_message("user@opn.example", "Subject", &svc.welcome_email(), None)
+            .expect("message builds");
+        let raw = String::from_utf8(message.formatted()).expect("utf-8");
+        assert!(raw.contains("From: noreply@opn.example"), "{raw}");
     }
 
     #[test]
