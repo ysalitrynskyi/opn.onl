@@ -50,6 +50,7 @@ describe('Admin Page', () => {
         api_keys_count: 1,
         passkeys_count: 0,
         orgs_owned: 0,
+        purge_at: null,
         disabled_at: null,
         disabled_reason: null,
         disabled_by: null,
@@ -92,6 +93,7 @@ describe('Admin Page', () => {
                 email_verified: true,
                 created_at: '2024-01-04T00:00:00Z',
                 deleted_at: '2024-01-05T00:00:00Z',
+                purge_at: '2024-02-04T00:00:00Z',
             },
             {
                 ...userDefaults,
@@ -798,6 +800,35 @@ describe('Admin Page', () => {
             await openUsersTab();
 
             expect(await screen.findByRole('button', { name: /restore/i })).toBeInTheDocument();
+        });
+
+        it('shows when a deleted user is permanently removed, and only for deleted users', async () => {
+            render(<Admin />);
+            await openUsersTab();
+
+            const deadline = new Date('2024-02-04T00:00:00Z').toLocaleDateString();
+            const notice = await screen.findByText(`Permanently removed on ${deadline}`);
+            expect(notice.closest('tr')).toHaveTextContent('deleted@example.com');
+            expect(screen.getAllByText(/permanently removed on/i)).toHaveLength(1);
+        });
+
+        it('shows no deadline when the purge is disabled', async () => {
+            const answerAll = global.fetch as unknown as (url: string) => Promise<unknown>;
+            global.fetch = vi.fn((url: string) =>
+                url.includes('/admin/users')
+                    ? Promise.resolve({
+                          ok: true,
+                          json: () =>
+                              Promise.resolve({ users: [{ ...mockUsers.users[3], purge_at: null }], total: 1, page: 1, per_page: 25 }),
+                      })
+                    : answerAll(url),
+            ) as unknown as typeof fetch;
+
+            render(<Admin />);
+            await openUsersTab();
+
+            expect(await screen.findByText('deleted@example.com')).toBeInTheDocument();
+            expect(screen.queryByText(/permanently removed on/i)).not.toBeInTheDocument();
         });
 
         it('can search users', async () => {
