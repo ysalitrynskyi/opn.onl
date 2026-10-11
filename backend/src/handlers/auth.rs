@@ -1194,7 +1194,7 @@ pub async fn delete_account(
         use crate::entity::links;
         use sea_orm::sea_query::Expr;
 
-        let cached_codes = match links::Entity::find()
+        let mut cached_codes = match links::Entity::find()
             .filter(links::Column::UserId.eq(user_id))
             .filter(links::Column::OrgId.is_null())
             .filter(links::Column::DeletedAt.is_null())
@@ -1247,6 +1247,16 @@ pub async fn delete_account(
                 .exec(&txn)
                 .await?;
 
+            // An org with no other live member has nobody left to manage it, so
+            // its links go down with its owner (same stamp, so an admin restore
+            // revives exactly this cascade).
+            let solo_org_codes = crate::handlers::organizations::soft_delete_solo_org_links(
+                &txn,
+                &split.solo,
+                deleted_at,
+            )
+            .await?;
+
             crate::utils::privacy::purge_click_pii_for_user(&txn, user_id).await?;
 
             api_keys::Entity::delete_many()
@@ -1258,19 +1268,22 @@ pub async fn delete_account(
                 .exec(&txn)
                 .await?;
 
-            Ok::<(), sea_orm::DbErr>(())
+            Ok::<Vec<String>, sea_orm::DbErr>(solo_org_codes)
         }
         .await;
 
-        if result.is_err() {
-            let _ = txn.rollback().await;
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to delete account".to_string(),
-                }),
-            )
-                .into_response();
+        match result {
+            Ok(solo_org_codes) => cached_codes.extend(solo_org_codes),
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Failed to delete account".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
         }
 
         if txn.commit().await.is_err() {

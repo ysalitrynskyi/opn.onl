@@ -232,8 +232,9 @@ pub async fn update_bio_settings(
 }
 
 /// Public bio page data. Returns 404 unless the instance flag AND the user's
-/// `bio_enabled` are both on (and the user isn't deleted) — 404 rather than 403
-/// so a disabled page never reveals whether a username exists.
+/// `bio_enabled` are both on (and the user is neither deleted nor disabled by an
+/// admin) — 404 rather than 403 so a disabled page never reveals whether a
+/// username exists.
 #[utoipa::path(
     get,
     path = "/api/bio/{username}",
@@ -255,6 +256,7 @@ pub async fn get_public_bio(
     let user = match users::Entity::find()
         .filter(users::Column::BioUsername.eq(uname))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .one(&state.db)
         .await
         .ok()
