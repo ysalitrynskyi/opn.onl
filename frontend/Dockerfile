@@ -9,15 +9,29 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # allow that origin - otherwise connect-src 'self' blocks every API call and the
 # app loads no data. Derived from the same build arg the JS bundle uses, so the
 # CSP and the baked-in API URL cannot drift. Also allow the WebSocket origin.
+#
+# RUN is `sh -c` without -e, and a bare `! grep` is exempt from `set -e`, so the
+# guards are explicit `if ...; exit 1` and the build fails if the placeholder is
+# missing before the substitution (nothing would be replaced and the CSP would
+# silently lack the API origin) or still present after it.
 ARG VITE_API_URL
-RUN if [ -n "$VITE_API_URL" ]; then \
+RUN set -e; \
+    CONF=/etc/nginx/conf.d/default.conf; \
+    if ! grep -q '__API_CONNECT_SRC__' "$CONF"; then \
+        echo "ERROR: __API_CONNECT_SRC__ placeholder not found in nginx.conf; the CSP would ship without the API origin"; \
+        exit 1; \
+    fi; \
+    if [ -n "$VITE_API_URL" ]; then \
         WS_ORIGIN=$(printf '%s' "$VITE_API_URL" | sed -e 's#^https://#wss://#' -e 's#^http://#ws://#'); \
         CONNECT_SRC="$VITE_API_URL $WS_ORIGIN"; \
     else \
         CONNECT_SRC=""; \
     fi; \
-    sed -i "s#__API_CONNECT_SRC__#${CONNECT_SRC}#g" /etc/nginx/conf.d/default.conf; \
-    ! grep -q '__API_CONNECT_SRC__' /etc/nginx/conf.d/default.conf; \
+    sed -i "s#__API_CONNECT_SRC__#${CONNECT_SRC}#g" "$CONF"; \
+    if grep -q '__API_CONNECT_SRC__' "$CONF"; then \
+        echo "ERROR: __API_CONNECT_SRC__ placeholder still present after substitution"; \
+        exit 1; \
+    fi; \
     echo "CSP connect-src extra sources: '${CONNECT_SRC}'"
 
 # Build stage - use full Node image for Puppeteer/Chromium support
