@@ -487,3 +487,44 @@ async fn blocking_an_email_domain_disables_matching_users_across_batches() {
         "the admin and the unrelated host stay enabled"
     );
 }
+
+#[tokio::test]
+async fn dashboard_top_countries_for_an_account_with_more_links_than_one_statement_can_bind() {
+    let (server, db) = spawn_real_app().await;
+    let (token, user_id) = register_verified(&server, &db).await;
+    insert_bulk_links(&db, user_id, None, "dash-bind.example", OVER_THE_LIMIT).await;
+    // One recent click with a country on one of those links.
+    sql(
+        &db,
+        format!(
+            "INSERT INTO click_events (link_id, created_at, country, browser) \
+             SELECT id, NOW() AT TIME ZONE 'UTC', 'Iceland', 'Firefox' FROM links \
+             WHERE user_id = {user_id} ORDER BY id LIMIT 1"
+        ),
+    )
+    .await;
+
+    let res = server
+        .get("/analytics/dashboard")
+        .authorization_bearer(&token)
+        .await;
+    let status = res.status_code();
+    let body: Value = res.json();
+    sql(&db, format!("DELETE FROM links WHERE user_id = {user_id}")).await;
+
+    assert_eq!(status, 200, "dashboard: {body}");
+    let countries: Vec<&str> = body["top_countries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["country"].as_str())
+        .collect();
+    assert_eq!(countries, vec!["Iceland"], "top countries: {body}");
+    let browsers: Vec<&str> = body["top_browsers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|b| b["browser"].as_str())
+        .collect();
+    assert_eq!(browsers, vec!["Firefox"], "top browsers: {body}");
+}

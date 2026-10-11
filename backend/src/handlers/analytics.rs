@@ -517,7 +517,12 @@ async fn dashboard_grouped_label_counts(
         .select_only()
         .column(column)
         .column_as(click_events::Column::Id.count(), "cnt")
-        .filter(click_events::Column::LinkId.is_in(link_ids.to_vec()))
+        // Inline like the other dashboard queries: one bind parameter per link
+        // would fail outright past Postgres's 65,535-parameter limit.
+        .filter(sea_query::Expr::cust(format!(
+            "link_id IN ({})",
+            sql_int_list(link_ids)
+        )))
         .filter(click_events::Column::CreatedAt.gte(month_start))
         .group_by(column)
         .into_tuple()
