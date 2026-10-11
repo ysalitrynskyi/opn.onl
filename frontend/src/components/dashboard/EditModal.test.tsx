@@ -26,6 +26,15 @@ const okResponse = (body: unknown = []) => ({
     json: () => Promise.resolve(body),
 });
 
+/** Open Smart routing and add one rule, so that saving has routing changes to send. */
+async function addRoutedRule(user: ReturnType<typeof render>['user']) {
+    await user.click(screen.getByRole('button', { name: /smart routing/i }));
+    await user.click(await screen.findByRole('button', { name: /add rule/i }));
+    fireEvent.change(screen.getByPlaceholderText('https://…'), {
+        target: { value: 'https://routed.example/' },
+    });
+}
+
 describe('EditModal', () => {
     beforeEach(() => {
         vi.mocked(global.fetch).mockReset();
@@ -144,6 +153,7 @@ describe('EditModal', () => {
                 routingEnabled
             />
         );
+        await addRoutedRule(user);
 
         await user.click(screen.getByRole('button', { name: /save changes/i }));
 
@@ -173,6 +183,7 @@ describe('EditModal', () => {
                 routingEnabled
             />
         );
+        await addRoutedRule(user);
 
         await user.click(screen.getByRole('button', { name: /save changes/i }));
 
