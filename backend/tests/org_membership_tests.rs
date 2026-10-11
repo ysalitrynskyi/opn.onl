@@ -489,3 +489,57 @@ async fn audit_entries_say_who_was_changed_and_how() {
     assert_eq!(removal["details"]["target_user_id"], member.id);
     assert_eq!(removal["details"]["old_role"], "editor");
 }
+
+/// The admin organization list counts members the way the owner's views do:
+/// a soft-deleted account keeps its membership row but is not a member.
+#[tokio::test]
+async fn admin_org_list_member_count_ignores_deleted_accounts() {
+    let (server, db) = app().await;
+    let admin = person(&db).await;
+    let mut as_admin: users::ActiveModel = users::Entity::find_by_id(admin.id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into();
+    as_admin.is_admin = Set(true);
+    as_admin.update(&db).await.unwrap();
+
+    let owner = person(&db).await;
+    let viewer = person(&db).await;
+    let editor = person(&db).await;
+    let org_id = create_org(&server, &owner).await;
+    invite(&server, &owner, org_id, &viewer, "viewer").await;
+    invite(&server, &owner, org_id, &editor, "editor").await;
+    let slug = server
+        .get(&format!("/orgs/{org_id}"))
+        .authorization_bearer(&owner.token)
+        .await
+        .json::<Value>()["slug"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let admin_count = || async {
+        let body = server
+            .get("/admin/orgs")
+            .add_query_param("search", &slug)
+            .authorization_bearer(&admin.token)
+            .await
+            .json::<Value>();
+        assert_eq!(body["total"], 1, "{body}");
+        body["orgs"][0]["member_count"].as_i64().unwrap()
+    };
+    assert_eq!(admin_count().await, 3);
+
+    let mut gone: users::ActiveModel = users::Entity::find_by_id(viewer.id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into();
+    gone.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
+    gone.update(&db).await.unwrap();
+
+    assert_eq!(admin_count().await, 2);
+}
