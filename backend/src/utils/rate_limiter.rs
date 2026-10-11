@@ -341,6 +341,44 @@ pub fn extract_ip(req: &Request<Body>) -> String {
     "unknown".to_string()
 }
 
+/// The rate-limit bucket of the requesting client, as [`extract_ip`] derived
+/// it. The middleware stores it in the request extensions so a handler that
+/// keeps a budget of its own (outgoing mail) keys it by the same client, with
+/// the same proxy-trust rules and socket-peer fallback.
+#[derive(Clone, Debug)]
+pub struct ClientKey(pub String);
+
+/// The `429 Too Many Requests` answer: headers and body shape are documented
+/// in the OpenAPI document (`TooManyRequests`).
+pub fn too_many_requests(
+    retry_after_secs: u64,
+    limit: u32,
+    remaining: u32,
+    message: String,
+) -> Response {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        serde_json::json!({
+            "error": "Too many requests",
+            "retry_after": retry_after_secs,
+            "message": message
+        })
+        .to_string(),
+    )
+        .into_response();
+
+    let headers = response.headers_mut();
+    headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
+    headers.insert(
+        "X-RateLimit-Remaining",
+        remaining.to_string().parse().unwrap(),
+    );
+    headers.insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+
+    response
+}
+
 /// Known top-level API path segments. Anything whose first segment is one of
 /// these is a normal API request, never a short-code redirect. Keep in sync with
 /// the routes registered in `build_router`.
@@ -401,10 +439,11 @@ fn is_link_creation_path(path: &str) -> bool {
 /// Rate limit middleware for general API endpoints
 pub async fn rate_limit_middleware(
     State(limiters): State<Arc<RateLimiters>>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     let ip = extract_ip(&req);
+    req.extensions_mut().insert(ClientKey(ip.clone()));
     let path = req.uri().path();
 
     // Redirects are high-volume and skip the strict per-second gate; everything
@@ -418,27 +457,12 @@ pub async fn rate_limit_middleware(
             remaining,
         } = limiters.per_second.check(&format!("sec:{}", ip))
     {
-        let mut response = (
-            StatusCode::TOO_MANY_REQUESTS,
-            serde_json::json!({
-                "error": "Too many requests",
-                "retry_after": retry_after_secs,
-                "message": format!("Rate limit: maximum {} requests per second", limit)
-            })
-            .to_string(),
-        )
-            .into_response();
-
-        let headers = response.headers_mut();
-        headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
-        headers.insert(
-            "X-RateLimit-Remaining",
-            remaining.to_string().parse().unwrap(),
+        return too_many_requests(
+            retry_after_secs,
+            limit,
+            remaining,
+            format!("Rate limit: maximum {} requests per second", limit),
         );
-        headers.insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-
-        return response;
     }
 
     // Choose appropriate limiter based on path
@@ -489,27 +513,15 @@ pub async fn rate_limit_middleware(
             retry_after_secs,
             limit,
             remaining,
-        } => {
-            let mut response = (
-                StatusCode::TOO_MANY_REQUESTS,
-                serde_json::json!({
-                    "error": "Too many requests",
-                    "retry_after": retry_after_secs,
-                    "message": format!("Rate limit exceeded. Please try again in {} seconds.", retry_after_secs)
-                }).to_string(),
-            ).into_response();
-
-            let headers = response.headers_mut();
-            headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
-            headers.insert(
-                "X-RateLimit-Remaining",
-                remaining.to_string().parse().unwrap(),
-            );
-            headers.insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
-            headers.insert("Content-Type", "application/json".parse().unwrap());
-
-            response
-        }
+        } => too_many_requests(
+            retry_after_secs,
+            limit,
+            remaining,
+            format!(
+                "Rate limit exceeded. Please try again in {} seconds.",
+                retry_after_secs
+            ),
+        ),
     }
 }
 
@@ -980,6 +992,69 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(res.status().as_u16(), 429);
+        }
+
+        /// A handler that keeps a budget of its own (outgoing mail) reads the
+        /// key the middleware stored, so it charges the same client the rate
+        /// limiter charged: the trusted header first, the socket peer when
+        /// there is none, never a forwarding header the client could forge.
+        #[tokio::test]
+        async fn handlers_see_the_client_key_the_limiter_used() {
+            use axum::Extension;
+            set_env("TRUST_PROXY_HEADERS", "true");
+
+            let limiters = generous_limiters(RateLimiter::new(RateLimitConfig::new(10_000, 60)));
+            let app = Router::new()
+                .route(
+                    "/auth/login",
+                    post(|Extension(key): Extension<ClientKey>| async move { key.0 }),
+                )
+                .layer(middleware::from_fn_with_state(
+                    limiters,
+                    rate_limit_middleware,
+                ));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            let client = reqwest::Client::new();
+            let key_for = |headers: Vec<(&'static str, &'static str)>| {
+                let client = client.clone();
+                async move {
+                    let mut request = client.post(format!("http://{addr}/auth/login"));
+                    for (name, value) in headers {
+                        request = request.header(name, value);
+                    }
+                    request.send().await.unwrap().text().await.unwrap()
+                }
+            };
+
+            assert_eq!(
+                key_for(vec![
+                    ("cf-connecting-ip", "203.0.113.7"),
+                    ("x-forwarded-for", "9.9.9.9, 203.0.113.7"),
+                    ("x-real-ip", "9.9.9.9"),
+                ])
+                .await,
+                "203.0.113.7",
+                "the trusted header decides, forged forwarding headers do not"
+            );
+            assert_eq!(
+                key_for(vec![("cf-connecting-ip", "2001:db8:1:2::9")]).await,
+                "2001:db8:1:2::",
+                "IPv6 clients are keyed by their /64, like the limiter"
+            );
+            assert_eq!(
+                key_for(vec![]).await,
+                "127.0.0.1",
+                "with no trusted header the socket peer is the client"
+            );
         }
 
         #[tokio::test]
