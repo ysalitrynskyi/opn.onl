@@ -1,4 +1,5 @@
 import { Helmet } from 'react-helmet-async';
+import { version as APP_VERSION } from '../../package.json';
 import { SEO_TAG_ATTRIBUTE } from '../utils/prerenderedHead';
 import { normalizeSiteUrl } from '../utils/siteUrl';
 
@@ -78,7 +79,7 @@ export default function SEO({
       applicationCategory: 'UtilityApplication',
       operatingSystem: 'Web',
       browserRequirements: 'Requires JavaScript',
-      softwareVersion: '1.0.0',
+      softwareVersion: APP_VERSION,
       author: {
         '@type': 'Person',
         name: 'Yevhen Salitrynskyi',
@@ -107,13 +108,6 @@ export default function SEO({
         'CSV export',
       ],
       screenshot: `${BASE_URL}/og-image.png`,
-      aggregateRating: {
-        '@type': 'AggregateRating',
-        ratingValue: '5',
-        ratingCount: '1',
-        bestRating: '5',
-        worstRating: '1',
-      },
     }),
     ...(schemaType === 'WebSite' && {
       potentialAction: {

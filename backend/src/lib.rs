@@ -26,6 +26,7 @@ use tower_http::trace::TraceLayer;
 
 use handlers::websocket::WsState;
 use utils::cache::RedisCache;
+use utils::env::env_flag;
 use utils::rate_limiter::{RateLimiters, rate_limit_middleware};
 use utils::{BackupService, ClickBuffer, EmailService};
 
@@ -63,11 +64,16 @@ impl AppState {
 
 /// Middleware to redirect HTTP to HTTPS in production
 pub async fn https_redirect(req: Request<Body>, next: axum::middleware::Next) -> impl IntoResponse {
-    let force_https = std::env::var("FORCE_HTTPS")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    if !env_flag("FORCE_HTTPS", false) {
+        return next.run(req).await;
+    }
 
-    if !force_https {
+    // The container health probe asks over plain HTTP from inside the compose
+    // network, with no proxy in front to set X-Forwarded-Proto. Redirecting it
+    // answers 308, which `curl -f` counts as success, so the probe would stay
+    // green with the database down. The endpoint is read-only and its reply is
+    // the same one a TLS-terminated caller gets.
+    if req.uri().path() == "/health" {
         return next.run(req).await;
     }
 
@@ -437,7 +443,9 @@ pub fn build_router(app_state: AppState) -> Router {
         )
         .route(
             "/links/:id",
-            put(handlers::links::update_link).delete(handlers::links::delete_link),
+            get(handlers::links::get_link)
+                .put(handlers::links::update_link)
+                .delete(handlers::links::delete_link),
         )
         .route("/links/:id/qr", get(handlers::links::get_qr_code))
         .route("/links/:id/clone", post(handlers::links::clone_link))

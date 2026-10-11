@@ -6,6 +6,7 @@ use lettre::{
 use tracing::{error, info};
 
 use super::email_limits::{MailDenied, MailKind, Pools, TriggerLimiter, loggable_domain};
+use super::env::env_nonempty;
 
 /// Hourly mail budget when `EMAIL_RATE_LIMIT_PER_HOUR` is unset or invalid.
 const DEFAULT_HOURLY_LIMIT: u64 = 500;
@@ -38,15 +39,18 @@ impl Default for EmailService {
 
 impl EmailService {
     pub fn new() -> Self {
-        let smtp_host = std::env::var("SMTP_HOST").ok();
+        // Compose passes SMTP_HOST/USER/PASS as empty strings when they are not
+        // set, and an empty host is not a configured server.
+        let smtp_host = env_nonempty("SMTP_HOST");
         let smtp_port = std::env::var("SMTP_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(587);
-        let smtp_user = std::env::var("SMTP_USER").ok();
-        let smtp_pass = std::env::var("SMTP_PASS").ok();
+        let smtp_user = env_nonempty("SMTP_USER");
+        let smtp_pass = env_nonempty("SMTP_PASS");
         let from_email =
-            std::env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "noreply@opn.onl".to_string());
+            env_nonempty("SMTP_FROM_EMAIL").unwrap_or_else(|| "noreply@opn.onl".to_string());
+        // A blank SMTP_FROM_NAME is kept: it means "send the bare address".
         let from_name = std::env::var("SMTP_FROM_NAME").unwrap_or_else(|_| "opn.onl".to_string());
         let frontend_url =
             std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());

@@ -14,6 +14,7 @@ use crate::utils::email_domain_policy::{
     normalize_email,
 };
 use crate::utils::email_limits::{MailDenied, MailKind};
+use crate::utils::env::env_flag;
 use crate::utils::jwt::{
     PASSWORD_TOO_LONG, create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password,
 };
@@ -1048,13 +1049,23 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct ChangePasswordResponse {
+    pub message: String,
+    /// A fresh session token. Changing the password signs out every session
+    /// issued before it, the caller's included; this one replaces theirs. Only
+    /// left out if a token could not be signed, in which case sign in again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
 /// Change password for authenticated user
 #[utoipa::path(
     post,
     path = "/auth/change-password",
     request_body = ChangePasswordRequest,
     responses(
-        (status = 200, description = "Password changed successfully", body = MessageResponse),
+        (status = 200, description = "Password changed; the response carries a fresh token for the caller's session", body = ChangePasswordResponse),
         (status = 400, description = "Invalid request or wrong current password"),
         (status = 401, description = "Unauthorized"),
     ),
@@ -1232,16 +1243,17 @@ pub async fn change_password(
         return match create_jwt(token_user_id, &token_email, next_token_version) {
             Ok(token) => (
                 StatusCode::OK,
-                Json(serde_json::json!({
-                    "message": "Password changed successfully",
-                    "token": token,
-                })),
+                Json(ChangePasswordResponse {
+                    message: "Password changed successfully".to_string(),
+                    token: Some(token),
+                }),
             )
                 .into_response(),
             Err(_) => (
                 StatusCode::OK,
-                Json(MessageResponse {
+                Json(ChangePasswordResponse {
                     message: "Password changed successfully".to_string(),
+                    token: None,
                 }),
             )
                 .into_response(),
@@ -1286,10 +1298,7 @@ pub async fn delete_account(
     Json(payload): Json<DeleteAccountRequest>,
 ) -> impl IntoResponse {
     // Check if account deletion is enabled
-    let deletion_enabled = std::env::var("ENABLE_ACCOUNT_DELETION")
-        .unwrap_or_else(|_| "false".to_string())
-        .parse::<bool>()
-        .unwrap_or(false);
+    let deletion_enabled = env_flag("ENABLE_ACCOUNT_DELETION", false);
 
     if !deletion_enabled {
         return (StatusCode::FORBIDDEN, Json(ErrorResponse {
@@ -1636,15 +1645,9 @@ pub struct AppSettingsResponse {
     tag = "Authentication"
 )]
 pub async fn get_app_settings() -> impl IntoResponse {
-    let account_deletion_enabled = std::env::var("ENABLE_ACCOUNT_DELETION")
-        .unwrap_or_else(|_| "false".to_string())
-        .parse::<bool>()
-        .unwrap_or(false);
+    let account_deletion_enabled = env_flag("ENABLE_ACCOUNT_DELETION", false);
 
-    let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
+    let custom_aliases_enabled = env_flag("ENABLE_CUSTOM_ALIASES", true);
 
     let max_links_per_user = std::env::var("MAX_LINKS_PER_USER")
         .ok()
@@ -1660,45 +1663,28 @@ pub async fn get_app_settings() -> impl IntoResponse {
         .and_then(|v| v.parse().ok())
         .unwrap_or(50);
 
-    let url_sanitization_enabled = std::env::var("ENABLE_URL_SANITIZATION")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
+    let url_sanitization_enabled = env_flag("ENABLE_URL_SANITIZATION", true);
 
     // QR branding is a non-destructive kill-switch — default ON.
-    let qr_branding_enabled = std::env::var("ENABLE_QR_BRANDING")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let qr_branding_enabled = env_flag("ENABLE_QR_BRANDING", true);
 
     // Non-breaking kill-switch — default ON (set the var to "false" to disable).
-    let burn_after_reading_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let burn_after_reading_enabled = env_flag("ENABLE_BURN_AFTER_READING", true);
 
     // Non-breaking kill-switch — default ON.
-    let safe_link_interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let safe_link_interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
 
     // Non-breaking kill-switch — default ON.
-    let conditional_routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let conditional_routing_enabled = env_flag("ENABLE_CONDITIONAL_ROUTING", true);
 
     // Non-breaking kill-switch — default ON (and additionally per-user opt-in).
-    let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let link_in_bio_enabled = env_flag("ENABLE_LINK_IN_BIO", true);
 
     // API keys (personal access tokens for the MCP / external clients) — default ON.
-    let api_keys_enabled = std::env::var("ENABLE_API_KEYS")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let api_keys_enabled = env_flag("ENABLE_API_KEYS", true);
 
     // Passkeys kill-switch — default ON.
-    let passkeys_enabled = std::env::var("ENABLE_PASSKEYS")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let passkeys_enabled = env_flag("ENABLE_PASSKEYS", true);
 
     (
         StatusCode::OK,

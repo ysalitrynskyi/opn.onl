@@ -3,6 +3,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use super::env::env_nonempty;
+
 /// Cached link data for fast redirects
 #[derive(Clone, Debug)]
 pub struct CachedLink {
@@ -65,7 +67,7 @@ impl RedisCache {
     /// Create a new Redis cache instance
     /// Returns None if REDIS_URL is not set (cache disabled)
     pub async fn new() -> Option<Self> {
-        let redis_url = std::env::var("REDIS_URL").ok()?;
+        let redis_url = env_nonempty("REDIS_URL")?;
         let ttl = std::env::var("REDIS_CACHE_TTL")
             .ok()
             .and_then(|s| s.parse().ok())

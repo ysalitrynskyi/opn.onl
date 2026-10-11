@@ -22,6 +22,7 @@ use crate::handlers::link_access::{
     CallerAccess, LinkAction, authorize_link, listed_links, live_link_for, readable_links,
 };
 use crate::handlers::websocket::ClickEvent;
+use crate::utils::env::env_flag;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::link_owner::link_owner_is_active;
@@ -234,23 +235,7 @@ fn get_max_links_per_user() -> Option<u64> {
 
 /// Check if URL sanitization is enabled (default: true)
 fn is_url_sanitization_enabled() -> bool {
-    std::env::var("ENABLE_URL_SANITIZATION")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true)
-}
-
-/// Read a boolean env var that defaults to `true` (the safe/on setting). Any
-/// value other than "false"/"0" (case-insensitive) is treated as enabled, so a
-/// blank or malformed value fails safe rather than opening the guard.
-fn env_flag_default_on(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v != "false" && v != "0" && v != "no"
-        }
-        Err(_) => true,
-    }
+    env_flag("ENABLE_URL_SANITIZATION", true)
 }
 
 /// Reject destinations that exist only to deliver a payload. Two independent,
@@ -262,14 +247,14 @@ fn env_flag_default_on(name: &str) -> bool {
 ///
 /// Runs on every create/update/bulk/routing destination via `validate_url`.
 fn check_url_content_policy(url: &str) -> Result<(), String> {
-    if env_flag_default_on("BLOCK_DANGEROUS_FILE_EXTENSIONS")
+    if env_flag("BLOCK_DANGEROUS_FILE_EXTENSIONS", true)
         && let Some(ext) = crate::utils::url_policy::dangerous_extension(url)
     {
         return Err(format!(
             "Links to .{ext} files are not allowed (potentially executable content)"
         ));
     }
-    if env_flag_default_on("BLOCK_RAW_IP_URLS") && crate::utils::url_policy::host_is_raw_ip(url) {
+    if env_flag("BLOCK_RAW_IP_URLS", true) && crate::utils::url_policy::host_is_raw_ip(url) {
         return Err("Links to raw IP addresses are not allowed".to_string());
     }
     Ok(())
@@ -940,6 +925,39 @@ pub struct LinkResponse {
     pub tags: Vec<TagInfo>,
 }
 
+impl LinkResponse {
+    /// A stored link as the API shows it. `GET /links` and `GET /links/{id}`
+    /// both build their items here, so the two cannot drift apart. The caller
+    /// passes the public base URLs because a list computes them once, not per
+    /// row.
+    fn from_model(l: &links::Model, tags: Vec<TagInfo>, base_url: &str, api_url: &str) -> Self {
+        Self {
+            id: l.id,
+            code: l.code.clone(),
+            short_url: format!("{}/{}", base_url, l.code),
+            api_url: format!("{}/{}", api_url, l.code),
+            original_url: l.original_url.clone(),
+            title: l.title.clone(),
+            click_count: l.click_count,
+            created_at: utc_rfc3339(l.created_at),
+            expires_at: l.expires_at.map(utc_rfc3339),
+            has_password: l.password_hash.is_some(),
+            notes: l.notes.clone(),
+            folder_id: l.folder_id,
+            org_id: l.org_id,
+            starts_at: l.starts_at.map(utc_rfc3339),
+            max_clicks: l.max_clicks,
+            burn_after_reading: l.burn_after_reading,
+            burned_at: l.burned_at.map(utc_rfc3339),
+            safe_link_interstitial: l.safe_link_interstitial,
+            bio_visible: l.bio_visible,
+            is_active: l.is_active(),
+            is_pinned: l.is_pinned,
+            tags,
+        }
+    }
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
@@ -953,6 +971,17 @@ pub struct SuccessResponse {
 #[derive(Deserialize, ToSchema)]
 pub struct VerifyPasswordRequest {
     pub password: String,
+}
+
+/// What a correct link password buys: a short-lived proof, carried in the URL
+/// the browser is sent to next.
+#[derive(Serialize, ToSchema)]
+pub struct VerifyPasswordResponse {
+    /// `GET /{code}?unlock=...`. Open it to be redirected; it is the normal
+    /// redirect, so caps, blocks and routing still apply.
+    pub redirect_url: String,
+    /// How long the `unlock` proof in `redirect_url` stays valid.
+    pub expires_in_seconds: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1175,10 +1204,7 @@ const API_KEY_LAST_USED_REFRESH_MINUTES: i64 = 5;
 async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<i32> {
     use crate::entity::api_keys;
     // Instance kill-switch: when ENABLE_API_KEYS=false, keys stop authenticating.
-    if std::env::var("ENABLE_API_KEYS")
-        .map(|v| v == "false")
-        .unwrap_or(false)
-    {
+    if !env_flag("ENABLE_API_KEYS", true) {
         return None;
     }
     let hash = hash_api_key(key);
@@ -1220,15 +1246,11 @@ fn get_api_url() -> String {
 }
 
 fn burn_feature_enabled() -> bool {
-    std::env::var("ENABLE_BURN_AFTER_READING")
-        .map(|v| v != "false")
-        .unwrap_or(true)
+    env_flag("ENABLE_BURN_AFTER_READING", true)
 }
 
 fn interstitial_feature_enabled() -> bool {
-    std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-        .map(|v| v != "false")
-        .unwrap_or(true)
+    env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true)
 }
 
 fn redirect_confirmed(confirm: Option<&str>) -> bool {
@@ -1267,9 +1289,7 @@ async fn active_routing_rules(
     db: &DatabaseConnection,
     link_id: i32,
 ) -> Vec<crate::entity::routing_rules::Model> {
-    let routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let routing_enabled = env_flag("ENABLE_CONDITIONAL_ROUTING", true);
     if !routing_enabled {
         return Vec::new();
     }
@@ -1511,10 +1531,7 @@ pub async fn create_link(
     }
 
     // Check if custom aliases are enabled
-    let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
+    let custom_aliases_enabled = env_flag("ENABLE_CUSTOM_ALIASES", true);
 
     let using_custom_alias = payload.custom_alias.is_some();
     let code = if let Some(alias) = payload.custom_alias {
@@ -1623,9 +1640,7 @@ pub async fn create_link(
 
     // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING). A burn link needs a
     // click cap to ride the existing max_clicks enforcement; default to one-time use.
-    let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let burn_enabled = env_flag("ENABLE_BURN_AFTER_READING", true);
     let burn_after_reading = burn_enabled && payload.burn_after_reading.unwrap_or(false);
     let effective_max_clicks = if burn_after_reading && payload.max_clicks.is_none() {
         Some(1)
@@ -1634,9 +1649,7 @@ pub async fn create_link(
     };
 
     // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
-    let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
     let safe_link_interstitial =
         interstitial_enabled && payload.safe_link_interstitial.unwrap_or(false);
 
@@ -1847,8 +1860,10 @@ pub struct LinkPreviewResponse {
     pub safe_link_interstitial: bool,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct PreviewQuery {
+    /// Short-lived password proof issued by `POST /{code}/verify`. With it, the
+    /// preview describes a password-protected link's destination.
     unlock: Option<String>,
 }
 
@@ -1857,7 +1872,8 @@ pub struct PreviewQuery {
     get,
     path = "/{code}/preview",
     params(
-        ("code" = String, Path, description = "Short link code")
+        ("code" = String, Path, description = "Short link code"),
+        PreviewQuery
     ),
     responses(
         (status = 200, description = "Link preview", body = LinkPreviewResponse),
@@ -1904,9 +1920,7 @@ pub async fn preview_link(
 
             let base_url = get_base_url();
 
-            let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-                .map(|v| v != "false")
-                .unwrap_or(true);
+            let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
 
             let password_unlocked = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
                 (Some(password_hash), Some(token)) => {
@@ -2018,7 +2032,7 @@ pub async fn preview_link(
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct RedirectQuery {
     /// Set to `1` after the visitor confirms the safe-link interstitial in the SPA.
     confirm: Option<String>,
@@ -2154,7 +2168,8 @@ fn unfurler_page() -> axum::response::Response {
     get,
     path = "/{code}",
     params(
-        ("code" = String, Path, description = "Short link code")
+        ("code" = String, Path, description = "Short link code"),
+        RedirectQuery
     ),
     responses(
         (status = 200, description = "A HEAD on a one-time or click-capped link, or a GET from a known link-preview bot: no destination, nothing consumed"),
@@ -2710,7 +2725,8 @@ fn record_click_buffered(
     ),
     request_body = VerifyPasswordRequest,
     responses(
-        (status = 200, description = "Password verified"),
+        (status = 200, description = "Password verified", body = VerifyPasswordResponse),
+        (status = 400, description = "The link does not require a password"),
         (status = 401, description = "Invalid password"),
         (status = 404, description = "Link not found"),
         (status = 410, description = "Link expired"),
@@ -2829,10 +2845,10 @@ pub async fn verify_link_password(
     );
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "redirect_url": redirect_url,
-            "expires_in_seconds": crate::utils::link_unlock::LINK_UNLOCK_TTL_SECONDS,
-        })),
+        Json(VerifyPasswordResponse {
+            redirect_url,
+            expires_in_seconds: crate::utils::link_unlock::LINK_UNLOCK_TTL_SECONDS,
+        }),
     )
         .into_response()
 }
@@ -2842,10 +2858,11 @@ pub async fn verify_link_password(
     get,
     path = "/links/{id}/qr",
     params(
-        ("id" = i32, Path, description = "Link ID")
+        ("id" = i32, Path, description = "Link ID"),
+        QrOptions
     ),
     responses(
-        (status = 200, description = "QR code image", content_type = "image/png"),
+        (status = 200, description = "QR code image: PNG, or SVG with `format=svg`", body = Vec<u8>, content_type = ["image/png", "image/svg+xml"]),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
@@ -2881,9 +2898,7 @@ pub async fn get_qr_code(
         // QR branding is a non-destructive kill-switch (default ON). When disabled,
         // all options are ignored and we serve the plain black/white PNG, which is
         // byte-identical to the legacy behavior.
-        let branding_enabled = std::env::var("ENABLE_QR_BRANDING")
-            .map(|v| v != "false")
-            .unwrap_or(true);
+        let branding_enabled = env_flag("ENABLE_QR_BRANDING", true);
         let effective = if branding_enabled {
             opts
         } else {
@@ -2909,7 +2924,7 @@ pub async fn get_qr_code(
 
 /// Query options for branded QR rendering. All optional — an empty set renders
 /// the plain black/white PNG (byte-identical to the legacy behavior).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct QrOptions {
     /// Foreground (module) color as hex, with or without `#`, e.g. `2f37d8`.
     pub color: Option<String>,
@@ -3840,36 +3855,63 @@ pub async fn get_user_links(
 
     let base_url = get_base_url();
     let api_url = get_api_url();
-    let mut response = Vec::new();
-    for l in user_links {
-        let tags = tags_by_link.remove(&l.id).unwrap_or_default();
-        response.push(LinkResponse {
-            id: l.id,
-            code: l.code.clone(),
-            short_url: format!("{}/{}", base_url, l.code),
-            api_url: format!("{}/{}", api_url, l.code),
-            original_url: l.original_url.clone(),
-            title: l.title.clone(),
-            click_count: l.click_count,
-            created_at: utc_rfc3339(l.created_at),
-            expires_at: l.expires_at.map(utc_rfc3339),
-            has_password: l.password_hash.is_some(),
-            notes: l.notes.clone(),
-            folder_id: l.folder_id,
-            org_id: l.org_id,
-            starts_at: l.starts_at.map(utc_rfc3339),
-            max_clicks: l.max_clicks,
-            burn_after_reading: l.burn_after_reading,
-            burned_at: l.burned_at.map(utc_rfc3339),
-            safe_link_interstitial: l.safe_link_interstitial,
-            bio_visible: l.bio_visible,
-            is_active: l.is_active(),
-            is_pinned: l.is_pinned,
-            tags,
-        });
-    }
+    let response: Vec<LinkResponse> = user_links
+        .iter()
+        .map(|l| {
+            let tags = tags_by_link.remove(&l.id).unwrap_or_default();
+            LinkResponse::from_model(l, tags, &base_url, &api_url)
+        })
+        .collect();
 
     link_page(total, response).into_response()
+}
+
+/// Get one link
+///
+/// The same object an item of `GET /links` is. An organization link is
+/// readable by any current member, whoever created it. A missing, deleted or
+/// someone else's link is the same 403, so the answer does not reveal which
+/// ids exist.
+#[utoipa::path(
+    get,
+    path = "/links/{id}",
+    params(
+        ("id" = i32, Path, description = "Link ID")
+    ),
+    responses(
+        (status = 200, description = "The link", body = LinkResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "No such link, or the caller may not read it"),
+    ),
+    tag = "Links",
+    security(("bearer_auth" = []), ("api_key" = []))
+)]
+pub async fn get_link(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&state.db, &headers).await {
+        Some(id) => id,
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
+    };
+
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Read).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
+    };
+
+    let tags = get_link_tags(&state.db, link.id).await;
+    (
+        StatusCode::OK,
+        Json(LinkResponse::from_model(
+            &link,
+            tags,
+            &get_base_url(),
+            &get_api_url(),
+        )),
+    )
+        .into_response()
 }
 
 /// Delete a link
@@ -4309,17 +4351,13 @@ pub async fn update_link(
         }
 
         // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
-        let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-            .map(|v| v != "false")
-            .unwrap_or(true);
+        let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
         if interstitial_enabled && let Some(interstitial) = payload.safe_link_interstitial {
             active_link.safe_link_interstitial = Set(interstitial);
         }
 
         // Link-in-bio visibility (gated by ENABLE_LINK_IN_BIO).
-        let link_in_bio_enabled = std::env::var("ENABLE_LINK_IN_BIO")
-            .map(|v| v != "false")
-            .unwrap_or(true);
+        let link_in_bio_enabled = env_flag("ENABLE_LINK_IN_BIO", true);
         if link_in_bio_enabled && let Some(visible) = payload.bio_visible {
             // A bio page lists its owner's links, so only the creator decides
             // whether an organization link appears on theirs. Editors may

@@ -7,6 +7,8 @@ import {
 import SEO from '../components/SEO';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://l.opn.onl';
+// short_url is built from the frontend origin, api_url from the API origin.
+const SHORT_BASE = (import.meta.env.VITE_FRONTEND_URL || 'https://opn.onl').replace(/\/+$/, '');
 
 export default function Docs() {
     return (
@@ -129,22 +131,41 @@ export default function Docs() {
                             <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
                                 <code className="text-green-400 text-sm whitespace-pre">{`{
   "original_url": "https://example.com/page",  // Required
-  "custom_alias": "my-link",                    // Optional (5-50 chars)
+  "custom_alias": "my-link",                    // Optional (5-25 chars by default)
   "title": "My Link Title",                     // Optional, private
   "password": "secret123",                      // Optional
-  "expires_at": "2025-12-31T23:59:59Z",        // Optional
+  "expires_at": "2099-12-31T23:59:59Z",        // Optional, RFC 3339
   "notes": "Internal notes"                     // Optional
 }`}</code>
                             </div>
+                            <p className="text-sm text-slate-600">
+                                Also accepted: <code className="bg-slate-100 px-1 rounded">starts_at</code> (not live before this time),{' '}
+                                <code className="bg-slate-100 px-1 rounded">max_clicks</code>,{' '}
+                                <code className="bg-slate-100 px-1 rounded">burn_after_reading</code>,{' '}
+                                <code className="bg-slate-100 px-1 rounded">safe_link_interstitial</code>,{' '}
+                                <code className="bg-slate-100 px-1 rounded">folder_id</code>,{' '}
+                                <code className="bg-slate-100 px-1 rounded">tag_ids</code> and{' '}
+                                <code className="bg-slate-100 px-1 rounded">org_id</code>. A custom alias uses letters,
+                                digits, hyphens and underscores; whoever runs the instance sets its length limits
+                                (<code className="bg-slate-100 px-1 rounded">MIN_ALIAS_LENGTH</code>,{' '}
+                                <code className="bg-slate-100 px-1 rounded">MAX_ALIAS_LENGTH</code>).
+                            </p>
                             <h4 className="font-medium text-slate-900">Response</h4>
                             <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
                                 <code className="text-green-400 text-sm whitespace-pre">{`{
   "id": 123,
   "code": "abc123",
-  "short_url": "${API_BASE}/abc123",
+  "short_url": "${SHORT_BASE}/abc123",
+  "api_url": "${API_BASE}/abc123",
   "original_url": "https://example.com/page",
   "click_count": 0,
-  "created_at": "2025-01-01T00:00:00Z"
+  "created_at": "2026-01-01T00:00:00Z",
+  "expires_at": "2099-12-31T23:59:59Z",
+  "has_password": true,
+  "is_active": true,
+  "tags": []
+  // ...plus title, notes, folder_id, org_id, starts_at, max_clicks,
+  // burn_after_reading, burned_at, safe_link_interstitial, bio_visible, is_pinned
 }`}</code>
                             </div>
                         </div>
@@ -162,12 +183,55 @@ export default function Docs() {
                         <div className="p-4 space-y-3">
                             <h4 className="font-medium text-slate-900">Query Parameters</h4>
                             <ul className="text-sm text-slate-600 space-y-1">
-                                <li><code className="bg-slate-100 px-1 rounded">search</code> - Search by URL or code</li>
+                                <li><code className="bg-slate-100 px-1 rounded">search</code> - Search by URL, code, title or notes</li>
                                 <li><code className="bg-slate-100 px-1 rounded">folder_id</code> - Filter by folder</li>
                                 <li><code className="bg-slate-100 px-1 rounded">tag_id</code> - Filter by tag</li>
-                                <li><code className="bg-slate-100 px-1 rounded">limit</code> - Number of results (default: 50)</li>
-                                <li><code className="bg-slate-100 px-1 rounded">offset</code> - Pagination offset</li>
+                                <li><code className="bg-slate-100 px-1 rounded">org_id</code> - List an organization's links instead of your own (members only)</li>
+                                <li><code className="bg-slate-100 px-1 rounded">limit</code> - Number of results (default and maximum: 1000)</li>
+                                <li><code className="bg-slate-100 px-1 rounded">offset</code> - Number of links to skip</li>
                             </ul>
+                            <p className="text-sm text-slate-600">
+                                The body is a JSON array, pinned links first and then newest first. The{' '}
+                                <code className="bg-slate-100 px-1 rounded">X-Total-Count</code> response header says how
+                                many links match, ignoring <code className="bg-slate-100 px-1 rounded">limit</code> and{' '}
+                                <code className="bg-slate-100 px-1 rounded">offset</code>.
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Update Link */}
+                    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                        <div className="p-4 bg-slate-50 border-b border-slate-200">
+                            <div className="flex items-center gap-2">
+                                <span className="px-2 py-1 bg-yellow-100 text-yellow-700 rounded text-xs font-bold">PUT</span>
+                                <code className="text-slate-700">/links/{'{id}'}</code>
+                            </div>
+                            <p className="text-sm text-slate-600 mt-1">Update a link (requires auth)</p>
+                        </div>
+                        <div className="p-4 space-y-3">
+                            <p className="text-sm text-slate-600">
+                                Send only the fields you want to change. A field you leave out, or send as{' '}
+                                <code className="bg-slate-100 px-1 rounded">null</code>, stays as it is. The short code
+                                cannot be changed.
+                            </p>
+                            <h4 className="font-medium text-slate-900">Clearing a value</h4>
+                            <p className="text-sm text-slate-600">
+                                To remove a setting, send its flag as <code className="bg-slate-100 px-1 rounded">true</code>:
+                            </p>
+                            <ul className="text-sm text-slate-600 space-y-1">
+                                <li><code className="bg-slate-100 px-1 rounded">remove_password</code> - Drop the password</li>
+                                <li><code className="bg-slate-100 px-1 rounded">remove_expiration</code> - Clear <code className="bg-slate-100 px-1 rounded">expires_at</code></li>
+                                <li><code className="bg-slate-100 px-1 rounded">remove_starts_at</code> - Clear <code className="bg-slate-100 px-1 rounded">starts_at</code></li>
+                                <li><code className="bg-slate-100 px-1 rounded">remove_max_clicks</code> - Clear <code className="bg-slate-100 px-1 rounded">max_clicks</code></li>
+                                <li><code className="bg-slate-100 px-1 rounded">remove_folder</code> - Take the link out of its folder</li>
+                            </ul>
+                            <p className="text-sm text-slate-600">
+                                An empty <code className="bg-slate-100 px-1 rounded">title</code> or{' '}
+                                <code className="bg-slate-100 px-1 rounded">notes</code> clears it.
+                            </p>
+                            <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
+                                <code className="text-green-400 text-sm whitespace-pre">{`{ "remove_expiration": true, "title": "Renamed" }`}</code>
+                            </div>
                         </div>
                     </div>
 
@@ -180,7 +244,7 @@ export default function Docs() {
                             <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
                                 <code className="text-slate-700">/links/{'{id}'}</code>
-                                <span className="text-slate-500 text-sm">Get link details</span>
+                                <span className="text-slate-500 text-sm">Get one link, in the same shape as an item of the list</span>
                             </div>
                             <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-yellow-100 text-yellow-700 rounded text-xs font-bold">PUT</span>
@@ -306,6 +370,7 @@ export default function Docs() {
                                 <tr><td className="p-3"><code>REDIS_URL</code></td><td className="p-3">Redis connection (optional)</td><td className="p-3">-</td></tr>
                                 <tr><td className="p-3"><code>SMTP_HOST</code></td><td className="p-3">SMTP server hostname</td><td className="p-3">-</td></tr>
                                 <tr><td className="p-3"><code>MIN_ALIAS_LENGTH</code></td><td className="p-3">Minimum custom alias length</td><td className="p-3">5</td></tr>
+                                <tr><td className="p-3"><code>MAX_ALIAS_LENGTH</code></td><td className="p-3">Maximum custom alias length</td><td className="p-3">25 in the Compose files, 50 if unset</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_URL_SANITIZATION</code></td><td className="p-3">Block malicious URLs</td><td className="p-3">true</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_QR_BRANDING</code></td><td className="p-3">Brand colour / logo / SVG on QR codes</td><td className="p-3">true</td></tr>
                                 <tr><td className="p-3"><code>ENABLE_BURN_AFTER_READING</code></td><td className="p-3">One-time / self-destruct links</td><td className="p-3">true</td></tr>

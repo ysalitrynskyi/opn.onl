@@ -14,14 +14,13 @@ use crate::AppState;
 use crate::entity::{api_keys, users};
 use crate::handlers::json_error;
 use crate::handlers::links::{get_jwt_auth_from_header, hash_api_key};
+use crate::utils::env::env_flag;
 use crate::utils::time::utc_rfc3339;
 
 const MAX_API_KEYS: u64 = 20;
 
 fn api_keys_enabled() -> bool {
-    std::env::var("ENABLE_API_KEYS")
-        .map(|v| v != "false")
-        .unwrap_or(true)
+    env_flag("ENABLE_API_KEYS", true)
 }
 
 #[derive(Deserialize, ToSchema)]
