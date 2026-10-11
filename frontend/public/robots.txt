@@ -1,4 +1,5 @@
 # robots.txt for opn.onl
+# The Sitemap line is added at build time from VITE_FRONTEND_URL (vite.config.ts).
 
 User-agent: *
 Allow: /
@@ -14,11 +15,3 @@ Disallow: /forgot-password
 
 # Link-in-bio profile pages are public-by-link only — not indexed by default
 Disallow: /@
-
-# Sitemap
-Sitemap: https://opn.onl/sitemap.xml
-
-
-
-
-

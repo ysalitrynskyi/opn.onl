@@ -36,6 +36,8 @@ DATABASE_URL=postgres://localhost/opn_test cargo test --test admin_tests   # sin
 
 ### Frontend (`frontend/`)
 
+Needs Node `^20.19.0 || >=22.12.0` (the `engines` field; `frontend/.nvmrc` is 22): the locked Vite 8 / rolldown declare it, and `npm ci` still installs on older Node before the toolchain fails.
+
 ```bash
 npm run dev        # Vite dev server on :5173 (honors PORT env var)
 npm run build      # tsc -b && vite build (production build also prerenders static pages via Puppeteer)
@@ -70,7 +72,8 @@ The Playwright suite runs against the real backend: start it on `:3000` with a *
 ### Frontend
 
 - SPA with react-router (`src/App.tsx`). Marketing pages are **eagerly imported** so the production build prerenders them to static HTML (SEO); app pages (Dashboard, Admin, Settings…) are lazy-loaded and not prerendered.
-- **Adding a page route requires touching up to three places**: `src/App.tsx` (route), `vite.config.ts` `PRERENDER_ROUTES` (only if it should be prerendered), and `frontend/nginx.conf` SPA-route allowlist regex (production only — anything not on that allowlist matching `/[a-zA-Z0-9_-]{1,255}` is proxied to the backend as a short-link code and will 404 as a page; that range is every length the backend can store, since `MIN_ALIAS_LENGTH` / `MAX_ALIAS_LENGTH` are unclamped env vars. The SPA's short `/404` route is on the allowlist for that reason).
+- **Adding a page route requires touching up to four places**: `src/App.tsx` (route), `vite.config.ts` `PRERENDER_ROUTES` plus its `SITEMAP_HINTS` entry in `src/utils/sitemap.ts` (only if it should be prerendered — a route without hints, or hints without a route, fails the build), and `frontend/nginx.conf` SPA-route allowlist regex (production only — anything not on that allowlist matching `/[a-zA-Z0-9_-]{1,255}` is proxied to the backend as a short-link code and will 404 as a page; that range is every length the backend can store, since `MIN_ALIAS_LENGTH` / `MAX_ALIAS_LENGTH` are unclamped env vars. The SPA's short `/404` route is on the allowlist for that reason).
+- **`sitemap.xml` and the `Sitemap:` line of `robots.txt` are generated at build time** (the `generate-sitemap` plugin in `vite.config.ts`, builders in `src/utils/sitemap.ts`) from `VITE_FRONTEND_URL` (default `https://opn.onl`) and `PRERENDER_ROUTES`. Do not put either back under `public/` with a domain in it: a hard-coded sitemap once made every build for another domain fail `scripts/verify-prerender.mjs` and made 15 `SEO.test.tsx` tests fail after `cp .env.example .env`. `SEO.tsx` takes its canonical base from the same `normalizeSiteUrl`, `verify-prerender.mjs` checks each page's canonical and the robots.txt line against the generated `dist/`, and `SEO.test.tsx` runs the same generator, so all of them agree for any `VITE_FRONTEND_URL`.
 - API access goes through `src/config/api.ts` (`API_ENDPOINTS`, `authFetch` — reads JWT from localStorage). No state-management library; pages fetch directly.
 - **Never touch `localStorage`/`sessionStorage` directly**; use `src/utils/storage.ts`. When a visitor blocks site data, storage access throws, and one unguarded read during render used to replace every page, the public ones included, with the error screen.
 - Show short links with `shortLinkBase()` / `shortLinkHost()` from `src/config/api.ts`, never a literal `opn.onl` (self-hosted instances have their own host). Count labels go through `src/utils/plural.ts`.
