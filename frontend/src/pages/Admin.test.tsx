@@ -31,6 +31,7 @@ describe('Admin Page', () => {
         blocked_email_domains_count: 4,
         disabled_users_count: 1,
         suspicious_links_count: 2,
+        email_case_collisions: 0,
     };
 
     const mockActivity = {
@@ -420,6 +421,43 @@ describe('Admin Page', () => {
                     expect.anything(),
                 );
             });
+        });
+    });
+
+    describe('Email case collisions', () => {
+        const withCollisions = (count: number) => {
+            const original = global.fetch as unknown as (url: string) => Promise<unknown>;
+            global.fetch = vi.fn((url: string) =>
+                url.includes('/admin/stats')
+                    ? Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ ...mockStats, email_case_collisions: count }),
+                    })
+                    : original(url),
+            ) as any;
+        };
+
+        it('warns when accounts share an address that differs only by letter case', async () => {
+            withCollisions(3);
+            render(<Admin />);
+
+            const warning = await screen.findByRole('status');
+            expect(warning).toHaveTextContent(/3 email addresses are registered to more than one account/i);
+            expect(warning).toHaveTextContent(/differ only by letter case or domain encoding/i);
+        });
+
+        it('uses the singular for one address', async () => {
+            withCollisions(1);
+            render(<Admin />);
+
+            expect(await screen.findByRole('status')).toHaveTextContent(/1 email address is registered to more than one account/i);
+        });
+
+        it('shows no warning when no address collides', async () => {
+            render(<Admin />);
+
+            expect(await screen.findByText('Total Users')).toBeInTheDocument();
+            expect(screen.queryByRole('status')).not.toBeInTheDocument();
         });
     });
 
