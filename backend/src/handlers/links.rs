@@ -753,17 +753,47 @@ pub struct BulkUpdateRequest {
     pub remove_expiration: Option<bool>,
 }
 
-/// Dashboard fetches GET /links with no `limit` and paginates in the browser,
-/// so omitting `limit` must still return a complete-enough list. 1000 is a
-/// safety cap, not "every row the user owns".
+/// Scripts and API clients call GET /links with no `limit` and expect the
+/// whole list back, so omitting it still returns up to 1000 rows. That is a
+/// safety cap, not "every row the user owns": `X-Total-Count` says how many
+/// more there are and `offset` reaches them.
 const DEFAULT_LINKS_LIMIT: u64 = 1000;
 const MAX_LINKS_LIMIT: u64 = 1000;
 
-fn clamp_links_limit(limit: Option<u64>) -> u64 {
+/// How many rows matched a link list request, ignoring `limit` and `offset`.
+/// The body stays a bare JSON array (API clients depend on that), so the
+/// total travels in a header; `build_cors` exposes it to the browser.
+pub const X_TOTAL_COUNT: axum::http::HeaderName =
+    axum::http::HeaderName::from_static("x-total-count");
+
+/// One page of a link list: the rows, and `X-Total-Count`.
+pub type LinkPage = (
+    [(axum::http::HeaderName, String); 1],
+    Json<Vec<LinkResponse>>,
+);
+
+pub fn link_page(total: u64, rows: Vec<LinkResponse>) -> LinkPage {
+    ([(X_TOTAL_COUNT, total.to_string())], Json(rows))
+}
+
+pub(crate) fn clamp_links_limit(limit: Option<u64>) -> u64 {
     limit
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_LINKS_LIMIT)
         .min(MAX_LINKS_LIMIT)
+}
+
+/// Apply a link list request's `limit` and `offset` to an already filtered and
+/// ordered query.
+pub(crate) fn page_links(
+    select: Select<links::Entity>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> Select<links::Entity> {
+    // Postgres takes OFFSET as a signed 64-bit number, and the driver panics
+    // instead of failing when handed a larger one.
+    let offset = offset.map(|n| n.min(i64::MAX as u64));
+    select.limit(clamp_links_limit(limit)).offset(offset)
 }
 
 #[cfg(test)]
@@ -803,6 +833,16 @@ pub struct LinksQuery {
     pub search: Option<String>,
     /// Page size. Omitted or 0 defaults to 1000. Maximum 1000.
     pub limit: Option<u64>,
+    /// Number of links to skip, in the order the list is returned.
+    pub offset: Option<u64>,
+}
+
+/// Paging of the folder and tag link lists, the same as `GET /links`.
+#[derive(Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct LinkPageQuery {
+    /// Page size. Omitted or 0 defaults to 1000. Maximum 1000.
+    pub limit: Option<u64>,
+    /// Number of links to skip, in the order the list is returned.
     pub offset: Option<u64>,
 }
 
@@ -3540,7 +3580,12 @@ pub async fn replace_routing_rules(
     path = "/links",
     params(LinksQuery),
     responses(
-        (status = 200, description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member (limit defaults to 1000, maximum 1000)", body = Vec<LinkResponse>),
+        (
+            status = 200,
+            description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member. Pinned links first, then newest first (limit defaults to 1000, maximum 1000)",
+            body = Vec<LinkResponse>,
+            headers(("X-Total-Count" = u64, description = "How many links match the filters, ignoring `limit` and `offset`"))
+        ),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "Links",
@@ -3601,15 +3646,19 @@ pub async fn get_user_links(
         link_query = link_query.filter(links::Column::Id.is_in(link_tag_ids));
     }
 
-    let link_query = link_query.order_by_desc(links::Column::CreatedAt);
-
-    let limit = clamp_links_limit(query.limit);
-    let link_query = link_query.limit(limit);
-    let link_query = if let Some(offset) = query.offset {
-        link_query.offset(offset)
-    } else {
-        link_query
+    let total = match link_query.clone().count(&state.db).await {
+        Ok(total) => total,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
+
+    // Pinned links lead, then newest first. `id` breaks ties: a bulk create
+    // stamps many rows with the same instant, and without it the database may
+    // order them differently for each page, so paging repeats and skips rows.
+    let link_query = link_query
+        .order_by_desc(links::Column::IsPinned)
+        .order_by_desc(links::Column::CreatedAt)
+        .order_by_desc(links::Column::Id);
+    let link_query = page_links(link_query, query.limit, query.offset);
 
     let user_links = link_query.all(&state.db).await.unwrap_or_default();
     let page_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
@@ -3646,7 +3695,7 @@ pub async fn get_user_links(
         });
     }
 
-    (StatusCode::OK, Json(response)).into_response()
+    link_page(total, response).into_response()
 }
 
 /// Delete a link

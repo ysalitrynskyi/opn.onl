@@ -159,8 +159,8 @@ async fn list_excludes_soft_deleted_links_and_their_tags() {
 
 /// `limit` is clamped to 1..=1000. `limit=0` used to mean LIMIT 0 (empty page);
 /// omitted `limit` used to mean every live row. Both must now return a bounded
-/// page. Dashboard fetches with no `limit` and paginates in the browser, so the
-/// default is 1000 rather than 25.
+/// page. API clients and scripts fetch with no `limit` and expect the whole
+/// list, so the default is 1000 rather than 25.
 #[tokio::test]
 async fn list_clamps_limit_and_honours_offset() {
     let (server, db) = spawn_real_app().await;
