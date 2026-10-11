@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { test, expect, type APIRequestContext, type APIResponse, type Page } from '@playwright/test';
-import { API_URL, WEB_URL, TEST_PASSWORD, createLink, createUser, signIn, uniqueEmail } from './support/api';
+import { API_URL, WEB_URL, TEST_PASSWORD, createLink, createUser, isLinkListUrl, signIn, uniqueEmail } from './support/api';
 
 /**
  * Rate limiting against the real backend (backend/src/utils/rate_limiter.rs).
@@ -39,7 +39,7 @@ const WINDOW_LIMIT_MESSAGE = /^Rate limit exceeded\. Please try again in \d+ sec
  * first compile of the lazy dashboard chunk from failing an assertion.
  */
 const linkListLoaded = (page: Page) =>
-    page.waitForResponse((r) => r.request().method() === 'GET' && r.url() === `${API_URL}/links`);
+    page.waitForResponse((r) => r.request().method() === 'GET' && isLinkListUrl(r.url()));
 
 /** Eleven simultaneous GET /health from one client: one more than the per-second gate allows. */
 async function burst(request: APIRequestContext, ip: string, headers: Record<string, string> = {}) {
@@ -360,7 +360,7 @@ test.describe('link creation', () => {
         // would take a hundred requests. Only GET /links is replaced, with the
         // middleware's exact 429; the rest of the page talks to the real backend
         // as this real user.
-        const listUrl = `${API_URL}/links`;
+        const listUrl = (url: URL) => isLinkListUrl(url);
         await page.route(listUrl, (route) =>
             route.request().method() === 'GET'
                 ? route.fulfill({

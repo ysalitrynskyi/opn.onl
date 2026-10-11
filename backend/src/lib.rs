@@ -261,9 +261,10 @@ pub fn build_cors() -> CorsLayer {
 
     // `Access-Control-Allow-Headers: *` does not cover `Authorization` under the
     // Fetch spec (current engines tolerate it; the spec says they need not), so
-    // echo the headers a preflight asks for instead. And expose the rate-limit
-    // headers: on the split-origin deployment the app is cross-origin to the
-    // API, and without this the browser hides Retry-After from it.
+    // echo the headers a preflight asks for instead. And expose the headers the
+    // app reads: on the split-origin deployment the app is cross-origin to the
+    // API, and without this the browser hides Retry-After (and the
+    // X-Total-Count its link lists page by) from it.
     let layer = CorsLayer::new()
         .allow_methods(Any)
         .allow_headers(AllowHeaders::mirror_request())
@@ -271,6 +272,7 @@ pub fn build_cors() -> CorsLayer {
             axum::http::header::RETRY_AFTER,
             axum::http::HeaderName::from_static("x-ratelimit-limit"),
             axum::http::HeaderName::from_static("x-ratelimit-remaining"),
+            handlers::links::X_TOTAL_COUNT,
         ]);
     if origins.is_empty() {
         tracing::warn!(

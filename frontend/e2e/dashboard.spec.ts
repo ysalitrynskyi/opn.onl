@@ -88,7 +88,9 @@ function linkRow(page: Page, link: { id: number }) {
 }
 
 function isApiCall(res: Response, method: string, path: string): boolean {
-    return res.url() === `${API_URL}${path}` && res.request().method() === method;
+    // Without the query string: the list is asked for as `/links?limit=100`.
+    const { origin, pathname } = new URL(res.url());
+    return origin + pathname === `${API_URL}${path}` && res.request().method() === method;
 }
 
 /** Open the dashboard and wait for the backend to answer its links request. */

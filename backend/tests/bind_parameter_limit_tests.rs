@@ -277,15 +277,23 @@ async fn listing_the_links_of_a_tag_on_more_links_than_one_statement_can_bind() 
         .authorization_bearer(&token)
         .await;
     let status = res.status_code();
+    let total = res
+        .headers()
+        .get("x-total-count")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
     let listed = res.json::<Value>();
     let count = listed.as_array().map(|a| a.len());
+    // The untagged link is the newest, so it would head the first page.
     let has_untagged = listed
         .as_array()
         .is_some_and(|a| a.iter().any(|l| l["id"].as_i64() == Some(untagged as i64)));
     sql(&db, format!("DELETE FROM links WHERE user_id = {user_id}")).await;
 
     assert_eq!(status, 200, "GET /tags/{{id}}/links failed");
-    assert_eq!(count, Some(OVER_THE_LIMIT as usize));
+    // The list is paged (default 1000); the total still counts every link.
+    assert_eq!(total, Some(OVER_THE_LIMIT as u64), "X-Total-Count");
+    assert_eq!(count, Some(1000), "first page");
     assert!(
         !has_untagged,
         "an untagged link leaked into the tag listing"
