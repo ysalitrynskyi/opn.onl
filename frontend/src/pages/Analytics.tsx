@@ -67,6 +67,8 @@ interface LinkStats {
     code: string;
     original_url: string;
     total_clicks: number;
+    /** True when the period held more clicks than the server analyses; everything but `total_clicks` then covers only the most recent ones. */
+    truncated: boolean;
     unique_visitors: number;
     clicks_by_day: DayStats[];
     clicks_by_country: CountryStats[];
@@ -100,7 +102,7 @@ function Skeleton() {
     );
 }
 
-function StatCard({ title, value, icon: Icon }: { title: string; value: string | number; icon: React.ComponentType<{ className?: string }>; }) {
+function StatCard({ title, value, icon: Icon, hint }: { title: string; value: string | number; icon: React.ComponentType<{ className?: string }>; hint?: string; }) {
     return (
         <div className="bg-surface p-6">
             <div className="flex items-center justify-between mb-2">
@@ -110,6 +112,7 @@ function StatCard({ title, value, icon: Icon }: { title: string; value: string |
             <div className="font-display text-3xl font-extrabold text-ink tracking-tight tabular-nums">
                 {typeof value === 'number' ? value.toLocaleString() : value}
             </div>
+            {hint && <div className="mt-1 text-xs text-faint">{hint}</div>}
         </div>
     );
 }
@@ -238,6 +241,16 @@ export default function Analytics() {
         clicks: d.count
     }));
 
+    // The day buckets are built from the same clicks as the breakdowns, so
+    // together they add up to the size of the sample behind them.
+    const sampledClicks = stats.clicks_by_day.reduce((sum, d) => sum + d.count, 0);
+
+    // The same city name can exist in two countries.
+    const cityRows = stats.clicks_by_city.map(c => ({
+        ...c,
+        label: c.country ? `${c.city}, ${c.country}` : c.city,
+    }));
+
     return (
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
             <SEO title={`Analytics — /${stats.code}`} noIndex />
@@ -282,16 +295,28 @@ export default function Analytics() {
                 <p className="mt-2 truncate max-w-2xl font-mono text-sm text-faint">{stats.original_url}</p>
             </motion.div>
 
+            {stats.truncated && (
+                <div role="status" className="mb-8 rounded-xl border border-line2 bg-primary-50/40 px-4 py-3 text-sm text-muted">
+                    <p className="font-medium text-ink">
+                        Based on the most recent {sampledClicks.toLocaleString()} clicks
+                    </p>
+                    <p className="mt-1">
+                        This period has {stats.total_clicks.toLocaleString()} clicks in all. Total Clicks counts every
+                        one; unique visitors, the chart and the breakdowns below use only these.
+                    </p>
+                </div>
+            )}
+
             {/* Key Metrics */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-line border border-line rounded-2xl overflow-hidden mb-8">
-                <StatCard title="Total Clicks" value={stats.total_clicks} icon={MousePointer} />
-                <StatCard title="Unique Visitors" value={stats.unique_visitors} icon={Globe} />
+                <StatCard title="Total Clicks" value={stats.total_clicks} icon={MousePointer} hint={stats.truncated ? 'All clicks in this period' : undefined} />
+                <StatCard title="Unique Visitors" value={stats.unique_visitors} icon={Globe} hint={stats.truncated ? `Most recent ${sampledClicks.toLocaleString()}` : undefined} />
                 <StatCard title="Today" value={todayClicks} icon={Clock} />
                 <StatCard title="This Week" value={weekClicks} icon={TrendingUp} />
             </div>
 
             {/* Clicks Over Time Chart */}
-            {chartData.length > 0 && (
+            {stats.total_clicks > 0 && chartData.length > 0 && (
                 <motion.div
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -337,7 +362,7 @@ export default function Analytics() {
                     <StatsTable title="Top Countries" data={stats.clicks_by_country} labelKey="country" valueKey="count" />
                 </motion.div>
                 <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}>
-                    <StatsTable title="Top Cities" data={stats.clicks_by_city} labelKey="city" valueKey="count" />
+                    <StatsTable title="Top Cities" data={cityRows} labelKey="label" valueKey="count" />
                 </motion.div>
             </div>
 
