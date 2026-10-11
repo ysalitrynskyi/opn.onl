@@ -16,7 +16,10 @@ export default function Login() {
     const [needsVerification, setNeedsVerification] = useState(false);
     const [resendLoading, setResendLoading] = useState(false);
     const [resendSuccess, setResendSuccess] = useState(false);
-    const showPasskeyOption = true;
+    // Shown until the server says the instance has passkeys turned off. The
+    // page is prerendered with no server to ask, and an instance that has them
+    // (the default) should not see the button jump in once /auth/settings answers.
+    const [passkeysEnabled, setPasskeysEnabled] = useState(true);
     const navigate = useNavigate();
 
     // Redirect to dashboard if already logged in
@@ -26,6 +29,22 @@ export default function Login() {
             navigate('/dashboard', { replace: true });
         }
     }, [navigate]);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await fetch(API_ENDPOINTS.appSettings);
+                if (!res.ok) return;
+                const settings = await res.json();
+                if (!cancelled && settings.passkeys_enabled === false) setPasskeysEnabled(false);
+            } catch {
+                // Offline or an unreadable answer: keep the default. Signing in
+                // with a password does not depend on it.
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -246,7 +265,7 @@ export default function Login() {
                 </div>
 
                 <div className="rounded-2xl border border-line bg-surface p-8 shadow-card">
-                    {isPasskeySupported && showPasskeyOption && (
+                    {isPasskeySupported && passkeysEnabled && (
                         <>
                             <button
                                 type="button"

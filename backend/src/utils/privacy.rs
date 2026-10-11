@@ -15,11 +15,13 @@ use std::net::{IpAddr, Ipv6Addr};
 pub const DEFAULT_PII_RETENTION_DAYS: i32 = 396;
 
 /// Truncate an IP address for storage: IPv4 keeps the /24 (last octet
-/// zeroed), IPv6 keeps the /48. GeoIP lookup must happen on the full address
-/// *before* truncation. Unparsable input is dropped entirely rather than
-/// stored raw.
+/// zeroed), IPv6 keeps the /48. An IPv4-mapped IPv6 address
+/// (`::ffff:203.0.113.9`, what a dual-stack proxy reports) is an IPv4 client
+/// and is truncated as one; as IPv6 its /48 would be all zeros. GeoIP lookup
+/// must happen on the full address *before* truncation. Unparsable input is
+/// dropped entirely rather than stored raw.
 pub fn anonymize_ip(ip_str: &str) -> Option<String> {
-    match ip_str.trim().parse::<IpAddr>() {
+    match ip_str.trim().parse::<IpAddr>().map(|ip| ip.to_canonical()) {
         Ok(IpAddr::V4(v4)) => {
             let o = v4.octets();
             Some(format!("{}.{}.{}.0", o[0], o[1], o[2]))
@@ -144,6 +146,24 @@ mod tests {
             anonymize_ip("2001:db8:85a3:8d3:1319:8a2e:370:7348").as_deref(),
             Some("2001:db8:85a3::")
         );
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_truncates_like_ipv4() {
+        assert_eq!(
+            anonymize_ip("::ffff:203.0.113.77").as_deref(),
+            Some("203.0.113.0")
+        );
+        // The hex spelling of the same address.
+        assert_eq!(
+            anonymize_ip("::ffff:cb00:714d").as_deref(),
+            Some("203.0.113.0")
+        );
+    }
+
+    #[test]
+    fn ipv6_loopback_is_not_mistaken_for_ipv4() {
+        assert_eq!(anonymize_ip("::1").as_deref(), Some("::"));
     }
 
     #[test]
