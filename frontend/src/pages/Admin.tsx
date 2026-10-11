@@ -34,6 +34,7 @@ interface AdminStats {
     blocked_email_domains_count: number;
     disabled_users_count: number;
     suspicious_links_count: number;
+    email_case_collisions: number;
 }
 
 interface ActivityDay {
@@ -693,6 +694,20 @@ export default function Admin() {
                             </div>
                             <ChevronRight className="h-5 w-5 text-red-400 ml-auto" />
                         </button>
+                    )}
+
+                    {stats.email_case_collisions > 0 && (
+                        <div role="status" className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+                            <AlertTriangle className="h-6 w-6 text-amber-600 shrink-0" />
+                            <div>
+                                <div className="font-semibold text-amber-900">
+                                    {stats.email_case_collisions.toLocaleString()} email {pluralize(stats.email_case_collisions, 'address is', 'addresses are')} registered to more than one account, differing only by letter case
+                                </div>
+                                <div className="text-sm text-amber-800">
+                                    Search the Users tab for the address and resolve the duplicates. Until then, sign-in uses the account whose spelling matches exactly, otherwise the oldest.
+                                </div>
+                            </div>
+                        </div>
                     )}
 
                     <div className="bg-white rounded-xl border border-slate-200 p-6">
