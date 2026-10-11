@@ -1,5 +1,5 @@
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
@@ -14,7 +14,10 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{audit_log, folders, links, org_members, organizations, tags, users};
+use crate::handlers::links::{Authentication, authenticate_from_header};
 use crate::utils::email_domain_policy::normalize_email;
+use crate::utils::privacy::anonymize_ip;
+use crate::utils::rate_limiter::ClientKey;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_name, check_slug};
 
@@ -92,6 +95,30 @@ async fn get_user_id_from_header(
     crate::handlers::links::get_user_id_from_header(db, headers).await
 }
 
+/// Authenticate for an operation that cannot be undone or that hands the
+/// organization to someone else. Like account deletion, it needs a revocable
+/// session: an API key is a long-lived credential that lives in scripts and
+/// config files, and the owner of a leaked one must not be able to lose the
+/// team's data or ownership to it.
+async fn require_session_user_id(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Result<i32, (StatusCode, Json<serde_json::Value>)> {
+    match authenticate_from_header(db, headers).await {
+        Some(Authentication::Jwt(auth)) => Ok(auth.user_id),
+        Some(Authentication::ApiKey { .. }) => Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "API keys cannot delete an organization or transfer its ownership. Sign in and use the session token instead."
+            })),
+        )),
+        None => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        )),
+    }
+}
+
 async fn check_org_permission(
     db: &sea_orm::DatabaseConnection,
     org_id: i32,
@@ -151,6 +178,19 @@ pub(crate) async fn member_can_edit(
         .flatten()
         .map(|m| m.can_edit())
         .unwrap_or(false)
+}
+
+/// Members of an organization whose accounts are not deleted. Soft-deleting an
+/// account leaves its `org_members` row, and the member list skips those users,
+/// so the count has to skip them too.
+async fn live_member_count(db: &sea_orm::DatabaseConnection, org_id: i32) -> i64 {
+    org_members::Entity::find()
+        .inner_join(users::Entity)
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .filter(users::Column::DeletedAt.is_null())
+        .count(db)
+        .await
+        .unwrap_or(0) as i64
 }
 
 /// Organizations owned by a user, split by what deleting that user would do
@@ -296,7 +336,7 @@ async fn log_audit(
     resource_type: &str,
     resource_id: Option<i32>,
     details: Option<serde_json::Value>,
-    ip_address: Option<String>,
+    client: &ClientKey,
 ) {
     let audit_entry = audit_log::ActiveModel {
         org_id: Set(Some(org_id)),
@@ -305,7 +345,9 @@ async fn log_audit(
         resource_type: Set(resource_type.to_string()),
         resource_id: Set(resource_id),
         details: Set(details),
-        ip_address: Set(ip_address),
+        // Truncated like the IP of a click event (see utils::privacy): the full
+        // address is only ever held in memory.
+        ip_address: Set(anonymize_ip(&client.0)),
         ..Default::default()
     };
 
@@ -330,6 +372,7 @@ async fn log_audit(
 )]
 pub async fn create_organization(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     headers: HeaderMap,
     Json(payload): Json<CreateOrgRequest>,
 ) -> Result<(StatusCode, Json<OrgResponse>), (StatusCode, Json<serde_json::Value>)> {
@@ -437,7 +480,7 @@ pub async fn create_organization(
         "organization",
         Some(org.id),
         None,
-        None,
+        &client,
     )
     .await;
 
@@ -513,7 +556,9 @@ pub async fn get_user_organizations(
             .select_only()
             .column(org_members::Column::OrgId)
             .column_as(org_members::Column::Id.count(), "cnt")
+            .inner_join(users::Entity)
             .filter(org_members::Column::OrgId.is_in(org_ids.clone()))
+            .filter(users::Column::DeletedAt.is_null())
             .group_by(org_members::Column::OrgId)
             .into_tuple()
             .all(&state.db)
@@ -603,11 +648,7 @@ pub async fn get_organization(
             )
         })?;
 
-    let member_count = org_members::Entity::find()
-        .filter(org_members::Column::OrgId.eq(org.id))
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let member_count = live_member_count(&state.db, org.id).await;
 
     let link_count = crate::entity::links::Entity::find()
         .filter(crate::entity::links::Column::OrgId.eq(org.id))
@@ -647,6 +688,7 @@ pub async fn get_organization(
 )]
 pub async fn update_organization(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     headers: HeaderMap,
     Path(org_id): Path<i32>,
     Json(payload): Json<UpdateOrgRequest>,
@@ -740,15 +782,11 @@ pub async fn update_organization(
         "organization",
         Some(org_id),
         None,
-        None,
+        &client,
     )
     .await;
 
-    let member_count = org_members::Entity::find()
-        .filter(org_members::Column::OrgId.eq(org.id))
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let member_count = live_member_count(&state.db, org.id).await;
 
     let link_count = crate::entity::links::Entity::find()
         .filter(crate::entity::links::Column::OrgId.eq(org.id))
@@ -778,25 +816,18 @@ pub async fn update_organization(
     responses(
         (status = 204, description = "Organization deleted"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
+        (status = 403, description = "Only the owner can delete an organization, and not with an API key"),
         (status = 404, description = "Not found"),
     ),
     tag = "Organizations",
-    security(("bearer_auth" = []), ("api_key" = []))
+    security(("bearer_auth" = []))
 )]
 pub async fn delete_organization(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(org_id): Path<i32>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers)
-        .await
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Unauthorized"})),
-            )
-        })?;
+    let user_id = require_session_user_id(&state.db, &headers).await?;
 
     check_org_permission(&state.db, org_id, user_id, "owner").await?;
 
@@ -918,6 +949,7 @@ pub async fn get_organization_members(
 )]
 pub async fn invite_member(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     headers: HeaderMap,
     Path(org_id): Path<i32>,
     Json(payload): Json<InviteMemberRequest>,
@@ -1006,7 +1038,7 @@ pub async fn invite_member(
         "member",
         Some(member.id),
         Some(serde_json::json!({"email": payload.email, "role": payload.role})),
-        None,
+        &client,
     )
     .await;
 
@@ -1043,6 +1075,7 @@ pub async fn invite_member(
 )]
 pub async fn update_member_role(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     headers: HeaderMap,
     Path((org_id, member_id)): Path<(i32, i32)>,
     Json(payload): Json<UpdateMemberRoleRequest>,
@@ -1091,6 +1124,7 @@ pub async fn update_member_role(
         ));
     }
 
+    let old_role = member.role.clone();
     let mut member: org_members::ActiveModel = member.into();
     member.role = Set(payload.role.clone());
 
@@ -1114,8 +1148,12 @@ pub async fn update_member_role(
         "update_role",
         "member",
         Some(member_id),
-        Some(serde_json::json!({"new_role": payload.role})),
-        None,
+        Some(serde_json::json!({
+            "target_user_id": member.user_id,
+            "old_role": old_role,
+            "new_role": payload.role,
+        })),
+        &client,
     )
     .await;
 
@@ -1147,6 +1185,7 @@ pub async fn update_member_role(
 )]
 pub async fn remove_member(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     headers: HeaderMap,
     Path((org_id, member_id)): Path<(i32, i32)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
@@ -1203,8 +1242,90 @@ pub async fn remove_member(
         "remove",
         "member",
         Some(member_id),
-        None,
-        None,
+        Some(serde_json::json!({
+            "target_user_id": member.user_id,
+            "old_role": member.role,
+        })),
+        &client,
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Leave an organization
+///
+/// Invites add an existing account without asking, so a member needs a way out
+/// that does not depend on an admin. The owner cannot use it: an organization
+/// always has an owner. The links the member created stay with the organization.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org_id}/leave",
+    params(
+        ("org_id" = i32, Path, description = "Organization ID")
+    ),
+    responses(
+        (status = 204, description = "Left the organization"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Not a member of this organization"),
+        (status = 409, description = "The owner cannot leave: transfer ownership or delete the organization first"),
+    ),
+    tag = "Organizations",
+    security(("bearer_auth" = []), ("api_key" = []))
+)]
+pub async fn leave_organization(
+    State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
+    headers: HeaderMap,
+    Path(org_id): Path<i32>,
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    let user_id = get_user_id_from_header(&state.db, &headers)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            )
+        })?;
+
+    let member = check_org_permission(&state.db, org_id, user_id, "viewer").await?;
+
+    // The role filter makes the owner check part of the delete: a transfer that
+    // lands between the permission check and here cannot leave an organization
+    // whose owner has no membership row.
+    let removed = org_members::Entity::delete_many()
+        .filter(org_members::Column::Id.eq(member.id))
+        .filter(org_members::Column::Role.ne("owner"))
+        .exec(&state.db)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to leave organization"})),
+            )
+        })?;
+    if removed.rows_affected == 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "The owner cannot leave the organization. Transfer ownership (POST /orgs/{org_id}/transfer-ownership) or delete the organization first.",
+                "code": "ORG_OWNERSHIP_TRANSFER_REQUIRED",
+            })),
+        ));
+    }
+
+    log_audit(
+        &state.db,
+        org_id,
+        user_id,
+        "leave",
+        "member",
+        Some(member.id),
+        Some(serde_json::json!({
+            "target_user_id": user_id,
+            "old_role": member.role,
+        })),
+        &client,
     )
     .await;
 
@@ -1223,26 +1344,20 @@ pub async fn remove_member(
         (status = 200, description = "Ownership transferred", body = OrgResponse),
         (status = 400, description = "Invalid target (self, deleted user, or not a member)"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Only the owner can transfer ownership"),
+        (status = 403, description = "Only the owner can transfer ownership, and not with an API key"),
         (status = 404, description = "Organization or member not found"),
     ),
     tag = "Organizations",
-    security(("bearer_auth" = []), ("api_key" = []))
+    security(("bearer_auth" = []))
 )]
 pub async fn transfer_ownership(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     headers: HeaderMap,
     Path(org_id): Path<i32>,
     Json(payload): Json<TransferOwnershipRequest>,
 ) -> Result<Json<OrgResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let user_id = get_user_id_from_header(&state.db, &headers)
-        .await
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Unauthorized"})),
-            )
-        })?;
+    let user_id = require_session_user_id(&state.db, &headers).await?;
 
     check_org_permission(&state.db, org_id, user_id, "owner").await?;
 
@@ -1377,15 +1492,11 @@ pub async fn transfer_ownership(
             "previous_owner_id": user_id,
             "new_owner_id": new_owner.id,
         })),
-        None,
+        &client,
     )
     .await;
 
-    let member_count = org_members::Entity::find()
-        .filter(org_members::Column::OrgId.eq(org.id))
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let member_count = live_member_count(&state.db, org.id).await;
 
     let link_count = links::Entity::find()
         .filter(links::Column::OrgId.eq(org.id))

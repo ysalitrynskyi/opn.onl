@@ -359,12 +359,13 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | POST | `/orgs` | Create organization |
 | GET | `/orgs/{org_id}` | Get organization |
 | PUT | `/orgs/{org_id}` | Update organization |
-| DELETE | `/orgs/{org_id}` | Delete organization (owner only) |
+| DELETE | `/orgs/{org_id}` | Delete organization (owner only; needs a sign-in session, an API key gets 403) |
 | GET | `/orgs/{org_id}/members` | List members |
 | POST | `/orgs/{org_id}/members` | Invite member by email (`role`: admin, editor, viewer) |
 | PUT | `/orgs/{org_id}/members/{member_id}` | Change a member's role |
 | DELETE | `/orgs/{org_id}/members/{member_id}` | Remove member |
-| POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only, body: `{"new_owner_user_id": <id>}`) |
+| POST | `/orgs/{org_id}/leave` | Leave an organization (any member except the owner, who gets 409 until ownership is transferred or the organization deleted). Links you created stay with the organization |
+| POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only; needs a sign-in session, an API key gets 403; body: `{"new_owner_user_id": <id>}`) |
 | GET | `/orgs/{org_id}/audit` | View audit log (admin+) |
 
 An account that owns organizations with other members cannot be deleted
