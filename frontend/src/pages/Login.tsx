@@ -128,7 +128,9 @@ export default function Login() {
                 throw new Error(data.error || 'No passkey found for this account');
             }
 
-            const { options } = await startRes.json();
+            // `login_id` names this attempt; the server answers `finish` only
+            // for the id it handed out here.
+            const { options, login_id: loginId } = await startRes.json();
 
             // Step 2: Get credential from browser
             const credential = await navigator.credentials.get({
@@ -153,7 +155,7 @@ export default function Login() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    username: email,
+                    login_id: loginId,
                     credential: {
                         id: credential.id,
                         rawId: bufferToBase64(credential.rawId),

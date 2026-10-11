@@ -502,6 +502,59 @@ pub fn generate_token() -> String {
         .collect()
 }
 
+/// Background mails that have not finished yet.
+static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts one background mail until dropped, so a send that panics is not
+/// counted forever.
+struct InFlight;
+
+impl InFlight {
+    fn begin() -> Self {
+        IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Send a mail from a task of its own and return at once. A request that waited
+/// for SMTP would take longer for an address that has an account, which is an
+/// oracle for the endpoints that must answer every address alike, and it would
+/// be only as fast as the mail server (lettre waits up to 60 s per command).
+/// `what` names the mail in the log line for a failed send.
+pub fn send_in_background<F>(what: &'static str, send: F)
+where
+    F: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
+    let in_flight = InFlight::begin();
+    tokio::spawn(async move {
+        let _in_flight = in_flight;
+        if let Err(e) = send.await {
+            error!("Failed to send {what} email: {e}");
+        }
+    });
+}
+
+/// Wait until every mail handed to [`send_in_background`] has finished or
+/// `timeout` has passed; `true` means none is left. The server calls this after
+/// it stops accepting requests, so a deploy does not drop mail that was already
+/// promised; tests call it to see what was really sent.
+pub async fn wait_for_background_mail(timeout: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::{EmailService, PasswordChange, Pools, TriggerLimiter, generate_token};

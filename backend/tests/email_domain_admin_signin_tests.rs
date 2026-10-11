@@ -5,15 +5,18 @@
 //! passkey login.
 
 mod common;
+#[path = "common/soft_passkey.rs"]
+mod soft_passkey;
 
 use axum_test::TestServer;
 use common::{setup_test_db, unique_code, unique_email};
-use opn_onl_backend::entity::{passkeys, users};
+use opn_onl_backend::entity::users;
 use opn_onl_backend::handlers::auth::hash_secret_token;
 use opn_onl_backend::utils::jwt::{create_jwt, hash_password};
 use opn_onl_backend::utils::rate_limiter::{RateLimitConfig, RateLimiter, RateLimiters};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
 use serde_json::{Value, json};
+use soft_passkey::SoftPasskey;
 use std::sync::Arc;
 
 const PASSWORD: &str = "password123";
@@ -25,7 +28,7 @@ fn roomy() -> Arc<RateLimiter> {
 async fn app() -> (TestServer, DatabaseConnection) {
     common::set_env("FORCE_HTTPS", "false");
     common::set_env("TRUST_PROXY_HEADERS", "false");
-    common::set_env("ENABLE_PASSKEYS", "true");
+    soft_passkey::pin_webauthn_environment();
     if std::env::var("JWT_SECRET").is_err() {
         common::set_env("JWT_SECRET", "integration-test-secret-0123456789abcdef");
     }
@@ -70,41 +73,33 @@ async fn account(
     .expect("insert user")
 }
 
-/// A stored passkey that parses, so `login/start` keeps pending state for it.
-async fn add_passkey(db: &DatabaseConnection, user_id: i32) {
-    let stored = json!({"cred": {
-        "cred_id": "uZcVDBVS68E_MtAgeQpElJxldF_6cY9sSvbWqx_qRh8wiu42lyRBRmh5yFeD_r9k130dMbFHBHI9RTFgdJQIzQ",
-        "cred": {"type_": "ES256", "key": {"EC_EC2": {
-            "curve": "SECP256R1",
-            "x": [194,126,127,109,252,23,131,21,252,6,223,99,44,254,140,27,230,17,94,5,133,28,104,41,144,69,171,149,161,26,200,243],
-            "y": [143,123,183,156,24,178,21,248,117,159,162,69,171,52,188,252,26,59,6,47,103,92,19,58,117,103,249,0,219,8,95,196],
-        }}},
-        "counter": 2,
-        "transports": null,
-        "user_verified": false,
-        "backup_eligible": false,
-        "backup_state": false,
-        "registration_policy": "preferred",
-        "extensions": {"cred_protect": "NotRequested", "hmac_create_secret": "NotRequested"},
-        "attestation": {"data": "None", "metadata": "None"},
-        "attestation_format": "None",
-    }})
-    .to_string();
-    serde_json::from_str::<webauthn_rs::prelude::Passkey>(&stored)
-        .expect("the fixture must be a passkey the app can read");
-    passkeys::ActiveModel {
-        user_id: Set(user_id),
-        cred_id: Set(format!("domain-gate-{}", uuid::Uuid::new_v4())),
-        cred_public_key: Set(stored),
-        counter: Set(0),
-        name: Set(Some("fixture".to_string())),
-        created_at: Set(chrono::Utc::now().naive_utc()),
-        last_used: Set(None),
-        ..Default::default()
-    }
-    .insert(db)
-    .await
-    .expect("insert passkey");
+/// Enrol a real passkey for `user` through the registration ceremony, with a
+/// software authenticator that can later sign in with it.
+async fn enroll_passkey(server: &TestServer, user: &users::Model) -> SoftPasskey {
+    let token = create_jwt(user.id, &user.email, user.token_version).unwrap();
+    let start = server
+        .post("/auth/passkey/register/start")
+        .authorization_bearer(&token)
+        .json(&json!({ "username": &user.email }))
+        .await;
+    assert_eq!(start.status_code(), 200, "register start: {}", start.text());
+    let options = start.json::<Value>()["options"].clone();
+    let authenticator = SoftPasskey::new();
+    let finish = server
+        .post("/auth/passkey/register/finish")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "username": &user.email,
+            "credential": authenticator.registration(&options),
+        }))
+        .await;
+    assert_eq!(
+        finish.status_code(),
+        200,
+        "register finish: {}",
+        finish.text()
+    );
+    authenticator
 }
 
 async fn login(server: &TestServer, email: &str, password: &str) -> u16 {
@@ -116,36 +111,24 @@ async fn login(server: &TestServer, email: &str, password: &str) -> u16 {
         .as_u16()
 }
 
-/// Whether `login/start` kept pending state for the username: the finish call
-/// then fails the assertion (401) instead of finding no state (400). Start
-/// itself answers the same 200 shape either way, by design.
-async fn passkey_login_has_pending_state(server: &TestServer, email: &str) -> bool {
+/// A whole passkey sign-in with `authenticator`: the status `login/finish`
+/// answers (200 with a session, or the uniform 401). A blocked non-admin only
+/// ever gets a decoy challenge, which no real passkey can satisfy.
+async fn passkey_sign_in(server: &TestServer, email: &str, authenticator: &mut SoftPasskey) -> u16 {
     let start = server
         .post("/auth/passkey/login/start")
         .json(&json!({ "username": email }))
         .await;
     assert_eq!(start.status_code(), 200, "start: {}", start.text());
+    let start: Value = start.json();
     let finish = server
         .post("/auth/passkey/login/finish")
         .json(&json!({
-            "username": email,
-            "credential": {
-                "id": "AAAA",
-                "rawId": "AAAA",
-                "type": "public-key",
-                "response": {
-                    "authenticatorData": "AAAA",
-                    "clientDataJSON": "AAAA",
-                    "signature": "AAAA"
-                }
-            }
+            "login_id": start["login_id"].as_str().expect("login_id"),
+            "credential": authenticator.assertion(&start["options"]),
         }))
         .await;
-    match finish.status_code().as_u16() {
-        401 => true,
-        400 => false,
-        other => panic!("unexpected finish status {other}: {}", finish.text()),
-    }
+    finish.status_code().as_u16()
 }
 
 async fn stored(db: &DatabaseConnection, id: i32) -> users::Model {
@@ -166,7 +149,7 @@ async fn an_admin_on_a_blocked_domain_can_still_sign_in_and_recover_the_account(
     let domain = format!("peer-{}.iana.org", unique_code().to_lowercase());
     let peer_email = format!("admin@{domain}");
     let peer = account(&db, &peer_email, true, Some(PASSWORD)).await;
-    add_passkey(&db, peer.id).await;
+    let mut peer_passkey = enroll_passkey(&server, &peer).await;
     let victim = account(&db, &format!("user@{domain}"), false, None).await;
 
     let blocked = server
@@ -183,7 +166,7 @@ async fn an_admin_on_a_blocked_domain_can_still_sign_in_and_recover_the_account(
     assert!(stored(&db, victim.id).await.disabled_at.is_some());
     let control_email = format!("late@{domain}");
     let control = account(&db, &control_email, false, Some(PASSWORD)).await;
-    add_passkey(&db, control.id).await;
+    let mut control_passkey = enroll_passkey(&server, &control).await;
 
     // Login.
     let res = server
@@ -224,13 +207,15 @@ async fn an_admin_on_a_blocked_domain_can_still_sign_in_and_recover_the_account(
 
     // Passkey login (before the reset below: a reset removes the account's
     // passkeys, as account recovery should).
-    assert!(
-        passkey_login_has_pending_state(&server, &peer_email).await,
-        "the admin's passkey login must start for real"
+    assert_eq!(
+        passkey_sign_in(&server, &peer_email, &mut peer_passkey).await,
+        200,
+        "the admin signs in with their passkey"
     );
-    assert!(
-        !passkey_login_has_pending_state(&server, &control_email).await,
-        "a non-admin on the blocked domain still gets only the decoy"
+    assert_eq!(
+        passkey_sign_in(&server, &control_email, &mut control_passkey).await,
+        401,
+        "a non-admin on the blocked domain only ever gets a decoy challenge"
     );
 
     // Reset password with a token the user holds.

@@ -39,6 +39,10 @@ interface UserProfile {
 
 interface AppSettings {
     account_deletion_enabled: boolean;
+    // Days until a deleted account's data is removed for good; null when the
+    // operator keeps it until an admin removes it. Operator-configured, so the
+    // page quotes it instead of hard-coding a number.
+    account_purge_days?: number | null;
     custom_aliases_enabled: boolean;
     max_links_per_user: number | null;
     passkeys_enabled: boolean;
@@ -48,6 +52,14 @@ interface AppSettings {
 
 function errorMessage(err: unknown, fallback = 'Something went wrong'): string {
     return err instanceof Error ? err.message : fallback;
+}
+
+// What happens to an account's data after it is deleted, as the server reports it.
+function retentionNotice(purgeDays: number | null | undefined): string {
+    if (typeof purgeDays !== 'number') {
+        return 'Your data stays on the server until an administrator removes it.';
+    }
+    return `Your email address, profile and links are permanently removed ${purgeDays} ${purgeDays === 1 ? 'day' : 'days'} after you delete the account. Until then only an administrator can restore it; after that nothing can.`;
 }
 
 export default function Settings() {
@@ -328,7 +340,7 @@ export default function Settings() {
 
     const handleDeleteAccount = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!confirm('Are you SURE you want to delete your account? This cannot be undone!')) return;
+        if (!confirm(`Delete your account? You are signed out and your links stop working right away. ${retentionNotice(appSettings?.account_purge_days)}`)) return;
 
         setDeletingAccount(true);
         setError('');
@@ -1211,8 +1223,12 @@ export default function Settings() {
                             ) : (
                                 <form onSubmit={handleDeleteAccount} className="space-y-4">
                                     <div className="rounded-xl border border-danger/30 bg-danger/5 p-4">
-                                        <p className="text-sm font-medium text-danger">This action cannot be undone!</p>
-                                        <p className="text-sm text-danger">All your links and data will be permanently deleted.</p>
+                                        <p className="text-sm font-medium text-danger">Your account closes as soon as you confirm.</p>
+                                        <p className="text-sm text-danger">
+                                            You are signed out and your short links stop working right away. Links you
+                                            created inside an organization belong to it and keep working.
+                                        </p>
+                                        <p className="mt-2 text-sm text-danger">{retentionNotice(appSettings.account_purge_days)}</p>
                                     </div>
                                     <input
                                         type="password"

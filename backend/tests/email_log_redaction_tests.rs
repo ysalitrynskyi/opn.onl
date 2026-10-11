@@ -92,7 +92,13 @@ async fn outgoing_mail_logs_the_domain_and_never_the_address() {
         .json(&json!({ "email": email }))
         .await;
     assert_eq!(res.status_code(), 200);
-    assert_eq!(stub.to(&email).len(), 2, "both mails were sent");
+    // The handlers answer before SMTP is done; the log lines are written while
+    // the mail is sent, so wait for both to arrive before reading them.
+    assert_eq!(
+        stub.wait_for(&email, 2).await.len(),
+        2,
+        "both mails were sent"
+    );
 
     let lines = captured.0.lock().unwrap().clone();
     let sending: Vec<&String> = lines.iter().filter(|l| l.contains("Sending ")).collect();

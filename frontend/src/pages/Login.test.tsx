@@ -118,6 +118,7 @@ describe('Login Page', () => {
               allowCredentials: [{ id: 'BAUG', type: 'public-key' }],
             },
           },
+          login_id: 'attempt-1',
         });
       }
       if (url.includes('/passkey/login/finish')) {
@@ -134,6 +135,16 @@ describe('Login Page', () => {
       expect(localStorage.setItem).toHaveBeenCalledWith('token', mockToken);
       expect(localStorage.setItem).toHaveBeenCalledWith('is_admin', 'true');
     });
+
+    // The server keys the pending challenge by the id it handed out at start,
+    // not by the email, so finish must send that id back.
+    const finish = vi
+      .mocked(global.fetch)
+      .mock.calls.find(([url]) => String(url).includes('/passkey/login/finish'));
+    expect(finish).toBeDefined();
+    const sent = JSON.parse(String((finish![1] as RequestInit).body));
+    expect(sent.login_id).toBe('attempt-1');
+    expect(sent.credential.id).toBe('credential-id');
   });
 
   describe('passkey button', () => {

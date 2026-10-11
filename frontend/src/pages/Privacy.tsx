@@ -44,7 +44,7 @@ export default function Privacy() {
                             <Shield className="h-8 w-8 text-emerald-600" />
                         </div>
                         <h1 className="text-4xl font-extrabold text-slate-900 mb-4">Privacy Policy</h1>
-                        <p className="text-slate-500">Last updated: July 7, 2026</p>
+                        <p className="text-slate-500">Last updated: October 11, 2026</p>
                     </motion.div>
                 </div>
             </section>
@@ -152,8 +152,18 @@ export default function Privacy() {
                                 We retain your data only as long as necessary to provide the service:
                             </p>
                             <ul className="list-disc pl-5 space-y-2 mb-4">
-                                <li><strong>Account data:</strong> Retained until you delete your account</li>
-                                <li><strong>Link data:</strong> Retained until you delete the link or your account</li>
+                                <li>
+                                    <strong>Account data:</strong> Kept while your account is open. When you
+                                    delete your account it closes immediately, and your email address, password
+                                    hash, profile, links (destinations, titles and notes), click history,
+                                    passkeys and API keys are permanently removed 30 days later. Until then an
+                                    administrator can restore the account; after that nobody can
+                                </li>
+                                <li>
+                                    <strong>Link data:</strong> A link you delete stops redirecting at once, but
+                                    its record is kept until your account is permanently removed. Links you
+                                    created inside an organization belong to that organization and stay with it
+                                </li>
                                 <li>
                                     <strong>Per-visitor analytics identifiers:</strong> The truncated IP address
                                     and raw user-agent string of a click are automatically anonymized after
@@ -171,8 +181,9 @@ export default function Privacy() {
                                 Depending on where you live (e.g. under the GDPR or similar laws), you have the
                                 right to access, correct, export, object to the processing of, and delete your
                                 personal data. Where self-service deletion is enabled you can delete your account
-                                from Settings; otherwise email us and we will process verified deletion requests
-                                within 30 days.
+                                from Settings: it closes immediately and the data is permanently removed after the
+                                30 days described above. Otherwise email us and we will process verified deletion
+                                requests within 30 days.
                             </p>
                             <p>
                                 Legal bases we rely on: performance of a contract (providing the service you sign
@@ -250,7 +261,7 @@ export default function Privacy() {
                     {/* Footer */}
                     <div className="border-t border-slate-200 pt-8">
                         <p className="text-sm text-slate-500 text-center">
-                            This privacy policy is effective as of July 7, 2026. We may update this policy
+                            This privacy policy is effective as of October 11, 2026. We may update this policy
                             from time to time. We will notify you of any significant changes by email or through 
                             a notice on our website.
                         </p>

@@ -236,13 +236,14 @@ is ignored with a warning in the log and the default applies.
 | `ENABLE_URL_SANITIZATION` | true | Sanitize URLs for security |
 | `BLOCK_DANGEROUS_FILE_EXTENSIONS` | true | Refuse to shorten links pointing directly at executable/script files (`.hta`, `.exe`, `.msi`, `.jar`, `.apk`, `.dmg`, …) — a common malware-delivery vector. Recommended on for any public instance |
 | `BLOCK_RAW_IP_URLS` | true | Refuse to shorten links whose host is a bare IP address. Set `false` if you legitimately shorten internal/LAN IPs on a self-hosted instance |
-| `ENABLE_ACCOUNT_DELETION` | false | Allow users to delete their own accounts |
+| `ENABLE_ACCOUNT_DELETION` | false | Allow users to delete their own accounts. The account closes at once; see `ACCOUNT_PURGE_DAYS` for when its data is removed |
 
 ### Privacy & Analytics
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) and the truncated IP on organization audit entries are anonymized by a daily sweep; aggregate stats and the audit entries themselves are kept. `0` disables the sweep |
+| `ACCOUNT_PURGE_DAYS` | 30 | Days a deleted account (deleted by its owner or an admin) is kept before a daily sweep removes it for good: the user, their links with URLs, titles and notes, click history, passkeys and API keys. An admin can restore the account until then, not after. Team links stay with their organization. An account that still owns an organization with other members is kept until ownership moves. `0` disables the sweep |
 
 Click analytics never store the full visitor IP: addresses are truncated at
 collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
@@ -330,7 +331,7 @@ Errors come in a few shapes, so a generic client should look at the status code 
 | POST | `/auth/forgot-password` | Request password reset |
 | POST | `/auth/reset-password` | Reset password with token |
 | POST | `/auth/change-password` | Change password (authenticated). Signs out every session, so the response carries a fresh `token` to keep using |
-| POST | `/auth/delete-account` | Delete own account (if enabled; refused with 409 while you own orgs with other members) |
+| POST | `/auth/delete-account` | Delete own account (if enabled; refused with 409 while you own orgs with other members). The account closes at once and is removed for good after `ACCOUNT_PURGE_DAYS` |
 | GET / POST | `/auth/api-keys` | List / create personal API keys |
 | DELETE | `/auth/api-keys/{id}` | Revoke an API key |
 | POST | `/auth/passkey/register/start` · `/finish` | Enroll a passkey for the authenticated account (WebAuthn; requires `ENABLE_PASSKEYS`) |
@@ -441,9 +442,9 @@ up pointing at someone else's page.
 | GET | `/admin/stats` | Get system statistics |
 | GET | `/admin/activity` | Daily signups/links/clicks timeseries (`?days=30`) |
 | GET | `/admin/users` | List all users — paginated, searchable, with per-user link/click/key/org counts |
-| DELETE | `/admin/users/{id}` | Soft delete user (their links, and the links of organizations they are the only member of, stop redirecting) |
+| DELETE | `/admin/users/{id}` | Soft delete user (their links, and the links of organizations they are the only member of, stop redirecting); removed for good after `ACCOUNT_PURGE_DAYS`, the list shows `purge_at` |
 | DELETE | `/admin/users/{id}/hard` | Permanently delete user |
-| POST | `/admin/users/{id}/restore` | Restore deleted user and the links that deletion took down (409 if the email was registered again meanwhile) |
+| POST | `/admin/users/{id}/restore` | Restore deleted user and the links that deletion took down (409 if the email was registered again meanwhile; 404 once the account has been purged) |
 | POST | `/admin/users/{id}/make-admin` | Promote to admin |
 | POST | `/admin/users/{id}/remove-admin` | Demote from admin |
 | POST | `/admin/users/{id}/verify-email` | Force-verify a user's email |
@@ -614,7 +615,8 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
   bcrypt's input limit
 - Email verification and password-reset tokens stored only as SHA-256 hashes
 - JWT tokens with expiration
-- Soft-delete for links and users (data preserved)
+- Soft-delete for links and users; deleted accounts are removed for good after
+  a grace window (`ACCOUNT_PURGE_DAYS`, default 30 days)
 - Email verification required before creating links
 - The account owner is emailed when their password is changed or reset
 - HTTPS enforced in production; the API sends `X-Content-Type-Options`, `X-Frame-Options`, and HSTS
