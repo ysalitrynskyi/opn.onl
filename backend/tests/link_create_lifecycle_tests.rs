@@ -671,3 +671,55 @@ async fn link_times_are_rfc3339_utc() {
         "{created_at} is not the creation time in UTC"
     );
 }
+
+/// The create response uses the same `Z` form as the list, not chrono's
+/// `+00:00`, and converts an offset the client sent to UTC.
+#[tokio::test]
+async fn create_response_times_match_the_list_format() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let created = create_link(
+        &server,
+        &token,
+        json!({
+            "original_url": format!("https://iana.org/tz-create-{}", unique_code()),
+            "starts_at": "2030-01-15T00:00:00Z",
+            "expires_at": "2030-01-16T09:59:00+05:00",
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        created["starts_at"],
+        json!("2030-01-15T00:00:00Z"),
+        "{created}"
+    );
+    assert_eq!(
+        created["expires_at"],
+        json!("2030-01-16T04:59:00Z"),
+        "{created}"
+    );
+    let created_at = created["created_at"].as_str().unwrap();
+    assert!(created_at.ends_with('Z'), "{created_at}");
+    let parsed = chrono::DateTime::parse_from_rfc3339(created_at).expect("RFC 3339");
+    let skew = Utc::now() - parsed.with_timezone(&Utc);
+    assert!(
+        skew.num_minutes().abs() < 5,
+        "{created_at} is not the creation time in UTC"
+    );
+
+    let id = created["id"].as_i64().unwrap();
+    let list: Value = server
+        .get("/links")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["id"].as_i64() == Some(id))
+        .expect("the new link is listed");
+    assert_eq!(row["starts_at"], created["starts_at"]);
+    assert_eq!(row["expires_at"], created["expires_at"]);
+}

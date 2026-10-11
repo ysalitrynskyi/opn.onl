@@ -1607,13 +1607,13 @@ pub async fn create_link(
             original_url: payload.original_url,
             title: payload.title,
             click_count: 0,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
+            created_at: utc_rfc3339(chrono::Utc::now().naive_utc()),
+            expires_at: payload.expires_at.map(|d| utc_rfc3339(d.naive_utc())),
             has_password: password_hash.is_some(),
             notes: payload.notes,
             folder_id: payload.folder_id,
             org_id: payload.org_id,
-            starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
+            starts_at: payload.starts_at.map(|d| utc_rfc3339(d.naive_utc())),
             max_clicks: effective_max_clicks,
             burn_after_reading,
             burned_at: None,
@@ -5059,42 +5059,26 @@ pub async fn build_utm_url(Json(payload): Json<BuildUtmRequest>) -> impl IntoRes
         }
     };
 
+    // Collect first: `query_pairs_mut` leaves a bare `?` on the URL as soon as
+    // it is called, even when nothing is appended.
     let mut utm_params = std::collections::HashMap::new();
-
-    // Add UTM parameters
-    {
-        let mut query_pairs = parsed.query_pairs_mut();
-
-        if let Some(ref source) = payload.utm_source
-            && !source.is_empty()
+    let mut utm_pairs = Vec::new();
+    for (name, value) in [
+        ("utm_source", &payload.utm_source),
+        ("utm_medium", &payload.utm_medium),
+        ("utm_campaign", &payload.utm_campaign),
+        ("utm_term", &payload.utm_term),
+        ("utm_content", &payload.utm_content),
+    ] {
+        if let Some(value) = value
+            && !value.is_empty()
         {
-            query_pairs.append_pair("utm_source", source);
-            utm_params.insert("utm_source".to_string(), source.clone());
+            utm_pairs.push((name, value));
+            utm_params.insert(name.to_string(), value.clone());
         }
-        if let Some(ref medium) = payload.utm_medium
-            && !medium.is_empty()
-        {
-            query_pairs.append_pair("utm_medium", medium);
-            utm_params.insert("utm_medium".to_string(), medium.clone());
-        }
-        if let Some(ref campaign) = payload.utm_campaign
-            && !campaign.is_empty()
-        {
-            query_pairs.append_pair("utm_campaign", campaign);
-            utm_params.insert("utm_campaign".to_string(), campaign.clone());
-        }
-        if let Some(ref term) = payload.utm_term
-            && !term.is_empty()
-        {
-            query_pairs.append_pair("utm_term", term);
-            utm_params.insert("utm_term".to_string(), term.clone());
-        }
-        if let Some(ref content) = payload.utm_content
-            && !content.is_empty()
-        {
-            query_pairs.append_pair("utm_content", content);
-            utm_params.insert("utm_content".to_string(), content.clone());
-        }
+    }
+    if !utm_pairs.is_empty() {
+        parsed.query_pairs_mut().extend_pairs(utm_pairs);
     }
 
     (

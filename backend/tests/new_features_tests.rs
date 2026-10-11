@@ -273,6 +273,58 @@ async fn build_utm_url_appends_parameters() {
 }
 
 #[tokio::test]
+async fn build_utm_url_keeps_a_fixed_parameter_order() {
+    let (server, _db) = spawn_real_app().await;
+    let res = server
+        .post("/links/build-utm")
+        .json(&json!({
+            "url": "https://iana.org/landing?ref=home",
+            "utm_content": "banner",
+            "utm_term": "shoes",
+            "utm_campaign": "spring_sale",
+            "utm_medium": "email",
+            "utm_source": "newsletter",
+        }))
+        .await;
+    assert_eq!(res.status_code(), 200, "build-utm: {}", res.text());
+    let body: Value = res.json();
+    assert_eq!(
+        body["url_with_utm"],
+        json!(
+            "https://iana.org/landing?ref=home&utm_source=newsletter&utm_medium=email\
+             &utm_campaign=spring_sale&utm_term=shoes&utm_content=banner"
+        )
+    );
+    assert_eq!(body["utm_params"].as_object().unwrap().len(), 5);
+}
+
+/// With nothing to add the URL comes back as it was: no dangling `?`, and an
+/// existing query string is not re-encoded.
+#[tokio::test]
+async fn build_utm_url_without_parameters_leaves_the_url_alone() {
+    let (server, _db) = spawn_real_app().await;
+    for (url, body) in [
+        ("https://iana.org/landing", json!({})),
+        (
+            "https://iana.org/landing",
+            json!({ "utm_source": "", "utm_medium": null }),
+        ),
+        ("https://iana.org/landing?q=a%20b", json!({})),
+    ] {
+        let mut payload = json!({ "url": url });
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        let res = server.post("/links/build-utm").json(&payload).await;
+        assert_eq!(res.status_code(), 200, "build-utm: {}", res.text());
+        let body: Value = res.json();
+        assert_eq!(body["url_with_utm"], json!(url), "{body}");
+        assert!(body["utm_params"].as_object().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn build_utm_url_rejects_invalid_url() {
     let (server, _db) = spawn_real_app().await;
     let res = server
