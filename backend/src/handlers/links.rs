@@ -19,6 +19,7 @@ use crate::handlers::json_error;
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
+use crate::utils::link_owner::link_owner_is_active;
 use crate::utils::time::utc_rfc3339;
 
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
@@ -115,6 +116,7 @@ async fn cached_link_is_still_plain(
         || current.user_id != cached.user_id
         || current.expires_at.map(|value| value.and_utc().timestamp()) != cached.expires_at
         || current.starts_at.map(|value| value.and_utc().timestamp()) != cached.starts_at
+        || !link_owner_is_active(db, &current).await?
     {
         return Ok(false);
     }
@@ -1731,6 +1733,19 @@ pub async fn preview_link(
         .await
         .unwrap_or(None);
 
+    // The preview shows the destination, so a disabled or deleted owner's link
+    // is as good as gone here too.
+    let link = match link {
+        Some(link)
+            if !link_owner_is_active(&state.db, &link)
+                .await
+                .unwrap_or(false) =>
+        {
+            None
+        }
+        link => link,
+    };
+
     match link {
         Some(link) => {
             let is_expired = if let Some(exp) = link.expires_at {
@@ -2140,6 +2155,15 @@ pub async fn redirect_link(
         if !link.is_active() {
             let reason = link.inactive_reason().unwrap_or("Link is inactive");
             return dead_link(&headers, StatusCode::GONE, reason);
+        }
+
+        // A disabled or deleted owner takes their links down with them. Like the
+        // blocklist check, this fails closed and runs before anything is cached.
+        if !link_owner_is_active(&state.db, &link)
+            .await
+            .unwrap_or(false)
+        {
+            return dead_link(&headers, StatusCode::GONE, "This link has been disabled");
         }
 
         // Enforce content blocking at redirect time so a block applied after the
@@ -5413,8 +5437,8 @@ fn canonical_avatar_content_type(raw: &str) -> Option<&'static str> {
 /// (validated + DNS-pinned, redirects re-validated), restricted to successful
 /// http(s) responses carrying an allowed raster image type, and size-capped.
 ///
-/// The URL must also be the `avatar_url` of a non-deleted user whose bio is
-/// public. Otherwise this route is an open fetch.
+/// The URL must also be the `avatar_url` of a non-deleted, non-disabled user
+/// whose bio is public. Otherwise this route is an open fetch.
 #[utoipa::path(
     get,
     path = "/api/bio/avatar",
@@ -5446,6 +5470,7 @@ pub async fn proxy_bio_avatar(
     // Exact column match: the bio page requests the URL it just received.
     let allowed = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .filter(users::Column::BioEnabled.eq(true))
         .filter(users::Column::AvatarUrl.eq(&query.url))
         .limit(1)

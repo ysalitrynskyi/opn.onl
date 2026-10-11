@@ -391,9 +391,9 @@ the organization is deleted — one person leaving can't wipe a shared team.
 | GET | `/admin/stats` | Get system statistics |
 | GET | `/admin/activity` | Daily signups/links/clicks timeseries (`?days=30`) |
 | GET | `/admin/users` | List all users — paginated, searchable, with per-user link/click/key/org counts |
-| DELETE | `/admin/users/{id}` | Soft delete user |
+| DELETE | `/admin/users/{id}` | Soft delete user (their links, and the links of organizations they are the only member of, stop redirecting) |
 | DELETE | `/admin/users/{id}/hard` | Permanently delete user |
-| POST | `/admin/users/{id}/restore` | Restore deleted user |
+| POST | `/admin/users/{id}/restore` | Restore deleted user and the links that deletion took down (409 if the email was registered again meanwhile) |
 | POST | `/admin/users/{id}/make-admin` | Promote to admin |
 | POST | `/admin/users/{id}/remove-admin` | Demote from admin |
 | POST | `/admin/users/{id}/verify-email` | Force-verify a user's email |

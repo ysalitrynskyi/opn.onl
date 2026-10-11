@@ -6,6 +6,7 @@ pub mod email;
 pub mod email_domain_policy;
 pub mod geoip;
 pub mod jwt;
+pub mod link_owner;
 pub mod link_unlock;
 pub mod privacy;
 pub mod rate_limiter;

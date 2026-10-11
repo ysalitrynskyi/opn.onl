@@ -562,7 +562,7 @@ describe('Admin Page', () => {
             });
         });
 
-        it('confirms before blocking an email domain, including the disable warning', async () => {
+        it('confirms before blocking an email domain, including the disable and takedown warning', async () => {
             const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
             render(<Admin />);
             await openBlockedTab();
@@ -574,7 +574,9 @@ describe('Admin Page', () => {
             fireEvent.click(blockBtns[2]);
 
             expect(confirmSpy).toHaveBeenCalledWith(
-                expect.stringMatching(/block gmail\.com\?.*disables existing matching users/i),
+                expect.stringMatching(
+                    /block gmail\.com\?.*disables existing matching users.*links and bio pages stop working until they are re-enabled/i,
+                ),
             );
             await waitFor(() => {
                 expect(global.fetch).toHaveBeenCalledWith(

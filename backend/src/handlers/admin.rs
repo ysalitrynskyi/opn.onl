@@ -277,7 +277,7 @@ async fn disable_users_for_email_domain<C: ConnectionTrait>(
     domain: &str,
     admin_id: i32,
     reason: Option<&str>,
-) -> Result<u64, DbErr> {
+) -> Result<Vec<i32>, DbErr> {
     let matching = users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::DisabledAt.is_null())
@@ -291,7 +291,7 @@ async fn disable_users_for_email_domain<C: ConnectionTrait>(
         .collect::<Vec<_>>();
 
     if matching.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
     let ids = matching.iter().map(|user| user.id).collect::<Vec<_>>();
@@ -300,7 +300,7 @@ async fn disable_users_for_email_domain<C: ConnectionTrait>(
         .map(|value| value.to_string())
         .unwrap_or_else(|| format!("Email domain {domain} blocked by admin"));
 
-    let result = users::Entity::update_many()
+    users::Entity::update_many()
         .col_expr(
             users::Column::DisabledAt,
             Expr::value(Utc::now().naive_utc()),
@@ -311,11 +311,43 @@ async fn disable_users_for_email_domain<C: ConnectionTrait>(
             users::Column::TokenVersion,
             Expr::col(users::Column::TokenVersion).add(1),
         )
-        .filter(users::Column::Id.is_in(ids))
+        .filter(users::Column::Id.is_in(ids.clone()))
         .exec(db)
         .await?;
 
-    Ok(result.rows_affected)
+    Ok(ids)
+}
+
+/// Purge cached redirects of every link that stops serving because its owner
+/// was just disabled: their personal links, and every link of an org they own
+/// (org links answer to the org's owner, whoever created them).
+async fn invalidate_cache_for_owners(state: &AppState, user_ids: &[i32]) {
+    if state.redis_cache.is_none() || user_ids.is_empty() {
+        return;
+    }
+    let owned_orgs = sea_orm::sea_query::Query::select()
+        .column(organizations::Column::Id)
+        .from(organizations::Entity)
+        .and_where(organizations::Column::OwnerId.is_in(user_ids.iter().copied()))
+        .to_owned();
+    let codes = links::Entity::find()
+        .select_only()
+        .column(links::Column::Code)
+        .filter(links::Column::DeletedAt.is_null())
+        .filter(
+            Condition::any()
+                .add(
+                    Condition::all()
+                        .add(links::Column::UserId.is_in(user_ids.iter().copied()))
+                        .add(links::Column::OrgId.is_null()),
+                )
+                .add(links::Column::OrgId.in_subquery(owned_orgs)),
+        )
+        .into_tuple::<String>()
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+    crate::handlers::links::invalidate_cached_codes(state, &codes).await;
 }
 
 /// Soft delete a user (admin only)
@@ -468,7 +500,7 @@ pub async fn delete_user(
             .into_response();
     }
 
-    let cached_codes = match links::Entity::find()
+    let mut cached_codes = match links::Entity::find()
         .filter(links::Column::UserId.eq(user_id))
         .filter(links::Column::OrgId.is_null())
         .filter(links::Column::DeletedAt.is_null())
@@ -521,6 +553,15 @@ pub async fn delete_user(
             .exec(&txn)
             .await?;
 
+        // An org with no other live member has nobody left to manage it, so
+        // its links go down with its owner (same stamp, same restore rule).
+        let solo_org_codes = crate::handlers::organizations::soft_delete_solo_org_links(
+            &txn,
+            &split.solo,
+            deleted_at,
+        )
+        .await?;
+
         crate::utils::privacy::purge_click_pii_for_user(&txn, user_id).await?;
 
         api_keys::Entity::delete_many()
@@ -532,20 +573,23 @@ pub async fn delete_user(
             .exec(&txn)
             .await?;
 
-        Ok::<(), sea_orm::DbErr>(())
+        Ok::<Vec<String>, sea_orm::DbErr>(solo_org_codes)
     }
     .await;
 
-    if result.is_err() {
-        let _ = txn.rollback().await;
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(AdminResponse {
-                success: false,
-                message: "Failed to delete user".to_string(),
-            }),
-        )
-            .into_response();
+    match result {
+        Ok(solo_org_codes) => cached_codes.extend(solo_org_codes),
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Failed to delete user".to_string(),
+                }),
+            )
+                .into_response();
+        }
     }
 
     if txn.commit().await.is_err() {
@@ -755,6 +799,7 @@ pub async fn hard_delete_user(
         (status = 400, description = "User is not deleted"),
         (status = 403, description = "Admin access required"),
         (status = 404, description = "User not found"),
+        (status = 409, description = "Email address is now registered to another account"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -879,16 +924,30 @@ pub async fn restore_user(
             .exec(&txn)
             .await?;
 
-        // Restore only personal links stamped by this exact account-deletion
-        // cascade. Older takedowns and links deleted later stay deleted.
+        // Restore only the links stamped by this exact account-deletion
+        // cascade: the user's personal links and the links of organizations
+        // they own (the ones that went down with them as a solo org). Older
+        // takedowns and links deleted later stay deleted.
+        let owned_orgs = sea_orm::sea_query::Query::select()
+            .column(organizations::Column::Id)
+            .from(organizations::Entity)
+            .and_where(organizations::Column::OwnerId.eq(user_id))
+            .to_owned();
         links::Entity::update_many()
             .col_expr(
                 links::Column::DeletedAt,
                 Expr::value(Option::<chrono::NaiveDateTime>::None),
             )
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::OrgId.is_null())
             .filter(links::Column::DeletedAt.eq(account_deleted_at))
+            .filter(
+                Condition::any()
+                    .add(
+                        Condition::all()
+                            .add(links::Column::UserId.eq(user_id))
+                            .add(links::Column::OrgId.is_null()),
+                    )
+                    .add(links::Column::OrgId.in_subquery(owned_orgs)),
+            )
             .exec(&txn)
             .await?;
 
@@ -896,8 +955,24 @@ pub async fn restore_user(
     }
     .await;
 
-    if result.is_err() {
+    if let Err(err) = result {
         let _ = txn.rollback().await;
+        // The address was registered again after this account was deleted, and
+        // the live-email unique index refuses a second account holding it.
+        if matches!(
+            err.sql_err(),
+            Some(sea_orm::SqlErr::UniqueConstraintViolation(_))
+        ) {
+            return (
+                StatusCode::CONFLICT,
+                Json(AdminResponse {
+                    success: false,
+                    message: "Cannot restore this user: their email address is now registered to another account"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(AdminResponse {
@@ -2025,7 +2100,8 @@ pub async fn unblock_domain(
     }
 }
 
-/// Block an email domain and disable matching existing users.
+/// Block an email domain and disable matching existing users. A disabled
+/// user's links and bio page stop serving until the user is re-enabled.
 #[utoipa::path(
     post,
     path = "/admin/blocked/email-domains",
@@ -2153,11 +2229,11 @@ pub async fn block_email_domain(
         }
     };
 
-    let affected_users =
+    let disabled_user_ids =
         match disable_users_for_email_domain(&txn, &domain, admin_id, payload.reason.as_deref())
             .await
         {
-            Ok(count) => count,
+            Ok(ids) => ids,
             Err(_) => {
                 let _ = txn.rollback().await;
                 return (
@@ -2182,6 +2258,10 @@ pub async fn block_email_domain(
             .into_response();
     }
 
+    // Disabled owners' links stop serving (see `link_owner_is_active`), so
+    // drop any cached redirect for them now rather than after the cache TTL.
+    invalidate_cache_for_owners(&state, &disabled_user_ids).await;
+
     (
         StatusCode::CREATED,
         Json(BlockedEmailDomainResponse {
@@ -2190,7 +2270,7 @@ pub async fn block_email_domain(
             reason: result.reason,
             blocked_by: result.blocked_by,
             created_at: utc_rfc3339(result.created_at),
-            affected_users,
+            affected_users: disabled_user_ids.len() as u64,
         }),
     )
         .into_response()
