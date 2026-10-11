@@ -64,7 +64,9 @@ pub fn lookup_ip(ip_str: &str) -> GeoLocation {
         return GeoLocation::default();
     }
 
-    match reader.lookup(ip) {
+    // A proxy may report an IPv4 client as `::ffff:a.b.c.d`; look it up as the
+    // IPv4 address it is.
+    match reader.lookup(ip.to_canonical()) {
         Ok(result) => match result.decode::<geoip2::City>() {
             Ok(Some(city)) => GeoLocation {
                 country: city.country.names.english.map(str::to_string),
@@ -83,9 +85,10 @@ pub fn lookup_ip(ip_str: &str) -> GeoLocation {
     }
 }
 
-/// Check if an IP address is private/local
+/// Check if an IP address is private/local. An IPv4-mapped IPv6 address is
+/// judged as the IPv4 address it wraps.
 fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
+    match ip.to_canonical() {
         IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
         IpAddr::V6(ipv6) => ipv6.is_loopback(),
     }
@@ -274,6 +277,13 @@ mod tests {
         assert!(is_private_ip(&"192.168.1.1".parse().unwrap()));
         assert!(is_private_ip(&"10.0.0.1".parse().unwrap()));
         assert!(!is_private_ip(&"8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_mapped_addresses_are_judged_as_ipv4() {
+        assert!(is_private_ip(&"::ffff:10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_private_ip(&"::ffff:8.8.8.8".parse().unwrap()));
     }
 
     #[test]
