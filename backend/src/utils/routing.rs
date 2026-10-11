@@ -54,6 +54,24 @@ pub fn rule_matches(
     true
 }
 
+/// The rules that can win for a request: every match at the best (lowest)
+/// priority. More than one is a weighted A/B split.
+fn winning_rules<'a>(
+    rules: &'a [RoutingRule],
+    ua: &UserAgentInfo,
+    geo: &GeoLocation,
+    lang: Option<&str>,
+) -> Vec<&'a RoutingRule> {
+    let mut matches: Vec<&RoutingRule> = rules
+        .iter()
+        .filter(|r| rule_matches(r, ua, geo, lang))
+        .collect();
+    if let Some(min_priority) = matches.iter().map(|r| r.priority).min() {
+        matches.retain(|r| r.priority == min_priority);
+    }
+    matches
+}
+
 /// Resolve the destination for a request. Rules are evaluated by ascending
 /// `priority`; the first priority level with one or more matches wins. When
 /// several rules tie at that priority, one is chosen by weighted random (A/B).
@@ -66,17 +84,11 @@ pub fn resolve_destination(
     fallback: &str,
 ) -> String {
     let lang = primary_lang(accept_language);
-    let mut matches: Vec<&RoutingRule> = rules
-        .iter()
-        .filter(|r| rule_matches(r, ua, geo, lang.as_deref()))
-        .collect();
+    let matches = winning_rules(rules, ua, geo, lang.as_deref());
 
     if matches.is_empty() {
         return fallback.to_string();
     }
-
-    let min_priority = matches.iter().map(|r| r.priority).min().unwrap_or(0);
-    matches.retain(|r| r.priority == min_priority);
 
     if matches.len() == 1 {
         return matches[0].destination_url.clone();
@@ -95,6 +107,30 @@ pub fn resolve_destination(
         }
     }
     matches[0].destination_url.clone()
+}
+
+/// Every destination `resolve_destination` could return for a request. One
+/// entry is certain; several mean an A/B split, where nothing can say in advance
+/// which one this visitor will get.
+pub fn possible_destinations(
+    rules: &[RoutingRule],
+    ua: &UserAgentInfo,
+    geo: &GeoLocation,
+    accept_language: Option<&str>,
+    fallback: &str,
+) -> Vec<String> {
+    let lang = primary_lang(accept_language);
+    let winners = winning_rules(rules, ua, geo, lang.as_deref());
+    if winners.is_empty() {
+        return vec![fallback.to_string()];
+    }
+    let mut destinations: Vec<String> = Vec::new();
+    for rule in winners {
+        if !destinations.contains(&rule.destination_url) {
+            destinations.push(rule.destination_url.clone());
+        }
+    }
+    destinations
 }
 
 #[cfg(test)]
@@ -278,5 +314,42 @@ mod tests {
             "https://fb",
         );
         assert!(dest == "https://a.example" || dest == "https://b.example");
+    }
+
+    #[test]
+    fn possible_destinations_is_certain_without_a_tie() {
+        let default = rule(1, 10, "https://web.example");
+        let mut mobile = rule(2, 0, "https://app.example");
+        mobile.match_device = Some("Mobile".to_string());
+        let rules = vec![default, mobile];
+        assert_eq!(
+            possible_destinations(&rules, &ua("Mobile", "iOS"), &geo(None), None, "https://fb"),
+            vec!["https://app.example".to_string()]
+        );
+        assert_eq!(
+            possible_destinations(&[], &ua("Desktop", "Linux"), &geo(None), None, "https://fb"),
+            vec!["https://fb".to_string()]
+        );
+    }
+
+    #[test]
+    fn possible_destinations_lists_every_tied_rule_once() {
+        let a = rule(1, 0, "https://a.example");
+        let b = rule(2, 0, "https://b.example");
+        let b_again = rule(3, 0, "https://b.example");
+        let worse = rule(4, 5, "https://worse.example");
+        assert_eq!(
+            possible_destinations(
+                &[a, b, b_again, worse],
+                &ua("Desktop", "Linux"),
+                &geo(None),
+                None,
+                "https://fb"
+            ),
+            vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string()
+            ]
+        );
     }
 }

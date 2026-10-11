@@ -6,6 +6,18 @@ import { API_ENDPOINTS } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 
+/**
+ * What the verify endpoint's 410 says. The API names the reason (expired, not
+ * live yet, one-time link already opened, click limit reached); a plain
+ * "expired" is only right for an expired link.
+ */
+function goneMessage(reason: unknown): string {
+    if (typeof reason !== 'string' || !reason || reason === 'Link has expired') {
+        return 'This link has expired.';
+    }
+    return reason.endsWith('.') ? reason : `${reason}.`;
+}
+
 export default function PasswordPrompt() {
     const { code } = useParams<{ code: string }>();
     const navigate = useNavigate();
@@ -38,7 +50,7 @@ export default function PasswordPrompt() {
                 const retryAfter = res.headers.get('Retry-After');
                 setError(`Too many attempts. Please try again in ${retryAfter || '60'} seconds.`);
             } else if (res.status === 410) {
-                setError('This link has expired.');
+                setError(goneMessage(data.error));
             } else if (res.status === 404) {
                 setError('Link not found.');
             } else {
