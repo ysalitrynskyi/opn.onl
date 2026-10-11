@@ -6,7 +6,7 @@
 //!
 //! | action | personal link | organization link |
 //! |--------|---------------|-------------------|
-//! | read (stats, realtime, QR, rules, lists, export, sparklines, `/ws`, `/sse`) | creator | any member |
+//! | read (the link itself, stats, realtime, QR, rules, lists, export, sparklines, `/ws`, `/sse`) | creator | any member |
 //! | write (update, pin, rules, tags, clone, bulk update) | creator | editor and above |
 //! | delete (single and bulk) | creator | admin and above, or the creator while still an editor |
 
@@ -307,6 +307,7 @@ async fn bulk_delete(token: &str, ids: &[i32]) -> i64 {
 async fn assert_can_read(who: &str, token: &str, team: &Team) {
     let id = team.link.id;
     for path in [
+        format!("/links/{id}"),
         format!("/links/{id}/stats"),
         format!("/links/{id}/clicks/realtime"),
         format!("/links/{id}/qr"),
@@ -334,6 +335,7 @@ async fn assert_can_read(who: &str, token: &str, team: &Team) {
 async fn assert_cannot_read(who: &str, token: &str, team: &Team) {
     let id = team.link.id;
     for path in [
+        format!("/links/{id}"),
         format!("/links/{id}/stats"),
         format!("/links/{id}/clicks/realtime"),
         format!("/links/{id}/qr"),
@@ -664,6 +666,7 @@ async fn personal_links_belong_to_their_creator_alone() {
         ("outsider", &team.outsider.token),
     ] {
         for path in [
+            format!("/links/{id}"),
             format!("/links/{id}/stats"),
             format!("/links/{id}/clicks/realtime"),
             format!("/links/{id}/qr"),
@@ -712,6 +715,7 @@ async fn personal_links_belong_to_their_creator_alone() {
 
     // Control: the creator can do all of it.
     let token = &team.editor.token;
+    assert_eq!(get_status(token, &format!("/links/{id}")).await, 200);
     assert_eq!(get_status(token, &format!("/links/{id}/stats")).await, 200);
     assert_eq!(
         status(

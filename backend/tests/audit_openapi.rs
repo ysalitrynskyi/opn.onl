@@ -435,6 +435,101 @@ async fn redirect_is_documented_as_307() {
     assert!(responses.get("302").is_none(), "{responses}");
 }
 
+/// Names of the query parameters an operation declares.
+fn query_parameters(spec: &Value, path: &str, method: &str) -> BTreeSet<String> {
+    spec["paths"][path][method]["parameters"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{method} {path} declares no parameters"))
+        .iter()
+        .filter_map(|param| resolve(spec, param))
+        .filter(|param| param["in"] == "query")
+        .filter_map(|param| param["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The schema a 200 response names, followed through `$ref`.
+fn ok_schema<'a>(spec: &'a Value, path: &str, method: &str) -> &'a Value {
+    let response = &spec["paths"][path][method]["responses"]["200"];
+    let schema = &response["content"]["application/json"]["schema"];
+    resolve(spec, schema).unwrap_or_else(|| panic!("{method} {path}: 200 names no schema"))
+}
+
+/// A generated client cannot ask for an SVG or a branded QR, nor send the
+/// unlock proof, unless the document lists the query parameters. It cannot
+/// read the new session token or the redirect URL unless it names those
+/// response fields.
+#[tokio::test]
+async fn query_parameters_and_response_fields_clients_need_are_documented() {
+    let spec = served_spec().await;
+
+    for (path, method, expected) in [
+        (
+            "/links/{id}/qr",
+            "get",
+            &["color", "bg", "logo", "format", "size"][..],
+        ),
+        ("/{code}", "get", &["confirm", "unlock"][..]),
+        ("/{code}/preview", "get", &["unlock"][..]),
+        (
+            "/links",
+            "get",
+            &["folder_id", "org_id", "tag_id", "search", "limit", "offset"][..],
+        ),
+    ] {
+        let declared = query_parameters(&spec, path, method);
+        for name in expected {
+            assert!(
+                declared.contains(*name),
+                "{method} {path} must document the `{name}` query parameter; has {declared:?}"
+            );
+        }
+    }
+
+    let qr_types = &spec["paths"]["/links/{id}/qr"]["get"]["responses"]["200"]["content"];
+    assert!(qr_types.get("image/png").is_some(), "{qr_types}");
+    assert!(
+        qr_types.get("image/svg+xml").is_some(),
+        "format=svg returns SVG, so the document must say so: {qr_types}"
+    );
+
+    // The SPA keeps the session alive with this token after a password change.
+    let changed = ok_schema(&spec, "/auth/change-password", "post");
+    assert!(changed["properties"].get("token").is_some(), "{changed}");
+    assert!(changed["properties"].get("message").is_some(), "{changed}");
+
+    let verified = ok_schema(&spec, "/{code}/verify", "post");
+    for field in ["redirect_url", "expires_in_seconds"] {
+        assert!(
+            verified["properties"].get(field).is_some(),
+            "POST /{{code}}/verify: 200 must describe `{field}`: {verified}"
+        );
+    }
+}
+
+/// `GET /links/{id}` answers with the object `GET /links` lists, for the same
+/// two kinds of credential, and says what a refusal looks like.
+#[tokio::test]
+async fn a_single_link_can_be_read_by_id() {
+    let spec = served_spec().await;
+    let get = &spec["paths"]["/links/{id}"]["get"];
+    assert_eq!(
+        get["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/LinkResponse",
+        "{get}"
+    );
+    for status in ["401", "403"] {
+        assert!(get["responses"].get(status).is_some(), "{status}: {get}");
+    }
+    assert_eq!(
+        security_requirements(get),
+        vec![
+            BTreeSet::from(["bearer_auth".to_string()]),
+            BTreeSet::from(["api_key".to_string()]),
+        ],
+        "{get}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Security
 // ---------------------------------------------------------------------------
