@@ -10,6 +10,7 @@ pub mod links;
 pub mod org_members;
 pub mod organizations;
 pub mod passkeys;
+pub mod retired_codes;
 pub mod routing_rules;
 pub mod tags;
 pub mod users;

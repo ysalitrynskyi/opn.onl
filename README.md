@@ -238,7 +238,7 @@ one budget. The limits are kept in memory, so a restart clears them.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) are anonymized by a daily sweep; aggregate stats are kept. `0` disables the sweep |
+| `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) and the truncated IP on organization audit entries are anonymized by a daily sweep; aggregate stats and the audit entries themselves are kept. `0` disables the sweep |
 
 Click analytics never store the full visitor IP: addresses are truncated at
 collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
@@ -360,17 +360,23 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | POST | `/orgs` | Create organization |
 | GET | `/orgs/{org_id}` | Get organization |
 | PUT | `/orgs/{org_id}` | Update organization |
-| DELETE | `/orgs/{org_id}` | Delete organization (owner only) |
+| DELETE | `/orgs/{org_id}` | Delete organization (owner only; needs a sign-in session, an API key gets 403) |
 | GET | `/orgs/{org_id}/members` | List members |
 | POST | `/orgs/{org_id}/members` | Invite member by email (`role`: admin, editor, viewer) |
 | PUT | `/orgs/{org_id}/members/{member_id}` | Change a member's role |
 | DELETE | `/orgs/{org_id}/members/{member_id}` | Remove member |
-| POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only, body: `{"new_owner_user_id": <id>}`) |
+| POST | `/orgs/{org_id}/leave` | Leave an organization (any member except the owner, who gets 409 until ownership is transferred or the organization deleted). Links you created stay with the organization |
+| POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only; needs a sign-in session, an API key gets 403; body: `{"new_owner_user_id": <id>}`) |
 | GET | `/orgs/{org_id}/audit` | View audit log (admin+) |
 
 An account that owns organizations with other members cannot be deleted
 (HTTP 409 with the list of blocking orgs) until ownership is transferred or
 the organization is deleted — one person leaving can't wipe a shared team.
+
+Deleting an organization (or an admin hard-deleting a user) removes the links
+for good, but their short codes stay reserved: a retired code is never issued
+again, as a custom alias or as a random code, so an old printed link can't end
+up pointing at someone else's page.
 
 ### Folders
 
@@ -578,7 +584,8 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
   behind an HTTPS proxy
 - URL sanitization and blocking
 - Visitor IPs truncated before storage (IPv4 /24, IPv6 /48); remaining
-  click identifiers anonymized after a configurable retention window
+  click identifiers, and the truncated address on organization audit entries,
+  anonymized after a configurable retention window
   (`ANALYTICS_PII_RETENTION_DAYS`, default ~13 months)
 
 ## Development

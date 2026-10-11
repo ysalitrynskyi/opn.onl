@@ -77,6 +77,11 @@ export default function Privacy() {
                                 <li>Email address (for authentication and account recovery)</li>
                                 <li>Password hash (we never store passwords in plain text)</li>
                                 <li>Passkey credentials (if you enable passwordless login)</li>
+                                <li>
+                                    Organization activity logs (if you use teams) record who changed a
+                                    membership or setting, with a truncated IP address that is removed after
+                                    13 months
+                                </li>
                             </ul>
 
                             <h4 className="font-semibold text-slate-900 mb-2">Link Data</h4>

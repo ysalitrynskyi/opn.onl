@@ -25,6 +25,7 @@ use crate::handlers::websocket::ClickEvent;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::link_owner::link_owner_is_active;
+use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::ilike_pattern;
 
@@ -948,6 +949,26 @@ fn generate_short_code() -> String {
         .collect()
 }
 
+/// The first code `next` produces that no link row holds (live or soft-deleted:
+/// the column is globally unique) and that was not retired. Callers pass the
+/// random generator; a test passes a scripted sequence. A failed lookup counts
+/// as free, as it did before retired codes existed: the insert's UNIQUE
+/// constraint still guards link rows.
+pub async fn unused_code<C: ConnectionTrait>(db: &C, mut next: impl FnMut() -> String) -> String {
+    loop {
+        let code = next();
+        let in_use = links::Entity::find()
+            .filter(links::Column::Code.eq(&code))
+            .one(db)
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !in_use && !retired_codes::is_retired(db, &code).await.unwrap_or(false) {
+            return code;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JwtAuthentication {
     pub user_id: i32,
@@ -1494,13 +1515,19 @@ pub async fn create_link(
         // An alias previously used by a now-deleted link cannot be reused: the
         // global UNIQUE on links.code still holds that code, so an insert would
         // fail. Reject explicitly with a clear message rather than 500 later.
+        // A code whose link row was purged is reserved the same way, but only
+        // the retired_codes table remembers it.
         let exists_deleted = links::Entity::find()
             .filter(links::Column::Code.eq(&alias))
             .filter(links::Column::DeletedAt.is_not_null())
             .one(&state.db)
             .await
             .unwrap_or(None);
-        if exists_deleted.is_some() {
+        let retired = match retired_codes::is_retired(&state.db, &alias).await {
+            Ok(retired) => retired,
+            Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+        };
+        if exists_deleted.is_some() || retired {
             return (
                 StatusCode::CONFLICT,
                 Json(ErrorResponse {
@@ -1512,17 +1539,7 @@ pub async fn create_link(
 
         alias
     } else {
-        let mut code = generate_short_code();
-        while links::Entity::find()
-            .filter(links::Column::Code.eq(&code))
-            .one(&state.db)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            code = generate_short_code();
-        }
-        code
+        unused_code(&state.db, generate_short_code).await
     };
 
     let password_hash = if let Some(password) = link_password {
@@ -4606,16 +4623,7 @@ pub async fn bulk_create_links(
         let mut created = false;
         let mut last_duplicate: Option<String> = None;
         for _ in 0..8 {
-            let mut code = generate_short_code();
-            while links::Entity::find()
-                .filter(links::Column::Code.eq(&code))
-                .one(&state.db)
-                .await
-                .unwrap_or(None)
-                .is_some()
-            {
-                code = generate_short_code();
-            }
+            let code = unused_code(&state.db, generate_short_code).await;
 
             let txn = match state.db.begin().await {
                 Ok(txn) => txn,
@@ -5187,16 +5195,7 @@ pub async fn clone_link(
         }
 
         // Generate new short code
-        let mut code = generate_short_code();
-        while links::Entity::find()
-            .filter(links::Column::Code.eq(&code))
-            .one(&state.db)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            code = generate_short_code();
-        }
+        let code = unused_code(&state.db, generate_short_code).await;
 
         // A burn link is its cap: the clone starts with the same cap and no
         // clicks, so it is a fresh one-time link. The two features follow the
@@ -5460,12 +5459,16 @@ pub async fn check_code_availability(
 
     // Consider deleted links too: their code is still held by the global UNIQUE
     // constraint on links.code, so it is not actually available for reuse.
+    // Purged links' codes are held by retired_codes instead.
     let exists = links::Entity::find()
         .filter(links::Column::Code.eq(code))
         .one(&state.db)
         .await
         .unwrap_or(None)
-        .is_some();
+        .is_some()
+        || retired_codes::is_retired(&state.db, code)
+            .await
+            .unwrap_or(false);
 
     if exists {
         (
