@@ -72,7 +72,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 ### Prerequisites
 - Docker & Docker Compose
 - Rust 1.98.1 (pinned by `backend/rust-toolchain.toml` for local development)
-- Node.js 20+ (for local development)
+- Node.js 22, or 20.19+ (for local development; `frontend/.nvmrc` pins 22)
 
 ### Development Setup
 

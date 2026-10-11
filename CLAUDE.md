@@ -36,6 +36,8 @@ DATABASE_URL=postgres://localhost/opn_test cargo test --test admin_tests   # sin
 
 ### Frontend (`frontend/`)
 
+Needs Node `^20.19.0 || >=22.12.0` (the `engines` field; `frontend/.nvmrc` is 22): the locked Vite 8 / rolldown declare it, and `npm ci` still installs on older Node before the toolchain fails.
+
 ```bash
 npm run dev        # Vite dev server on :5173 (honors PORT env var)
 npm run build      # tsc -b && vite build (production build also prerenders static pages via Puppeteer)
