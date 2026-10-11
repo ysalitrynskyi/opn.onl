@@ -394,9 +394,15 @@ async fn export_links_csv_for_owner_only() {
         res.headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok()),
-        Some("text/csv")
+        Some("text/csv; charset=utf-8")
+    );
+    // The byte order mark lets Excel read the file as UTF-8.
+    assert!(
+        res.as_bytes().starts_with(&[0xEF, 0xBB, 0xBF]),
+        "export must start with a UTF-8 byte order mark"
     );
     let csv = res.text();
+    let csv = csv.strip_prefix('\u{feff}').unwrap_or(&csv);
     assert!(
         csv.starts_with(
             "ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At\n"

@@ -153,6 +153,111 @@ jobs:
           --tag opn-frontend-csp-smoke
           frontend
 
+      # Two behaviours only show up against a running nginx with an upstream:
+      #  - the image's stock http-level access log (client address, X-Forwarded-For,
+      #    referrer, user agent, full request line with ?token=) must be replaced
+      #    by the privacy format, and
+      #  - a proxied redirect must carry the backend's own Referrer-Policy once,
+      #    not that plus nginx's default.
+      # A stub named `backend` stands in for the API on a user-defined network
+      # (the proxy resolves it through Docker's DNS, as in the compose files).
+      - name: Verify access log privacy and redirect Referrer-Policy
+        run: |
+          set -euo pipefail
+
+          # Static: no access_log may use a format other than the privacy one, and
+          # that format may not name anything that identifies the visitor or carries
+          # the query string.
+          if grep -E '^[[:space:]]*access_log[[:space:]]' frontend/nginx.conf \
+              | grep -vE '^[[:space:]]*access_log[[:space:]]+(off|/var/log/nginx/access\.log[[:space:]]+privacy);'; then
+            echo "access_log uses a format other than 'privacy'"
+            exit 1
+          fi
+          grep -E "^log_format[[:space:]]+privacy[[:space:]]" frontend/nginx.conf
+          if grep -E '^log_format[[:space:]]' frontend/nginx.conf \
+              | grep -E '\$(remote_addr|realip_remote_addr|http_x_forwarded_for|http_x_real_ip|http_cf_connecting_ip|http_referer|http_user_agent|request|request_uri|args|query_string|is_args)\b'; then
+            echo "log_format names a client-identifying or query-carrying variable"
+            exit 1
+          fi
+
+          cat > "$RUNNER_TEMP/backend-stub.conf" <<'EOF'
+          server {
+              listen 3000;
+              location = /nopolicy {
+                  return 200 "ok";
+              }
+              location / {
+                  add_header Referrer-Policy "no-referrer" always;
+                  return 307 https://destination.example/landing;
+              }
+          }
+          EOF
+
+          network=opn-smoke-net
+          docker network create "$network"
+          backend_id=$(docker run --detach --name backend --network "$network" \
+            --volume "$RUNNER_TEMP/backend-stub.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:alpine)
+          frontend_id=$(docker run --detach --network "$network" \
+            --publish 127.0.0.1:8081:80 opn-frontend-csp-smoke)
+          trap 'docker rm --force "$backend_id" "$frontend_id" >/dev/null; docker network rm "$network" >/dev/null' EXIT
+
+          # Ready once a proxied request round-trips through the stub.
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:8081/nopolicy; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent --output /dev/null http://127.0.0.1:8081/nopolicy
+
+          # Referrer-Policy: the backend's value, exactly once, on a proxied redirect.
+          redirect_headers=$(curl --silent --output /dev/null --dump-header - \
+            'http://127.0.0.1:8081/abc123' | tr -d '\r')
+          printf '%s\n' "$redirect_headers" | grep -E '^HTTP/[0-9.]+ 307'
+          test "$(printf '%s\n' "$redirect_headers" | grep -ic '^referrer-policy:')" -eq 1
+          printf '%s\n' "$redirect_headers" | grep -ix 'referrer-policy: no-referrer'
+
+          # Control: a proxied response without a policy still gets nginx's default.
+          plain_headers=$(curl --silent --output /dev/null --dump-header - \
+            http://127.0.0.1:8081/nopolicy | tr -d '\r')
+          test "$(printf '%s\n' "$plain_headers" | grep -ic '^referrer-policy:')" -eq 1
+          printf '%s\n' "$plain_headers" | grep -ix 'referrer-policy: strict-origin-when-cross-origin'
+
+          # Access log: visit the token pages and a short link as a real visitor
+          # would arrive through the tunnel (client address in X-Forwarded-For,
+          # referrer and user agent set), then read what nginx wrote to stdout.
+          for url in \
+            'http://127.0.0.1:8081/reset-password?token=SECRET123' \
+            'http://127.0.0.1:8081/verify-email?token=SECRET123' \
+            'http://127.0.0.1:8081/abc123?unlock=SECRET456'; do
+            curl --silent --output /dev/null \
+              --header 'X-Forwarded-For: 203.0.113.7' \
+              --header 'Referer: https://referrer.example/from-page' \
+              --user-agent 'smoke-agent/9.9' \
+              "$url"
+          done
+
+          for attempt in $(seq 1 10); do
+            logs=$(docker logs "$frontend_id" 2>/dev/null)
+            if printf '%s\n' "$logs" | grep -qE ' GET /abc123 307 '; then
+              break
+            fi
+            sleep 1
+          done
+
+          # The paths must be logged (otherwise the checks below prove nothing)...
+          printf '%s\n' "$logs" | grep -E ' GET /reset-password [0-9]{3} '
+          printf '%s\n' "$logs" | grep -E ' GET /verify-email [0-9]{3} '
+          printf '%s\n' "$logs" | grep -E ' GET /abc123 307 '
+          # ...without the visitor, the referrer, the user agent or any query string.
+          for leaked in 203.0.113.7 SECRET123 SECRET456 referrer.example smoke-agent 'token=' 'unlock='; do
+            if printf '%s\n' "$logs" | grep -F -- "$leaked"; then
+              echo "access log contains '$leaked'"
+              exit 1
+            fi
+          done
+
       - name: Verify served security headers
         run: |
           container_id=$(docker run --detach --publish 127.0.0.1:8080:80 opn-frontend-csp-smoke)
