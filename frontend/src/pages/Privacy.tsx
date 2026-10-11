@@ -174,7 +174,7 @@ export default function Privacy() {
                                     country, city, device type, browser, referrer) are retained for the lifetime
                                     of the link so your statistics keep working
                                 </li>
-                                <li><strong>Backups:</strong> Encrypted database backups are rotated on a fixed schedule; deleted data ages out of backups as they rotate</li>
+                                <li><strong>Backups:</strong> Database backups are taken automatically on a schedule (daily by default) and only a fixed number of the most recent automatic copies is kept (14 by default); deleted data ages out of those as old copies are removed. A backup an administrator takes by hand is kept until an administrator deletes it</li>
                             </ul>
                             <h4 className="font-semibold text-slate-900 mb-2">Your rights</h4>
                             <p className="mb-4">
@@ -234,7 +234,7 @@ export default function Privacy() {
                                 <li><strong>Cloudflare</strong> — network proxy, TLS and DDoS protection in front of our servers (sees connection metadata like your IP, as any network carrier does)</li>
                                 <li><strong>MaxMind GeoLite2</strong> — the IP-to-city database used for geographic analytics; lookups run entirely on our own servers, so your IP is never transmitted to MaxMind</li>
                                 <li><strong>Email delivery provider</strong> — sends transactional email only (verification, password reset, security notices) to the address you registered</li>
-                                <li><strong>Object storage (S3-compatible)</strong> — stores encrypted database backups</li>
+                                <li><strong>Object storage (S3-compatible)</strong> — stores database backups. They are sent over an encrypted (TLS) connection and are encrypted at rest by the storage provider (Cloudflare R2 encrypts everything it stores)</li>
                                 {analytics.enabled && (
                                     <li><strong>Google</strong> — Google Analytics measures page traffic on this deployment. IP anonymization is on and advertising features are off. See Cookies above for when the tag loads.</li>
                                 )}

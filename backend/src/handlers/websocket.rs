@@ -143,7 +143,9 @@ impl WsState {
         self.begin_shutdown();
     }
 
-    fn shutdown_watch(&self) -> watch::Receiver<bool> {
+    /// A receiver that flips to true once shutdown has begun, for background
+    /// tasks that must stop with the server.
+    pub fn shutdown_watch(&self) -> watch::Receiver<bool> {
         self.shutting_down.subscribe()
     }
 

@@ -17,6 +17,7 @@ use crate::entity::{
     api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events, links,
     org_members, organizations, passkeys, users,
 };
+use crate::utils::backup::is_automatic_backup;
 use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::{
     count_email_case_collisions, is_reserved_email_domain, normalize_email,
@@ -83,9 +84,23 @@ pub struct BackupResponse {
     pub message: String,
 }
 
+/// How often backups are taken without anyone asking, and how many the prune
+/// after each one leaves. Absent from a response when scheduled backups are off.
+#[derive(Serialize, ToSchema)]
+pub struct BackupScheduleInfo {
+    pub interval_hours: u32,
+    pub keep: usize,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct BackupListResponse {
+    /// Automatic and manual backups together, newest first.
     pub backups: Vec<String>,
+    /// The names in `backups` that the schedule took. The schedule's retention
+    /// only ever deletes these.
+    pub automatic: Vec<String>,
+    /// `null` when scheduled backups are off (`BACKUP_INTERVAL_HOURS=0`).
+    pub schedule: Option<BackupScheduleInfo>,
 }
 
 /// Check if user is admin
@@ -1280,7 +1295,7 @@ pub async fn create_backup(State(state): State<AppState>, headers: HeaderMap) ->
     }
 }
 
-/// List available backups (admin only)
+/// List available backups, newest first, and the automatic backup schedule (admin only)
 #[utoipa::path(
     get,
     path = "/admin/backup",
@@ -1309,7 +1324,22 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
     }
 
     match state.backup.list_backups().await {
-        Ok(backups) => (StatusCode::OK, Json(BackupListResponse { backups })).into_response(),
+        Ok(backups) => (
+            StatusCode::OK,
+            Json(BackupListResponse {
+                automatic: backups
+                    .iter()
+                    .filter(|name| is_automatic_backup(name))
+                    .cloned()
+                    .collect(),
+                backups,
+                schedule: state.backup.schedule().map(|schedule| BackupScheduleInfo {
+                    interval_hours: schedule.interval_hours,
+                    keep: schedule.keep,
+                }),
+            }),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(AdminResponse {
@@ -1321,15 +1351,16 @@ pub async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> 
     }
 }
 
-/// Clean up old backups (admin only)
+/// Delete all but the newest backups, automatic and manual counted together (admin only)
 #[utoipa::path(
     delete,
     path = "/admin/backup/cleanup/{keep_count}",
     params(
-        ("keep_count" = usize, Path, description = "Number of recent backups to keep")
+        ("keep_count" = usize, Path, description = "Number of recent backups to keep, at least 1")
     ),
     responses(
         (status = 200, description = "Old backups cleaned up", body = AdminResponse),
+        (status = 400, description = "keep_count is 0", body = AdminResponse),
         (status = 403, description = "Admin access required"),
         (status = 503, description = "Backup service not configured"),
     ),
@@ -1343,6 +1374,19 @@ pub async fn cleanup_backups(
 ) -> impl IntoResponse {
     if let Err(e) = require_admin(&state, &headers).await {
         return e.into_response();
+    }
+
+    // Zero would delete every backup, the one that could still restore the
+    // database included.
+    if keep_count == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AdminResponse {
+                success: false,
+                message: "keep must be at least 1".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     if !state.backup.is_configured() {

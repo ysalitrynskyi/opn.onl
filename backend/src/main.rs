@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use opn_onl_backend::handlers::websocket::WsState;
+use opn_onl_backend::utils::backup::spawn_backup_task;
 use opn_onl_backend::utils::cache::RedisCache;
 use opn_onl_backend::utils::env::env_parse;
 use opn_onl_backend::utils::logging::{DEFAULT_LOG_MAX_FILES, daily_log_appender};
@@ -109,6 +110,7 @@ async fn main() {
     } else {
         tracing::info!("Backup service disabled (S3/R2 not configured)");
     }
+    spawn_backup_task(backup.clone(), ws_state.shutdown_watch());
 
     let app_state = AppState {
         db,

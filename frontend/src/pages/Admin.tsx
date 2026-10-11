@@ -37,6 +37,17 @@ interface AdminStats {
     email_case_collisions: number;
 }
 
+interface BackupSchedule {
+    interval_hours: number;
+    keep: number;
+}
+
+type BackupState =
+    | { status: 'loading' }
+    | { status: 'unconfigured' }
+    | { status: 'error' }
+    | { status: 'ready'; backups: string[]; automatic: string[]; schedule: BackupSchedule | null };
+
 interface ActivityDay {
     date: string;
     new_users: number;
@@ -140,6 +151,15 @@ function formatDate(value: string) {
     return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString();
 }
 
+function describeSchedule(schedule: BackupSchedule | null) {
+    if (!schedule) return 'Automatic backups are off';
+    const every = schedule.interval_hours === 1 ? 'hour' : `${schedule.interval_hours} h`;
+    return `Automatic: every ${every}, keeping ${schedule.keep}`;
+}
+
+// How many backups the card lists before summarising the rest.
+const BACKUPS_SHOWN = 10;
+
 export default function Admin() {
     const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
@@ -151,6 +171,7 @@ export default function Admin() {
     // Overview
     const [stats, setStats] = useState<AdminStats | null>(null);
     const [activity, setActivity] = useState<ActivityDay[]>([]);
+    const [backupState, setBackupState] = useState<BackupState>({ status: 'loading' });
 
     // Users
     const [users, setUsers] = useState<AdminUser[]>([]);
@@ -219,6 +240,23 @@ export default function Admin() {
         }
         return true;
     }, [navigate]);
+
+    const loadBackups = useCallback(async () => {
+        const res = await authFetch(API_ENDPOINTS.adminBackup);
+        if (res.status === 503) {
+            setBackupState({ status: 'unconfigured' });
+        } else if (res.ok) {
+            const data = await res.json();
+            setBackupState({
+                status: 'ready',
+                backups: data.backups ?? [],
+                automatic: data.automatic ?? [],
+                schedule: data.schedule ?? null,
+            });
+        } else {
+            setBackupState({ status: 'error' });
+        }
+    }, []);
 
     const usersLoadId = useRef(0);
     const loadUsers = useCallback(async () => {
@@ -317,6 +355,14 @@ export default function Admin() {
             }
         })();
     }, [navigate, loadOverview]);
+
+    // Backups live in the bucket, not the database, so they load on their own
+    // and a slow or failing bucket cannot hold up the rest of the overview.
+    const overviewShown = !loading && stats !== null && activeTab === 'overview';
+    useEffect(() => {
+        if (!overviewShown) return;
+        loadBackups().catch(() => setBackupState({ status: 'error' }));
+    }, [overviewShown, loadBackups]);
 
     // Per-tab data loads, re-run when their filters change.
     useEffect(() => {
@@ -599,7 +645,7 @@ export default function Admin() {
     const createBackup = () => doAction(
         () => authFetch(API_ENDPOINTS.adminBackup, { method: 'POST' }),
         'Backup created',
-        () => undefined,
+        () => loadBackups().catch(() => setBackupState({ status: 'error' })),
     );
 
     if (loading) {
@@ -763,12 +809,54 @@ export default function Admin() {
                             <Database className="h-5 w-5" />
                             Backup Management
                         </h3>
+                        {backupState.status === 'ready' && (
+                            <div className="mb-4">
+                                <p className="text-sm text-slate-600">{describeSchedule(backupState.schedule)}</p>
+                                {backupState.schedule && (
+                                    <p className="text-xs text-slate-500">
+                                        Only automatic backups are deleted to stay within that number; backups you take by hand are kept.
+                                    </p>
+                                )}
+                            </div>
+                        )}
+                        {backupState.status === 'unconfigured' && (
+                            <p className="text-sm text-slate-600 mb-4">
+                                Backup storage is not configured. Set the BACKUP_S3_* variables to enable backups.
+                            </p>
+                        )}
+                        {backupState.status === 'error' && (
+                            <p className="text-sm text-red-600 mb-4">Could not load the backup list.</p>
+                        )}
                         <button
                             onClick={createBackup}
-                            className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
+                            disabled={backupState.status === 'unconfigured'}
+                            className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             Create Backup Now
                         </button>
+                        {backupState.status === 'ready' && (
+                            backupState.backups.length > 0 ? (
+                                <div className="mt-4">
+                                    <ul className="divide-y divide-slate-100 text-sm font-mono text-slate-700">
+                                        {backupState.backups.slice(0, BACKUPS_SHOWN).map((name) => (
+                                            <li key={name} className="py-1.5 flex items-center gap-2">
+                                                <span>{name}</span>
+                                                {backupState.automatic.includes(name) && (
+                                                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-sans text-xs text-slate-600">auto</span>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                    {backupState.backups.length > BACKUPS_SHOWN && (
+                                        <p className="mt-2 text-sm text-slate-500">
+                                            and {backupState.backups.length - BACKUPS_SHOWN} older
+                                        </p>
+                                    )}
+                                </div>
+                            ) : (
+                                <p className="mt-4 text-sm text-slate-500">No backups yet.</p>
+                            )
+                        )}
                     </div>
                 </motion.div>
             )}

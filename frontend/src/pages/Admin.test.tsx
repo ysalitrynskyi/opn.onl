@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act } from '@testing-library/react';
-import { render, screen, waitFor, fireEvent, wait } from '../test/test-utils';
+import { render, screen, waitFor, fireEvent, wait, within } from '../test/test-utils';
 import Admin from './Admin';
 import { mockToken } from '../test/test-utils';
 
@@ -586,6 +586,103 @@ describe('Admin Page', () => {
     });
 
     describe('Backup Management', () => {
+        // Answer the backup list (GET /admin/backup) and leave every other
+        // endpoint to the default mock.
+        const mockBackupList = (status: number, payload: unknown) => {
+            const base = global.fetch as unknown as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.endsWith('/admin/backup') && init?.method !== 'POST') {
+                    return Promise.resolve({
+                        ok: status >= 200 && status < 300,
+                        status,
+                        json: () => Promise.resolve(payload),
+                    });
+                }
+                return base(url, init);
+            }) as any;
+        };
+
+        const backupName = /^backup_(auto_)?\d{8}_\d{6}\.sql\.gz$/;
+
+        it('shows the automatic schedule and lists the backups newest first', async () => {
+            mockBackupList(200, {
+                backups: ['backup_20261011_030000.sql.gz', 'backup_auto_20261010_030000.sql.gz'],
+                automatic: ['backup_auto_20261010_030000.sql.gz'],
+                schedule: { interval_hours: 24, keep: 14 },
+            });
+            render(<Admin />);
+
+            expect(await screen.findByText('Automatic: every 24 h, keeping 14')).toBeInTheDocument();
+            const names = (await screen.findAllByText(backupName)).map((el) => el.textContent);
+            expect(names).toEqual(['backup_20261011_030000.sql.gz', 'backup_auto_20261010_030000.sql.gz']);
+        });
+
+        it('marks the automatic backups and says only they are pruned', async () => {
+            mockBackupList(200, {
+                backups: ['backup_20261011_030000.sql.gz', 'backup_auto_20261010_030000.sql.gz'],
+                automatic: ['backup_auto_20261010_030000.sql.gz'],
+                schedule: { interval_hours: 24, keep: 14 },
+            });
+            render(<Admin />);
+
+            const autoRow = (await screen.findByText('backup_auto_20261010_030000.sql.gz')).closest('li')!;
+            const manualRow = screen.getByText('backup_20261011_030000.sql.gz').closest('li')!;
+            expect(within(autoRow).getByText('auto')).toBeInTheDocument();
+            expect(within(manualRow).queryByText('auto')).not.toBeInTheDocument();
+            expect(screen.getAllByText('auto')).toHaveLength(1);
+            expect(screen.getByText(/only automatic backups are deleted/i)).toBeInTheDocument();
+        });
+
+        it('says so when automatic backups are off', async () => {
+            mockBackupList(200, { backups: [], schedule: null });
+            render(<Admin />);
+
+            expect(await screen.findByText('Automatic backups are off')).toBeInTheDocument();
+            expect(screen.getByText(/no backups yet/i)).toBeInTheDocument();
+            expect(screen.queryByText(/^Automatic: every/)).not.toBeInTheDocument();
+        });
+
+        it('summarises the backups beyond the first ten', async () => {
+            const backups = Array.from({ length: 14 }, (_, i) => `backup_202610${String(14 - i).padStart(2, '0')}_030000.sql.gz`);
+            mockBackupList(200, { backups, schedule: { interval_hours: 24, keep: 14 } });
+            render(<Admin />);
+
+            expect(await screen.findByText('and 4 older')).toBeInTheDocument();
+            expect(screen.getAllByText(backupName)).toHaveLength(10);
+        });
+
+        it('explains that backup storage is not configured and disables the button', async () => {
+            mockBackupList(503, { success: false, message: 'Backup service not configured' });
+            render(<Admin />);
+
+            expect(await screen.findByText(/backup storage is not configured/i)).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /create backup/i })).toBeDisabled();
+            expect(screen.queryByText(/automatic/i)).not.toBeInTheDocument();
+        });
+
+        it('says when the list could not be loaded, without claiming a schedule', async () => {
+            mockBackupList(500, { success: false, message: 'Failed to list backups' });
+            render(<Admin />);
+
+            expect(await screen.findByText(/could not load the backup list/i)).toBeInTheDocument();
+            expect(screen.queryByText(/automatic/i)).not.toBeInTheDocument();
+        });
+
+        it('reloads the list after creating a backup', async () => {
+            mockBackupList(200, { backups: [], schedule: { interval_hours: 6, keep: 3 } });
+            render(<Admin />);
+
+            expect(await screen.findByText('Automatic: every 6 h, keeping 3')).toBeInTheDocument();
+            const listCalls = () => (global.fetch as any).mock.calls.filter(
+                ([url, init]: [string, RequestInit?]) => url.endsWith('/admin/backup') && init?.method !== 'POST',
+            ).length;
+            expect(listCalls()).toBe(1);
+
+            fireEvent.click(screen.getByRole('button', { name: /create backup/i }));
+
+            await waitFor(() => expect(listCalls()).toBe(2));
+        });
+
         it('displays backup section', async () => {
             render(<Admin />);
 

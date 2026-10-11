@@ -43,7 +43,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Content Blocking** - Block specific URLs or entire domains
 - **First User = Admin** - First registered user automatically becomes admin
 - **Audit Log** - Record of organization changes: creation, settings, invitations, role changes, removals and ownership transfers (link, folder and tag changes are not logged)
-- **Database Backups** - Automated S3-compatible backup support
+- **Database Backups** - Scheduled backups to S3-compatible storage, with retention
 
 ### Performance
 - **Redis Caching** - Optional caching layer for faster redirects
@@ -275,6 +275,8 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 | `BACKUP_S3_ACCESS_KEY` | S3 access key |
 | `BACKUP_S3_SECRET_KEY` | S3 secret key |
 | `BACKUP_S3_REGION` | S3 region (default: auto) |
+| `BACKUP_INTERVAL_HOURS` | Hours between automatic backups (default: 24; `0` turns them off) |
+| `BACKUP_KEEP` | Automatic backups kept; after each automatic backup all but the newest N automatic backups are deleted (default: 14, minimum 1). Backups taken by hand are never deleted by the schedule |
 
 ### Analytics (Optional)
 
@@ -461,7 +463,7 @@ up pointing at someone else's page.
 | DELETE | `/admin/blocked/domains/{id}` | Unblock domain |
 | POST | `/admin/backup` | Create database backup |
 | GET | `/admin/backup` | List backups |
-| DELETE | `/admin/backup/cleanup/{keep}` | Clean old backups |
+| DELETE | `/admin/backup/cleanup/{keep}` | Delete all but the newest `keep` backups, automatic and manual together (`keep` must be at least 1) |
 
 ### Other
 
@@ -579,7 +581,11 @@ BACKUP_S3_ACCESS_KEY=your-key
 BACKUP_S3_SECRET_KEY=your-secret
 ```
 
-Backups can be triggered via Admin panel or API. Old backups are automatically cleaned up.
+With all four `BACKUP_S3_*` values set, the backend runs `pg_dump` on a schedule and uploads the gzipped dump as `backup_auto_YYYYMMDD_HHMMSS.sql.gz` (UTC). By default that is every 24 hours (`BACKUP_INTERVAL_HOURS`; `0` turns it off), and after each successful automatic backup everything but the newest 14 automatic backups (`BACKUP_KEEP`) is deleted. The first automatic backup runs one interval after the backend starts, not at startup, so a container that keeps restarting does not dump the database on every boot.
+
+A backup taken from the Admin panel or with `POST /admin/backup` is named `backup_YYYYMMDD_HHMMSS.sql.gz` and is never deleted by the schedule; only `DELETE /admin/backup/cleanup/{keep}` removes it. That endpoint is a deliberate admin action and counts automatic and manual backups together. Only objects named like these are ever listed or deleted, so the bucket can hold other files. The Admin panel shows the schedule and the existing backups, automatic ones marked.
+
+Backups are not encrypted by the application. They travel to the storage endpoint over TLS when the endpoint is an `https://` URL, and they are encrypted at rest only if the storage provider does that (Cloudflare R2 always does). Use a bucket that is private and encrypted at rest.
 
 ## Security Features
 
