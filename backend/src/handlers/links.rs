@@ -946,6 +946,34 @@ pub async fn get_user_id_from_header(
         .map(Authentication::user_id)
 }
 
+/// A request sent an `Authorization` header that did not authenticate.
+pub struct RejectedCredential;
+
+impl IntoResponse for RejectedCredential {
+    fn into_response(self) -> axum::response::Response {
+        json_error(StatusCode::UNAUTHORIZED, "Invalid or expired credentials")
+    }
+}
+
+/// Authenticate for an endpoint where credentials are optional. No
+/// `Authorization` header is an anonymous caller (`Ok(None)`). A header that
+/// is present but does not authenticate (expired or revoked token, unknown
+/// key, wrong scheme, garbage) is a 401, never a quiet downgrade to
+/// anonymous: the caller believes they are signed in, and would otherwise get
+/// back a success that is not attached to their account.
+pub async fn optional_user_id_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Result<Option<i32>, RejectedCredential> {
+    if !headers.contains_key(axum::http::header::AUTHORIZATION) {
+        return Ok(None);
+    }
+    get_user_id_from_header(db, headers)
+        .await
+        .map(Some)
+        .ok_or(RejectedCredential)
+}
+
 /// Require a revocable JWT. API keys are intentionally rejected even when they
 /// belong to the same user.
 pub async fn get_jwt_auth_from_header(
@@ -1161,9 +1189,12 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 /// Create a new shortened link
 ///
 /// Credentials are optional. Without them the link is anonymous and cannot be
-/// put in a folder, tagged, or owned by an organization. An account can shorten
-/// the same URL at most 10 times in 10 minutes; the next request is answered
-/// 429 with only an `error` field and no `Retry-After`.
+/// put in a folder, tagged, or owned by an organization. Credentials that are
+/// sent but do not authenticate (expired, revoked, unknown key) are refused
+/// with 401 instead of creating an anonymous link; omit the `Authorization`
+/// header to create one. An account can shorten the same URL at most 10 times
+/// in 10 minutes; the next request is answered 429 with only an `error` field
+/// and no `Retry-After`.
 #[utoipa::path(
     post,
     path = "/links",
@@ -1171,6 +1202,7 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
     responses(
         (status = 201, description = "Link created", body = LinkResponse),
         (status = 400, description = "Invalid request"),
+        (status = 401, description = "Credentials were sent but are invalid, expired or revoked"),
         (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
     ),
@@ -1182,6 +1214,13 @@ pub async fn create_link(
     headers: HeaderMap,
     Json(payload): Json<CreateLinkRequest>,
 ) -> impl IntoResponse {
+    // Resolve the caller first, so rejected credentials are refused before any
+    // validation or DNS lookup is spent on the request.
+    let user_id = match optional_user_id_from_header(&state.db, &headers).await {
+        Ok(user_id) => user_id,
+        Err(rejected) => return rejected.into_response(),
+    };
+
     // Validate URL first
     let validated_url = match validate_url(&payload.original_url) {
         Ok(url) => url,
@@ -1206,8 +1245,6 @@ pub async fn create_link(
         )
             .into_response();
     }
-
-    let user_id = get_user_id_from_header(&state.db, &headers).await;
 
     // Check email verification for authenticated users
     if let Some(uid) = user_id {
