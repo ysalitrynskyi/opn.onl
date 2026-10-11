@@ -21,6 +21,7 @@ use crate::handlers::link_access::{
     CallerAccess, LinkAction, authorize_link, listed_links, live_link_for, readable_links,
 };
 use crate::handlers::websocket::ClickEvent;
+use crate::utils::env::env_flag;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::link_owner::link_owner_is_active;
@@ -231,23 +232,7 @@ fn get_max_links_per_user() -> Option<u64> {
 
 /// Check if URL sanitization is enabled (default: true)
 fn is_url_sanitization_enabled() -> bool {
-    std::env::var("ENABLE_URL_SANITIZATION")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true)
-}
-
-/// Read a boolean env var that defaults to `true` (the safe/on setting). Any
-/// value other than "false"/"0" (case-insensitive) is treated as enabled, so a
-/// blank or malformed value fails safe rather than opening the guard.
-fn env_flag_default_on(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v != "false" && v != "0" && v != "no"
-        }
-        Err(_) => true,
-    }
+    env_flag("ENABLE_URL_SANITIZATION", true)
 }
 
 /// Reject destinations that exist only to deliver a payload. Two independent,
@@ -259,14 +244,14 @@ fn env_flag_default_on(name: &str) -> bool {
 ///
 /// Runs on every create/update/bulk/routing destination via `validate_url`.
 fn check_url_content_policy(url: &str) -> Result<(), String> {
-    if env_flag_default_on("BLOCK_DANGEROUS_FILE_EXTENSIONS")
+    if env_flag("BLOCK_DANGEROUS_FILE_EXTENSIONS", true)
         && let Some(ext) = crate::utils::url_policy::dangerous_extension(url)
     {
         return Err(format!(
             "Links to .{ext} files are not allowed (potentially executable content)"
         ));
     }
-    if env_flag_default_on("BLOCK_RAW_IP_URLS") && crate::utils::url_policy::host_is_raw_ip(url) {
+    if env_flag("BLOCK_RAW_IP_URLS", true) && crate::utils::url_policy::host_is_raw_ip(url) {
         return Err("Links to raw IP addresses are not allowed".to_string());
     }
     Ok(())
@@ -1063,10 +1048,7 @@ pub fn hash_api_key(key: &str) -> String {
 async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<i32> {
     use crate::entity::api_keys;
     // Instance kill-switch: when ENABLE_API_KEYS=false, keys stop authenticating.
-    if std::env::var("ENABLE_API_KEYS")
-        .map(|v| v == "false")
-        .unwrap_or(false)
-    {
+    if !env_flag("ENABLE_API_KEYS", true) {
         return None;
     }
     let hash = hash_api_key(key);
@@ -1101,9 +1083,7 @@ fn get_api_url() -> String {
 }
 
 fn interstitial_feature_enabled() -> bool {
-    std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-        .map(|v| v != "false")
-        .unwrap_or(true)
+    env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true)
 }
 
 fn redirect_confirmed(confirm: Option<&str>) -> bool {
@@ -1142,9 +1122,7 @@ async fn active_routing_rules(
     db: &DatabaseConnection,
     link_id: i32,
 ) -> Vec<crate::entity::routing_rules::Model> {
-    let routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let routing_enabled = env_flag("ENABLE_CONDITIONAL_ROUTING", true);
     if !routing_enabled {
         return Vec::new();
     }
@@ -1369,10 +1347,7 @@ pub async fn create_link(
     }
 
     // Check if custom aliases are enabled
-    let custom_aliases_enabled = std::env::var("ENABLE_CUSTOM_ALIASES")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
+    let custom_aliases_enabled = env_flag("ENABLE_CUSTOM_ALIASES", true);
 
     let using_custom_alias = payload.custom_alias.is_some();
     let code = if let Some(alias) = payload.custom_alias {
@@ -1485,9 +1460,7 @@ pub async fn create_link(
 
     // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING). A burn link needs a
     // click cap to ride the existing max_clicks enforcement; default to one-time use.
-    let burn_enabled = std::env::var("ENABLE_BURN_AFTER_READING")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let burn_enabled = env_flag("ENABLE_BURN_AFTER_READING", true);
     let burn_after_reading = burn_enabled && payload.burn_after_reading.unwrap_or(false);
     let effective_max_clicks = if burn_after_reading && payload.max_clicks.is_none() {
         Some(1)
@@ -1496,9 +1469,7 @@ pub async fn create_link(
     };
 
     // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
-    let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
     let safe_link_interstitial =
         interstitial_enabled && payload.safe_link_interstitial.unwrap_or(false);
 
@@ -1766,9 +1737,7 @@ pub async fn preview_link(
 
             let base_url = get_base_url();
 
-            let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
-                .map(|v| v != "false")
-                .unwrap_or(true);
+            let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
 
             let password_unlocked = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
                 (Some(password_hash), Some(token)) => {
@@ -2743,9 +2712,7 @@ pub async fn get_qr_code(
         // QR branding is a non-destructive kill-switch (default ON). When disabled,
         // all options are ignored and we serve the plain black/white PNG, which is
         // byte-identical to the legacy behavior.
-        let branding_enabled = std::env::var("ENABLE_QR_BRANDING")
-            .map(|v| v != "false")
-            .unwrap_or(true);
+        let branding_enabled = env_flag("ENABLE_QR_BRANDING", true);
         let effective = if branding_enabled {
             opts
         } else {

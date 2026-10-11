@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tracing::{error, info};
 
+use super::env::env_nonempty;
+
 /// Backup service for PostgreSQL to S3/R2
 pub struct BackupService {
     s3_client: Option<S3Client>,
@@ -21,11 +23,13 @@ impl BackupService {
     pub async fn new() -> Self {
         let database_url = crate::utils::database_url::resolve_database_url();
 
-        let bucket = std::env::var("BACKUP_S3_BUCKET").unwrap_or_default();
-        let endpoint = std::env::var("BACKUP_S3_ENDPOINT").ok();
-        let access_key = std::env::var("BACKUP_S3_ACCESS_KEY").ok();
-        let secret_key = std::env::var("BACKUP_S3_SECRET_KEY").ok();
-        let region = std::env::var("BACKUP_S3_REGION").unwrap_or_else(|_| "auto".to_string());
+        // Compose passes unset options as empty strings; a blank endpoint or
+        // key is not a configured bucket.
+        let bucket = env_nonempty("BACKUP_S3_BUCKET").unwrap_or_default();
+        let endpoint = env_nonempty("BACKUP_S3_ENDPOINT");
+        let access_key = env_nonempty("BACKUP_S3_ACCESS_KEY");
+        let secret_key = env_nonempty("BACKUP_S3_SECRET_KEY");
+        let region = env_nonempty("BACKUP_S3_REGION").unwrap_or_else(|| "auto".to_string());
 
         let s3_client = if let (Some(endpoint), Some(access_key), Some(secret_key)) =
             (endpoint, access_key, secret_key)
