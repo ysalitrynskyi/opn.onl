@@ -1,4 +1,4 @@
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use chrono::{Duration, Utc};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
@@ -7,11 +7,14 @@ use validator::Validate;
 
 use crate::AppState;
 use crate::entity::{api_keys, passkeys, users};
-use crate::utils::email::generate_token;
+use crate::handlers::links::optional_user_id_from_header;
+use crate::utils::email::{EmailService, generate_token};
 use crate::utils::email_domain_policy::{ensure_email_domain_allowed, normalize_email};
+use crate::utils::email_limits::{MailDenied, MailKind};
 use crate::utils::jwt::{
     PASSWORD_TOO_LONG, create_jwt, hash_password, password_exceeds_bcrypt_limit, verify_password,
 };
+use crate::utils::rate_limiter::{ClientKey, too_many_requests};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::validation_error_message;
 use axum::http::HeaderMap;
@@ -85,6 +88,7 @@ pub struct ErrorResponse {
 )]
 pub async fn register(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     Json(payload): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = payload.validate() {
@@ -194,9 +198,12 @@ pub async fn register(
                 )
                     .into_response();
             }
-            // Send verification email if email service is configured
+            // Send verification email if email service is configured. When
+            // the mail limits refuse it the account exists all the same, as
+            // the answer below says; a later resend sends the mail.
             if let Some(email_service) = &state.email_service
                 && email_service.is_configured()
+                && may_send_mail(email_service, MailKind::Verification, &email, &client)
                 && let Err(e) = email_service
                     .send_verification_email(&email, &verification_token)
                     .await
@@ -456,7 +463,170 @@ pub async fn verify_email(
         .into_response()
 }
 
+/// Whether a mail that a request triggers may go out. `false` means send
+/// nothing: the caller still gets the answer a sent mail would get, and the
+/// account's stored token is left alone, so the link already in the inbox keeps
+/// working.
+fn may_send_mail(
+    service: &EmailService,
+    kind: MailKind,
+    recipient: &str,
+    client: &ClientKey,
+) -> bool {
+    match service.reserve(kind, recipient, &client.0) {
+        Ok(()) => true,
+        Err(denied @ MailDenied::PoolSpent { .. }) => {
+            tracing::warn!("{} email withheld: {}", kind.label(), denied.reason());
+            false
+        }
+        Err(denied) => {
+            tracing::debug!("{} email withheld: {}", kind.label(), denied.reason());
+            false
+        }
+    }
+}
+
+/// The honest refusal for a signed-in user asking for their own verification
+/// email: unlike the anonymous answer, it says why nothing was sent.
+fn verification_mail_denied(denied: MailDenied) -> axum::response::Response {
+    let minutes = denied.retry_after_secs().div_ceil(60);
+    let wait = if minutes <= 1 {
+        "a minute".to_string()
+    } else {
+        format!("{minutes} minutes")
+    };
+    match denied {
+        MailDenied::Cooldown { .. } => too_many_requests(
+            denied.retry_after_secs(),
+            denied.limit(),
+            0,
+            format!(
+                "A verification email was sent to this address a moment ago. Check your inbox \
+                 and spam folder, or try again in {wait}."
+            ),
+        ),
+        MailDenied::RecipientDaily { .. } => too_many_requests(
+            denied.retry_after_secs(),
+            denied.limit(),
+            0,
+            "This address has already been sent the most verification emails allowed in a day. \
+             Check your inbox and spam folder, or try again later."
+                .to_string(),
+        ),
+        MailDenied::Client { .. } => too_many_requests(
+            denied.retry_after_secs(),
+            denied.limit(),
+            0,
+            format!("Too many emails were requested from your network. Try again in {wait}."),
+        ),
+        MailDenied::PoolSpent { .. } => {
+            let mut response = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "This server has reached its hourly email limit. Try again later."
+                        .to_string(),
+                }),
+            )
+                .into_response();
+            if let Ok(retry_after) = denied.retry_after_secs().to_string().parse() {
+                response.headers_mut().insert("Retry-After", retry_after);
+            }
+            response
+        }
+    }
+}
+
+/// A signed-in user asking for the verification email of their own account:
+/// nothing here is an enumeration risk, so every outcome is spelled out.
+async fn resend_verification_to_owner(
+    state: &AppState,
+    client: &ClientKey,
+    user: users::Model,
+) -> axum::response::Response {
+    if user.email_verified {
+        return (
+            StatusCode::OK,
+            Json(MessageResponse {
+                message: "Your email address is already verified".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let Some(email_service) = state
+        .email_service
+        .as_ref()
+        .filter(|service| service.is_configured())
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "This server is not set up to send email, so no verification email can be \
+                        sent. Ask the administrator to verify your account."
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    if let Err(denied) = email_service.reserve(MailKind::Verification, &user.email, &client.0) {
+        return verification_mail_denied(denied);
+    }
+
+    let verification_token = generate_token();
+    let verification_expires = Utc::now() + Duration::hours(24);
+    let email = user.email.clone();
+    let mut active_user: users::ActiveModel = user.into();
+    active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
+    active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
+    if active_user.update(&state.db).await.is_err() {
+        tracing::error!("Failed to generate verification token");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to send verification email".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    match email_service
+        .send_verification_email(&email, &verification_token)
+        .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(MessageResponse {
+                message: "Verification email sent".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to send verification email: {}", e);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "The verification email could not be sent right now. Try again later."
+                        .to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Resend verification email
+///
+/// Anonymous callers always get the same `200`, whether or not the address
+/// belongs to an unverified account, so the endpoint cannot be used to look
+/// accounts up. A caller whose `Authorization` header authenticates the account
+/// named in the body is told what happened instead: `200` when the mail was sent
+/// (or the address is already verified), `429` with `Retry-After` when one was
+/// sent recently, `503` when the server cannot send email.
+///
+/// An address is sent at most one verification email every 5 minutes and five a
+/// day, and one client IP can trigger at most 20 account emails an hour.
+/// Requests past those limits send nothing and leave the earlier link valid.
 #[utoipa::path(
     post,
     path = "/auth/resend-verification",
@@ -464,13 +634,23 @@ pub async fn verify_email(
     responses(
         (status = 200, description = "Verification email sent if an unverified account exists", body = MessageResponse),
         (status = 400, description = "Email domain is not allowed"),
+        (status = 401, description = "Credentials were sent but are invalid, expired or revoked"),
+        (status = 503, description = "Signed-in caller only: the server cannot send email right now"),
     ),
-    tag = "Authentication"
+    tag = "Authentication",
+    security((), ("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn resend_verification(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
+    headers: HeaderMap,
     Json(payload): Json<ResendVerificationRequest>,
 ) -> impl IntoResponse {
+    let caller = match optional_user_id_from_header(&state.db, &headers).await {
+        Ok(caller) => caller,
+        Err(rejected) => return rejected.into_response(),
+    };
+
     let email = normalize_email(&payload.email);
     if let Err(rejection) = ensure_email_domain_allowed(&state.db, &email).await {
         return (
@@ -490,29 +670,48 @@ pub async fn resend_verification(
         .await
         .unwrap_or(None);
 
+    // The owner of the account asking about it gets the honest answer.
+    let user = match user {
+        Some(user) if caller == Some(user.id) => {
+            return resend_verification_to_owner(&state, &client, user).await;
+        }
+        user => user,
+    };
+
     // Always the same 200 body, including on verified / unknown / update
-    // failure: distinct status codes here enumerate live accounts.
+    // failure / withheld by the mail limits: distinct answers here enumerate
+    // live accounts.
     if let Some(user) = user
         && !user.email_verified
     {
-        let verification_token = generate_token();
-        let verification_expires = Utc::now() + Duration::hours(24);
+        // With mail configured, a request the mail limits refuse changes
+        // nothing, so the link already mailed stays valid. Without mail there
+        // is no link to protect and the token is stored as before.
+        let service = state
+            .email_service
+            .as_ref()
+            .filter(|service| service.is_configured());
+        if service.is_none_or(|service| {
+            may_send_mail(service, MailKind::Verification, &user.email, &client)
+        }) {
+            let verification_token = generate_token();
+            let verification_expires = Utc::now() + Duration::hours(24);
 
-        let mut active_user: users::ActiveModel = user.clone().into();
-        active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
-        active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
+            let mut active_user: users::ActiveModel = user.clone().into();
+            active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
+            active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
-        if active_user.update(&state.db).await.is_ok() {
-            if let Some(email_service) = &state.email_service
-                && email_service.is_configured()
-                && let Err(e) = email_service
-                    .send_verification_email(&user.email, &verification_token)
-                    .await
-            {
-                tracing::error!("Failed to send verification email: {}", e);
+            if active_user.update(&state.db).await.is_ok() {
+                if let Some(service) = service
+                    && let Err(e) = service
+                        .send_verification_email(&user.email, &verification_token)
+                        .await
+                {
+                    tracing::error!("Failed to send verification email: {}", e);
+                }
+            } else {
+                tracing::error!("Failed to generate verification token");
             }
-        } else {
-            tracing::error!("Failed to generate verification token");
         }
     }
 
@@ -537,6 +736,7 @@ pub async fn resend_verification(
 )]
 pub async fn forgot_password(
     State(state): State<AppState>,
+    Extension(client): Extension<ClientKey>,
     Json(payload): Json<ForgotPasswordRequest>,
 ) -> impl IntoResponse {
     let email = normalize_email(&payload.email);
@@ -571,24 +771,36 @@ pub async fn forgot_password(
     equalize_work().await;
 
     if let Some(user) = user {
-        let reset_token = generate_token();
-        let reset_expires = Utc::now() + Duration::hours(1);
+        // With mail configured, a request the mail limits refuse changes
+        // nothing: the answer below is the same, and the reset link already
+        // mailed to this address stays valid instead of being replaced by one
+        // that was never sent. Without mail there is no link to protect and the
+        // token is stored as before.
+        let service = state
+            .email_service
+            .as_ref()
+            .filter(|service| service.is_configured());
+        if service.is_none_or(|service| {
+            may_send_mail(service, MailKind::PasswordReset, &user.email, &client)
+        }) {
+            let reset_token = generate_token();
+            let reset_expires = Utc::now() + Duration::hours(1);
 
-        let mut active_user: users::ActiveModel = user.clone().into();
-        active_user.password_reset_token = Set(Some(hash_secret_token(&reset_token)));
-        active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
+            let mut active_user: users::ActiveModel = user.clone().into();
+            active_user.password_reset_token = Set(Some(hash_secret_token(&reset_token)));
+            active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
-        if active_user.update(&state.db).await.is_ok() {
-            if let Some(email_service) = &state.email_service
-                && email_service.is_configured()
-                && let Err(e) = email_service
-                    .send_password_reset_email(&user.email, &reset_token)
-                    .await
-            {
-                tracing::error!("Failed to send password reset email: {}", e);
+            if active_user.update(&state.db).await.is_ok() {
+                if let Some(service) = service
+                    && let Err(e) = service
+                        .send_password_reset_email(&user.email, &reset_token)
+                        .await
+                {
+                    tracing::error!("Failed to send password reset email: {}", e);
+                }
+            } else {
+                tracing::error!("Failed to generate password reset token");
             }
-        } else {
-            tracing::error!("Failed to generate password reset token");
         }
     }
 

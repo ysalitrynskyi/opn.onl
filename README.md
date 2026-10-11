@@ -204,12 +204,23 @@ the frontend yourself (`docker compose up -d --build` from Option 1, or
 | `SMTP_PASS` | - | SMTP password |
 | `SMTP_TLS` | starttls | TLS mode: `starttls`, `tls`, or `none` |
 | `SMTP_FROM_EMAIL` | noreply@opn.onl | From email address |
-| `SMTP_FROM_NAME` | opn.onl | From display name |
+| `SMTP_FROM_NAME` | opn.onl | From display name (commas and quotes are fine) |
 | `ADMIN_EMAIL` | admin@opn.onl | Admin email for contact form |
+| `EMAIL_RATE_LIMIT_PER_HOUR` | 500 | Most emails the instance sends per hour in total. Split 70% account mail (verification, password reset, welcome), 20% security notices (password changed) and 10% contact form, so a flood of one kind cannot starve the others |
 
 Without SMTP, verification, password-reset and password-changed emails are not sent, and the
 contact form answers `503` ("not delivered") instead of accepting a message it has nowhere to send.
 Every email carries a plain-text part alongside the HTML.
+
+Mail that a request can trigger (`register`, `forgot-password`, `resend-verification`) is limited
+per address and per client, on top of the hourly total. An address is sent at most one verification
+email and one password-reset email every 5 minutes, and five of each a day. One client IP can
+trigger at most 20 of these emails an hour. A request past a limit gets the same answer as one that
+sent mail, sends nothing, and leaves the link already mailed valid, so the answers never reveal
+whether an address has an account. A signed-in user asking for their own verification email is told
+instead: `429` with `Retry-After`, or `503` when the server cannot send email. Client IPs follow
+`TRUST_PROXY_HEADERS` and `REAL_IP_HEADER`; behind a reverse proxy set them, or every visitor shares
+one budget. The limits are kept in memory, so a restart clears them.
 
 ### Link Management
 

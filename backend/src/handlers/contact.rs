@@ -111,7 +111,7 @@ pub async fn send_contact_message(
 
     // Send email to admin
     match email_service
-        .send_email_with_reply_to(&admin_email, &subject, &body, &payload.email)
+        .send_contact_email(&admin_email, &subject, &body, &payload.email)
         .await
     {
         Ok(_) => {
