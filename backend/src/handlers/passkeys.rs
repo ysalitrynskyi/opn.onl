@@ -15,6 +15,7 @@ use webauthn_rs::prelude::*;
 use crate::AppState;
 use crate::entity::{passkeys, users};
 use crate::handlers::json_error;
+use crate::utils::email::generate_token;
 use crate::utils::email_domain_policy::{
     ensure_email_domain_allowed, live_users_by_email, normalize_email,
 };
@@ -29,6 +30,16 @@ use std::sync::Mutex;
 
 /// How long a pending registration/authentication challenge is kept before it expires.
 const PASSKEY_STATE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Ceiling on pending challenges held at once. Sign-in attempts are keyed by a
+/// random id, so unlike the per-account keys they would otherwise grow with the
+/// request rate; past the ceiling the oldest ceremony is dropped.
+const PASSKEY_STATE_MAX_ENTRIES: usize = 10_000;
+
+/// How long the browser keeps the WebAuthn prompt open. The real `Webauthn` is
+/// built with it and the decoy challenge repeats it, so the field cannot tell
+/// the two apart.
+const WEBAUTHN_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// In-memory map of pending WebAuthn challenges with per-entry expiry. Entries
 /// are pruned on insert so abandoned ceremonies can't accumulate unbounded, and
@@ -49,6 +60,14 @@ impl<V> ExpiringMap<V> {
         let mut map = self.inner.lock().unwrap();
         let now = std::time::Instant::now();
         map.retain(|_, (t, _)| now.duration_since(*t) < PASSKEY_STATE_TTL);
+        if map.len() >= PASSKEY_STATE_MAX_ENTRIES
+            && let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, (t, _))| *t)
+                .map(|(key, _)| key.clone())
+        {
+            map.remove(&oldest);
+        }
         map.insert(key, (now, value));
     }
 
@@ -71,6 +90,10 @@ struct PendingPasskeyAuthentication {
     state: PasskeyAuthentication,
 }
 
+/// Pending sign-in ceremonies, keyed by the random `login_id` that `login_start`
+/// hands to the browser that began them. Keying by the account's email would let
+/// anyone who knows the address consume or replace the owner's challenge, and
+/// would make two tabs signing in as the same user clobber each other.
 static AUTH_STATE: Lazy<ExpiringMap<PendingPasskeyAuthentication>> = Lazy::new(ExpiringMap::new);
 
 /// Resolve the WebAuthn RP ID from an optional `WEBAUTHN_RP_ID` and the frontend origin.
@@ -119,8 +142,10 @@ pub fn validate_webauthn_rp_id() {
     }
 }
 
-// Helper to get Webauthn instance
-fn get_webauthn() -> Webauthn {
+/// The origin and RP ID passkeys are bound to, from `FRONTEND_URL` and
+/// `WEBAUTHN_RP_ID`. Shared by the real ceremonies and the decoy challenge so
+/// both advertise the same `rpId`.
+fn webauthn_origin_and_rp_id() -> (Url, String) {
     let rp_origin =
         std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
 
@@ -135,6 +160,12 @@ fn get_webauthn() -> Webauthn {
     let rp_id_env = std::env::var("WEBAUTHN_RP_ID").ok();
     let effective_rp_id = effective_webauthn_rp_id(rp_id_env.as_deref(), &origin_url)
         .unwrap_or_else(|e| panic!("{e}"));
+    (origin_url, effective_rp_id)
+}
+
+// Helper to get Webauthn instance
+fn get_webauthn() -> Webauthn {
+    let (origin_url, effective_rp_id) = webauthn_origin_and_rp_id();
 
     WebauthnBuilder::new(&effective_rp_id, &origin_url)
         .map_err(|e| {
@@ -142,10 +173,13 @@ fn get_webauthn() -> Webauthn {
             e
         })
         .and_then(|builder| {
-            builder.build().map_err(|e| {
-                tracing::error!("Failed to build WebAuthn: {:?}", e);
-                e
-            })
+            builder
+                .timeout(WEBAUTHN_PROMPT_TIMEOUT)
+                .build()
+                .map_err(|e| {
+                    tracing::error!("Failed to build WebAuthn: {:?}", e);
+                    e
+                })
         })
         .unwrap_or_else(|_| {
             // Last resort fallback for development only
@@ -155,6 +189,7 @@ fn get_webauthn() -> Webauthn {
             let fallback_url = Url::parse("http://localhost:5173").expect("Hardcoded URL");
             WebauthnBuilder::new("localhost", &fallback_url)
                 .expect("Localhost WebAuthn builder")
+                .timeout(WEBAUTHN_PROMPT_TIMEOUT)
                 .build()
                 .expect("Localhost WebAuthn build")
         })
@@ -199,14 +234,20 @@ pub struct LoginStartRequest {
     pub username: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct LoginStartResponse {
+    /// Standard WebAuthn assertion challenge — not expanded.
+    #[schema(value_type = Object)]
     pub options: RequestChallengeResponse,
+    /// Names this sign-in attempt. Send it back unchanged to `login/finish`;
+    /// the pending challenge is held under it, usable once, for five minutes.
+    pub login_id: String,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct LoginFinishRequest {
-    pub username: String,
+    /// The `login_id` that `login/start` returned for this attempt.
+    pub login_id: String,
     /// Standard WebAuthn assertion credential — not expanded.
     #[schema(value_type = Object)]
     pub credential: PublicKeyCredential,
@@ -385,7 +426,7 @@ pub async fn register_finish(
 
     // Save passkey to DB - serialize the passkey for storage
     let passkey_json = serde_json::to_string(&passkey).unwrap_or_default();
-    let cred_id_str = format!("{:?}", passkey.cred_id());
+    let cred_id_str = credential_key(passkey.cred_id());
 
     // A credential id is globally unique to one authenticator credential.
     // Reject a re-registration of an already-known credential instead of
@@ -393,7 +434,7 @@ pub async fn register_finish(
     // discarded, so a duplicate — or, with the new UNIQUE index, a constraint
     // violation — went unnoticed).
     let already_registered = passkeys::Entity::find()
-        .filter(passkeys::Column::CredId.eq(&cred_id_str))
+        .filter(passkeys::Column::CredId.is_in(credential_keys(passkey.cred_id())))
         .one(&txn)
         .await
         .ok()
@@ -436,6 +477,27 @@ pub async fn register_finish(
         .into_response()
 }
 
+/// What `passkeys.cred_id` holds for a credential: its id as unpadded base64url,
+/// the text a browser reports as `PublicKeyCredential.id`.
+fn credential_key(id: &CredentialID) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id)
+}
+
+/// Passkeys saved before `credential_key` existed hold the `Debug` text of the
+/// credential id instead, `HumanBinaryData([1, 2, 3])`. Those rows are live, so
+/// lookups accept this form too. It is spelled out rather than taken from
+/// `{:?}` so that a dependency upgrade that changes `Debug` cannot strand them.
+fn legacy_credential_key(id: &CredentialID) -> String {
+    let bytes: &[u8] = id.as_ref();
+    format!("HumanBinaryData({bytes:?})")
+}
+
+/// Both spellings a credential may be stored under.
+fn credential_keys(id: &CredentialID) -> [String; 2] {
+    [credential_key(id), legacy_credential_key(id)]
+}
+
 /// HMAC-SHA256 used to mint a deterministic decoy credential id so unknown
 /// usernames cannot be distinguished from real ones by watching the allow-list
 /// change between requests.
@@ -474,18 +536,14 @@ fn decoy_login_challenge(username: &str) -> RequestChallengeResponse {
     let mut challenge = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut challenge);
 
-    let rp_id = std::env::var("FRONTEND_URL")
-        .ok()
-        .and_then(|url| Url::parse(&url).ok())
-        .and_then(|url| url.host_str().map(str::to_string))
-        .unwrap_or_else(|| "localhost".to_string());
+    let (_, rp_id) = webauthn_origin_and_rp_id();
 
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
 
     serde_json::from_value(serde_json::json!({
         "publicKey": {
             "challenge": b64(&challenge),
-            "timeout": 60000,
+            "timeout": WEBAUTHN_PROMPT_TIMEOUT.as_millis() as u64,
             "rpId": rp_id,
             "allowCredentials": [{
                 "type": "public-key",
@@ -497,17 +555,21 @@ fn decoy_login_challenge(username: &str) -> RequestChallengeResponse {
     .expect("decoy WebAuthn challenge")
 }
 
+/// A challenge nobody will be able to answer, under a `login_id` that names no
+/// pending state. `login_finish` treats it like any other unknown attempt.
 fn decoy_login_start(username: &str) -> axum::response::Response {
     (
         StatusCode::OK,
         Json(LoginStartResponse {
             options: decoy_login_challenge(username),
+            login_id: generate_token(),
         }),
     )
         .into_response()
 }
 
-/// Begin passkey login. Returns a WebAuthn `RequestChallengeResponse`.
+/// Begin passkey login. Returns a WebAuthn `RequestChallengeResponse` and a
+/// `login_id` to send back to `login/finish`.
 /// Unknown users, disabled users, and users without passkeys receive the same
 /// 200 challenge shape as a real account; pending state is stored only when
 /// the account exists and has parseable passkeys.
@@ -516,7 +578,7 @@ fn decoy_login_start(username: &str) -> axum::response::Response {
     path = "/auth/passkey/login/start",
     request_body = LoginStartRequest,
     responses(
-        (status = 200, description = "WebAuthn assertion challenge"),
+        (status = 200, description = "WebAuthn assertion challenge and the login_id that names this attempt", body = LoginStartResponse),
         (status = 403, description = "Passkeys are disabled on this instance"),
     ),
     tag = "Authentication"
@@ -575,8 +637,9 @@ pub async fn login_start(
         }
     };
 
+    let login_id = generate_token();
     AUTH_STATE.insert(
-        username,
+        login_id.clone(),
         PendingPasskeyAuthentication {
             user_id: user.id,
             token_version: user.token_version,
@@ -584,20 +647,29 @@ pub async fn login_start(
         },
     );
 
-    (StatusCode::OK, Json(LoginStartResponse { options: rcr })).into_response()
+    (
+        StatusCode::OK,
+        Json(LoginStartResponse {
+            options: rcr,
+            login_id,
+        }),
+    )
+        .into_response()
 }
 
 /// Complete passkey login and issue a JWT on success.
+///
+/// A `login_id` that is unknown, expired, already used or minted for a decoy
+/// challenge, and an assertion that does not verify, all get the same `401`.
+/// The pending challenge is consumed by the first attempt, right or wrong.
 #[utoipa::path(
     post,
     path = "/auth/passkey/login/finish",
     request_body = LoginFinishRequest,
     responses(
         (status = 200, description = "Authenticated; JWT issued", body = PasskeyAuthResponse),
-        (status = 400, description = "Invalid or expired assertion"),
-        (status = 401, description = "Assertion did not verify"),
+        (status = 401, description = "Authentication failed: no pending attempt under this login_id, or the assertion did not verify"),
         (status = 403, description = "Passkeys are disabled on this instance"),
-        (status = 404, description = "User not found"),
     ),
     tag = "Authentication"
 )]
@@ -611,20 +683,22 @@ pub async fn login_finish(
             "Passkeys are disabled on this instance",
         );
     }
-    let username = normalize_email(&payload.username);
-    let pending = match AUTH_STATE.remove(&username) {
-        Some(s) => s,
-        None => return json_error(StatusCode::BAD_REQUEST, "Authentication state not found"),
+    // One answer for "no such attempt" (unknown, expired, replayed, or a decoy's
+    // id) and "the assertion did not verify", so the pair says nothing about
+    // whether the address has a passkey.
+    let authentication_failed = || json_error(StatusCode::UNAUTHORIZED, "Authentication failed");
+    let Some(pending) = AUTH_STATE.remove(&payload.login_id) else {
+        return authentication_failed();
     };
 
     let webauthn = get_webauthn();
     let auth_result =
         match webauthn.finish_passkey_authentication(&payload.credential, &pending.state) {
             Ok(res) => res,
-            Err(_) => return json_error(StatusCode::UNAUTHORIZED, "Authentication failed"),
+            Err(_) => return authentication_failed(),
         };
 
-    let cred_id_str = format!("{:?}", auth_result.cred_id());
+    let cred_keys = credential_keys(auth_result.cred_id());
 
     // Serialize login completion against factor revocation and every other
     // token-version transition. Both paths lock the user row first, then the
@@ -653,7 +727,7 @@ pub async fn login_finish(
     };
 
     let passkey_db = match passkeys::Entity::find()
-        .filter(passkeys::Column::CredId.eq(&cred_id_str))
+        .filter(passkeys::Column::CredId.is_in(cred_keys))
         .filter(passkeys::Column::UserId.eq(pending.user_id))
         .lock_exclusive()
         .one(&txn)
@@ -1063,5 +1137,45 @@ mod webauthn_rp_id_tests {
             .expect_err("unrelated RP ID must be rejected");
         assert!(err.contains("other.com"), "{err}");
         assert!(err.contains("app.opn.onl"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod pending_state_tests {
+    use super::*;
+
+    #[test]
+    fn a_pending_entry_is_handed_out_once() {
+        let map = ExpiringMap::new();
+        map.insert("attempt".to_string(), 7);
+        assert_eq!(map.remove("other"), None);
+        assert_eq!(map.remove("attempt"), Some(7));
+        assert_eq!(map.remove("attempt"), None);
+    }
+
+    #[test]
+    fn the_map_stays_under_its_ceiling_and_drops_the_oldest() {
+        let map = ExpiringMap::new();
+        for n in 0..PASSKEY_STATE_MAX_ENTRIES + 25 {
+            map.insert(n.to_string(), n);
+        }
+        assert_eq!(map.inner.lock().unwrap().len(), PASSKEY_STATE_MAX_ENTRIES);
+        assert_eq!(map.remove("0"), None, "the oldest ceremony made room");
+        let newest = PASSKEY_STATE_MAX_ENTRIES + 24;
+        assert_eq!(map.remove(&newest.to_string()), Some(newest));
+    }
+
+    #[test]
+    fn credential_ids_are_stored_as_base64url() {
+        let id = CredentialID::from(vec![0xfb, 0xff, 0xbe, 0x01]);
+        assert_eq!(credential_key(&id), "-_--AQ");
+    }
+
+    /// Rows saved by earlier versions hold this text; changing it would strand
+    /// those passkeys.
+    #[test]
+    fn the_old_credential_key_format_is_pinned() {
+        let id = CredentialID::from(vec![1, 2, 3]);
+        assert_eq!(legacy_credential_key(&id), "HumanBinaryData([1, 2, 3])");
     }
 }

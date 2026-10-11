@@ -275,6 +275,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
             passkeys::RegisterStartRequest,
             passkeys::RegisterFinishRequest,
             passkeys::LoginStartRequest,
+            passkeys::LoginStartResponse,
             passkeys::LoginFinishRequest,
             passkeys::DeletePasskeyRequest,
             passkeys::DeletePasskeyResponse,
