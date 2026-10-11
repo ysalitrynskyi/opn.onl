@@ -146,7 +146,7 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(ws_state.shutdown_after(shutdown_signal()))
     .await
     .unwrap();
 
