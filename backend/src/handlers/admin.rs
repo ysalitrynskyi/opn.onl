@@ -21,7 +21,7 @@ use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::is_reserved_email_domain;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{domain_matches, normalize_domain_input, normalize_hostname};
-use crate::utils::validation::MAX_IDS_PER_REQUEST;
+use crate::utils::validation::{MAX_IDS_PER_REQUEST, ilike_pattern};
 
 /// Clamp pagination params: 1-based page, 1..=100 per_page (default 25).
 fn clamp_pagination(page: Option<u64>, per_page: Option<u64>) -> (u64, u64) {
@@ -30,21 +30,11 @@ fn clamp_pagination(page: Option<u64>, per_page: Option<u64>) -> (u64, u64) {
     (page, per_page)
 }
 
-/// Escape LIKE/ILIKE wildcards in user-supplied search text and wrap it for a
-/// substring match.
 /// Postgres `SUM(bigint)` returns `numeric`, which SeaORM will not decode as
 /// `i64`. Cast so the admin aggregates keep the i64 API. A sum past 2^63-1
 /// makes the CAST fail rather than wrap.
 fn sum_click_count_as_bigint() -> sea_orm::sea_query::SimpleExpr {
     Expr::cust("CAST(SUM(\"click_count\") AS BIGINT)")
-}
-
-fn ilike_pattern(search: &str) -> String {
-    let escaped = search
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{}%", escaped)
 }
 
 /// A `WHERE` fragment matching links whose destination is suspicious — a
