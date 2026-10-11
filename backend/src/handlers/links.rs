@@ -7,6 +7,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use rand::distributions::Alphanumeric;
 use rand::{Rng, thread_rng};
+use sea_orm::sea_query::{Alias, Expr};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -5215,11 +5216,18 @@ pub async fn build_utm_url(Json(payload): Json<BuildUtmRequest>) -> impl IntoRes
 
 // ============= New Feature: Sparkline Data =============
 
+/// Days a sparkline covers: today and the six UTC calendar days before it.
+const SPARKLINE_DAYS: i64 = 7;
+/// Most ids one sparkline request may carry. The dashboard sends 80 at a time.
+const MAX_SPARKLINE_IDS: usize = 500;
+
 #[derive(Serialize, ToSchema)]
 pub struct SparklineData {
     pub link_id: i32,
-    pub data: Vec<i64>,      // Click counts for each day
-    pub labels: Vec<String>, // Date labels
+    /// Clicks per UTC calendar day, oldest first; the last entry is today.
+    pub data: Vec<i64>,
+    /// `MM/DD` (UTC) of each day in `data`.
+    pub labels: Vec<String>,
     pub total: i64,
 }
 
@@ -5228,16 +5236,42 @@ pub struct SparklineResponse {
     pub sparklines: Vec<SparklineData>,
 }
 
-/// Get sparkline data (last 7 days) for multiple links
+/// The days a sparkline covers, oldest first, ending with `today`.
+fn sparkline_days(today: chrono::NaiveDate) -> Vec<chrono::NaiveDate> {
+    (0..SPARKLINE_DAYS)
+        .rev()
+        .map(|days_ago| today - chrono::Duration::days(days_ago))
+        .collect()
+}
+
+/// Spread `(link, day, clicks)` rows over one zero-filled series per link. A
+/// link with no click in the window comes in as a row without a day.
+fn sparkline_series(
+    days: &[chrono::NaiveDate],
+    rows: Vec<(i32, Option<chrono::NaiveDate>, i64)>,
+) -> HashMap<i32, Vec<i64>> {
+    let mut series: HashMap<i32, Vec<i64>> = HashMap::new();
+    for (link_id, day, clicks) in rows {
+        let counts = series.entry(link_id).or_insert_with(|| vec![0; days.len()]);
+        if let Some(index) = day.and_then(|day| days.iter().position(|d| *d == day)) {
+            counts[index] = clicks;
+        }
+    }
+    series
+}
+
+/// Get sparkline data (last 7 UTC days) for multiple links
 #[utoipa::path(
     get,
     path = "/links/sparklines",
     params(
-        ("ids" = String, Query, description = "Comma-separated link IDs")
+        ("ids" = String, Query, description = "Comma-separated link IDs (at most 500). Links the caller cannot read are omitted.")
     ),
     responses(
         (status = 200, description = "Sparkline data", body = SparklineResponse),
+        (status = 400, description = "Too many ids"),
         (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Database error"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -5265,6 +5299,14 @@ pub async fn get_sparklines(
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
+    if link_ids.len() > MAX_SPARKLINE_IDS {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            format!("Too many ids in one request (max {MAX_SPARKLINE_IDS})"),
+        );
+    }
+    let link_ids = unique_ids(link_ids);
+
     if link_ids.is_empty() {
         return (
             StatusCode::OK,
@@ -5273,64 +5315,105 @@ pub async fn get_sparklines(
             .into_response();
     }
 
-    // Keep only the links the caller may read; the rest are silently omitted.
-    let user_links = links::Entity::find()
+    // `created_at` is a naive UTC timestamp, so casting it to `date` buckets by
+    // UTC calendar day whatever the session time zone.
+    let days = sparkline_days(chrono::Utc::now().date_naive());
+    let window_start = days[0].and_time(chrono::NaiveTime::MIN);
+    let click_day = Expr::col((click_events::Entity, click_events::Column::CreatedAt))
+        .cast_as(Alias::new("date"));
+
+    // One row per (link, day with clicks), counted by the database. Joining
+    // from `links` keeps a readable link with no clicks in the answer (one row
+    // without a day) and drops the ones the caller may not read or that were
+    // deleted, in the same statement.
+    let rows: Vec<(i32, Option<chrono::NaiveDate>, i64)> = match links::Entity::find()
+        .select_only()
+        .column(links::Column::Id)
+        .column_as(click_day.clone(), "day")
+        .column_as(click_events::Column::Id.count(), "clicks")
+        .join(
+            JoinType::LeftJoin,
+            links::Relation::ClickEvents
+                .def()
+                .on_condition(move |_links, clicks| {
+                    Condition::all()
+                        .add(Expr::col((clicks, click_events::Column::CreatedAt)).gte(window_start))
+                }),
+        )
         .filter(links::Column::Id.is_in(link_ids.clone()))
         .filter(readable_links(user_id))
         .filter(links::Column::DeletedAt.is_null())
+        .group_by(links::Column::Id)
+        .group_by(click_day)
+        .into_tuple()
         .all(&state.db)
         .await
-        .unwrap_or_default();
-
-    let owned_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
-
-    // Get last 7 days
-    let now = chrono::Utc::now().naive_utc();
-    let seven_days_ago = now - chrono::Duration::days(7);
-
-    // Generate date labels
-    let mut labels: Vec<String> = Vec::new();
-    for i in (0..7).rev() {
-        let date = now - chrono::Duration::days(i);
-        labels.push(date.format("%m/%d").to_string());
-    }
-
-    // Fetch click events
-    let events = click_events::Entity::find()
-        .filter(click_events::Column::LinkId.is_in(owned_ids.clone()))
-        .filter(click_events::Column::CreatedAt.gte(seven_days_ago))
-        .all(&state.db)
-        .await
-        .unwrap_or_default();
-
-    // Group clicks by link and day
-    let mut sparklines: Vec<SparklineData> = Vec::new();
-
-    for link_id in owned_ids {
-        let mut daily_counts: Vec<i64> = vec![0; 7];
-        let mut total: i64 = 0;
-
-        for event in &events {
-            if event.link_id == link_id {
-                let duration = now.signed_duration_since(event.created_at);
-                let days_ago = duration.num_days();
-                if (0..7).contains(&days_ago) {
-                    let idx = (6 - days_ago) as usize;
-                    daily_counts[idx] += 1;
-                    total += 1;
-                }
-            }
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!("Failed to load sparklines: {}", error);
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
         }
+    };
 
-        sparklines.push(SparklineData {
-            link_id,
-            data: daily_counts,
-            labels: labels.clone(),
-            total,
-        });
-    }
+    let mut series = sparkline_series(&days, rows);
+    let labels: Vec<String> = days.iter().map(|d| d.format("%m/%d").to_string()).collect();
+
+    // Answer in the order asked, which is also what the client batches by.
+    let sparklines: Vec<SparklineData> = link_ids
+        .into_iter()
+        .filter_map(|link_id| {
+            let data = series.remove(&link_id)?;
+            let total = data.iter().sum();
+            Some(SparklineData {
+                link_id,
+                data,
+                labels: labels.clone(),
+                total,
+            })
+        })
+        .collect();
 
     (StatusCode::OK, Json(SparklineResponse { sparklines })).into_response()
+}
+
+#[cfg(test)]
+mod sparkline_tests {
+    use super::{sparkline_days, sparkline_series};
+    use chrono::NaiveDate;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn window_is_seven_utc_days_ending_today() {
+        let days = sparkline_days(date(2028, 3, 2));
+        assert_eq!(days.first(), Some(&date(2028, 2, 25)));
+        assert_eq!(days.last(), Some(&date(2028, 3, 2)));
+        assert_eq!(days.len(), 7);
+        assert!(days.contains(&date(2028, 2, 29)), "leap day is a bucket");
+    }
+
+    #[test]
+    fn series_are_zero_filled_and_ignore_days_outside_the_window() {
+        let days = sparkline_days(date(2026, 10, 10));
+        let series = sparkline_series(
+            &days,
+            vec![
+                (1, Some(date(2026, 10, 4)), 3),
+                (1, Some(date(2026, 10, 10)), 5),
+                // Outside the window (before it, and after today): not counted.
+                (1, Some(date(2026, 10, 3)), 100),
+                (1, Some(date(2026, 10, 11)), 100),
+                // A link with no clicks arrives as a row without a day.
+                (2, None, 0),
+            ],
+        );
+        assert_eq!(series[&1], vec![3, 0, 0, 0, 0, 0, 5]);
+        assert_eq!(series[&2], vec![0; 7]);
+        assert_eq!(series.len(), 2);
+    }
 }
 
 // ============= New Feature: Link Preview (OG Metadata) =============

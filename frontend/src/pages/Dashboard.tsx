@@ -293,8 +293,8 @@ export default function Dashboard() {
         }
     };
 
-    // Fetch sparkline data for all links. Batch ids so a large account cannot
-    // blow typical request-line limits (~8KB) with one query string.
+    // Fetch sparkline data for the given links. Batch ids so a large account
+    // cannot blow typical request-line limits (~8KB) with one query string.
     const fetchSparklines = useCallback(async (linkIds: number[]) => {
         if (linkIds.length === 0) return;
         const requestId = ++sparklineFetchId.current;
@@ -323,13 +323,31 @@ export default function Dashboard() {
         }
     }, []);
 
-    // Fetch sparklines when links change
+    // The ids of the links on the page as one stable string. Pinning, editing
+    // or refreshing into the same links gives a new `links` array but leaves
+    // this unchanged, so none of those asks the server for charts again.
+    const linkIdsKey = useMemo(
+        () => links.map(l => l.id).sort((a, b) => a - b).join(','),
+        [links],
+    );
+    // The charts held so far, readable from the effect below without every
+    // arriving batch re-running it.
+    const sparklineDataRef = useRef(sparklineData);
     useEffect(() => {
-        if (links.length > 0) {
-            const linkIds = links.map(l => l.id);
-            fetchSparklines(linkIds);
-        }
-    }, [links, fetchSparklines]);
+        sparklineDataRef.current = sparklineData;
+    }, [sparklineData]);
+
+    // When the set of links changes, fetch the ones without a chart and drop
+    // the charts of links that are gone (a delete needs no request at all).
+    useEffect(() => {
+        const ids = linkIdsKey ? linkIdsKey.split(',').map(Number) : [];
+        const shown = new Set(ids);
+        setSparklineData(prev => {
+            const kept = Object.entries(prev).filter(([id]) => shown.has(Number(id)));
+            return kept.length === Object.keys(prev).length ? prev : Object.fromEntries(kept);
+        });
+        fetchSparklines(ids.filter(id => !(id in sparklineDataRef.current)));
+    }, [linkIdsKey, fetchSparklines]);
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
