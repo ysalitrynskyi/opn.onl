@@ -26,6 +26,7 @@ use tower_http::trace::TraceLayer;
 
 use handlers::websocket::WsState;
 use utils::cache::RedisCache;
+use utils::env::env_flag;
 use utils::rate_limiter::{RateLimiters, rate_limit_middleware};
 use utils::{BackupService, ClickBuffer, EmailService};
 
@@ -63,11 +64,16 @@ impl AppState {
 
 /// Middleware to redirect HTTP to HTTPS in production
 pub async fn https_redirect(req: Request<Body>, next: axum::middleware::Next) -> impl IntoResponse {
-    let force_https = std::env::var("FORCE_HTTPS")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    if !env_flag("FORCE_HTTPS", false) {
+        return next.run(req).await;
+    }
 
-    if !force_https {
+    // The container health probe asks over plain HTTP from inside the compose
+    // network, with no proxy in front to set X-Forwarded-Proto. Redirecting it
+    // answers 308, which `curl -f` counts as success, so the probe would stay
+    // green with the database down. The endpoint is read-only and its reply is
+    // the same one a TLS-terminated caller gets.
+    if req.uri().path() == "/health" {
         return next.run(req).await;
     }
 
@@ -190,8 +196,7 @@ pub async fn ensure_admin_exists(db: &DatabaseConnection) {
     match first_user_result {
         Ok(Some(user)) => {
             tracing::info!(
-                "Found first user: {} (ID: {}, is_admin: {})",
-                user.email,
+                "Found first user: ID {} (is_admin: {})",
                 user.id,
                 user.is_admin
             );
@@ -202,32 +207,27 @@ pub async fn ensure_admin_exists(db: &DatabaseConnection) {
             }
 
             let user_id = user.id;
-            let user_email = user.email.clone();
             let mut active_user: users::ActiveModel = user.into();
             active_user.is_admin = Set(true);
 
             match active_user.update(db).await {
-                Ok(updated) => {
-                    tracing::info!(
-                        "✓ Successfully promoted user {} (ID: {}) to admin",
-                        updated.email,
-                        user_id
-                    );
+                Ok(_) => {
+                    tracing::info!("✓ Successfully promoted user ID {} to admin", user_id);
 
                     // Verify the update worked
                     if let Ok(Some(verify)) = users::Entity::find_by_id(user_id).one(db).await {
                         if verify.is_admin {
-                            tracing::info!("✓ Verified: {} is now admin", verify.email);
+                            tracing::info!("✓ Verified: user ID {} is now admin", user_id);
                         } else {
                             tracing::error!(
-                                "✗ Verification failed: {} is still not admin!",
-                                verify.email
+                                "✗ Verification failed: user ID {} is still not admin!",
+                                user_id
                             );
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::error!("✗ Failed to promote user {} to admin: {}", user_email, e);
+                    tracing::error!("✗ Failed to promote user ID {} to admin: {}", user_id, e);
                 }
             }
         }
@@ -438,7 +438,9 @@ pub fn build_router(app_state: AppState) -> Router {
         )
         .route(
             "/links/:id",
-            put(handlers::links::update_link).delete(handlers::links::delete_link),
+            get(handlers::links::get_link)
+                .put(handlers::links::update_link)
+                .delete(handlers::links::delete_link),
         )
         .route("/links/:id/qr", get(handlers::links::get_qr_code))
         .route("/links/:id/clone", post(handlers::links::clone_link))

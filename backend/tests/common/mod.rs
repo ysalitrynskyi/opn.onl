@@ -97,7 +97,10 @@ pub async fn spawn_real_app_ws_with_interval(
     spawn_real_app_ws_with_state(ws_state).await
 }
 
-async fn spawn_real_app_ws_with_state(
+/// WebSocket/SSE app around a `WsState` the test built itself, for settings
+/// the plain constructors do not expose (a per-user connection limit).
+#[allow(dead_code)]
+pub async fn spawn_real_app_ws_with_state(
     ws_state: std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
 ) -> (
     axum_test::TestServer,

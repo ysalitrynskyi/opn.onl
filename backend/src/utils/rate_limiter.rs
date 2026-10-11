@@ -11,6 +11,8 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::env::env_flag;
+
 /// Rate limiter configuration
 #[derive(Clone, Debug)]
 pub struct RateLimitConfig {
@@ -203,9 +205,11 @@ impl RateLimiters {
 ///   client IP. Defaults to `cf-connecting-ip`: Cloudflare sets it
 ///   authoritatively at the edge (a client cannot forge it through
 ///   Cloudflare), and it survives both production paths (tunnel -> backend
-///   and tunnel -> nginx -> backend) verbatim. Set it to an empty string to
-///   disable when the edge is not Cloudflare, or to e.g. `x-real-ip` when a
-///   trusted nginx overwrites that header with the real peer address.
+///   and tunnel -> nginx -> backend) verbatim. Set it to `none` to disable
+///   when the edge is not Cloudflare, or to e.g. `x-real-ip` when a trusted
+///   nginx overwrites that header with the real peer address. `none` is the
+///   spelling to use: the compose files fall back to the Cloudflare default
+///   for an empty value, so an empty one only disables it outside compose.
 /// - `TRUSTED_PROXY_HOPS` — `X-Forwarded-For` fallback used when
 ///   `REAL_IP_HEADER` is unset or absent: how many trailing XFF entries were
 ///   appended by additional trusted proxies (default 0 = use the right-most
@@ -218,18 +222,26 @@ pub struct ClientIpConfig {
     pub trusted_proxy_hops: usize,
 }
 
+/// The real-client-IP header named by `REAL_IP_HEADER`: `None` for `none` (or
+/// an empty value), the Cloudflare header when the variable is unset.
+fn parse_real_ip_header(raw: Option<&str>) -> Option<String> {
+    match raw {
+        None => Some("cf-connecting-ip".to_string()),
+        Some(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            if v.is_empty() || v == "none" {
+                None
+            } else {
+                Some(v)
+            }
+        }
+    }
+}
+
 impl ClientIpConfig {
     pub fn from_env() -> Self {
-        let trust_proxy_headers = std::env::var("TRUST_PROXY_HEADERS")
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false);
-        let real_ip_header = match std::env::var("REAL_IP_HEADER") {
-            Ok(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                if v.is_empty() { None } else { Some(v) }
-            }
-            Err(_) => Some("cf-connecting-ip".to_string()),
-        };
+        let trust_proxy_headers = env_flag("TRUST_PROXY_HEADERS", false);
+        let real_ip_header = parse_real_ip_header(std::env::var("REAL_IP_HEADER").ok().as_deref());
         let trusted_proxy_hops = std::env::var("TRUSTED_PROXY_HOPS")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
@@ -413,6 +425,18 @@ fn is_redirect_path(path: &str) -> bool {
     }
 }
 
+/// The short code a redirect-style path addresses, as the router's `Path`
+/// extractor will see it: the first segment, percent-decoded once. `/%61bc`
+/// and `/abc` are the same link, so they must be the same rate-limit bucket.
+fn route_code(path: &str) -> String {
+    let raw = path.split('/').find(|s| !s.is_empty()).unwrap_or("unknown");
+    // Invalid UTF-8 is rejected by the extractor before any password is
+    // checked, so the raw segment is a fine key for it.
+    urlencoding::decode(raw)
+        .map(|decoded| decoded.into_owned())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
 /// Auth API routes are `/auth` and `/auth/...` only. A short code that merely
 /// begins with "auth" (`/auth-sale`) is a redirect, not a login attempt.
 fn is_auth_path(path: &str) -> bool {
@@ -475,10 +499,9 @@ pub async fn rate_limit_middleware(
         {
             limited @ RateLimitResult::Limited { .. } => limited,
             RateLimitResult::Allowed { .. } => {
-                let code = path.split('/').find(|s| !s.is_empty()).unwrap_or("unknown");
                 limiters
                     .password_verify
-                    .check(&format!("pwverify:{}:{}", ip, code))
+                    .check(&format!("pwverify:{}:{}", ip, route_code(path)))
             }
         }
     } else if is_auth_path(path) && req.method() == axum::http::Method::POST {
@@ -650,6 +673,71 @@ mod tests {
         );
     }
 
+    /// `/%61bc/verify` reaches the handler as the code `abc`, so it has to spend
+    /// the same per-code budget as `/abc/verify`. Keyed on the raw path it got a
+    /// fresh bucket per spelling, and the 5-a-minute guess limit became the much
+    /// larger per-IP one.
+    #[tokio::test]
+    async fn password_code_budget_is_shared_by_every_spelling_of_the_code() {
+        use axum::{Router, middleware, routing::post};
+
+        let limiters = Arc::new(RateLimiters {
+            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            general: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            auth: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            redirect: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
+            password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
+            password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
+            contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+        });
+        let app = Router::new()
+            .route("/:code/verify", post(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limiters,
+                rate_limit_middleware,
+            ));
+        let server = axum_test::TestServer::new(app).unwrap();
+
+        assert_eq!(
+            server.post("/abcde/verify").await.status_code(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            server.post("/%61bcde/verify").await.status_code(),
+            StatusCode::OK
+        );
+        for spelling in [
+            "/abcde/verify",
+            "/a%62cde/verify",
+            "/%61%62%63%64%65/verify",
+        ] {
+            assert_eq!(
+                server.post(spelling).await.status_code(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{spelling} must share the budget of /abcde/verify"
+            );
+        }
+
+        // Control: a different link keeps its own budget.
+        assert_eq!(
+            server.post("/vwxyz/verify").await.status_code(),
+            StatusCode::OK
+        );
+    }
+
+    #[test]
+    fn route_code_is_the_decoded_first_segment() {
+        assert_eq!(route_code("/abc/verify"), "abc");
+        assert_eq!(route_code("/%61bc/verify"), "abc");
+        assert_eq!(route_code("/a%2Fb/verify"), "a/b");
+        // Decoded once, like the extractor: %2561 is the literal text %61.
+        assert_eq!(route_code("/%2561/verify"), "%61");
+        assert_eq!(route_code("/"), "unknown");
+        // Not UTF-8 once decoded: keep the raw text rather than panic.
+        assert_eq!(route_code("/%ff/verify"), "%ff");
+    }
+
     fn generous_limiters(auth: RateLimiter) -> Arc<RateLimiters> {
         Arc::new(RateLimiters {
             per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 1))),
@@ -794,6 +882,35 @@ mod tests {
         fn hops_beyond_chain_yield_none() {
             let headers = headers_of(&[("x-forwarded-for", "203.0.113.7")]);
             assert_eq!(client_ip_with(&headers, &cfg(true, None, 5)), None);
+        }
+
+        #[test]
+        fn real_ip_header_none_disables_the_header_and_never_trusts_a_spoof() {
+            // Unset keeps the Cloudflare default.
+            assert_eq!(
+                parse_real_ip_header(None).as_deref(),
+                Some("cf-connecting-ip")
+            );
+            // `none` (any case, padded) and an empty value turn it off.
+            for off in ["none", "NONE", " None ", "", "  "] {
+                assert_eq!(parse_real_ip_header(Some(off)), None, "{off:?}");
+            }
+            assert_eq!(
+                parse_real_ip_header(Some(" X-Real-IP ")).as_deref(),
+                Some("x-real-ip")
+            );
+
+            // With it off, a client-chosen CF-Connecting-IP is ignored and the
+            // right-most X-Forwarded-For entry (the proxy's own) decides.
+            let headers = headers_of(&[
+                ("cf-connecting-ip", "6.6.6.6"),
+                ("x-forwarded-for", "6.6.6.6, 203.0.113.7"),
+            ]);
+            let config = cfg(true, parse_real_ip_header(Some("none")).as_deref(), 0);
+            assert_eq!(
+                client_ip_with(&headers, &config),
+                Some("203.0.113.7".to_string())
+            );
         }
 
         #[test]

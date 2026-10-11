@@ -1,18 +1,35 @@
 use crate::utils::decode_jwt;
+use crate::utils::env::env_parse;
 use axum::{
     extract::{
         Query, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code},
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, sync::Arc, time::Duration};
-use tokio::sync::broadcast;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
+use tokio::sync::{broadcast, watch};
 
 const DEFAULT_AUTH_REVALIDATE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Open `/ws` and `/sse` connections one user may hold at once, together
+/// (`WS_MAX_CONNECTIONS_PER_USER`). Each connection is a task, a broadcast
+/// receiver and a user lookup every revalidation interval; a handful covers
+/// several tabs and devices.
+const DEFAULT_MAX_CONNECTIONS_PER_USER: usize = 5;
+
+/// Largest message the server accepts on `/ws`. It ignores everything a client
+/// sends, so this only has to fit a ping or a subscribe; the library default of
+/// 64 MiB let any signed-in user make the server buffer and parse that much per
+/// connection.
+const MAX_CLIENT_MESSAGE_BYTES: usize = 4 * 1024;
 
 /// WebSocket state for real-time updates
 #[derive(Clone)]
@@ -23,11 +40,45 @@ pub struct WsState {
     /// state to leak.
     pub click_tx: broadcast::Sender<ClickEvent>,
     auth_revalidate_interval: Duration,
+    /// 0 means no limit.
+    max_connections_per_user: usize,
+    open_connections: Arc<Mutex<HashMap<i32, usize>>>,
+    /// Flips to `true` when the process starts shutting down. Open `/sse`
+    /// streams never finish on their own, and the HTTP server waits for every
+    /// response to finish before it exits, so each connection watches this and
+    /// ends itself.
+    shutting_down: Arc<watch::Sender<bool>>,
+}
+
+/// One open `/ws` or `/sse` connection, counted against its user's limit until
+/// dropped.
+pub struct ConnectionGuard {
+    user_id: i32,
+    open_connections: Arc<Mutex<HashMap<i32, usize>>>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let mut open = self
+            .open_connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = open.get_mut(&self.user_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.remove(&self.user_id);
+            }
+        }
+    }
 }
 
 impl WsState {
     pub fn new() -> Self {
         Self::with_auth_revalidate_interval(DEFAULT_AUTH_REVALIDATE_INTERVAL)
+            .with_max_connections_per_user(env_parse(
+                "WS_MAX_CONNECTIONS_PER_USER",
+                DEFAULT_MAX_CONNECTIONS_PER_USER,
+            ))
     }
 
     /// Override the revalidation interval, primarily for deterministic transport
@@ -37,7 +88,63 @@ impl WsState {
         Self {
             click_tx,
             auth_revalidate_interval,
+            max_connections_per_user: DEFAULT_MAX_CONNECTIONS_PER_USER,
+            open_connections: Arc::default(),
+            shutting_down: Arc::new(watch::channel(false).0),
         }
+    }
+
+    /// Cap the `/ws` and `/sse` connections one user may hold at once; 0 lifts
+    /// the cap.
+    pub fn with_max_connections_per_user(mut self, max: usize) -> Self {
+        self.max_connections_per_user = max;
+        self
+    }
+
+    /// Count a new connection for `user_id`, or `None` when they are at the
+    /// limit. The count drops again when the guard does.
+    pub fn try_acquire(&self, user_id: i32) -> Option<ConnectionGuard> {
+        let mut open = self
+            .open_connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let count = open.get(&user_id).copied().unwrap_or(0);
+        if self.max_connections_per_user != 0 && count >= self.max_connections_per_user {
+            return None;
+        }
+        open.insert(user_id, count + 1);
+        Some(ConnectionGuard {
+            user_id,
+            open_connections: self.open_connections.clone(),
+        })
+    }
+
+    /// Connections `user_id` currently holds open.
+    pub fn open_connections(&self, user_id: i32) -> usize {
+        self.open_connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&user_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Tell every open connection to finish.
+    pub fn begin_shutdown(&self) {
+        self.shutting_down.send_replace(true);
+    }
+
+    /// Wait for `signal`, then end every open connection. Hand this to
+    /// `with_graceful_shutdown`: the server waits for each response to finish
+    /// before it exits, an open `/sse` stream never does, and a deploy with one
+    /// stream attached ran into the orchestrator's kill timeout and exited 137.
+    pub async fn shutdown_after(self: Arc<Self>, signal: impl std::future::Future<Output = ()>) {
+        signal.await;
+        self.begin_shutdown();
+    }
+
+    fn shutdown_watch(&self) -> watch::Receiver<bool> {
+        self.shutting_down.subscribe()
     }
 
     /// Broadcast a click event. Connections subscribe to `click_tx` and filter
@@ -104,6 +211,20 @@ async fn current_org_ids(db: &sea_orm::DatabaseConnection, user_id: i32) -> Hash
             HashSet::new()
         }
     }
+}
+
+/// Resolves once shutdown has begun. A dropped sender means the state is gone
+/// and nothing can be broadcast any more, which also ends the connection.
+async fn shutdown_began(shutdown: &mut watch::Receiver<bool>) {
+    let _ = shutdown.wait_for(|stopping| *stopping).await;
+}
+
+fn too_many_connections() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many open realtime connections for this account. Close one and try again.",
+    )
+        .into_response()
 }
 
 /// WebSocket message types
@@ -211,8 +332,15 @@ pub async fn ws_handler(
         .ws_state
         .clone()
         .unwrap_or_else(|| Arc::new(WsState::new()));
+    let Some(connection) = ws_state.try_acquire(user_id) else {
+        return too_many_connections();
+    };
     let db = state.db.clone();
-    ws.on_upgrade(move |socket| handle_socket(socket, ws_state, db, credentials, user_id))
+    ws.max_message_size(MAX_CLIENT_MESSAGE_BYTES)
+        .max_frame_size(MAX_CLIENT_MESSAGE_BYTES)
+        .on_upgrade(move |socket| {
+            handle_socket(socket, ws_state, db, credentials, user_id, connection)
+        })
 }
 
 async fn handle_socket(
@@ -221,8 +349,12 @@ async fn handle_socket(
     db: sea_orm::DatabaseConnection,
     credentials: WsCredentials,
     user_id: i32,
+    // Held for the life of the socket so the user's connection count drops
+    // when it ends.
+    _connection: ConnectionGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
+    let mut shutdown = ws_state.shutdown_watch();
 
     // Subscribe to the global channel and filter per event. The receiver is
     // dropped when this task ends, so nothing accumulates server-side.
@@ -233,6 +365,15 @@ async fn handle_socket(
 
     loop {
         tokio::select! {
+            _ = shutdown_began(&mut shutdown) => {
+                let _ = sender
+                    .send(Message::Close(Some(CloseFrame {
+                        code: close_code::AWAY,
+                        reason: "server shutting down".into(),
+                    })))
+                    .await;
+                break;
+            }
             _ = revalidate.tick() => {
                 let current_user = resolve_ws_user(
                     &db,
@@ -274,11 +415,35 @@ async fn handle_socket(
                         }
                     }
                 }
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Err(_)) => {
+                    // The size limit is the one way a well-behaved client can
+                    // trip an error here; a peer that is broken some other way
+                    // is not reading the close frame anyway.
+                    let _ = sender
+                        .send(Message::Close(Some(CloseFrame {
+                            code: close_code::SIZE,
+                            reason: "messages from clients may not exceed 4 KiB".into(),
+                        })))
+                        .await;
+                    break;
+                }
+                Some(Ok(Message::Close(_))) | None => break,
                 Some(Ok(_)) => {}
             },
         }
     }
+}
+
+/// Everything one `/sse` stream carries between events.
+struct SseSession {
+    rx: broadcast::Receiver<ClickEvent>,
+    revalidate: tokio::time::Interval,
+    db: sea_orm::DatabaseConnection,
+    credentials: WsCredentials,
+    user_id: i32,
+    org_ids: HashSet<i32>,
+    shutdown: watch::Receiver<bool>,
+    _connection: ConnectionGuard,
 }
 
 /// Handler for SSE (Server-Sent Events) alternative
@@ -319,6 +484,9 @@ pub async fn sse_handler(
         .ws_state
         .clone()
         .unwrap_or_else(|| Arc::new(WsState::new()));
+    let Some(connection) = ws_state.try_acquire(user_id) else {
+        return too_many_connections();
+    };
     let rx = ws_state.click_tx.subscribe();
     let mut revalidate = tokio::time::interval(ws_state.auth_revalidate_interval);
     revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -326,44 +494,54 @@ pub async fn sse_handler(
     let org_ids = current_org_ids(&db, user_id).await;
 
     // Filter events to only include links this user may read, and end the
-    // stream when its credential is revoked or the user is soft-deleted.
-    let stream = stream::unfold(
-        (rx, revalidate, db, credentials, user_id, org_ids),
-        |(mut rx, mut revalidate, db, credentials, uid, mut org_ids)| async move {
-            loop {
-                tokio::select! {
-                    _ = revalidate.tick() => {
-                        let current_user = resolve_ws_user(
-                            &db,
-                            credentials.token.as_deref(),
-                            &credentials.headers,
-                        )
-                        .await;
-                        if current_user != Some(uid) {
-                            return None;
-                        }
-                        org_ids = current_org_ids(&db, uid).await;
+    // stream when its credential is revoked, the user is soft-deleted or the
+    // server is shutting down. The connection guard lives in the state, so the
+    // user's count drops when the stream is dropped.
+    let session = SseSession {
+        rx,
+        revalidate,
+        db,
+        credentials,
+        user_id,
+        org_ids,
+        shutdown: ws_state.shutdown_watch(),
+        _connection: connection,
+    };
+    let stream = stream::unfold(session, |mut session| async move {
+        loop {
+            tokio::select! {
+                _ = shutdown_began(&mut session.shutdown) => return None,
+                _ = session.revalidate.tick() => {
+                    let current_user = resolve_ws_user(
+                        &session.db,
+                        session.credentials.token.as_deref(),
+                        &session.credentials.headers,
+                    )
+                    .await;
+                    if current_user != Some(session.user_id) {
+                        return None;
                     }
-                    event = rx.recv() => match event {
-                        Ok(event) => {
-                            // Only send events for links this user may read
-                            if event_is_for(&event, uid, &org_ids) {
-                                let json = serde_json::to_string(&event).unwrap_or_default();
-                                return Some((
-                                    Ok::<_, std::convert::Infallible>(Event::default().data(json)),
-                                    (rx, revalidate, db, credentials, uid, org_ids),
-                                ));
-                            }
-                            // Skip events for other links
-                            continue;
-                        }
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => return None,
-                    },
+                    session.org_ids = current_org_ids(&session.db, session.user_id).await;
                 }
+                event = session.rx.recv() => match event {
+                    Ok(event) => {
+                        // Only send events for links this user may read
+                        if event_is_for(&event, session.user_id, &session.org_ids) {
+                            let json = serde_json::to_string(&event).unwrap_or_default();
+                            return Some((
+                                Ok::<_, std::convert::Infallible>(Event::default().data(json)),
+                                session,
+                            ));
+                        }
+                        // Skip events for other links
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                },
             }
-        },
-    );
+        }
+    });
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default())

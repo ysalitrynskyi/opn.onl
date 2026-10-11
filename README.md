@@ -23,7 +23,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Branded QR Codes** - Generate a QR for any link, with optional brand colour, centre logo and PNG/SVG export
 
 ### Organization & Management
-- **Organizations** - Team workspaces with role-based access (owner, admin, member, viewer)
+- **Organizations** - Team workspaces with role-based access (owner, admin, editor, viewer; see [Organizations](#organizations))
 - **Folders** - Organize links into folders with color coding
 - **Tags** - Add colored tags to categorize links
 - **Bulk Operations** - Create, update, delete links in batches
@@ -42,7 +42,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **User Management** - View, promote, demote, delete, restore users
 - **Content Blocking** - Block specific URLs or entire domains
 - **First User = Admin** - First registered user automatically becomes admin
-- **Audit Log** - Track all organization activities
+- **Audit Log** - Record of organization changes: creation, settings, invitations, role changes, removals and ownership transfers (link, folder and tag changes are not logged)
 - **Database Backups** - Automated S3-compatible backup support
 
 ### Performance
@@ -224,11 +224,15 @@ one budget. The limits are kept in memory, so a restart clears them.
 
 ### Link Management
 
+Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`)
+accepts `true` or `false`, also written `1`/`0`, `yes`/`no` or `on`/`off`, in any case. Any other value
+is ignored with a warning in the log and the default applies.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENABLE_CUSTOM_ALIASES` | true | Allow users to create custom aliases |
 | `MIN_ALIAS_LENGTH` | 5 | Minimum custom alias length |
-| `MAX_ALIAS_LENGTH` | 25 | Maximum custom alias length |
+| `MAX_ALIAS_LENGTH` | 25 | Maximum custom alias length. The Compose files and `.env.example` set 25; a backend started without the variable allows up to 50. A custom alias is letters, digits, hyphens and underscores, and cannot start or end with a hyphen or underscore |
 | `ENABLE_URL_SANITIZATION` | true | Sanitize URLs for security |
 | `BLOCK_DANGEROUS_FILE_EXTENSIONS` | true | Refuse to shorten links pointing directly at executable/script files (`.hta`, `.exe`, `.msi`, `.jar`, `.apk`, `.dmg`, …) — a common malware-delivery vector. Recommended on for any public instance |
 | `BLOCK_RAW_IP_URLS` | true | Refuse to shorten links whose host is a bare IP address. Set `false` if you legitimately shorten internal/LAN IPs on a self-hosted instance |
@@ -285,19 +289,34 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUST_LOG` | info | Log level (trace, debug, info, warn, error) |
+| `RUST_LOG` | info | Log level (trace, debug, info, warn, error). At `debug`, `tower_http` logs two lines for every request |
+| `LOG_MAX_FILES` | 14 | Daily log files kept in the backend's logs volume; older ones are deleted. `0` keeps all of them. Docker's own container logs are rotated by the compose files (10 MB x 5 per service) |
+| `WS_MAX_CONNECTIONS_PER_USER` | 5 | Open `/ws` and `/sse` connections one account may hold at once, together; more are refused with `429`. `0` lifts the limit |
+| `TRUST_PROXY_HEADERS` | true (compose) | Take the client IP from proxy headers. Leave on behind Cloudflare or a proxy you control; off, every visitor behind a proxy shares one rate-limit bucket |
+| `REAL_IP_HEADER` | cf-connecting-ip | Header the trusted edge sets to the real client IP. **Not behind Cloudflare? Set `REAL_IP_HEADER=none`**, or name the header your own proxy overwrites (for example `x-real-ip`). An empty value does not disable it in the compose files: they substitute the default, and any client can forge `CF-Connecting-IP` when Cloudflare is not in front |
+| `TRUSTED_PROXY_HOPS` | 0 | `X-Forwarded-For` fallback when `REAL_IP_HEADER` is `none` or absent from the request: trusted proxies in front of the app (0 uses the right-most entry) |
 | `POSTGRES_HOST_PORT` | 5433 | Host port for the loopback-published postgres in the arm64 Portainer compose. 5432 is often already taken on a host running more than one postgres. Bound to 127.0.0.1 only |
-| `FORCE_HTTPS` | true | Force HTTPS redirects |
+| `FORCE_HTTPS` | true | Redirect plain HTTP to HTTPS, going by `X-Forwarded-Proto`. The Compose files default it to `true`; a backend started without the variable does not redirect. `/health` is exempt: the container health check asks over plain HTTP and must see the real answer |
 | `WEBAUTHN_RP_ID` | (from FRONTEND_URL) | WebAuthn Relying Party ID |
 
 ## API Reference
 
 Full API documentation available at `/swagger-ui/` when backend is running.
 
-Timestamps in responses are RFC 3339 in UTC, for example `2026-11-15T04:59:00Z`. Errors are JSON,
-`{"error": "..."}`, on every endpoint except the short-link redirect itself: `GET /{code}` answers a
-missing or dead link with a small HTML page when the client accepts `text/html`, and with the plain
-reason otherwise.
+Timestamps in responses are RFC 3339 in UTC, for example `2026-11-15T04:59:00Z`.
+
+Errors come in a few shapes, so a generic client should look at the status code first:
+
+- Most endpoints answer `{"error": "..."}`. A `429` from the rate limiter adds `retry_after` and
+  `message` next to `error`.
+- `/admin/*` and `POST /contact` answer `{"success": false, "message": "..."}`.
+- `POST /links/bulk` answers a refusal as `{"links": [], "errors": ["..."]}`.
+- A request body, query string or path id that does not parse (malformed JSON, a wrong type, a
+  non-numeric id) is refused before the handler runs, with status `400`, `415` or `422` and a
+  plain-text reason.
+- `GET /{code}` answers a missing or dead link with a small HTML page when the client accepts
+  `text/html`, and with the plain-text reason otherwise. `/sse` and `/api/bio/avatar` also answer
+  errors as plain text.
 
 ### Authentication
 
@@ -309,7 +328,7 @@ reason otherwise.
 | POST | `/auth/resend-verification` | Resend verification email |
 | POST | `/auth/forgot-password` | Request password reset |
 | POST | `/auth/reset-password` | Reset password with token |
-| POST | `/auth/change-password` | Change password (authenticated) |
+| POST | `/auth/change-password` | Change password (authenticated). Signs out every session, so the response carries a fresh `token` to keep using |
 | POST | `/auth/delete-account` | Delete own account (if enabled; refused with 409 while you own orgs with other members). The account closes at once and is removed for good after `ACCOUNT_PURGE_DAYS` |
 | GET / POST | `/auth/api-keys` | List / create personal API keys |
 | DELETE | `/auth/api-keys/{id}` | Revoke an API key |
@@ -325,8 +344,9 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only). Pinned links first, then newest first. Filters: `folder_id`, `tag_id`, `search`. Pages with `limit` (default and maximum 1000) and `offset`; the body is a JSON array and the `X-Total-Count` response header carries how many links match, ignoring `limit`/`offset` |
-| POST | `/links` | Create new link. Without an `Authorization` header the link is anonymous; a header that does not authenticate (expired, revoked or unknown token) is a 401, not an anonymous link |
-| PUT | `/links/{id}` | Update link. Only the fields you send change; `null` counts as not sent, so clear a field with its flag: `remove_expiration`, `remove_starts_at`, `remove_max_clicks`, `remove_password`, `remove_folder`. An empty `title` or `notes` clears it. A burn-after-reading link always has a click cap (1 unless you set another): turning burn off removes the cap it implied, and `remove_max_clicks` on a burn link turns burn off |
+| POST | `/links` | Create new link (`custom_alias` sets the code). Without an `Authorization` header the link is anonymous; a header that does not authenticate (expired, revoked or unknown token) is a 401, not an anonymous link |
+| GET | `/links/{id}` | Get one link, in the same shape as an item of `GET /links`. Organization links: any current member. A missing, deleted or someone else's link is a `403` |
+| PUT | `/links/{id}` | Update link. The short code cannot be changed. Only the fields you send change; `null` counts as not sent, so clear a field with its flag: `remove_expiration`, `remove_starts_at`, `remove_max_clicks`, `remove_password`, `remove_folder`. An empty `title` or `notes` clears it. A burn-after-reading link always has a click cap (1 unless you set another): turning burn off removes the cap it implied, and `remove_max_clicks` on a burn link turns burn off |
 | POST | `/links/{id}/clone` | Copy a link under a new code: destination, password, schedule, click cap, burn-after-reading, interstitial, folder, tags and routing rules. Clicks start at zero and the copy is not pinned |
 | DELETE | `/links/{id}` | Delete link (organization links: org admins and above, or the creator while still an editor) |
 | GET | `/links/{id}/qr` | Get QR code image. Optional query: `color` (hex), `bg` (hex), `logo` (`true`), `format` (`png`\|`svg`), `size` (256–1024) |
@@ -343,7 +363,7 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 |--------|----------|-------------|
 | GET, HEAD | `/{code}` | Redirect to original URL. A `HEAD` never counts as a click. On a one-time or click-capped link, a `HEAD` and a `GET` from a known link-preview bot get a `200` without the destination and use nothing up |
 | GET | `/{code}/preview` | Link preview + safety/reputation signal (append `+` to any short link). The destination is left out (empty `original_url` and `domain`) for a link that is not live, is password-protected, or is one-time |
-| POST | `/{code}/verify` | Verify password-protected link |
+| POST | `/{code}/verify` | Verify a password-protected link. A correct password answers `{"redirect_url", "expires_in_seconds"}`; open `redirect_url` (it carries a short-lived `?unlock=` proof) to be redirected |
 
 ### Link-in-Bio
 
@@ -369,6 +389,16 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | POST | `/orgs/{org_id}/leave` | Leave an organization (any member except the owner, who gets 409 until ownership is transferred or the organization deleted). Links you created stay with the organization |
 | POST | `/orgs/{org_id}/transfer-ownership` | Transfer ownership to another member (owner only; needs a sign-in session, an API key gets 403; body: `{"new_owner_user_id": <id>}`) |
 | GET | `/orgs/{org_id}/audit` | View audit log (admin+) |
+
+What a member may do depends on their current role. The creator of a link gets nothing extra
+from having made it, except that an editor may delete their own.
+
+| Role | Links | Folders and tags | The organization |
+|------|-------|------------------|------------------|
+| `owner` | Read, create, edit and delete any | Read, create, edit and delete | Everything an admin can, plus delete the organization and transfer ownership |
+| `admin` | Read, create, edit and delete any | Read, create, edit and delete | Rename it, invite members (as admin, editor or viewer), change roles, remove members, read the audit log |
+| `editor` | Read, create and edit any; delete only the ones they created | Read, create, edit and delete | View the member list |
+| `viewer` | Read only (stats and QR codes included) | Read only | View the member list |
 
 An account that owns organizations with other members cannot be deleted
 (HTTP 409 with the list of blocking orgs) until ownership is transferred or
@@ -556,11 +586,12 @@ Backups can be triggered via Admin panel or API. Old backups are automatically c
 ### Rate Limiting
 - **Per-second:** 10 requests/second per IP
 - **General:** 100 requests/minute per IP
-- **Link creation:** 100 links/hour per user
+- **Link creation:** 100 links/hour per IP (`POST /links` and clone; a bulk create spends one per URL)
 - **Sign-in and other auth writes:** 10/minute per IP (`POST /auth/*`; reads such as `/auth/me`
   use the general limit)
-- **Password verification:** 5 attempts/minute per IP+link (anti-bruteforce)
-- **Same URL:** 10 times per 10 minutes per user
+- **Password verification:** 5 attempts/minute per IP+link, 20/minute per IP across links
+  (anti-bruteforce)
+- **Same URL:** 10 times per 10 minutes per user (the one limit counted per account, not per IP)
 - **Redirects:** 100/second per IP
 
 A refused request gets `429` with `Retry-After` (seconds, rounded up) and `X-RateLimit-Limit` /
@@ -627,22 +658,20 @@ The E2E suite needs the backend running on a fresh database; see
 
 ### Database Migrations
 
-```bash
-cd backend
-# Migrations run automatically on startup
-# To run manually:
-cargo run -- migrate
-```
+Migrations run automatically every time the backend starts (`cargo run`, or the container), and
+the test suite runs them on its first connection. There is no separate migrate command: the
+binary takes no arguments.
 
 ## Troubleshooting
 
 ### Container Health Checks Failing
 ```bash
-# Check backend health
-curl http://localhost:3000/health
+# Check backend health (the ports are not published, so ask from inside the
+# container; a non-200 answer means the database is unreachable)
+docker-compose exec backend curl -fsS http://localhost:3000/health
 
 # Check frontend health
-curl http://localhost:80/health
+docker-compose exec frontend curl -fsS http://localhost:80/health
 
 # View logs
 docker-compose logs -f backend

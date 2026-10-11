@@ -88,7 +88,7 @@ const features = [
     {
         icon: <Route className="h-6 w-6" />,
         title: "Smart Conditional Routing",
-        description: "One link, many destinations. Route by device, OS, country or language — send iPhone users to the App Store, everyone else to the web — with an optional weighted A/B split, measured in real time.",
+        description: "One link, many destinations. Route by device, OS, country or language — send iPhone users to the App Store, everyone else to the web — with an optional weighted A/B split.",
         color: "text-sky-600",
         bgColor: "bg-sky-100"
     },

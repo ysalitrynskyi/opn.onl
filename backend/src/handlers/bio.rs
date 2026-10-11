@@ -11,6 +11,7 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::{links, users};
 use crate::handlers::json_error;
+use crate::utils::env::env_flag;
 
 /// Usernames that would collide with app routes or API paths.
 const RESERVED_USERNAMES: &[&str] = &[
@@ -51,9 +52,7 @@ const RESERVED_USERNAMES: &[&str] = &[
 ];
 
 pub(crate) fn link_in_bio_enabled() -> bool {
-    std::env::var("ENABLE_LINK_IN_BIO")
-        .map(|v| v != "false")
-        .unwrap_or(true)
+    env_flag("ENABLE_LINK_IN_BIO", true)
 }
 
 #[derive(Deserialize, ToSchema)]

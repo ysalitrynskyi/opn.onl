@@ -8,11 +8,20 @@ on:
     types: [published]
   workflow_dispatch:
 
-# Serialize GHCR publication across release, tag, and manual runs. Matrix jobs
-# still run in parallel within one workflow, but separate runs cannot interleave
-# per-architecture tags and manifest promotion.
+# Serialize GHCR publication per ref. Matrix jobs still run in parallel within
+# one run, but two runs for the same ref cannot interleave per-architecture tags
+# and manifest promotion.
+#
+# The group is per ref on purpose. The `release` branch run is the only one that
+# writes `:latest`; a tag run writes only `:X.Y.Z`. Their tags do not overlap,
+# so they may run side by side. With one repo-wide group, a tag or release run
+# queued behind a running build replaced the queued `release` run, and `:latest`
+# stayed on the old build (it happened on 1.4.0). Within one ref GitHub keeps
+# only the newest queued run, which is right: same ref, same tags, newest commit
+# wins. A run that has started is never cancelled: a half-pushed manifest is
+# worse than a late one.
 concurrency:
-  group: ghcr-publish-${{ github.repository }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 env:
