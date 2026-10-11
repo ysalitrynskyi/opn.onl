@@ -10,6 +10,15 @@ use super::email_limits::{MailDenied, MailKind, Pools, TriggerLimiter, loggable_
 /// Hourly mail budget when `EMAIL_RATE_LIMIT_PER_HOUR` is unset or invalid.
 const DEFAULT_HOURLY_LIMIT: u64 = 500;
 
+/// How the password changed, which decides what the security notice can say
+/// was revoked. A reset is account recovery, so it also removes the API keys
+/// and passkeys; a change made while signed in leaves them in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasswordChange {
+    Reset,
+    Change,
+}
+
 pub struct EmailService {
     mailer: Option<AsyncSmtpTransport<Tokio1Executor>>,
     from_email: String,
@@ -335,16 +344,24 @@ impl EmailService {
         )
     }
 
-    fn password_changed_email(&self, changed_at: &str) -> EmailBody {
+    fn password_changed_email(&self, change: PasswordChange, changed_at: &str) -> EmailBody {
         let url = format!("{}/forgot-password", self.frontend_url);
-        let when = format!("The password for your opn.onl account was changed on {changed_at}.");
+        let (verb, revoked, advice) = match change {
+            PasswordChange::Reset => (
+                "reset",
+                "Every signed-in session was signed out, and all API keys and passkeys on the account were removed. Create new ones in Settings if you need them.",
+                "If you made this change, you don't need to do anything. If you didn't, reset your password again now:",
+            ),
+            PasswordChange::Change => (
+                "changed",
+                "Your other signed-in sessions were signed out. Your API keys and passkeys were not changed.",
+                "If you made this change, you don't need to do anything. If you didn't, reset your password now, which also removes all API keys and passkeys:",
+            ),
+        };
+        let when = format!("The password for your opn.onl account was {verb} on {changed_at}.");
         EmailBody::new(
             "Your password was changed",
-            &[
-                &when,
-                "Sessions signed in with the old password have been signed out.",
-                "If you made this change, you don't need to do anything. If you didn't, reset your password now:",
-            ],
+            &[&when, revoked, advice],
             Some(("Reset Password", &url)),
             &[],
             "You get this email whenever the password on your account changes.",
@@ -382,14 +399,19 @@ impl EmailService {
     }
 
     /// Security notice after a password change or reset. If the owner did not
-    /// make the change, this is how they find out.
-    pub async fn send_password_changed_email(&self, to: &str) -> Result<(), String> {
+    /// make the change, this is how they find out, so it says what was and
+    /// was not revoked for the way the password changed.
+    pub async fn send_password_changed_email(
+        &self,
+        to: &str,
+        change: PasswordChange,
+    ) -> Result<(), String> {
         let changed_at = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
         self.send_email(
             MailKind::PasswordChanged,
             to,
             "Your password was changed - opn.onl",
-            &self.password_changed_email(&changed_at),
+            &self.password_changed_email(change, &changed_at),
         )
         .await
     }
@@ -478,7 +500,7 @@ pub fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailService, Pools, TriggerLimiter, generate_token};
+    use super::{EmailService, PasswordChange, Pools, TriggerLimiter, generate_token};
 
     fn service() -> EmailService {
         EmailService {
@@ -507,7 +529,7 @@ mod tests {
             ),
             (svc.welcome_email(), "https://opn.example/dashboard"),
             (
-                svc.password_changed_email("2026-09-30 12:00 UTC"),
+                svc.password_changed_email(PasswordChange::Change, "2026-09-30 12:00 UTC"),
                 "https://opn.example/forgot-password",
             ),
         ];
@@ -537,6 +559,42 @@ mod tests {
             assert!(raw.contains("text/html"), "{raw}");
         }
         assert!(bodies[3].0.text.contains("2026-09-30 12:00 UTC"));
+    }
+
+    /// The notice is the one place a person learns what a password change
+    /// revoked, so it must not claim more or less than the change did.
+    #[test]
+    fn the_password_notice_matches_what_each_kind_of_change_revoked() {
+        let svc = service();
+        let reset = svc
+            .password_changed_email(PasswordChange::Reset, "2026-09-30 12:00 UTC")
+            .text;
+        assert!(
+            reset.contains("was reset on 2026-09-30 12:00 UTC"),
+            "{reset}"
+        );
+        assert!(
+            reset.contains("all API keys and passkeys on the account were removed"),
+            "{reset}"
+        );
+        assert!(!reset.contains("were not changed"), "{reset}");
+
+        let change = svc
+            .password_changed_email(PasswordChange::Change, "2026-09-30 12:00 UTC")
+            .text;
+        assert!(
+            change.contains("was changed on 2026-09-30 12:00 UTC"),
+            "{change}"
+        );
+        assert!(
+            change.contains("other signed-in sessions were signed out"),
+            "{change}"
+        );
+        assert!(
+            change.contains("API keys and passkeys were not changed"),
+            "{change}"
+        );
+        assert!(!change.contains("were removed"), "{change}");
     }
 
     /// The display name the From header carries, whether the writer left it
