@@ -190,6 +190,7 @@ pub async fn create_folder(
     responses(
         (status = 200, description = "List of folders", body = Vec<FolderResponse>),
         (status = 401, description = "Unauthorized"),
+        (status = 500, description = "The folders could not be read"),
     ),
     tag = "Folders",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -258,7 +259,12 @@ pub async fn get_folders(
             .into_tuple()
             .all(&state.db)
             .await
-            .unwrap_or_default();
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Database error"})),
+                )
+            })?;
         for (folder_id, count) in rows {
             if let Some(folder_id) = folder_id {
                 link_counts.insert(folder_id, count);
@@ -707,7 +713,14 @@ pub async fn get_folder_links(
         })?;
 
     let page_ids: Vec<i32> = links_list.iter().map(|l| l.id).collect();
-    let mut tags_by_link = get_tags_by_link_ids(&state.db, &page_ids).await;
+    let mut tags_by_link = get_tags_by_link_ids(&state.db, &page_ids)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?;
 
     let base_url =
         std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
