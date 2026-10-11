@@ -277,6 +277,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
             passkeys::LoginStartRequest,
             passkeys::LoginFinishRequest,
             passkeys::DeletePasskeyRequest,
+            passkeys::DeletePasskeyResponse,
             passkeys::RenamePasskeyRequest,
 
             // Link-in-bio schemas
