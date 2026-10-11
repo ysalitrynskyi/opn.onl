@@ -8,7 +8,7 @@ use validator::Validate;
 use crate::AppState;
 use crate::entity::{api_keys, passkeys, users};
 use crate::handlers::links::optional_user_id_from_header;
-use crate::utils::email::{EmailService, PasswordChange, generate_token};
+use crate::utils::email::{EmailService, PasswordChange, generate_token, send_in_background};
 use crate::utils::email_domain_policy::{
     ensure_email_domain_allowed, ensure_sign_in_domain_allowed, live_users_by_email,
     normalize_email,
@@ -22,6 +22,7 @@ use crate::utils::rate_limiter::{ClientKey, too_many_requests};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_max_chars, validation_error_message};
 use axum::http::HeaderMap;
+use std::sync::Arc;
 
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
@@ -229,15 +230,18 @@ pub async fn register(
             }
             // Send verification email if email service is configured. When
             // the mail limits refuse it the account exists all the same, as
-            // the answer below says; a later resend sends the mail.
+            // the answer below says; a later resend sends the mail. The send
+            // runs on its own task: an unreachable mail server must not hold
+            // up a sign-up that is already committed.
             if let Some(email_service) = &state.email_service
                 && email_service.is_configured()
                 && may_send_mail(email_service, MailKind::Verification, &email, &client)
-                && let Err(e) = email_service
-                    .send_verification_email(&email, &verification_token)
-                    .await
             {
-                tracing::error!("Failed to send verification email: {}", e);
+                let service = Arc::clone(email_service);
+                let (to, token) = (email.clone(), verification_token);
+                send_in_background("verification", async move {
+                    service.send_verification_email(&to, &token).await
+                });
             }
 
             let token = match create_jwt(user_res.last_insert_id, &email, 0) {
@@ -475,9 +479,13 @@ pub async fn verify_email(
         // Send welcome email
         if let Some(email_service) = &state.email_service
             && email_service.is_configured()
-            && let Err(e) = email_service.send_welcome_email(&user.email).await
         {
-            tracing::error!("Failed to send welcome email: {}", e);
+            let service = Arc::clone(email_service);
+            let to = user.email.clone();
+            send_in_background(
+                "welcome",
+                async move { service.send_welcome_email(&to).await },
+            );
         }
 
         return (
@@ -735,12 +743,14 @@ pub async fn resend_verification(
             active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
             if active_user.update(&state.db).await.is_ok() {
-                if let Some(service) = service
-                    && let Err(e) = service
-                        .send_verification_email(&user.email, &verification_token)
-                        .await
-                {
-                    tracing::error!("Failed to send verification email: {}", e);
+                // Never wait for SMTP here: the answer is the same whether or
+                // not a mail went out, and so must be its timing.
+                if let Some(service) = service {
+                    let service = Arc::clone(service);
+                    let (to, token) = (user.email.clone(), verification_token);
+                    send_in_background("verification", async move {
+                        service.send_verification_email(&to, &token).await
+                    });
                 }
             } else {
                 tracing::error!("Failed to generate verification token");
@@ -774,7 +784,8 @@ pub async fn forgot_password(
 ) -> impl IntoResponse {
     let email = normalize_email(&payload.email);
     // Same dummy bcrypt as login, paid on every path so a miss is not a
-    // cheap SELECT while a hit pays for UPDATE (and SMTP when configured).
+    // cheap SELECT while a hit pays for an UPDATE. The mail itself is sent
+    // from a task of its own, so SMTP never shows in the response time.
     let equalize_work = || async {
         let _ = verify_password("not-a-real-password", dummy_password_hash()).await;
     };
@@ -822,12 +833,12 @@ pub async fn forgot_password(
             active_user.password_reset_expires = Set(Some(reset_expires.naive_utc()));
 
             if active_user.update(&state.db).await.is_ok() {
-                if let Some(service) = service
-                    && let Err(e) = service
-                        .send_password_reset_email(&user.email, &reset_token)
-                        .await
-                {
-                    tracing::error!("Failed to send password reset email: {}", e);
+                if let Some(service) = service {
+                    let service = Arc::clone(service);
+                    let (to, token) = (user.email.clone(), reset_token);
+                    send_in_background("password reset", async move {
+                        service.send_password_reset_email(&to, &token).await
+                    });
                 }
             } else {
                 tracing::error!("Failed to generate password reset token");
@@ -1025,10 +1036,8 @@ fn notify_password_changed(state: &AppState, email: String, change: PasswordChan
     if let Some(service) = state.email_service.clone()
         && service.is_configured()
     {
-        tokio::spawn(async move {
-            if let Err(e) = service.send_password_changed_email(&email, change).await {
-                tracing::error!("Failed to send password-changed email: {}", e);
-            }
+        send_in_background("password-changed", async move {
+            service.send_password_changed_email(&email, change).await
         });
     }
 }
@@ -1363,6 +1372,31 @@ pub async fn delete_account(
                     .into_response();
             }
         };
+
+        // An admin's deletion is decided by how many live admins there are, so
+        // two admins deleting at once must not each count the other. Lock every
+        // live admin row, in id order and before the caller's own row: a fixed
+        // order makes concurrent deletions queue rather than deadlock, and the
+        // one that waits counts after the first has committed.
+        if user.is_admin
+            && users::Entity::find()
+                .filter(users::Column::IsAdmin.eq(true))
+                .filter(users::Column::DeletedAt.is_null())
+                .order_by_asc(users::Column::Id)
+                .lock_exclusive()
+                .all(&txn)
+                .await
+                .is_err()
+        {
+            let _ = txn.rollback().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }),
+            )
+                .into_response();
+        }
 
         // Re-read under a row lock. Credential changes and passkey revocation use
         // the same lock, preventing a stale token_version write from surviving a

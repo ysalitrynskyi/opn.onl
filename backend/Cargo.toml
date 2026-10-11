@@ -90,6 +90,9 @@ regex = "1.10"
 
 [dev-dependencies]
 axum-test = { version = "16", features = ["ws"] }
+# Signs the WebAuthn registration and login ceremonies the tests act out; it is
+# the library webauthn-rs already verifies them with.
+openssl = "0.10"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
 mime = "0.3"

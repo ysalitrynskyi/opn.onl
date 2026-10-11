@@ -124,11 +124,23 @@ fn bearer_for(user: &users::Model) -> String {
     create_jwt(user.id, &user.email, user.token_version).expect("mint token")
 }
 
+/// Wait for the mail that requests have handed to background tasks: the
+/// handlers answer before SMTP is done, so what the server has received is only
+/// complete (and "nothing was sent" only means something) once they finish.
+async fn mail_sent() {
+    assert!(
+        opn_onl_backend::utils::email::wait_for_background_mail(std::time::Duration::from_secs(20))
+            .await,
+        "background mail did not finish"
+    );
+}
+
 /// POST `body` to `path` as the client at `ip`. Forged forwarding headers ride
 /// along on every request: they must not give anyone a budget of their own.
+/// Returns once the mail the request triggered has been handed to SMTP.
 async fn post_as(server: &TestServer, ip: &str, path: &str, body: Value) -> TestResponse {
     let forged = format!("203.0.113.{}", uuid::Uuid::new_v4().as_u128() % 250 + 1);
-    server
+    let res = server
         .post(path)
         .add_header(
             HeaderName::from_static("cf-connecting-ip"),
@@ -143,7 +155,9 @@ async fn post_as(server: &TestServer, ip: &str, path: &str, body: Value) -> Test
             HeaderValue::from_str(&forged).unwrap(),
         )
         .json(&body)
-        .await
+        .await;
+    mail_sent().await;
+    res
 }
 
 async fn forgot(server: &TestServer, ip: &str, email: &str) -> TestResponse {

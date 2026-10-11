@@ -155,6 +155,12 @@ async fn main() {
     .await
     .unwrap();
 
+    // Mail a request promised before it was answered is sent from a task of its
+    // own; let it finish before the runtime goes away.
+    if !utils::email::wait_for_background_mail(std::time::Duration::from_secs(10)).await {
+        tracing::warn!("Shutting down while mail was still being sent");
+    }
+
     tracing::info!("Server stopped — draining click buffer");
     shutdown_buffer.request_stop();
     let _ = flush_task.await;
