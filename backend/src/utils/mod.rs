@@ -10,6 +10,7 @@ pub mod geoip;
 pub mod jwt;
 pub mod link_owner;
 pub mod link_unlock;
+pub mod logging;
 pub mod privacy;
 pub mod rate_limiter;
 pub mod routing;
