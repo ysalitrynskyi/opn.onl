@@ -1,5 +1,6 @@
 //! Privacy helpers for click analytics: IP truncation at collection time and
-//! a scheduled retention sweep that anonymizes old per-visitor identifiers.
+//! a scheduled retention sweep that anonymizes old per-visitor identifiers
+//! (and the truncated address kept on organization audit entries).
 //!
 //! Visitor IPs are personal data (GDPR et al.). Analytics only need network /
 //! city granularity, so we truncate before storage (IPv4 to /24, IPv6 to /48)
@@ -75,6 +76,24 @@ pub async fn scrub_expired_click_pii(
     Ok(res.rows_affected())
 }
 
+/// Null `ip_address` on organization audit-log entries older than `days`, the
+/// same window as click events. The entry itself (who did what, when) stays.
+pub async fn scrub_expired_audit_ips(
+    db: &DatabaseConnection,
+    days: i32,
+) -> Result<u64, sea_orm::DbErr> {
+    let res = db
+        .execute(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "UPDATE audit_log SET ip_address = NULL \
+             WHERE created_at < NOW() - make_interval(days => $1) \
+               AND ip_address IS NOT NULL",
+            [days.into()],
+        ))
+        .await?;
+    Ok(res.rows_affected())
+}
+
 /// Erase visitor PII (IP, user-agent, referer) from every click event on a
 /// user's personal links. Called on account deletion so a departing user's link
 /// analytics stop retaining per-visitor identifiers immediately, rather than
@@ -120,6 +139,15 @@ pub fn spawn_retention_task(db: DatabaseConnection) {
                     days
                 ),
                 Err(e) => tracing::error!("Analytics PII retention sweep failed: {}", e),
+            }
+            match scrub_expired_audit_ips(&db, days).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    "Retention sweep removed the IP address from {} audit log entries (older than {} days)",
+                    n,
+                    days
+                ),
+                Err(e) => tracing::error!("Audit log IP retention sweep failed: {}", e),
             }
         }
     });

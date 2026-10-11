@@ -238,7 +238,7 @@ one budget. The limits are kept in memory, so a restart clears them.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) are anonymized by a daily sweep; aggregate stats are kept. `0` disables the sweep |
+| `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) and the truncated IP on organization audit entries are anonymized by a daily sweep; aggregate stats and the audit entries themselves are kept. `0` disables the sweep |
 
 Click analytics never store the full visitor IP: addresses are truncated at
 collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
@@ -583,7 +583,8 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
   behind an HTTPS proxy
 - URL sanitization and blocking
 - Visitor IPs truncated before storage (IPv4 /24, IPv6 /48); remaining
-  click identifiers anonymized after a configurable retention window
+  click identifiers, and the truncated address on organization audit entries,
+  anonymized after a configurable retention window
   (`ANALYTICS_PII_RETENTION_DAYS`, default ~13 months)
 
 ## Development
