@@ -9,6 +9,9 @@ interface Interstitial {
     original_url: string;
     verdict: string;
     source: string;
+    /** The API withheld the destination, so there is nothing to show or vouch for. */
+    hidden: boolean;
+    oneTime: boolean;
 }
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -55,13 +58,16 @@ export default function Redirect() {
                     }
 
                     // Opted-in + instance-enabled → show the safety interstitial
-                    // instead of redirecting straight away.
-                    if (data.interstitial_enabled && data.safe_link_interstitial) {
+                    // instead of redirecting straight away. A link that is no
+                    // longer live skips it: the backend answers with the reason.
+                    if (data.is_active !== false && data.interstitial_enabled && data.safe_link_interstitial) {
                         setInterstitial({
                             domain: data.domain,
                             original_url: data.original_url,
                             verdict: data.reputation?.verdict ?? 'unknown',
                             source: data.reputation?.source ?? 'internal_blocklist',
+                            hidden: !data.original_url,
+                            oneTime: Boolean(data.burn_after_reading),
                         });
                         setChecking(false);
                         return;
@@ -127,29 +133,46 @@ export default function Redirect() {
                     <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
                         <div className="bg-gradient-to-r from-primary-600 to-primary-700 px-6 py-5">
                             <h1 className="text-xl font-bold text-white">You're leaving opn.onl</h1>
-                            <p className="text-primary-100 text-sm mt-1">Review the destination before continuing</p>
+                            <p className="text-primary-100 text-sm mt-1">
+                                {interstitial.hidden ? 'This link keeps its destination private' : 'Review the destination before continuing'}
+                            </p>
                         </div>
                         <div className="p-6 space-y-5">
-                            <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl">
-                                {/* Domain initial instead of a third-party favicon service:
-                                    fetching favicons from Google leaked the destination
-                                    domain and the visitor's IP to a third party. */}
-                                <div className="h-10 w-10 bg-white rounded-lg border border-slate-200 flex items-center justify-center flex-shrink-0">
-                                    <span className="text-sm font-bold text-slate-500 uppercase">
-                                        {interstitial.domain?.charAt(0) || '?'}
+                            {interstitial.hidden ? (
+                                // Nothing to show, so nothing is vouched for: the
+                                // destination is withheld until the visit itself.
+                                <div className="flex items-start gap-2.5 p-4 rounded-xl border bg-slate-50 border-slate-200 text-sm text-slate-700">
+                                    <ShieldQuestion className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                                    <span>
+                                        {interstitial.oneTime
+                                            ? "This is a one-time link. Its destination isn't shown in advance, and once you continue it can't be opened again."
+                                            : "This link's destination can't be shown or checked in advance."}
                                     </span>
                                 </div>
-                                <div className="min-w-0 flex-1">
-                                    <p className="font-medium text-slate-900 truncate">{interstitial.domain}</p>
-                                    <p className="text-sm text-slate-500 truncate">{interstitial.original_url}</p>
-                                </div>
-                                <ExternalLink className="h-4 w-4 text-slate-400 flex-shrink-0" />
-                            </div>
+                            ) : (
+                                <>
+                                    <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl">
+                                        {/* Domain initial instead of a third-party favicon service:
+                                            fetching favicons from Google leaked the destination
+                                            domain and the visitor's IP to a third party. */}
+                                        <div className="h-10 w-10 bg-white rounded-lg border border-slate-200 flex items-center justify-center flex-shrink-0">
+                                            <span className="text-sm font-bold text-slate-500 uppercase">
+                                                {interstitial.domain?.charAt(0) || '?'}
+                                            </span>
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="font-medium text-slate-900 truncate">{interstitial.domain}</p>
+                                            <p className="text-sm text-slate-500 truncate">{interstitial.original_url}</p>
+                                        </div>
+                                        <ExternalLink className="h-4 w-4 text-slate-400 flex-shrink-0" />
+                                    </div>
 
-                            <div className={`flex items-start gap-2.5 p-3 rounded-lg border text-sm ${verdictTone}`}>
-                                <VerdictIcon className="h-4 w-4 flex-shrink-0 mt-0.5" />
-                                <span>{verdictLabel}</span>
-                            </div>
+                                    <div className={`flex items-start gap-2.5 p-3 rounded-lg border text-sm ${verdictTone}`}>
+                                        <VerdictIcon className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                                        <span>{verdictLabel}</span>
+                                    </div>
+                                </>
+                            )}
 
                             <div className="flex gap-3 pt-1">
                                 <RouterLink
