@@ -553,7 +553,7 @@ export default function Admin() {
     const blockEmailDomain = () => {
         const domain = newBlockedEmailDomain.trim();
         if (!domain) return;
-        if (!confirm(`Block ${domain}? Rejects future signups/resets for this email domain and disables existing matching users without deleting their data.`)) return;
+        if (!confirm(`Block ${domain}? Rejects future signups/resets for this email domain and disables existing matching users. Their links and bio pages stop working until they are re-enabled; no data is deleted.`)) return;
         doAction(
             () => authFetch(API_ENDPOINTS.adminBlockedEmailDomains, {
                 method: 'POST',
@@ -1274,7 +1274,7 @@ export default function Admin() {
                             Block Email Domain
                         </h3>
                         <p className="text-sm text-slate-500 mb-4">
-                            Rejects future signups/resets for this email domain and disables existing matching users without deleting their data.
+                            Rejects future signups/resets for this email domain and disables existing matching users. Their links and bio pages stop working until they are re-enabled; no data is deleted.
                         </p>
                         <div className="flex flex-wrap gap-3">
                             <input
