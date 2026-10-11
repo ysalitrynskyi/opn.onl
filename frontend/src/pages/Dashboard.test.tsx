@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '../test/test-utils';
+import { act } from '@testing-library/react';
+import { fireEvent, render, screen, wait, waitFor } from '../test/test-utils';
 import Dashboard from './Dashboard';
 import { mockFetchError, mockFetchResponse, mockToken, mockLink } from '../test/test-utils';
 import { ToastContainer } from '../components/Toast';
@@ -491,16 +492,16 @@ describe('Dashboard Page', () => {
     });
   });
 
-  it('keeps cached sparklines when a later batch fails', async () => {
-    const many = Array.from({ length: 150 }, (_, i) => ({
-      ...mockLink,
-      id: i + 1,
-      code: `c${String(i + 1).padStart(3, '0')}`,
-      created_at: new Date(Date.UTC(2024, 0, 1, 0, 0, i)).toISOString(),
-      is_active: true,
-      is_pinned: false,
-    }));
-    let sparkCalls = 0;
+  /**
+   * A dashboard whose sparkline endpoint answers with a chart for every id it
+   * is asked about, except where `failSparklines` says to refuse. `clone`
+   * adds a link to the account, as the real endpoint does.
+   */
+  function mockSparklineDashboard(
+    initial: typeof linkA[],
+    failSparklines: (ids: number[]) => boolean = () => false,
+  ) {
+    let account = [...initial];
     vi.mocked(global.fetch).mockImplementation((url, options) => {
       const requestUrl = String(url);
       if (requestUrl.endsWith('/auth/settings')) {
@@ -511,42 +512,111 @@ describe('Dashboard Page', () => {
         }) as any;
       }
       if (requestUrl.includes('/links/sparklines')) {
-        sparkCalls += 1;
-        const ids = new URL(requestUrl).searchParams.get('ids')?.split(',') ?? [];
-        const firstId = Number(ids[0]);
-        if (sparkCalls > 2 && firstId > 80) {
-          return mockFetchError('sparkline batch failed', 500) as any;
+        const ids = (new URL(requestUrl).searchParams.get('ids') ?? '').split(',').map(Number);
+        if (failSparklines(ids)) {
+          return mockFetchError('sparklines unavailable', 500) as any;
         }
         return mockFetchResponse({
           sparklines: ids.map((id) => ({
-            link_id: Number(id),
+            link_id: id,
             data: [1, 2, 3],
             labels: ['a', 'b', 'c'],
           })),
         }) as any;
       }
-      if (options?.method === 'POST' && requestUrl.includes('/pin')) {
+      if (options?.method === 'POST' && requestUrl.endsWith('/pin')) {
         return mockFetchResponse({ is_pinned: true, message: 'Pinned' }) as any;
       }
+      if (options?.method === 'POST' && requestUrl.endsWith('/clone')) {
+        const id = Math.max(...account.map((l) => l.id)) + 1;
+        account = [...account, { ...linkA, id, code: `clone${id}` }];
+        return mockFetchResponse({ code: `clone${id}` }) as any;
+      }
+      if (options?.method === 'PUT') {
+        return mockFetchResponse({}) as any;
+      }
+      if (options?.method === 'DELETE') {
+        const id = Number(requestUrl.split('/').pop());
+        account = account.filter((l) => l.id !== id);
+        return mockFetchResponse({}) as any;
+      }
       if (requestUrl.endsWith('/links')) {
-        return mockFetchResponse(many) as any;
+        return mockFetchResponse(account) as any;
       }
       return mockFetchResponse([]) as any;
     });
+  }
 
-    const sparkSvgs = () => document.querySelectorAll('svg[width="70"]');
+  /** The ids of every sparkline request made so far, one list per request. */
+  const sparklineRequests = () =>
+    vi.mocked(global.fetch).mock.calls
+      .filter(([url]) => String(url).includes('/links/sparklines'))
+      .map(([url]) => (new URL(String(url)).searchParams.get('ids') ?? '').split(',').map(Number));
+
+  /** How many times the link list itself has been loaded. */
+  const linkListLoads = () =>
+    vi.mocked(global.fetch).mock.calls.filter(
+      ([url, options]) => String(url).endsWith('/links') && !(options as RequestInit | undefined)?.method,
+    ).length;
+
+  const sparkSvgs = () => document.querySelectorAll('svg[width="70"]');
+
+  /** Let any request an effect would fire after the last interaction go out. */
+  const settle = () => act(() => wait(50));
+
+  it('does not ask for sparklines again when a link is pinned, edited or deleted', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockSparklineDashboard([linkA, linkB]);
+
     const { user } = render(<Dashboard />);
-    expect(await screen.findByText(/150 links/i)).toBeInTheDocument();
-    await waitFor(() => {
-      expect(sparkSvgs().length).toBeGreaterThan(0);
-    });
-    const svgCountAfterLoad = sparkSvgs().length;
+    await waitFor(() => expect(sparkSvgs()).toHaveLength(2));
+    expect(sparklineRequests()).toEqual([[1, 2]]);
 
-    await user.click(screen.getAllByRole('button', { name: /^pin link /i })[0]);
-    await waitFor(() => {
-      expect(sparkCalls).toBeGreaterThan(2);
-    });
-    expect(sparkSvgs().length).toBe(svgCountAfterLoad);
+    // Pinning replaces the links array without changing which links there are.
+    await user.click(screen.getByRole('button', { name: 'Pin link aaa111' }));
+    await screen.findByRole('button', { name: 'Unpin link aaa111' });
+    await settle();
+    expect(sparklineRequests()).toEqual([[1, 2]]);
+    expect(sparkSvgs()).toHaveLength(2);
+
+    // Saving an edit reloads the list into the same links.
+    const loadsBeforeEdit = linkListLoads();
+    await user.click(screen.getByRole('button', { name: 'Edit link aaa111' }));
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(linkListLoads()).toBe(loadsBeforeEdit + 1));
+    await settle();
+    expect(sparklineRequests()).toEqual([[1, 2]]);
+
+    // Deleting removes a chart and needs no request for the others.
+    await user.click(screen.getByRole('button', { name: 'Delete link bbb222' }));
+    await waitFor(() => expect(screen.queryAllByText(/bbb222/i)).toHaveLength(0));
+    await settle();
+    expect(sparklineRequests()).toEqual([[1, 2]]);
+    expect(sparkSvgs()).toHaveLength(1);
+  });
+
+  it('asks only for the new link after a clone', async () => {
+    mockSparklineDashboard([linkA, linkB]);
+
+    const { user } = render(<Dashboard />);
+    await waitFor(() => expect(sparkSvgs()).toHaveLength(2));
+
+    await user.click(screen.getByRole('button', { name: 'Clone link aaa111' }));
+    await waitFor(() => expect(sparkSvgs()).toHaveLength(3));
+    expect(sparklineRequests()).toEqual([[1, 2], [3]]);
+  });
+
+  it('keeps the charts it has when the request for a new link fails', async () => {
+    mockSparklineDashboard([linkA, linkB], (ids) => ids.includes(3));
+
+    const { user } = render(<Dashboard />);
+    await waitFor(() => expect(sparkSvgs()).toHaveLength(2));
+
+    await user.click(screen.getByRole('button', { name: 'Clone link aaa111' }));
+    await waitFor(() => expect(sparklineRequests()).toEqual([[1, 2], [3]]));
+    expect(await screen.findAllByText(/clone3/i)).not.toHaveLength(0);
+    await settle();
+    expect(sparkSvgs()).toHaveLength(2);
   });
 
   it('shows bulk-import API errors from the errors array', async () => {
