@@ -4,6 +4,66 @@
 
 use crate::entity::routing_rules::Model as RoutingRule;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo};
+use rand::Rng;
+
+/// Device classes a rule can target: what `geoip::parse_user_agent` reports.
+pub const DEVICE_TYPES: [&str; 4] = ["Mobile", "Tablet", "Desktop", "Bot"];
+
+/// A blank condition means "match anything".
+fn condition(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Canonical device class for a rule, or why it can never match.
+pub fn normalize_device(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = condition(raw) else {
+        return Ok(None);
+    };
+    DEVICE_TYPES
+        .iter()
+        .find(|d| d.eq_ignore_ascii_case(value))
+        .map(|d| Some((*d).to_string()))
+        .ok_or_else(|| format!("device must be one of {}", DEVICE_TYPES.join(", ")))
+}
+
+/// Operating-system prefix as reported by the User-Agent parser ("iOS",
+/// "Windows 10", ...).
+pub fn normalize_os(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = condition(raw) else {
+        return Ok(None);
+    };
+    let plain = value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'));
+    if value.len() > 32 || !plain {
+        return Err("os must be a short name such as iOS, Android or Windows".to_string());
+    }
+    Ok(Some(value.to_string()))
+}
+
+/// ISO 3166-1 alpha-2 code, the only shape the GeoIP lookup ever returns.
+pub fn normalize_country(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = condition(raw) else {
+        return Ok(None);
+    };
+    if value.len() == 2 && value.chars().all(|c| c.is_ascii_alphabetic()) {
+        Ok(Some(value.to_ascii_uppercase()))
+    } else {
+        Err("country must be a 2-letter ISO code such as US".to_string())
+    }
+}
+
+/// Primary language subtag, the only part of Accept-Language rules compare.
+pub fn normalize_lang(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = condition(raw) else {
+        return Ok(None);
+    };
+    if (2..=3).contains(&value.len()) && value.chars().all(|c| c.is_ascii_alphabetic()) {
+        Ok(Some(value.to_ascii_lowercase()))
+    } else {
+        Err("language must be a primary language code such as en or de".to_string())
+    }
+}
 
 /// Extract the primary BCP-47 subtag of the first `Accept-Language` entry.
 /// e.g. "en-US,en;q=0.9" → "en".
@@ -95,18 +155,30 @@ pub fn resolve_destination(
     }
 
     // Weighted A/B split among the tied rules.
-    let total: i32 = matches.iter().map(|r| r.weight.max(0)).sum();
-    if total <= 0 {
+    let total: u64 = matches.iter().map(|r| weight_of(r)).sum();
+    if total == 0 {
         return matches[0].destination_url.clone();
     }
-    let mut roll = (rand::random::<f64>() * total as f64) as i32;
-    for r in &matches {
-        roll -= r.weight.max(0);
-        if roll < 0 {
-            return r.destination_url.clone();
+    let roll = rand::thread_rng().gen_range(0..total);
+    pick_weighted(&matches, roll).destination_url.clone()
+}
+
+fn weight_of(rule: &RoutingRule) -> u64 {
+    rule.weight.max(0) as u64
+}
+
+/// The tied rule whose share of the total weight contains `roll`
+/// (`0 <= roll < total weight`). Summed in `u64`: weights are `i32`, so a few
+/// large ones overflow an `i32` total.
+fn pick_weighted<'a>(tied: &[&'a RoutingRule], mut roll: u64) -> &'a RoutingRule {
+    for rule in tied {
+        let weight = weight_of(rule);
+        if roll < weight {
+            return rule;
         }
+        roll -= weight;
     }
-    matches[0].destination_url.clone()
+    tied[0]
 }
 
 /// Every destination `resolve_destination` could return for a request. One
@@ -314,6 +386,108 @@ mod tests {
             "https://fb",
         );
         assert!(dest == "https://a.example" || dest == "https://b.example");
+    }
+
+    #[test]
+    fn pick_weighted_follows_the_weight_bands() {
+        let mut a = rule(1, 0, "https://a.example");
+        a.weight = 3;
+        let mut b = rule(2, 0, "https://b.example");
+        b.weight = 1;
+        let tied = [&a, &b];
+        // Rolls 0..3 land in a's band, 3 in b's.
+        for roll in 0..3 {
+            assert_eq!(pick_weighted(&tied, roll).id, 1, "roll {roll}");
+        }
+        assert_eq!(pick_weighted(&tied, 3).id, 2);
+    }
+
+    #[test]
+    fn huge_weights_do_not_overflow_the_total() {
+        // Two i32::MAX weights sum past i32::MAX; as an i32 total this wrapped
+        // negative in release and always picked the first rule.
+        let mut a = rule(1, 0, "https://a.example");
+        a.weight = i32::MAX;
+        let mut b = rule(2, 0, "https://b.example");
+        b.weight = i32::MAX;
+        let rules = [a, b];
+        let seen: std::collections::HashSet<String> = (0..200)
+            .map(|_| {
+                resolve_destination(
+                    &rules,
+                    &ua("Desktop", "Linux"),
+                    &geo(None),
+                    None,
+                    "https://fb",
+                )
+            })
+            .collect();
+        assert_eq!(seen.len(), 2, "both halves of the split must be reachable");
+
+        let tied = [&rules[0], &rules[1]];
+        assert_eq!(pick_weighted(&tied, i32::MAX as u64 - 1).id, 1);
+        assert_eq!(pick_weighted(&tied, i32::MAX as u64).id, 2);
+    }
+
+    #[test]
+    fn zero_weights_fall_back_to_the_first_tied_rule() {
+        let mut a = rule(1, 0, "https://a.example");
+        a.weight = 0;
+        let mut b = rule(2, 0, "https://b.example");
+        b.weight = 0;
+        assert_eq!(
+            resolve_destination(
+                &[a, b],
+                &ua("Desktop", "Linux"),
+                &geo(None),
+                None,
+                "https://fb"
+            ),
+            "https://a.example"
+        );
+    }
+
+    #[test]
+    fn device_must_be_a_known_class() {
+        assert_eq!(
+            normalize_device(Some(" mobile ")),
+            Ok(Some("Mobile".into()))
+        );
+        assert_eq!(normalize_device(Some("TABLET")), Ok(Some("Tablet".into())));
+        assert_eq!(normalize_device(Some("")), Ok(None));
+        assert_eq!(normalize_device(None), Ok(None));
+        assert!(normalize_device(Some("phone")).is_err());
+    }
+
+    #[test]
+    fn country_must_be_alpha2() {
+        assert_eq!(normalize_country(Some("us ")), Ok(Some("US".into())));
+        assert_eq!(normalize_country(Some("  ")), Ok(None));
+        for bad in ["UK1", "Germany", "U", "1A", "é"] {
+            assert!(normalize_country(Some(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn lang_must_be_a_primary_subtag() {
+        assert_eq!(normalize_lang(Some("DE")), Ok(Some("de".into())));
+        assert_eq!(normalize_lang(Some("fil")), Ok(Some("fil".into())));
+        // Rules compare against the primary subtag only, so a regional tag
+        // could never match.
+        for bad in ["pt-BR", "e", "english", "d3"] {
+            assert!(normalize_lang(Some(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn os_is_a_short_plain_name() {
+        assert_eq!(
+            normalize_os(Some(" Windows 10 ")),
+            Ok(Some("Windows 10".into()))
+        );
+        assert_eq!(normalize_os(Some("")), Ok(None));
+        assert!(normalize_os(Some(&"x".repeat(33))).is_err());
+        assert!(normalize_os(Some("iOS; DROP")).is_err());
     }
 
     #[test]
