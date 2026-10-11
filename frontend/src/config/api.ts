@@ -168,6 +168,16 @@ const handleUnauthorized = (requestToken: string | null) => {
     window.location.href = '/login';
 };
 
+// Thrown by authFetch when the server rejects the stored session. By then the
+// token is cleared and the browser is on its way to /login, so a caller only
+// needs this to keep what the user was doing (and to say why it stopped).
+export class SessionExpiredError extends Error {
+    constructor() {
+        super('Session expired. Please log in again.');
+        this.name = 'SessionExpiredError';
+    }
+}
+
 // Authenticated fetch wrapper - handles 401 automatically
 export async function authFetch(
     url: string,
@@ -185,7 +195,7 @@ export async function authFetch(
     // Handle unauthorized - logout user
     if (response.status === 401) {
         handleUnauthorized(requestToken);
-        throw new Error('Session expired. Please log in again.');
+        throw new SessionExpiredError();
     }
 
     return response;

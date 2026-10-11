@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Redirect},
 };
 use chrono::{DateTime, Utc};
@@ -17,7 +17,7 @@ use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::json_error;
 use crate::handlers::websocket::ClickEvent;
-use crate::utils::geoip::{lookup_ip, parse_user_agent};
+use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::link_owner::link_owner_is_active;
 use crate::utils::time::utc_rfc3339;
@@ -948,6 +948,34 @@ pub async fn get_user_id_from_header(
         .map(Authentication::user_id)
 }
 
+/// A request sent an `Authorization` header that did not authenticate.
+pub struct RejectedCredential;
+
+impl IntoResponse for RejectedCredential {
+    fn into_response(self) -> axum::response::Response {
+        json_error(StatusCode::UNAUTHORIZED, "Invalid or expired credentials")
+    }
+}
+
+/// Authenticate for an endpoint where credentials are optional. No
+/// `Authorization` header is an anonymous caller (`Ok(None)`). A header that
+/// is present but does not authenticate (expired or revoked token, unknown
+/// key, wrong scheme, garbage) is a 401, never a quiet downgrade to
+/// anonymous: the caller believes they are signed in, and would otherwise get
+/// back a success that is not attached to their account.
+pub async fn optional_user_id_from_header(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Result<Option<i32>, RejectedCredential> {
+    if !headers.contains_key(axum::http::header::AUTHORIZATION) {
+        return Ok(None);
+    }
+    get_user_id_from_header(db, headers)
+        .await
+        .map(Some)
+        .ok_or(RejectedCredential)
+}
+
 /// Require a revocable JWT. API keys are intentionally rejected even when they
 /// belong to the same user.
 pub async fn get_jwt_auth_from_header(
@@ -1098,6 +1126,40 @@ fn destination_redirect(url: &str) -> axum::response::Response {
     response
 }
 
+/// The link's smart-routing rules in priority order, or none when conditional
+/// routing is switched off (the link then degrades to a plain redirect).
+async fn active_routing_rules(
+    db: &DatabaseConnection,
+    link_id: i32,
+) -> Vec<crate::entity::routing_rules::Model> {
+    let routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    if !routing_enabled {
+        return Vec::new();
+    }
+    crate::entity::routing_rules::Entity::find()
+        .filter(crate::entity::routing_rules::Column::LinkId.eq(link_id))
+        .order_by_asc(crate::entity::routing_rules::Column::Priority)
+        .all(db)
+        .await
+        .unwrap_or_default()
+}
+
+/// What routing rules match on: device/OS from the User-Agent, country from the
+/// client IP, and the Accept-Language header.
+fn routing_signals(headers: &HeaderMap) -> (UserAgentInfo, GeoLocation, Option<&str>) {
+    let ip = crate::utils::rate_limiter::client_ip_from_headers(headers);
+    let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
+    let ua_info = headers
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok())
+        .map(parse_user_agent)
+        .unwrap_or_default();
+    let accept_language = headers.get("accept-language").and_then(|h| h.to_str().ok());
+    (ua_info, geo, accept_language)
+}
+
 /// Tags for many links in two queries: all `link_tags` for the page, then the
 /// distinct `tags` rows. Soft-deleted links are excluded by the caller — this
 /// table has no `deleted_at`, so a leftover assignment on a deleted link is
@@ -1163,9 +1225,12 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 /// Create a new shortened link
 ///
 /// Credentials are optional. Without them the link is anonymous and cannot be
-/// put in a folder, tagged, or owned by an organization. An account can shorten
-/// the same URL at most 10 times in 10 minutes; the next request is answered
-/// 429 with only an `error` field and no `Retry-After`.
+/// put in a folder, tagged, or owned by an organization. Credentials that are
+/// sent but do not authenticate (expired, revoked, unknown key) are refused
+/// with 401 instead of creating an anonymous link; omit the `Authorization`
+/// header to create one. An account can shorten the same URL at most 10 times
+/// in 10 minutes; the next request is answered 429 with only an `error` field
+/// and no `Retry-After`.
 #[utoipa::path(
     post,
     path = "/links",
@@ -1173,6 +1238,7 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
     responses(
         (status = 201, description = "Link created", body = LinkResponse),
         (status = 400, description = "Invalid request"),
+        (status = 401, description = "Credentials were sent but are invalid, expired or revoked"),
         (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
     ),
@@ -1184,6 +1250,13 @@ pub async fn create_link(
     headers: HeaderMap,
     Json(payload): Json<CreateLinkRequest>,
 ) -> impl IntoResponse {
+    // Resolve the caller first, so rejected credentials are refused before any
+    // validation or DNS lookup is spent on the request.
+    let user_id = match optional_user_id_from_header(&state.db, &headers).await {
+        Ok(user_id) => user_id,
+        Err(rejected) => return rejected.into_response(),
+    };
+
     // Validate URL first
     let validated_url = match validate_url(&payload.original_url) {
         Ok(url) => url,
@@ -1208,8 +1281,6 @@ pub async fn create_link(
         )
             .into_response();
     }
-
-    let user_id = get_user_id_from_header(&state.db, &headers).await;
 
     // Check email verification for authenticated users
     if let Some(uid) = user_id {
@@ -1572,13 +1643,13 @@ pub async fn create_link(
             original_url: payload.original_url,
             title: payload.title,
             click_count: 0,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: payload.expires_at.map(|d| d.to_rfc3339()),
+            created_at: utc_rfc3339(chrono::Utc::now().naive_utc()),
+            expires_at: payload.expires_at.map(|d| utc_rfc3339(d.naive_utc())),
             has_password: password_hash.is_some(),
             notes: payload.notes,
             folder_id: payload.folder_id,
             org_id: payload.org_id,
-            starts_at: payload.starts_at.map(|d| d.to_rfc3339()),
+            starts_at: payload.starts_at.map(|d| utc_rfc3339(d.naive_utc())),
             max_clicks: effective_max_clicks,
             burn_after_reading,
             burned_at: None,
@@ -1604,12 +1675,20 @@ pub struct ReputationInfo {
 pub struct LinkPreviewResponse {
     pub code: String,
     pub short_url: String,
+    /// Empty while the destination is withheld: the link is not live, is
+    /// password-protected and not unlocked, is one-time, or routes to one of
+    /// several destinations.
     pub original_url: String,
+    /// Host of `original_url`; empty whenever that is.
     pub domain: String,
     pub has_password: bool,
     pub is_expired: bool,
-    /// False when the link is not currently live (scheduled, expired, capped, or burned).
+    /// False when the link is not currently live (scheduled, expired, capped,
+    /// burned, or blocked). The destination is always withheld then.
     pub is_active: bool,
+    /// Whether this is a one-time link. Its destination is never shown ahead of
+    /// the visit that uses it up.
+    pub burn_after_reading: bool,
     pub created_at: String,
     pub click_count: i64,
     /// Destination reputation signal for the safe-link interstitial.
@@ -1642,6 +1721,7 @@ pub async fn preview_link(
     State(state): State<AppState>,
     Path(code): Path<String>,
     Query(query): Query<PreviewQuery>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     // Remove trailing + if present (for URL compatibility)
     let clean_code = code.trim_end_matches('+');
@@ -1674,26 +1754,11 @@ pub async fn preview_link(
                 false
             };
 
-            // Extract domain from original URL
-            let domain = url::Url::parse(&link.original_url)
-                .map(|u| u.host_str().unwrap_or("unknown").to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
-
             let base_url = get_base_url();
 
-            // Reputation: the internal blocklist is the source of truth we have
-            // today. Blocked → malicious; plain HTTP can't be vouched for → unknown;
-            // otherwise we have nothing bad on record → safe. (Fails open.)
             let interstitial_enabled = std::env::var("ENABLE_SAFE_LINK_INTERSTITIAL")
                 .map(|v| v != "false")
                 .unwrap_or(true);
-            let verdict = if check_blocked(&state.db, &link.original_url).await.is_err() {
-                "malicious"
-            } else if link.original_url.starts_with("https://") {
-                "safe"
-            } else {
-                "unknown"
-            };
 
             let password_unlocked = match (link.password_hash.as_deref(), query.unlock.as_deref()) {
                 (Some(password_hash), Some(token)) => {
@@ -1707,22 +1772,69 @@ pub async fn preview_link(
                 _ => false,
             };
 
-            // A valid unlock may reveal an ordinary password-protected target so
-            // the interstitial can describe it. Burn links stay secret until the
-            // authoritative redirect consumes their one-time click. A not-yet-live
-            // scheduled link is embargoed the same way: GET /{code} already 410s
-            // until starts_at, so the public preview must not leak original_url.
-            let not_yet_started = link
-                .starts_at
-                .map(|starts_at| Utc::now().naive_utc() < starts_at)
-                .unwrap_or(false);
-            let protected = (link.password_hash.is_some() && !password_unlocked)
-                || link.burn_after_reading
-                || not_yet_started;
-            let (shown_url, shown_domain) = if protected {
-                (String::new(), String::new())
+            // The destination is described only while the link can still be
+            // used. GET /{code} answers 410 for a link that is used up, expired,
+            // not yet live or blocked, so the public preview must not keep
+            // saying where it went. A valid unlock may reveal an ordinary
+            // password-protected target so the interstitial can describe it.
+            // Burn links stay secret until the authoritative redirect consumes
+            // their one-time click.
+            let mut blocked = check_blocked(&state.db, &link.original_url).await.is_err();
+            let mut destination = None;
+            if link.is_active()
+                && !blocked
+                && !link.burn_after_reading
+                && (link.password_hash.is_none() || password_unlocked)
+            {
+                // Describe where this visitor would actually be sent: the
+                // routing rule that wins for them, not just the fallback URL. A
+                // weighted A/B split has no single answer, so it is withheld.
+                let rules = active_routing_rules(&state.db, link.id).await;
+                let candidates = if rules.is_empty() {
+                    vec![link.original_url.clone()]
+                } else {
+                    let (ua_info, geo, accept_language) = routing_signals(&headers);
+                    crate::utils::routing::possible_destinations(
+                        &rules,
+                        &ua_info,
+                        &geo,
+                        accept_language,
+                        &link.original_url,
+                    )
+                };
+                if let [only] = candidates.as_slice() {
+                    if *only != link.original_url {
+                        blocked = check_blocked(&state.db, only).await.is_err();
+                    }
+                    if !blocked {
+                        destination = Some(only.clone());
+                    }
+                }
+            }
+
+            // Reputation: the internal blocklist is the source of truth we have
+            // today. Blocked → malicious; plain HTTP can't be vouched for → unknown;
+            // otherwise we have nothing bad on record → safe. A destination that
+            // is withheld is never vouched for. (Fails open.)
+            let verdict = if blocked {
+                "malicious"
+            } else if destination
+                .as_deref()
+                .is_some_and(|url| url.starts_with("https://"))
+            {
+                "safe"
             } else {
-                (link.original_url.clone(), domain)
+                "unknown"
+            };
+
+            let (shown_url, shown_domain) = match destination {
+                Some(url) => {
+                    let domain = url::Url::parse(&url)
+                        .map(|u| u.host_str().unwrap_or("unknown").to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
+                    (url, domain)
+                }
+                None => (String::new(), String::new()),
             };
 
             (
@@ -1734,7 +1846,8 @@ pub async fn preview_link(
                     domain: shown_domain,
                     has_password: link.password_hash.is_some(),
                     is_expired,
-                    is_active: link.is_active(),
+                    is_active: link.is_active() && !blocked,
+                    burn_after_reading: link.burn_after_reading,
                     created_at: utc_rfc3339(link.created_at),
                     click_count: link.click_count,
                     reputation: ReputationInfo {
@@ -1850,6 +1963,45 @@ p {{ margin: 0 0 1.5rem; color: #4a5160; }}
         .into_response()
 }
 
+/// The answer to a HEAD on a link that can be used up: the link is live, but
+/// saying where it goes would defeat the cap, so there is no `Location`.
+fn head_without_destination() -> axum::response::Response {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+    )
+        .into_response()
+}
+
+/// What a link unfurler gets for a link that can be used up. It names no
+/// destination and carries no Open Graph tags, so the chat card shows just the
+/// site name and the link is still unused when the recipient clicks.
+fn unfurler_page() -> axum::response::Response {
+    use axum::http::header;
+
+    const PAGE: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<title>opn.onl</title>
+</head>
+<body>
+<p>This is a short link.</p>
+</body>
+</html>
+"#;
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        PAGE,
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/{code}",
@@ -1857,6 +2009,7 @@ p {{ margin: 0 0 1.5rem; color: #4a5160; }}
         ("code" = String, Path, description = "Short link code")
     ),
     responses(
+        (status = 200, description = "A HEAD on a one-time or click-capped link, or a GET from a known link-preview bot: no destination, nothing consumed"),
         (status = 307, description = "Redirect to original URL"),
         (status = 401, description = "Password required"),
         (status = 404, description = "Link not found"),
@@ -1868,6 +2021,7 @@ pub async fn redirect_link(
     State(state): State<AppState>,
     Path(code): Path<String>,
     Query(query): Query<RedirectQuery>,
+    method: Method,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     use crate::utils::cache::CachedLink;
@@ -1946,6 +2100,11 @@ pub async fn redirect_link(
                                 && now > expires_at
                             {
                                 return dead_link(&headers, StatusCode::GONE, "Link has expired");
+                            }
+
+                            // A HEAD gets the GET's answer but is not a visit.
+                            if method == Method::HEAD {
+                                return destination_redirect(&cached.original_url);
                             }
 
                             // Record click using buffer (synchronous, non-blocking).
@@ -2129,29 +2288,10 @@ pub async fn redirect_link(
         // degrades to a plain redirect. Resolved (and blocklist-checked) BEFORE the
         // cap consume below, so a blocked routed destination can't waste a click
         // slot or burn a one-time link without serving anything.
-        let routing_enabled = std::env::var("ENABLE_CONDITIONAL_ROUTING")
-            .map(|v| v != "false")
-            .unwrap_or(true);
-        let routing_rules = if routing_enabled {
-            crate::entity::routing_rules::Entity::find()
-                .filter(crate::entity::routing_rules::Column::LinkId.eq(link.id))
-                .order_by_asc(crate::entity::routing_rules::Column::Priority)
-                .all(&state.db)
-                .await
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let routing_rules = active_routing_rules(&state.db, link.id).await;
 
         let routed_destination = if !routing_rules.is_empty() {
-            let ip = crate::utils::rate_limiter::client_ip_from_headers(&headers);
-            let geo = ip.as_ref().map(|ip| lookup_ip(ip)).unwrap_or_default();
-            let ua_info = headers
-                .get("user-agent")
-                .and_then(|h| h.to_str().ok())
-                .map(parse_user_agent)
-                .unwrap_or_default();
-            let accept_language = headers.get("accept-language").and_then(|h| h.to_str().ok());
+            let (ua_info, geo, accept_language) = routing_signals(&headers);
 
             let destination = crate::utils::routing::resolve_destination(
                 &routing_rules,
@@ -2169,6 +2309,29 @@ pub async fn redirect_link(
         } else {
             None
         };
+
+        // A HEAD, and a GET from a link unfurler (a chat app drawing a preview
+        // card before the recipient has clicked), is not a visit: it must not
+        // use up a click cap or burn a one-time link, and it is not counted.
+        // On a link that can be used up it is not told the destination either,
+        // which would defeat the cap.
+        let can_be_used_up = link.max_clicks.is_some() || link.burn_after_reading;
+        if method == Method::HEAD {
+            if can_be_used_up {
+                return head_without_destination();
+            }
+            return destination_redirect(
+                routed_destination.as_deref().unwrap_or(&link.original_url),
+            );
+        }
+        if can_be_used_up
+            && headers
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(crate::utils::unfurler::is_link_unfurler)
+        {
+            return unfurler_page();
+        }
 
         // Authoritative cap enforcement. From here on this request will be
         // served a destination, so for capped links the click is consumed NOW
@@ -2638,7 +2801,9 @@ static QR_LOGO: once_cell::sync::Lazy<Option<image::DynamicImage>> =
 /// input so callers can fall back to the default color.
 fn parse_hex(s: &str) -> Option<[u8; 3]> {
     let s = s.trim().trim_start_matches('#');
-    if s.len() != 6 {
+    // `len` counts bytes and the slices below cut at byte offsets, so anything
+    // but six ASCII hex digits (multibyte text included) is rejected up front.
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     Some([
@@ -2962,6 +3127,15 @@ mod qr_render_tests {
         assert_eq!(parse_hex("2f37d8"), Some([0x2f, 0x37, 0xd8]));
         assert_eq!(parse_hex("xyz"), None);
         assert_eq!(parse_hex("2f37"), None);
+    }
+
+    #[test]
+    fn parse_hex_rejects_multibyte_and_signed_input() {
+        // Six bytes, four chars: a byte slice at 0..2 would split the euro sign.
+        assert_eq!(parse_hex("a\u{20ac}bb"), None);
+        assert_eq!(parse_hex("\u{e9}\u{e9}\u{e9}"), None);
+        // `from_str_radix` alone would accept a leading sign.
+        assert_eq!(parse_hex("+f+f+f"), None);
     }
 }
 
@@ -5046,42 +5220,26 @@ pub async fn build_utm_url(Json(payload): Json<BuildUtmRequest>) -> impl IntoRes
         }
     };
 
+    // Collect first: `query_pairs_mut` leaves a bare `?` on the URL as soon as
+    // it is called, even when nothing is appended.
     let mut utm_params = std::collections::HashMap::new();
-
-    // Add UTM parameters
-    {
-        let mut query_pairs = parsed.query_pairs_mut();
-
-        if let Some(ref source) = payload.utm_source
-            && !source.is_empty()
+    let mut utm_pairs = Vec::new();
+    for (name, value) in [
+        ("utm_source", &payload.utm_source),
+        ("utm_medium", &payload.utm_medium),
+        ("utm_campaign", &payload.utm_campaign),
+        ("utm_term", &payload.utm_term),
+        ("utm_content", &payload.utm_content),
+    ] {
+        if let Some(value) = value
+            && !value.is_empty()
         {
-            query_pairs.append_pair("utm_source", source);
-            utm_params.insert("utm_source".to_string(), source.clone());
+            utm_pairs.push((name, value));
+            utm_params.insert(name.to_string(), value.clone());
         }
-        if let Some(ref medium) = payload.utm_medium
-            && !medium.is_empty()
-        {
-            query_pairs.append_pair("utm_medium", medium);
-            utm_params.insert("utm_medium".to_string(), medium.clone());
-        }
-        if let Some(ref campaign) = payload.utm_campaign
-            && !campaign.is_empty()
-        {
-            query_pairs.append_pair("utm_campaign", campaign);
-            utm_params.insert("utm_campaign".to_string(), campaign.clone());
-        }
-        if let Some(ref term) = payload.utm_term
-            && !term.is_empty()
-        {
-            query_pairs.append_pair("utm_term", term);
-            utm_params.insert("utm_term".to_string(), term.clone());
-        }
-        if let Some(ref content) = payload.utm_content
-            && !content.is_empty()
-        {
-            query_pairs.append_pair("utm_content", content);
-            utm_params.insert("utm_content".to_string(), content.clone());
-        }
+    }
+    if !utm_pairs.is_empty() {
+        parsed.query_pairs_mut().extend_pairs(utm_pairs);
     }
 
     (
