@@ -25,4 +25,7 @@ to ship a fix before public disclosure.
   ever leaks (rotating it invalidates all sessions).
 - Set `TRUST_PROXY_HEADERS=true` only behind a reverse proxy you control —
   otherwise clients can spoof their IP for rate limiting and analytics.
+  `REAL_IP_HEADER` defaults to `cf-connecting-ip`; unless Cloudflare is in
+  front, set `REAL_IP_HEADER=none` (or the header your own proxy overwrites),
+  or any client can choose its own rate-limit bucket by sending that header.
 - `FORCE_HTTPS=true` is expected in production behind TLS termination.

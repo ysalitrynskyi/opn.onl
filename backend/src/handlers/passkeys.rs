@@ -18,6 +18,7 @@ use crate::handlers::json_error;
 use crate::utils::email_domain_policy::{
     ensure_sign_in_domain_allowed, live_users_by_email, normalize_email,
 };
+use crate::utils::env::env_flag;
 use crate::utils::jwt::create_jwt;
 use crate::utils::time::utc_rfc3339;
 
@@ -164,9 +165,7 @@ fn get_webauthn() -> Webauthn {
 /// When `false`, the enroll and login ceremonies are refused; management
 /// endpoints (list/delete/rename) keep working so users can still clean up.
 fn passkeys_enabled() -> bool {
-    std::env::var("ENABLE_PASSKEYS")
-        .map(|v| v != "false")
-        .unwrap_or(true)
+    env_flag("ENABLE_PASSKEYS", true)
 }
 
 #[derive(Deserialize, ToSchema)]

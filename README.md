@@ -224,6 +224,10 @@ one budget. The limits are kept in memory, so a restart clears them.
 
 ### Link Management
 
+Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`)
+accepts `true` or `false`, also written `1`/`0`, `yes`/`no` or `on`/`off`, in any case. Any other value
+is ignored with a warning in the log and the default applies.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENABLE_CUSTOM_ALIASES` | true | Allow users to create custom aliases |
@@ -284,9 +288,14 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUST_LOG` | info | Log level (trace, debug, info, warn, error) |
+| `RUST_LOG` | info | Log level (trace, debug, info, warn, error). At `debug`, `tower_http` logs two lines for every request |
+| `LOG_MAX_FILES` | 14 | Daily log files kept in the backend's logs volume; older ones are deleted. `0` keeps all of them. Docker's own container logs are rotated by the compose files (10 MB x 5 per service) |
+| `WS_MAX_CONNECTIONS_PER_USER` | 5 | Open `/ws` and `/sse` connections one account may hold at once, together; more are refused with `429`. `0` lifts the limit |
+| `TRUST_PROXY_HEADERS` | true (compose) | Take the client IP from proxy headers. Leave on behind Cloudflare or a proxy you control; off, every visitor behind a proxy shares one rate-limit bucket |
+| `REAL_IP_HEADER` | cf-connecting-ip | Header the trusted edge sets to the real client IP. **Not behind Cloudflare? Set `REAL_IP_HEADER=none`**, or name the header your own proxy overwrites (for example `x-real-ip`). An empty value does not disable it in the compose files: they substitute the default, and any client can forge `CF-Connecting-IP` when Cloudflare is not in front |
+| `TRUSTED_PROXY_HOPS` | 0 | `X-Forwarded-For` fallback when `REAL_IP_HEADER` is `none` or absent from the request: trusted proxies in front of the app (0 uses the right-most entry) |
 | `POSTGRES_HOST_PORT` | 5433 | Host port for the loopback-published postgres in the arm64 Portainer compose. 5432 is often already taken on a host running more than one postgres. Bound to 127.0.0.1 only |
-| `FORCE_HTTPS` | true | Redirect plain HTTP to HTTPS, going by `X-Forwarded-Proto`. The Compose files default it to `true`; a backend started without the variable does not redirect |
+| `FORCE_HTTPS` | true | Redirect plain HTTP to HTTPS, going by `X-Forwarded-Proto`. The Compose files default it to `true`; a backend started without the variable does not redirect. `/health` is exempt: the container health check asks over plain HTTP and must see the real answer |
 | `WEBAUTHN_RP_ID` | (from FRONTEND_URL) | WebAuthn Relying Party ID |
 
 ## API Reference
@@ -655,11 +664,12 @@ binary takes no arguments.
 
 ### Container Health Checks Failing
 ```bash
-# Check backend health
-curl http://localhost:3000/health
+# Check backend health (the ports are not published, so ask from inside the
+# container; a non-200 answer means the database is unreachable)
+docker-compose exec backend curl -fsS http://localhost:3000/health
 
 # Check frontend health
-curl http://localhost:80/health
+docker-compose exec frontend curl -fsS http://localhost:80/health
 
 # View logs
 docker-compose logs -f backend

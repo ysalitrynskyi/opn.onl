@@ -1,5 +1,13 @@
 version: '3.8'
 
+# Docker keeps every line a container prints, forever, unless told otherwise.
+# Rotate the json-file logs so they cannot fill the disk the database lives on.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   # ===========================================
   # DATABASE - PostgreSQL
@@ -84,14 +92,20 @@ services:
       # X-Forwarded-For is APPENDED to (not overwritten) by Cloudflare, so its
       # first entry is client-controlled and must never be trusted.
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      # Not behind Cloudflare? Set REAL_IP_HEADER=none. An empty value does not
+      # disable it: compose substitutes the Cloudflare default for empty.
       REAL_IP_HEADER: ${REAL_IP_HEADER:-cf-connecting-ip}
       # X-Forwarded-For fallback (only used when REAL_IP_HEADER is absent):
       # 0 = right-most entry. Leave at 0 for the Cloudflare tunnel topology.
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
+      # Open /ws and /sse connections one account may hold at once (0 = no limit).
+      WS_MAX_CONNECTIONS_PER_USER: ${WS_MAX_CONNECTIONS_PER_USER:-5}
 
       # Logging
-      RUST_LOG: ${RUST_LOG:-info,tower_http=debug}
+      RUST_LOG: ${RUST_LOG:-info,tower_http=info}
       LOG_DIR: /app/logs
+      # Daily log files kept in the logs volume (0 keeps them all).
+      LOG_MAX_FILES: ${LOG_MAX_FILES:-14}
       
       # Redis Cache
       REDIS_URL: redis://redis:6379
@@ -161,6 +175,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    logging: *default-logging
     networks:
       - opn-network
 
@@ -190,6 +205,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+    logging: *default-logging
     networks:
       - opn-network
 
