@@ -41,8 +41,7 @@ const plans = [
             "Smart conditional routing",
             "Link-in-bio profile page",
             "Safe-link interstitial",
-            "Priority support",
-            "Early access to features"
+            "Support through the contact form"
         ],
         cta: "Get Started",
         ctaLink: "/register",
@@ -57,7 +56,7 @@ const plans = [
         features: [
             "Full source code access",
             "Deploy anywhere",
-            "Custom domain support",
+            "Runs on your own domain",
             "Complete data ownership",
             "No usage limits",
             "Modify as needed",

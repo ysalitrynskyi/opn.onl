@@ -1040,13 +1040,23 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct ChangePasswordResponse {
+    pub message: String,
+    /// A fresh session token. Changing the password signs out every session
+    /// issued before it, the caller's included; this one replaces theirs. Only
+    /// left out if a token could not be signed, in which case sign in again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
 /// Change password for authenticated user
 #[utoipa::path(
     post,
     path = "/auth/change-password",
     request_body = ChangePasswordRequest,
     responses(
-        (status = 200, description = "Password changed successfully", body = MessageResponse),
+        (status = 200, description = "Password changed; the response carries a fresh token for the caller's session", body = ChangePasswordResponse),
         (status = 400, description = "Invalid request or wrong current password"),
         (status = 401, description = "Unauthorized"),
     ),
@@ -1224,16 +1234,17 @@ pub async fn change_password(
         return match create_jwt(token_user_id, &token_email, next_token_version) {
             Ok(token) => (
                 StatusCode::OK,
-                Json(serde_json::json!({
-                    "message": "Password changed successfully",
-                    "token": token,
-                })),
+                Json(ChangePasswordResponse {
+                    message: "Password changed successfully".to_string(),
+                    token: Some(token),
+                }),
             )
                 .into_response(),
             Err(_) => (
                 StatusCode::OK,
-                Json(MessageResponse {
+                Json(ChangePasswordResponse {
                     message: "Password changed successfully".to_string(),
+                    token: None,
                 }),
             )
                 .into_response(),
