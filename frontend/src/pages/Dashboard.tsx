@@ -19,6 +19,8 @@ import Sparkline from '../components/Sparkline';
 import LinkPreviewCard from '../components/LinkPreviewCard';
 import EditModal from '../components/dashboard/EditModal';
 import QRModal from '../components/dashboard/QRModal';
+import BulkImportModal, { type BulkReport } from '../components/dashboard/BulkImportModal';
+import { parseBulkUrls, readBulkErrors } from '../components/dashboard/bulkImport';
 import Skeleton from '../components/dashboard/Skeleton';
 import MiniStats from '../components/dashboard/MiniStats';
 import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
@@ -102,6 +104,8 @@ export default function Dashboard() {
     const [showBulkImport, setShowBulkImport] = useState(false);
     const [bulkUrls, setBulkUrls] = useState('');
     const [bulkImporting, setBulkImporting] = useState(false);
+    // Shown inside the modal: the page's own error banner sits behind its backdrop.
+    const [bulkReport, setBulkReport] = useState<BulkReport | null>(null);
     const navigate = useNavigate();
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
@@ -171,15 +175,18 @@ export default function Dashboard() {
 
     // Bulk import handler
     const handleBulkImport = async () => {
-        const urls = bulkUrls.split('\n').map(u => u.trim()).filter(u => u && /^https?:\/\/.+/.test(u));
+        const urls = parseBulkUrls(bulkUrls);
 
         if (urls.length === 0) {
-            setError('No valid URLs found. Each line should contain a valid URL starting with http:// or https://');
+            setBulkReport({
+                message: 'No valid URLs found. Each line should contain a valid URL starting with http:// or https://',
+                failures: [],
+            });
             return;
         }
 
         setBulkImporting(true);
-        setError('');
+        setBulkReport(null);
 
         try {
             const res = await authFetch(API_ENDPOINTS.bulkLinks, {
@@ -189,22 +196,33 @@ export default function Dashboard() {
 
             if (res.ok) {
                 const data = await res.json();
-                setShowBulkImport(false);
-                setBulkUrls('');
                 fetchLinks();
 
-                if (data.errors && data.errors.length > 0) {
-                    setError(`Created ${data.links.length} ${pluralize(data.links.length, 'link')}. ${data.errors.length} failed: ${data.errors.slice(0, 3).join(', ')}${data.errors.length > 3 ? '...' : ''}`);
+                const errors: string[] = Array.isArray(data.errors) ? data.errors : [];
+                if (errors.length === 0) {
+                    setShowBulkImport(false);
+                    setBulkUrls('');
+                    return;
                 }
+
+                // Partly done: keep the modal open with only what failed in the
+                // box, so nothing has to be pasted again.
+                const created = Array.isArray(data.links) ? data.links.length : 0;
+                const { failures, remaining } = readBulkErrors(urls, errors);
+                setBulkUrls(remaining.join('\n'));
+                setBulkReport({
+                    message: `Created ${created} ${pluralize(created, 'link')}. ${failures.length} failed.`,
+                    failures,
+                });
             } else {
                 const data = await res.json();
                 const fromList = Array.isArray(data.errors) && data.errors.length > 0
                     ? data.errors.join(', ')
                     : null;
-                setError(fromList || data.error || 'Failed to import links');
+                setBulkReport({ message: fromList || data.error || 'Failed to import links', failures: [] });
             }
         } catch {
-            setError('Network error during import');
+            setBulkReport({ message: 'Network error during import', failures: [] });
         } finally {
             setBulkImporting(false);
         }
@@ -689,8 +707,6 @@ export default function Dashboard() {
         }
     };
 
-    const validBulkUrlCount = bulkUrls.split('\n').filter(u => u.trim() && /^https?:\/\/.+/.test(u.trim())).length;
-
     if (loading) {
         return (
             <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -805,7 +821,10 @@ export default function Dashboard() {
                 </div>
                 <div className="flex gap-2">
                     <button
-                        onClick={() => setShowBulkImport(true)}
+                        onClick={() => {
+                            setBulkReport(null);
+                            setShowBulkImport(true);
+                        }}
                         className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
                     >
                         <Upload className="h-4 w-4 text-muted" />
@@ -824,63 +843,14 @@ export default function Dashboard() {
             {/* Bulk Import Modal */}
             <AnimatePresence>
                 {showBulkImport && (
-                    <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="fixed inset-0 bg-ink/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-                        onClick={() => setShowBulkImport(false)}
-                    >
-                        <motion.div
-                            initial={{ scale: 0.97, opacity: 0, y: 8 }}
-                            animate={{ scale: 1, opacity: 1, y: 0 }}
-                            exit={{ scale: 0.97, opacity: 0, y: 8 }}
-                            transition={{ duration: 0.18, ease }}
-                            className="bg-surface rounded-2xl border border-line2 shadow-lift max-w-lg w-full p-6"
-                            onClick={e => e.stopPropagation()}
-                        >
-                            <div className="flex items-center justify-between mb-4">
-                                <h3 className="font-display text-xl font-bold text-ink tracking-tight">Bulk import URLs</h3>
-                                <button onClick={() => setShowBulkImport(false)} aria-label="Close" className="text-faint transition-colors hover:text-ink">
-                                    <X className="h-5 w-5" />
-                                </button>
-                            </div>
-                            <p className="text-sm text-muted mb-4">
-                                Paste one URL per line. Each URL will be shortened automatically.
-                            </p>
-                            <textarea
-                                value={bulkUrls}
-                                onChange={(e) => setBulkUrls(e.target.value)}
-                                className="w-full h-48 rounded-lg border border-line2 bg-surface px-4 py-3 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
-                                placeholder="https://example.com/page1&#10;https://example.com/page2&#10;https://example.com/page3"
-                            />
-                            <div className="flex justify-between items-center mt-4">
-                                <span className="text-sm text-faint">
-                                    {validBulkUrlCount} valid {pluralize(validBulkUrlCount, 'URL')}
-                                </span>
-                                <div className="flex gap-3">
-                                    <button
-                                        onClick={() => setShowBulkImport(false)}
-                                        className="rounded-lg border border-line2 px-4 py-2 font-medium text-muted transition-colors hover:text-ink hover:border-ink/30"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleBulkImport}
-                                        disabled={bulkImporting}
-                                        className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-70"
-                                    >
-                                        {bulkImporting ? (
-                                            <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                                        ) : (
-                                            <Upload className="h-4 w-4" />
-                                        )}
-                                        Import All
-                                    </button>
-                                </div>
-                            </div>
-                        </motion.div>
-                    </motion.div>
+                    <BulkImportModal
+                        urls={bulkUrls}
+                        onUrlsChange={setBulkUrls}
+                        importing={bulkImporting}
+                        report={bulkReport}
+                        onImport={handleBulkImport}
+                        onClose={() => setShowBulkImport(false)}
+                    />
                 )}
             </AnimatePresence>
 
