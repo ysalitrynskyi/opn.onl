@@ -50,7 +50,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Click Buffering** - Batch click events for better DB performance
 - **Real-time Updates** - WebSocket/SSE for live click notifications
 - **GeoIP Lookup** - Country and city detection (optional MaxMind)
-- **Database Indexes** - Optimized for billions of rows with composite indexes
+- **Database Indexes** - Composite and partial indexes on the redirect, listing and analytics paths
 
 ### Developer Experience
 - **API Documentation** - OpenAPI/Swagger UI included at `/swagger-ui/`
@@ -268,7 +268,7 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 | `REDIS_URL` | - | Redis connection URL |
 | `REDIS_CACHE_TTL` | 300 | Cache TTL in seconds |
 | `CLICK_BUFFER_SIZE` | 100 | Click events before DB flush |
-| `CLICK_FLUSH_INTERVAL` | 10 | Flush interval in seconds |
+| `CLICK_FLUSH_INTERVAL` | 10 | Flush interval in seconds (10 in the shipped compose files and `.env.example`; the backend's own default when unset is 5) |
 
 ### Backups (S3-compatible)
 

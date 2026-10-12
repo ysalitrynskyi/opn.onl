@@ -64,7 +64,7 @@ export default function Home() {
     };
 
     const features = [
-        { icon: Zap, title: 'Rust-fast redirects', desc: 'An Axum + Redis core resolves links in microseconds, built to index billions of rows.' },
+        { icon: Zap, title: 'Rust-fast redirects', desc: 'A Rust (Axum) core with an optional Redis cache resolves links in a few milliseconds.' },
         { icon: Shield, title: 'Privacy by default', desc: 'Click data stays on your instance. We don\'t sell it or follow visitors across other sites.' },
         { icon: BarChart2, title: 'Honest analytics', desc: 'Clicks, geography, devices and referrers — first-party, updated within seconds. Breakdowns use the newest 50,000 clicks per link.' },
         { icon: QrCode, title: 'Branded QR codes', desc: 'Every link ships with a QR — add your brand colour and logo, export PNG or SVG.' },
