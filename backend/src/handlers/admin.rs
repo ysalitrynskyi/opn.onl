@@ -20,7 +20,8 @@ use crate::entity::{
 use crate::utils::backup::is_automatic_backup;
 use crate::utils::decode_jwt;
 use crate::utils::email_domain_policy::{
-    count_email_case_collisions, is_reserved_email_domain, normalize_email,
+    blocked_email_domain, count_email_case_collisions, email_domain, is_reserved_email_domain,
+    normalize_email,
 };
 use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{
@@ -895,7 +896,8 @@ pub async fn hard_delete_user(
     }
 }
 
-/// Restore a soft-deleted user (admin only)
+/// Restore a soft-deleted user (admin only). A user whose email domain was
+/// blocked while the account was deleted comes back disabled.
 #[utoipa::path(
     post,
     path = "/admin/users/{user_id}/restore",
@@ -903,7 +905,7 @@ pub async fn hard_delete_user(
         ("user_id" = i32, Path, description = "User ID to restore")
     ),
     responses(
-        (status = 200, description = "User restored successfully", body = AdminResponse),
+        (status = 200, description = "User restored, left disabled when their email domain is blocked", body = AdminResponse),
         (status = 400, description = "User is not deleted"),
         (status = 403, description = "Admin access required"),
         (status = 404, description = "User not found"),
@@ -917,9 +919,10 @@ pub async fn restore_user(
     headers: HeaderMap,
     Path(user_id): Path<i32>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return e.into_response();
-    }
+    let admin_id = match require_admin(&state, &headers).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
 
     let user = match users::Entity::find_by_id(user_id).one(&state.db).await {
         Ok(Some(user)) => user,
@@ -1015,6 +1018,35 @@ pub async fn restore_user(
         }
     };
 
+    // A domain blocked while the account was deleted never disabled it: the
+    // block only reaches live accounts. Bringing it back must not undo the
+    // block, so it returns disabled, the way the block would have left it.
+    // Admins are exempt, as they are from the block itself, so one can always
+    // get back in to lift it. An account that was already disabled keeps its
+    // own reason.
+    let blocked_domain = if user.is_admin || user.disabled_at.is_some() {
+        None
+    } else {
+        let blocked = match email_domain(&user.email) {
+            Some(domain) => blocked_email_domain(&txn, &domain).await,
+            None => Ok(None),
+        };
+        match blocked {
+            Ok(blocked) => blocked.map(|blocked| blocked.domain),
+            Err(_) => {
+                let _ = txn.rollback().await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(AdminResponse {
+                        success: false,
+                        message: "Failed to restore user".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    };
+
     let result = async {
         // Back among the live accounts the address is folded like every other,
         // so lookups and the unique index see it in its canonical form.
@@ -1023,6 +1055,12 @@ pub async fn restore_user(
         active_user.email = Set(folded_email);
         active_user.deleted_at = Set(None);
         active_user.token_version = Set(next_token_version);
+        if let Some(domain) = &blocked_domain {
+            active_user.disabled_at = Set(Some(Utc::now().naive_utc()));
+            active_user.disabled_reason =
+                Set(Some(format!("Email domain {domain} blocked by admin")));
+            active_user.disabled_by = Set(Some(admin_id));
+        }
         active_user.update(&txn).await?;
 
         // Accounts deleted before credential cleanup was added may still have
@@ -1106,11 +1144,17 @@ pub async fn restore_user(
             .into_response();
     }
 
+    let message = match blocked_domain {
+        Some(domain) => format!(
+            "User {user_id} restored but left disabled: the email domain {domain} is blocked. Enable the user once the block is removed"
+        ),
+        None => format!("User {user_id} restored"),
+    };
     (
         StatusCode::OK,
         Json(AdminResponse {
             success: true,
-            message: format!("User {} restored", user_id),
+            message,
         }),
     )
         .into_response()
