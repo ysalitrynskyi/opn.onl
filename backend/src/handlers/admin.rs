@@ -717,6 +717,15 @@ pub(crate) async fn hard_delete_user_in(
     txn: &DatabaseTransaction,
     user_id: i32,
 ) -> Result<(), HardDeleteError> {
+    let email = users::Entity::find_by_id(user_id)
+        .select_only()
+        .column(users::Column::Email)
+        .into_tuple::<String>()
+        .one(txn)
+        .await
+        .map_err(HardDeleteError::Db)?
+        .ok_or(HardDeleteError::NotFound)?;
+
     let split = crate::handlers::organizations::split_owned_orgs(txn, user_id)
         .await
         .map_err(HardDeleteError::Db)?;
@@ -758,6 +767,10 @@ pub(crate) async fn hard_delete_user_in(
             .filter(links::Column::OrgId.is_null())
             .exec(txn)
             .await?;
+
+        // Invite entries in other organizations' audit logs name the user by
+        // address. They stay (who did what, when), the address does not.
+        crate::utils::privacy::scrub_audit_email(txn, &email).await?;
 
         users::Entity::delete_by_id(user_id).exec(txn).await
     }

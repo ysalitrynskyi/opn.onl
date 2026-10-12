@@ -16,7 +16,7 @@ use crate::AppState;
 use crate::entity::{audit_log, folders, links, org_members, organizations, tags, users};
 use crate::handlers::links::{Authentication, authenticate_from_header};
 use crate::utils::email_domain_policy::live_users_by_email;
-use crate::utils::privacy::anonymize_ip;
+use crate::utils::privacy::{anonymize_ip, mask_email};
 use crate::utils::rate_limiter::ClientKey;
 use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
@@ -1039,7 +1039,8 @@ pub async fn invite_member(
         "invite",
         "member",
         Some(member.id),
-        Some(serde_json::json!({"email": payload.email, "role": payload.role})),
+        // Masked: the entry outlives the invitee's account (see `mask_email`).
+        Some(serde_json::json!({"email": mask_email(&invite_user.email), "role": payload.role})),
         &client,
     )
     .await;

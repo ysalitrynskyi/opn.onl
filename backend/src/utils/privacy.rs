@@ -50,6 +50,43 @@ pub fn anonymize_referer(referer: &str) -> Option<String> {
         .and_then(|u| u.host_str().map(|s| s.to_string()))
 }
 
+/// An address reduced to what tells a reader which of a few people an entry is
+/// about, and no more: the first character of the local part, then `***`, then
+/// the domain (`j***@example.com`). Anything without an `@` is just `***`.
+/// Audit entries keep this form instead of the address, since an entry outlives
+/// the account it names.
+pub fn mask_email(email: &str) -> String {
+    let email = email.trim();
+    match email.rsplit_once('@') {
+        Some((local, domain)) => match local.chars().next() {
+            Some(first) => format!("{first}***@{domain}"),
+            None => format!("***@{domain}"),
+        },
+        None => "***".to_string(),
+    }
+}
+
+/// Replace `email` with its masked form in the `email` field of every audit
+/// entry that holds it, whatever the letter case or surrounding space it was
+/// typed with. Entries written before invites stored a masked address carry the
+/// whole address, and they would otherwise outlive the account they name.
+/// Returns how many entries were changed.
+pub async fn scrub_audit_email<C: ConnectionTrait>(
+    db: &C,
+    email: &str,
+) -> Result<u64, sea_orm::DbErr> {
+    let res = db
+        .execute(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "UPDATE audit_log \
+             SET details = jsonb_set(details::jsonb, '{email}', to_jsonb($2::text))::json \
+             WHERE lower(btrim(details->>'email')) = lower(btrim($1))",
+            [email.into(), mask_email(email).into()],
+        ))
+        .await?;
+    Ok(res.rows_affected())
+}
+
 /// Retention window in days, from `ANALYTICS_PII_RETENTION_DAYS`.
 /// `0` disables the sweep; unset or invalid falls back to the default.
 pub fn pii_retention_days() -> Option<i32> {
@@ -260,6 +297,21 @@ mod tests {
     #[test]
     fn already_truncated_is_stable() {
         assert_eq!(anonymize_ip("203.0.113.0").as_deref(), Some("203.0.113.0"));
+    }
+
+    #[test]
+    fn masked_email_keeps_the_first_character_and_the_domain() {
+        assert_eq!(mask_email("jane@example.com"), "j***@example.com");
+        assert_eq!(mask_email(" Jane.Doe@Example.com "), "J***@Example.com");
+        // The first character, not the first byte.
+        assert_eq!(mask_email("émile@example.fr"), "é***@example.fr");
+    }
+
+    #[test]
+    fn masked_email_without_a_local_part_or_domain_reveals_nothing() {
+        assert_eq!(mask_email("@example.com"), "***@example.com");
+        assert_eq!(mask_email("not-an-address"), "***");
+        assert_eq!(mask_email(""), "***");
     }
 
     #[test]
