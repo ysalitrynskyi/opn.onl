@@ -10,7 +10,9 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 use std::net::{IpAddr, Ipv6Addr};
 
-use super::account_purge::{account_purge_days, purge_expired_accounts};
+use super::account_purge::{
+    account_purge_days, purge_expired_accounts, purge_expired_deleted_links,
+};
 
 /// Default retention for per-visitor identifier columns (`ip_address`,
 /// `user_agent`) on click events: ~13 months, long enough for year-over-year
@@ -139,11 +141,11 @@ pub fn spawn_retention_task(db: DatabaseConnection) {
     }
     match purge_days {
         Some(days) => tracing::info!(
-            "Account purge enabled: removing accounts deleted more than {} days ago",
+            "Account purge enabled: removing accounts and links deleted more than {} days ago",
             days
         ),
         None => tracing::info!(
-            "Account purge disabled (ACCOUNT_PURGE_DAYS=0): deleted accounts stay until an admin removes them"
+            "Account purge disabled (ACCOUNT_PURGE_DAYS=0): deleted accounts and links stay until an admin removes them"
         ),
     }
     if pii_days.is_none() && purge_days.is_none() {
@@ -195,6 +197,15 @@ pub fn spawn_retention_task(db: DatabaseConnection) {
                         }
                     }
                     Err(e) => tracing::error!("Account purge failed: {}", e),
+                }
+                match purge_expired_deleted_links(&db, days).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(
+                        "Deleted-link purge removed {} links deleted more than {} days ago",
+                        n,
+                        days
+                    ),
+                    Err(e) => tracing::error!("Deleted-link purge failed: {}", e),
                 }
             }
         }

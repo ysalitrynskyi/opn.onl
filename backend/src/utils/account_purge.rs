@@ -9,6 +9,11 @@
 //! (`hard_delete_user_in`): org links move to the org owner, the codes of the
 //! removed links are retired, click history, passkeys and API keys go with the
 //! user. After that the account cannot be restored.
+//!
+//! A link deleted on its own is only marked as well, and keeps its destination,
+//! title and notes for as long as the account lives. The same sweep removes it
+//! once it has been deleted for longer than the same window, after retiring its
+//! code so the code stays reserved.
 
 use chrono::{Duration, NaiveDateTime, Utc};
 use sea_orm::{
@@ -16,8 +21,9 @@ use sea_orm::{
     TransactionTrait,
 };
 
-use crate::entity::users;
+use crate::entity::{links, users};
 use crate::handlers::admin::{HardDeleteError, hard_delete_user_in};
+use crate::utils::retired_codes::retire_link_codes;
 
 /// Default grace window between deleting an account and removing it for good.
 pub const DEFAULT_ACCOUNT_PURGE_DAYS: i32 = 30;
@@ -26,8 +32,9 @@ pub const DEFAULT_ACCOUNT_PURGE_DAYS: i32 = 30;
 /// cutoff that is still a valid Postgres timestamp.
 const MAX_ACCOUNT_PURGE_DAYS: i32 = 36_500;
 
-/// Accounts fetched per query. Each account is removed in its own transaction,
-/// so a backlog never holds one long transaction or one huge id list.
+/// Accounts (or links) fetched per query. Each account is removed in its own
+/// transaction and links a batch at a time, so a backlog never holds one long
+/// transaction or one huge id list.
 const BATCH_SIZE: u64 = 100;
 
 /// Grace window in days, from `ACCOUNT_PURGE_DAYS`. `0` disables the purge
@@ -120,6 +127,49 @@ pub async fn purge_expired_accounts(
         }
     }
     Ok(report)
+}
+
+/// Remove every link that was soft-deleted more than `days` days ago and
+/// return how many went. Their click events, tags and routing rules go with
+/// them (`ON DELETE CASCADE`); their codes are retired first, in the same
+/// transaction, so nobody can claim them later and inherit the old traffic.
+/// Counts only: links are never named in logs.
+pub async fn purge_expired_deleted_links(db: &DatabaseConnection, days: i32) -> Result<u64, DbErr> {
+    let Some(cutoff) = Utc::now()
+        .naive_utc()
+        .checked_sub_signed(Duration::days(days.into()))
+    else {
+        return Ok(0);
+    };
+
+    let mut purged = 0;
+    loop {
+        let txn = db.begin().await?;
+        // Locked, and matched again once the lock is won: a link an admin
+        // restores meanwhile is no longer deleted and drops out of the batch.
+        let batch: Vec<i32> = links::Entity::find()
+            .select_only()
+            .column(links::Column::Id)
+            .filter(links::Column::DeletedAt.lt(cutoff))
+            .order_by_asc(links::Column::Id)
+            .limit(BATCH_SIZE)
+            .lock_exclusive()
+            .into_tuple()
+            .all(&txn)
+            .await?;
+        if batch.is_empty() {
+            txn.rollback().await?;
+            return Ok(purged);
+        }
+
+        retire_link_codes(&txn, &batch).await?;
+        links::Entity::delete_many()
+            .filter(links::Column::Id.is_in(batch.clone()))
+            .exec(&txn)
+            .await?;
+        txn.commit().await?;
+        purged += batch.len() as u64;
+    }
 }
 
 async fn purge_account(

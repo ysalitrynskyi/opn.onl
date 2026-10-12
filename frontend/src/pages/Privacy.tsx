@@ -160,9 +160,10 @@ export default function Privacy() {
                                     administrator can restore the account; after that nobody can
                                 </li>
                                 <li>
-                                    <strong>Link data:</strong> A link you delete stops redirecting at once, but
-                                    its record is kept until your account is permanently removed. Links you
-                                    created inside an organization belong to that organization and stay with it
+                                    <strong>Link data:</strong> A link you delete stops redirecting at once, and
+                                    its record (destination, title and notes) is permanently removed 30 days
+                                    later, as for a deleted account. Links you created inside an organization
+                                    belong to that organization and stay with it
                                 </li>
                                 <li>
                                     <strong>Per-visitor analytics identifiers:</strong> The truncated IP address
