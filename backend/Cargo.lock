@@ -3144,6 +3144,7 @@ dependencies = [
  "image",
  "jsonwebtoken",
  "lettre",
+ "log",
  "maxminddb",
  "migration",
  "mime",
