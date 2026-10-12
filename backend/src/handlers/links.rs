@@ -3924,8 +3924,7 @@ pub async fn get_link(
     responses(
         (status = 200, description = "Link deleted"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Not found"),
+        (status = 403, description = "Forbidden, also for a link that does not exist"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -3948,69 +3947,45 @@ pub async fn delete_link(
         }
     };
 
-    let link = links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
+    // A missing link answers like a forbidden one, so ids cannot be probed.
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Delete).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
+    };
 
-    if let Some(link) = link {
-        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Delete).await {
-            return denied.into_response();
-        }
+    // Soft delete - set deleted_at timestamp instead of actually deleting
+    let mut active_link: links::ActiveModel = link.clone().into();
+    active_link.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
 
-        if link.deleted_at.is_some() {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "Link not found".to_string(),
-                }),
-            )
-                .into_response();
-        }
-
-        // Soft delete - set deleted_at timestamp instead of actually deleting
-        let mut active_link: links::ActiveModel = link.clone().into();
-        active_link.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
-
-        match active_link.update(&state.db).await {
-            Ok(_) => {
-                if invalidate_cached_code_required(&state, &link.code)
-                    .await
-                    .is_err()
-                {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Link deleted, but cache invalidation failed".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-                (
-                    StatusCode::OK,
-                    Json(SuccessResponse {
-                        message: "Link deleted successfully".to_string(),
+    match active_link.update(&state.db).await {
+        Ok(_) => {
+            if invalidate_cached_code_required(&state, &link.code)
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Link deleted, but cache invalidation failed".to_string(),
                     }),
                 )
-                    .into_response()
+                    .into_response();
             }
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to delete link".to_string(),
+            (
+                StatusCode::OK,
+                Json(SuccessResponse {
+                    message: "Link deleted successfully".to_string(),
                 }),
             )
-                .into_response(),
+                .into_response()
         }
-    } else {
-        (
-            StatusCode::NOT_FOUND,
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: "Link not found".to_string(),
+                error: "Failed to delete link".to_string(),
             }),
         )
-            .into_response()
+            .into_response(),
     }
 }
 
@@ -4154,8 +4129,7 @@ mod burn_and_cap_tests {
         (status = 200, description = "Link updated", body = LinkResponse),
         (status = 400, description = "Invalid input, such as a non-positive `max_clicks`, `starts_at` not before `expires_at`, or a different `custom_alias`"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Not found"),
+        (status = 403, description = "Forbidden, also for a link that does not exist"),
         (status = 500, description = "The link could not be updated"),
     ),
     tag = "Links",
@@ -4180,205 +4154,224 @@ pub async fn update_link(
         }
     };
 
-    let link = links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
+    // A missing link answers like a forbidden one, so ids cannot be probed.
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Write).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
+    };
 
-    if let Some(link) = link {
-        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Write).await {
-            return denied.into_response();
-        }
+    let mut active_link: links::ActiveModel = link.clone().into();
 
-        let mut active_link: links::ActiveModel = link.clone().into();
+    // Validate scheduling / limit inputs the same way create_link does, so an
+    // update can't leave a link in an invalid state (e.g. max_clicks <= 0
+    // bricks the link; starts_at >= expires_at makes it never active).
+    if payload.remove_max_clicks != Some(true)
+        && let Some(mc) = payload.max_clicks
+        && mc <= 0
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "max_clicks must be greater than 0".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let eff_starts: Option<DateTime<Utc>> = if payload.remove_starts_at == Some(true) {
+        None
+    } else {
+        payload
+            .starts_at
+            .or_else(|| link.starts_at.map(|d| d.and_utc()))
+    };
+    let eff_expires: Option<DateTime<Utc>> = if payload.remove_expiration == Some(true) {
+        None
+    } else {
+        payload
+            .expires_at
+            .or_else(|| link.expires_at.map(|d| d.and_utc()))
+    };
+    if let (Some(s), Some(e)) = (eff_starts, eff_expires)
+        && s >= e
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "starts_at must be before expires_at".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
-        // Validate scheduling / limit inputs the same way create_link does, so an
-        // update can't leave a link in an invalid state (e.g. max_clicks <= 0
-        // bricks the link; starts_at >= expires_at makes it never active).
-        if payload.remove_max_clicks != Some(true)
-            && let Some(mc) = payload.max_clicks
-            && mc <= 0
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "max_clicks must be greater than 0".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        let eff_starts: Option<DateTime<Utc>> = if payload.remove_starts_at == Some(true) {
-            None
-        } else {
-            payload
-                .starts_at
-                .or_else(|| link.starts_at.map(|d| d.and_utc()))
-        };
-        let eff_expires: Option<DateTime<Utc>> = if payload.remove_expiration == Some(true) {
-            None
-        } else {
-            payload
-                .expires_at
-                .or_else(|| link.expires_at.map(|d| d.and_utc()))
-        };
-        if let (Some(s), Some(e)) = (eff_starts, eff_expires)
-            && s >= e
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "starts_at must be before expires_at".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    if let Err(e) = check_link_text(payload.title.as_deref(), payload.notes.as_deref()) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
 
-        if let Err(e) = check_link_text(payload.title.as_deref(), payload.notes.as_deref()) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-        }
-
-        if let Some(ref url) = payload.original_url {
-            // Validate URL format and sanitize
-            let validated_url = match validate_url(url) {
-                Ok(u) => u,
-                Err(e) => {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
-                        .into_response();
-                }
-            };
-            // Check if new URL is blocked
-            if let Err(e) = check_blocked(&state.db, &validated_url).await {
-                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
-            }
-            if let Err(e) = ensure_public_destination(&validated_url).await {
+    if let Some(ref url) = payload.original_url {
+        // Validate URL format and sanitize
+        let validated_url = match validate_url(url) {
+            Ok(u) => u,
+            Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
-            active_link.original_url = Set(validated_url);
+        };
+        // Check if new URL is blocked
+        if let Err(e) = check_blocked(&state.db, &validated_url).await {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
         }
+        if let Err(e) = ensure_public_destination(&validated_url).await {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+        active_link.original_url = Set(validated_url);
+    }
 
-        if let Some(alias) = payload.custom_alias.as_deref().filter(|a| !a.is_empty())
-            && alias != link.code
-        {
+    if let Some(alias) = payload.custom_alias.as_deref().filter(|a| !a.is_empty())
+        && alias != link.code
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "The short code cannot be changed".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if payload.remove_expiration == Some(true) {
+        active_link.expires_at = Set(None);
+    } else if let Some(expires) = payload.expires_at {
+        active_link.expires_at = Set(Some(expires.naive_utc()));
+    }
+
+    // "" is not a new password (see create_link); clearing one is what
+    // remove_password is for, so an empty field leaves it unchanged.
+    if payload.remove_password == Some(true) {
+        active_link.password_hash = Set(None);
+    } else if let Some(password) = payload.password.filter(|p| !p.is_empty()) {
+        if password_exceeds_bcrypt_limit(&password) {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: "The short code cannot be changed".to_string(),
+                    error: PASSWORD_TOO_LONG.to_string(),
                 }),
             )
                 .into_response();
         }
-
-        if payload.remove_expiration == Some(true) {
-            active_link.expires_at = Set(None);
-        } else if let Some(expires) = payload.expires_at {
-            active_link.expires_at = Set(Some(expires.naive_utc()));
-        }
-
-        // "" is not a new password (see create_link); clearing one is what
-        // remove_password is for, so an empty field leaves it unchanged.
-        if payload.remove_password == Some(true) {
-            active_link.password_hash = Set(None);
-        } else if let Some(password) = payload.password.filter(|p| !p.is_empty()) {
-            if password_exceeds_bcrypt_limit(&password) {
+        match crate::utils::jwt::hash_password(&password).await {
+            Ok(h) => active_link.password_hash = Set(Some(h)),
+            Err(_) => {
                 return (
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: PASSWORD_TOO_LONG.to_string(),
+                        error: "Failed to hash password".to_string(),
                     }),
                 )
                     .into_response();
             }
-            match crate::utils::jwt::hash_password(&password).await {
-                Ok(h) => active_link.password_hash = Set(Some(h)),
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Failed to hash password".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-            }
         }
+    }
 
-        // An empty string is how a client clears a text field; storing it
-        // would leave a blank title/notes that is not the same as none.
-        if let Some(title) = payload.title {
-            active_link.title = Set(Some(title).filter(|t| !t.is_empty()));
-        }
+    // An empty string is how a client clears a text field; storing it
+    // would leave a blank title/notes that is not the same as none.
+    if let Some(title) = payload.title {
+        active_link.title = Set(Some(title).filter(|t| !t.is_empty()));
+    }
 
-        if let Some(notes) = payload.notes {
-            active_link.notes = Set(Some(notes).filter(|n| !n.is_empty()));
-        }
+    if let Some(notes) = payload.notes {
+        active_link.notes = Set(Some(notes).filter(|n| !n.is_empty()));
+    }
 
-        // `folder_id: null` cannot be told from an absent field, so taking a
-        // link out of its folder has its own flag, like the other removals.
-        let remove_folder = payload.remove_folder == Some(true);
-        let new_folder_id = if remove_folder {
-            None
-        } else {
-            payload.folder_id
-        };
-        if remove_folder {
-            active_link.folder_id = Set(None);
-        } else if let Some(folder_id) = new_folder_id {
-            active_link.folder_id = Set(Some(folder_id));
-        }
+    // `folder_id: null` cannot be told from an absent field, so taking a
+    // link out of its folder has its own flag, like the other removals.
+    let remove_folder = payload.remove_folder == Some(true);
+    let new_folder_id = if remove_folder {
+        None
+    } else {
+        payload.folder_id
+    };
+    if remove_folder {
+        active_link.folder_id = Set(None);
+    } else if let Some(folder_id) = new_folder_id {
+        active_link.folder_id = Set(Some(folder_id));
+    }
 
-        if payload.remove_starts_at == Some(true) {
-            active_link.starts_at = Set(None);
-        } else if let Some(starts_at) = payload.starts_at {
-            active_link.starts_at = Set(Some(starts_at.naive_utc()));
-        }
+    if payload.remove_starts_at == Some(true) {
+        active_link.starts_at = Set(None);
+    } else if let Some(starts_at) = payload.starts_at {
+        active_link.starts_at = Set(Some(starts_at.naive_utc()));
+    }
 
-        // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING) and the click
-        // cap it rides on are decided together.
-        let burn_enabled = burn_feature_enabled();
-        let (burn_after_reading, max_clicks) = burn_and_cap_after_update(
-            link.burn_after_reading,
-            link.max_clicks,
-            payload.burn_after_reading.filter(|_| burn_enabled),
-            payload.max_clicks,
-            payload.remove_max_clicks == Some(true),
-        );
-        if burn_after_reading != link.burn_after_reading {
-            active_link.burn_after_reading = Set(burn_after_reading);
-        }
-        if max_clicks != link.max_clicks {
-            active_link.max_clicks = Set(max_clicks);
-        }
+    // Burn-after-reading (gated by ENABLE_BURN_AFTER_READING) and the click
+    // cap it rides on are decided together.
+    let burn_enabled = burn_feature_enabled();
+    let (burn_after_reading, max_clicks) = burn_and_cap_after_update(
+        link.burn_after_reading,
+        link.max_clicks,
+        payload.burn_after_reading.filter(|_| burn_enabled),
+        payload.max_clicks,
+        payload.remove_max_clicks == Some(true),
+    );
+    if burn_after_reading != link.burn_after_reading {
+        active_link.burn_after_reading = Set(burn_after_reading);
+    }
+    if max_clicks != link.max_clicks {
+        active_link.max_clicks = Set(max_clicks);
+    }
 
-        // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
-        let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
-        if interstitial_enabled && let Some(interstitial) = payload.safe_link_interstitial {
-            active_link.safe_link_interstitial = Set(interstitial);
-        }
+    // Safe-link interstitial (gated by ENABLE_SAFE_LINK_INTERSTITIAL).
+    let interstitial_enabled = env_flag("ENABLE_SAFE_LINK_INTERSTITIAL", true);
+    if interstitial_enabled && let Some(interstitial) = payload.safe_link_interstitial {
+        active_link.safe_link_interstitial = Set(interstitial);
+    }
 
-        // Link-in-bio visibility (gated by ENABLE_LINK_IN_BIO).
-        let link_in_bio_enabled = env_flag("ENABLE_LINK_IN_BIO", true);
-        if link_in_bio_enabled && let Some(visible) = payload.bio_visible {
-            // A bio page lists its owner's links, so only the creator decides
-            // whether an organization link appears on theirs. Editors may
-            // change everything else; the dashboard echoes the current value
-            // on every save, which is not a change.
-            if visible != link.bio_visible && link.user_id != Some(user_id) {
+    // Link-in-bio visibility (gated by ENABLE_LINK_IN_BIO).
+    let link_in_bio_enabled = env_flag("ENABLE_LINK_IN_BIO", true);
+    if link_in_bio_enabled && let Some(visible) = payload.bio_visible {
+        // A bio page lists its owner's links, so only the creator decides
+        // whether an organization link appears on theirs. Editors may
+        // change everything else; the dashboard echoes the current value
+        // on every save, which is not a change.
+        if visible != link.bio_visible && link.user_id != Some(user_id) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error:
+                        "Only the link's creator can choose whether it appears on their bio page"
+                            .to_string(),
+                }),
+            )
+                .into_response();
+        }
+        active_link.bio_visible = Set(visible);
+    }
+
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Some(folder_id) = new_folder_id {
+        match validate_link_resource_scope(&txn, user_id, link.org_id, Some(folder_id), &[]).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = txn.rollback().await;
                 return (
                     StatusCode::FORBIDDEN,
                     Json(ErrorResponse {
-                        error: "Only the link's creator can choose whether it appears on their bio page"
-                            .to_string(),
+                        error: "Folder not found or access denied".to_string(),
                     }),
                 )
                     .into_response();
             }
-            active_link.bio_visible = Set(visible);
-        }
-
-        let txn = match state.db.begin().await {
-            Ok(txn) => txn,
             Err(_) => {
+                let _ = txn.rollback().await;
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
@@ -4387,155 +4380,120 @@ pub async fn update_link(
                 )
                     .into_response();
             }
-        };
-        if let Some(folder_id) = new_folder_id {
-            match validate_link_resource_scope(&txn, user_id, link.org_id, Some(folder_id), &[])
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    let _ = txn.rollback().await;
-                    return (
-                        StatusCode::FORBIDDEN,
-                        Json(ErrorResponse {
-                            error: "Folder not found or access denied".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-                Err(_) => {
-                    let _ = txn.rollback().await;
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Database error".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-            }
         }
+    }
 
-        // consume_capped_click compares only links.click_count. Uncapped clicks
-        // still sitting in the buffer would otherwise be spent again after a
-        // cap is added, then added on flush. Fold them into click_count in the
-        // same transaction that sets max_clicks.
-        let pending_to_fold = if let ActiveValue::Set(Some(_)) = &active_link.max_clicks {
-            state.click_buffer.take_pending_count(link.id).await
-        } else {
-            0
-        };
-        // Add to the stored count in SQL. The row was read before the password
-        // hash and the DNS check, so writing `link.click_count + pending` back
-        // would undo a buffer flush that landed in between.
-        if pending_to_fold > 0
-            && links::Entity::update_many()
-                .col_expr(
-                    links::Column::ClickCount,
-                    Expr::col(links::Column::ClickCount).add(pending_to_fold),
-                )
-                .filter(links::Column::Id.eq(link.id))
-                .exec(&txn)
-                .await
-                .is_err()
-        {
-            let _ = txn.rollback().await;
-            state
-                .click_buffer
-                .add_pending_count(link.id, pending_to_fold)
-                .await;
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to update link".to_string(),
-                }),
+    // consume_capped_click compares only links.click_count. Uncapped clicks
+    // still sitting in the buffer would otherwise be spent again after a
+    // cap is added, then added on flush. Fold them into click_count in the
+    // same transaction that sets max_clicks.
+    let pending_to_fold = if let ActiveValue::Set(Some(_)) = &active_link.max_clicks {
+        state.click_buffer.take_pending_count(link.id).await
+    } else {
+        0
+    };
+    // Add to the stored count in SQL. The row was read before the password
+    // hash and the DNS check, so writing `link.click_count + pending` back
+    // would undo a buffer flush that landed in between.
+    if pending_to_fold > 0
+        && links::Entity::update_many()
+            .col_expr(
+                links::Column::ClickCount,
+                Expr::col(links::Column::ClickCount).add(pending_to_fold),
             )
-                .into_response();
-        }
+            .filter(links::Column::Id.eq(link.id))
+            .exec(&txn)
+            .await
+            .is_err()
+    {
+        let _ = txn.rollback().await;
+        state
+            .click_buffer
+            .add_pending_count(link.id, pending_to_fold)
+            .await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to update link".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
-        match active_link.update(&txn).await {
-            Ok(updated) => {
-                if txn.commit().await.is_err() {
-                    state
-                        .click_buffer
-                        .add_pending_count(link.id, pending_to_fold)
-                        .await;
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Failed to update link".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-                if invalidate_cached_code_required(&state, &updated.code)
-                    .await
-                    .is_err()
-                {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Link updated, but cache invalidation failed".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-
-                let tags = get_link_tags(&state.db, updated.id).await;
-                let base_url = get_base_url();
-                let api_url = get_api_url();
-                (
-                    StatusCode::OK,
-                    Json(LinkResponse {
-                        id: updated.id,
-                        code: updated.code.clone(),
-                        short_url: format!("{}/{}", base_url, updated.code),
-                        api_url: format!("{}/{}", api_url, updated.code),
-                        original_url: updated.original_url.clone(),
-                        title: updated.title.clone(),
-                        click_count: updated.click_count,
-                        created_at: utc_rfc3339(updated.created_at),
-                        expires_at: updated.expires_at.map(utc_rfc3339),
-                        has_password: updated.password_hash.is_some(),
-                        notes: updated.notes.clone(),
-                        folder_id: updated.folder_id,
-                        org_id: updated.org_id,
-                        starts_at: updated.starts_at.map(utc_rfc3339),
-                        max_clicks: updated.max_clicks,
-                        burn_after_reading: updated.burn_after_reading,
-                        burned_at: updated.burned_at.map(utc_rfc3339),
-                        safe_link_interstitial: updated.safe_link_interstitial,
-                        bio_visible: updated.bio_visible,
-                        is_active: updated.is_active(),
-                        is_pinned: updated.is_pinned,
-                        tags,
-                    }),
-                )
-                    .into_response()
-            }
-            Err(_) => {
-                let _ = txn.rollback().await;
+    match active_link.update(&txn).await {
+        Ok(updated) => {
+            if txn.commit().await.is_err() {
                 state
                     .click_buffer
                     .add_pending_count(link.id, pending_to_fold)
                     .await;
-                (
+                return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
                         error: "Failed to update link".to_string(),
                     }),
                 )
-                    .into_response()
+                    .into_response();
             }
+            if invalidate_cached_code_required(&state, &updated.code)
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Link updated, but cache invalidation failed".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+
+            let tags = get_link_tags(&state.db, updated.id).await;
+            let base_url = get_base_url();
+            let api_url = get_api_url();
+            (
+                StatusCode::OK,
+                Json(LinkResponse {
+                    id: updated.id,
+                    code: updated.code.clone(),
+                    short_url: format!("{}/{}", base_url, updated.code),
+                    api_url: format!("{}/{}", api_url, updated.code),
+                    original_url: updated.original_url.clone(),
+                    title: updated.title.clone(),
+                    click_count: updated.click_count,
+                    created_at: utc_rfc3339(updated.created_at),
+                    expires_at: updated.expires_at.map(utc_rfc3339),
+                    has_password: updated.password_hash.is_some(),
+                    notes: updated.notes.clone(),
+                    folder_id: updated.folder_id,
+                    org_id: updated.org_id,
+                    starts_at: updated.starts_at.map(utc_rfc3339),
+                    max_clicks: updated.max_clicks,
+                    burn_after_reading: updated.burn_after_reading,
+                    burned_at: updated.burned_at.map(utc_rfc3339),
+                    safe_link_interstitial: updated.safe_link_interstitial,
+                    bio_visible: updated.bio_visible,
+                    is_active: updated.is_active(),
+                    is_pinned: updated.is_pinned,
+                    tags,
+                }),
+            )
+                .into_response()
         }
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Link not found".to_string(),
-            }),
-        )
-            .into_response()
+        Err(_) => {
+            let _ = txn.rollback().await;
+            state
+                .click_buffer
+                .add_pending_count(link.id, pending_to_fold)
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to update link".to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
