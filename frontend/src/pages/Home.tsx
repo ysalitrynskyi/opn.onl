@@ -66,7 +66,7 @@ export default function Home() {
     const features = [
         { icon: Zap, title: 'Rust-fast redirects', desc: 'An Axum + Redis core resolves links in microseconds, built to index billions of rows.' },
         { icon: Shield, title: 'Privacy by default', desc: 'Click data stays on your instance. We don\'t sell it or follow visitors across other sites.' },
-        { icon: BarChart2, title: 'Honest analytics', desc: 'Clicks, geography, devices and referrers — first-party, in real time, no sampling.' },
+        { icon: BarChart2, title: 'Honest analytics', desc: 'Clicks, geography, devices and referrers — first-party, updated within seconds. Breakdowns use the newest 50,000 clicks per link.' },
         { icon: QrCode, title: 'Branded QR codes', desc: 'Every link ships with a QR — add your brand colour and logo, export PNG or SVG.' },
         { icon: Lock, title: 'Password & limits', desc: 'Gate sensitive links behind a password, cap total clicks, or schedule a window.' },
         { icon: Clock, title: 'Expiring links', desc: 'Set a start and an end. Campaigns turn themselves off when they should.' },
@@ -75,7 +75,7 @@ export default function Home() {
     const steps = [
         { n: '01', title: 'Paste a long URL', desc: 'Drop in any link — query strings, UTM tags and all.' },
         { n: '02', title: 'Shape it', desc: 'Add a custom alias, a password, an expiry or a click cap. Optional, always.' },
-        { n: '03', title: 'Share & measure', desc: 'Copy the short link, generate a QR, and watch the clicks land live.' },
+        { n: '03', title: 'Share & measure', desc: 'Copy the short link, generate a QR, and see the clicks come in.' },
     ];
 
     const ease = [0.16, 1, 0.3, 1] as const;

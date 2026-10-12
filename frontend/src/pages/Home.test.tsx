@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '../test/test-utils';
 import Home from './Home';
@@ -42,6 +44,35 @@ describe('Home Page', () => {
     expect(screen.getByText('Rust-fast redirects')).toBeInTheDocument();
     expect(screen.getByText('Privacy by default')).toBeInTheDocument();
     expect(screen.getByText('Honest analytics')).toBeInTheDocument();
+  });
+
+  it('does not claim real-time, unsampled analytics', () => {
+    render(<Home />);
+    const card = screen.getByText('Honest analytics').parentElement!;
+    // Clicks reach the stats on the next buffer flush, and a link's breakdowns
+    // are computed from its newest clicks once a period holds more than the cap.
+    expect(card).not.toHaveTextContent(/real time|no sampling/i);
+    expect(card).toHaveTextContent(/within seconds/i);
+  });
+
+  // The cap lives in the backend; read it so the copy cannot drift from it.
+  const analyticsRs = resolve(process.cwd(), '../backend/src/handlers/analytics.rs');
+  it.skipIf(!existsSync(analyticsRs))('quotes the click cap the stats endpoint enforces', () => {
+    const cap = readFileSync(analyticsRs, 'utf8').match(/const MAX_STATS_EVENTS: u64 = ([\d_]+);/)?.[1];
+    expect(cap).toBeDefined();
+
+    render(<Home />);
+    const quoted = Number(cap!.replaceAll('_', '')).toLocaleString('en-US');
+    expect(screen.getByText('Honest analytics').parentElement).toHaveTextContent(
+      `newest ${quoted} clicks`,
+    );
+  });
+
+  it('does not promise clicks appearing live', () => {
+    render(<Home />);
+    // The pages show clicks on load or refresh; nothing pushes them.
+    expect(screen.queryByText(/land live/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/see the clicks come in/i)).toBeInTheDocument();
   });
 
   it('shows terms and privacy links', () => {
