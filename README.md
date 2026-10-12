@@ -368,7 +368,7 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET, HEAD | `/{code}` | Redirect to original URL. A `HEAD` never counts as a click. On a one-time or click-capped link, a `HEAD` and a `GET` from a known link-preview bot get a `200` without the destination and use nothing up |
-| GET | `/{code}/preview` | Link preview + safety/reputation signal (append `+` to any short link). The destination is left out (empty `original_url` and `domain`) for a link that is not live, is password-protected, or is one-time |
+| GET | `/{code}/preview` | Link preview + safety/reputation signal (append `+` to any short link). The destination is left out (empty `original_url` and `domain`) for a link that is not live, is password-protected, or is one-time. `inactive_reason` says why a link is not live (`not_started`, `expired`, `used_up` or `blocked`) and is `null` while it is |
 | POST | `/{code}/verify` | Verify a password-protected link. A correct password answers `{"redirect_url", "expires_in_seconds"}`; open `redirect_url` (it carries a short-lived `?unlock=` proof) to be redirected |
 
 ### Link-in-Bio
