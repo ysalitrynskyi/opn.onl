@@ -156,6 +156,10 @@ curl https://api.opn.onl/health
 # {"status":"healthy","version":"1.5.0","database":"connected","redis":"connected",...}
 ```
 
+`status` is `healthy`, `degraded` or `unhealthy`. Only the database can fail the check (503, `unhealthy`).
+Redis is optional: when `REDIS_URL` is set but Redis does not answer a PING, `redis` reads `disconnected`
+and `status` is `degraded`, still with a 200 so the container is not restarted for it.
+
 ### Option 2: Portainer (Pre-built Images)
 
 Docker images are automatically built by GitHub Actions on every push to `release`.

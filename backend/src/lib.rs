@@ -308,7 +308,19 @@ pub fn build_cors() -> CorsLayer {
     }
 }
 
-/// Health check endpoint
+/// How long `/health` waits for Redis to answer a PING. The container probe
+/// runs every few seconds with its own timeout, so a stuck Redis must not
+/// stall the answer for longer than this.
+const HEALTH_REDIS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Health check endpoint.
+///
+/// The database is the only hard dependency: unreachable, the answer is 503
+/// `unhealthy`. Redis, e-mail and backups are optional, so none of them can
+/// fail the probe. A configured Redis that does not answer a PING shows as
+/// `"redis": "disconnected"` and turns `status` into `degraded`, still 200:
+/// redirects keep working from the database, while edits that must clear a
+/// cached redirect fail until Redis is back, which is worth seeing.
 pub async fn health_check(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> axum::response::Response {
@@ -323,12 +335,17 @@ pub async fn health_check(
             .as_ref()
             .is_some_and(|e| e.is_configured());
         let backup_configured = state.backup.is_configured();
+        let redis = match &state.redis_cache {
+            None => "disabled",
+            Some(cache) if cache.ping(HEALTH_REDIS_TIMEOUT).await => "connected",
+            Some(_) => "disconnected",
+        };
         let status = serde_json::json!({
-            "status": "healthy",
+            "status": if redis == "disconnected" { "degraded" } else { "healthy" },
             // Which release is serving, so a deploy can be checked from outside.
             "version": env!("CARGO_PKG_VERSION"),
             "database": "connected",
-            "redis": if state.redis_cache.is_some() { "connected" } else { "disabled" },
+            "redis": redis,
             "email": if email_configured { "configured" } else { "disabled" },
             "backup": if backup_configured { "configured" } else { "disabled" }
         });
