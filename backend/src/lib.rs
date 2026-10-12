@@ -142,8 +142,8 @@ fn host_from_public_url(url: &str) -> Option<String> {
         .and_then(|u| u.authority().map(|a| a.as_str().to_string()))
 }
 
-/// Ensure at least one admin exists in the system
-/// If no admins exist, promote the first user to admin
+/// Ensure at least one admin who can sign in exists in the system
+/// If there is none, promote the first enabled user to admin
 pub async fn ensure_admin_exists(db: &DatabaseConnection) {
     use entity::users;
     use sea_orm::{
@@ -166,10 +166,12 @@ pub async fn ensure_admin_exists(db: &DatabaseConnection) {
         return;
     }
 
-    // Check if any admin exists (non-deleted)
+    // Check if any admin can sign in. A disabled admin is not one: an instance
+    // whose only admin was disabled would otherwise never get another.
     let admin_count = users::Entity::find()
         .filter(users::Column::IsAdmin.eq(true))
         .filter(users::Column::DeletedAt.is_null())
+        .filter(users::Column::DisabledAt.is_null())
         .count(db)
         .await
         .unwrap_or(0);
