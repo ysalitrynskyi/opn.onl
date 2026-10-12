@@ -12,6 +12,18 @@ const hasBackendSource = existsSync(linksRs);
 const backend = hasBackendSource ? readFileSync(linksRs, 'utf8') : '';
 
 describe('API reference', () => {
+    it('says the folders, tags and teams features are used through the API, which is all there is', () => {
+        // The dashboard has no folder, tag or team screens; claiming the
+        // features without saying so promised an interface that is not there.
+        render(<Docs />);
+        for (const title of ['Folders', 'Tags', 'Teams']) {
+            const card = screen.getByRole('heading', { level: 4, name: title }).parentElement;
+            expect(card, `${title} card`).toHaveTextContent(/via the API/i);
+        }
+        // The features that do have an interface are not marked.
+        expect(screen.getByRole('heading', { level: 4, name: 'Custom Aliases' }).parentElement).not.toHaveTextContent(/api/i);
+    });
+
     it('documents the endpoint that fetches one link', () => {
         render(<Docs />);
         const row = screen.getByText('Get one link, in the same shape as an item of the list');
