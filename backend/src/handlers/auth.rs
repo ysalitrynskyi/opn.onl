@@ -1630,6 +1630,7 @@ pub struct AppSettingsResponse {
     /// them (`ACCOUNT_PURGE_DAYS=0`).
     pub account_purge_days: Option<i32>,
     pub custom_aliases_enabled: bool,
+    /// Links one account may own. `null` when there is no limit.
     pub max_links_per_user: Option<i32>,
     pub passkeys_enabled: bool,
     pub min_alias_length: usize,
@@ -1657,9 +1658,11 @@ pub async fn get_app_settings() -> impl IntoResponse {
 
     let custom_aliases_enabled = env_flag("ENABLE_CUSTOM_ALIASES", true);
 
-    let max_links_per_user = std::env::var("MAX_LINKS_PER_USER")
-        .ok()
-        .and_then(|v| v.parse().ok());
+    // The cap link creation enforces, so the two cannot disagree: unset, 0 and
+    // anything unreadable are no cap and read `null`. A cap too large for the
+    // field is reported as the largest one it holds, never as "no cap".
+    let max_links_per_user = crate::handlers::links::get_max_links_per_user()
+        .map(|cap| i32::try_from(cap).unwrap_or(i32::MAX));
 
     let min_alias_length = std::env::var("MIN_ALIAS_LENGTH")
         .ok()

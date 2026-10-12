@@ -226,7 +226,7 @@ fn get_max_alias_length() -> usize {
 
 /// Per-user link cap from MAX_LINKS_PER_USER. `None` (unset / unparseable / 0)
 /// means unlimited. Surfaced in GET /auth/settings and enforced at link create.
-fn get_max_links_per_user() -> Option<u64> {
+pub(crate) fn get_max_links_per_user() -> Option<u64> {
     std::env::var("MAX_LINKS_PER_USER")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
