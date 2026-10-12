@@ -758,7 +758,7 @@ pub async fn get_realtime_clicks(
         Json(serde_json::json!({
             "link_id": link.id,
             "click_count": link.click_count,
-            "timestamp": chrono::Utc::now().to_rfc3339()
+            "timestamp": utc_rfc3339(chrono::Utc::now().naive_utc())
         })),
     )
         .into_response()

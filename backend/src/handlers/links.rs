@@ -2710,7 +2710,7 @@ fn record_click_buffered(
             city: geo.city,
             device: ua_info.device,
             browser: ua_info.browser,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: utc_rfc3339(chrono::Utc::now().naive_utc()),
         };
         ws.broadcast_click(event);
     }

@@ -465,3 +465,116 @@ async fn sse_sends_a_comment_line_while_idle() {
     .await
     .expect("no keep-alive comment arrived on an idle SSE stream");
 }
+
+// ------------------------------------------------------------- timestamps
+
+/// A verified user with one link: `(jwt, link_id, code)`.
+async fn user_with_link(
+    server: &axum_test::TestServer,
+    db: &sea_orm::DatabaseConnection,
+) -> (String, i32, String) {
+    let (token, user_id) = register(server, &unique_email()).await;
+    mark_email_verified(db, user_id).await;
+    let res = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/realtime-stamp" }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create link: {}", res.text());
+    let body: Value = res.json();
+    (
+        token,
+        body["id"].as_i64().unwrap() as i32,
+        body["code"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Every time the API emits is RFC 3339 in UTC with an explicit `Z`; a client
+/// that parses `+00:00` and `Z` differently, or compares the strings, must not
+/// meet two spellings of the same instant.
+fn assert_utc_z(timestamp: &Value) {
+    let text = timestamp.as_str().expect("timestamp is a string");
+    assert!(text.ends_with('Z'), "{text}");
+    let parsed = chrono::DateTime::parse_from_rfc3339(text).expect("RFC 3339");
+    let skew = chrono::Utc::now() - parsed.with_timezone(&chrono::Utc);
+    assert!(
+        skew.num_minutes().abs() < 5,
+        "{text} is not the time of the click"
+    );
+}
+
+#[tokio::test]
+async fn ws_click_event_timestamp_is_utc_with_z() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, _, code) = user_with_link(&server, &db).await;
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    let visit = server.get(&format!("/{code}")).await;
+    assert_eq!(visit.status_code(), 307, "redirect: {}", visit.text());
+
+    let msg: Value = socket.receive_json().await;
+    assert_eq!(msg["type"], "click", "{msg}");
+    assert_eq!(msg["link_code"], code, "{msg}");
+    assert_utc_z(&msg["timestamp"]);
+    socket.close().await;
+}
+
+#[tokio::test]
+async fn sse_click_event_timestamp_is_utc_with_z() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, _, code) = user_with_link(&server, &db).await;
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    let mut body = response.bytes_stream();
+    wait_for_subscriber(&ws).await;
+
+    let visit = server.get(&format!("/{code}")).await;
+    assert_eq!(visit.status_code(), 307, "redirect: {}", visit.text());
+
+    let mut acc = Vec::new();
+    let event = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(chunk) = body.next().await {
+            acc.extend_from_slice(&chunk.expect("read SSE body"));
+            let text = String::from_utf8_lossy(&acc);
+            if let Some(start) = text.find("data:")
+                && let Ok(event) =
+                    serde_json::from_str::<Value>(text[start + 5..].lines().next().unwrap_or(""))
+            {
+                return event;
+            }
+        }
+        panic!("SSE stream ended before a click event");
+    })
+    .await
+    .expect("timed out waiting for the SSE click");
+    assert_eq!(event["link_code"], code, "{event}");
+    assert_utc_z(&event["timestamp"]);
+}
+
+#[tokio::test]
+async fn realtime_click_count_timestamp_is_utc_with_z() {
+    let (server, db, _ws) = spawn_real_app_ws().await;
+    let (token, link_id, _) = user_with_link(&server, &db).await;
+
+    let res = server
+        .get(&format!("/links/{link_id}/clicks/realtime"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    assert_utc_z(&res.json::<Value>()["timestamp"]);
+}
