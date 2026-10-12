@@ -87,6 +87,10 @@ docker-compose -f docker-compose.dev.yml up -d
 # Backend setup
 cd backend
 cp .env.example .env
+# The server refuses to start without a signing secret (JWT_SECRET is empty in
+# the template); generate one into .env. The `.bak` suffix keeps this working
+# with both GNU and BSD/macOS sed.
+sed -i.bak "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env && rm .env.bak
 cargo run
 
 # Frontend setup (new terminal)
