@@ -12,7 +12,7 @@ import {
     ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
     Tooltip as ChartTooltip, CartesianGrid, Legend,
 } from 'recharts';
-import { API_ENDPOINTS, authFetch, shortLinkBase } from '../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, shortLinkBase } from '../config/api';
 import SEO from '../components/SEO';
 import { safeLocalStorage } from '../utils/storage';
 import { pluralize } from '../utils/plural';
@@ -348,8 +348,8 @@ export default function Admin() {
             setError('');
             try {
                 await loadOverview();
-            } catch {
-                setError('Failed to load admin data');
+            } catch (err) {
+                setError(failureMessage(err, 'Failed to load admin data'));
             } finally {
                 setLoading(false);
             }
@@ -367,22 +367,22 @@ export default function Admin() {
     // Per-tab data loads, re-run when their filters change.
     useEffect(() => {
         if (activeTab !== 'users') return;
-        loadUsers().catch(() => setError('Failed to load users'));
+        loadUsers().catch((err) => setError(failureMessage(err, 'Failed to load users')));
     }, [activeTab, loadUsers]);
 
     useEffect(() => {
         if (activeTab !== 'links') return;
-        loadLinks().catch(() => setError('Failed to load links'));
+        loadLinks().catch((err) => setError(failureMessage(err, 'Failed to load links')));
     }, [activeTab, loadLinks]);
 
     useEffect(() => {
         if (activeTab !== 'orgs') return;
-        loadOrgs().catch(() => setError('Failed to load organizations'));
+        loadOrgs().catch((err) => setError(failureMessage(err, 'Failed to load organizations')));
     }, [activeTab, loadOrgs]);
 
     useEffect(() => {
         if (activeTab !== 'blocked') return;
-        loadBlocked().catch(() => setError('Failed to load blocked content'));
+        loadBlocked().catch((err) => setError(failureMessage(err, 'Failed to load blocked content')));
     }, [activeTab, loadBlocked]);
 
     // Clamp to the last valid page when a delete or filter shrinks `total`.
@@ -429,8 +429,8 @@ export default function Admin() {
             } else {
                 flash(setError, data.message || 'Action failed');
             }
-        } catch {
-            flash(setError, 'Action failed');
+        } catch (err) {
+            flash(setError, failureMessage(err, 'Action failed'));
         }
     };
 

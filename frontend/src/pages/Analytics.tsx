@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { API_ENDPOINTS, authFetch, shortLinkHost } from '../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
@@ -192,7 +192,7 @@ export default function Analytics() {
         } catch (error) {
             if (gen !== requestGen.current) return;
             logger.error('Failed to fetch stats', error);
-            setError('Network error. Please try again.');
+            setError(failureMessage(error, 'Network error. Please try again.'));
         } finally {
             if (gen === requestGen.current) {
                 setLoading(false);

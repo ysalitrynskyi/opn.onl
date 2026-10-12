@@ -6,7 +6,7 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, responseError, shortLinkHost } from '../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, responseError, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { isSafeHttpUrl } from '../utils';
@@ -159,7 +159,7 @@ export default function Settings() {
             }
         } catch (err) {
             logger.error('Failed to fetch settings data', err);
-            setError('Failed to load account settings. Please try again.');
+            setError(failureMessage(err, 'Failed to load account settings. Please try again.'));
             setProfile(null);
         } finally {
             setLoading(false);
