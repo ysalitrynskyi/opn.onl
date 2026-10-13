@@ -3315,7 +3315,10 @@ mod api_key_tests {
 
 #[cfg(test)]
 mod ssrf_tests {
-    use super::{ValidatedTarget, build_pinned_client, is_disallowed_ip, resolve_and_validate};
+    use super::{
+        PRIVATE_DESTINATION, ValidatedTarget, build_pinned_client, ensure_public_destination,
+        host_resolves_private, is_disallowed_ip, resolve_and_validate,
+    };
     use std::net::{IpAddr, SocketAddr};
 
     /// Minimal HTTP/1.1 server that answers every connection with `200 ok`.
@@ -3411,6 +3414,18 @@ mod ssrf_tests {
             .await
             .expect_err("localhost must be refused");
         assert!(err.contains("disallowed"), "unexpected error: {err}");
+    }
+
+    /// Storing a destination whose name resolves to loopback is refused. The
+    /// hosts file answers for `localhost`, so this needs no network, unlike the
+    /// integration tests' public rebinding name.
+    #[tokio::test]
+    async fn stored_destination_resolving_to_loopback_is_refused() {
+        assert_eq!(host_resolves_private("localhost", 80).await, Some(true));
+        assert_eq!(
+            ensure_public_destination("http://localhost/x").await,
+            Err(PRIVATE_DESTINATION.to_string())
+        );
     }
 
     #[tokio::test]
