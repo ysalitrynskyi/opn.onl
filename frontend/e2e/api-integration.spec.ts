@@ -543,7 +543,11 @@ test.describe('API Integration Tests', () => {
                     400,
                     'Invalid URL format',
                 ],
-                [await api(request, 'delete', '/links/2147483647', user.token), 404, 'Link not found'],
+                [
+                    await api(request, 'delete', '/links/2147483647', user.token),
+                    403,
+                    "You don't have permission to delete this link",
+                ],
             ];
             for (const [response, status, error] of cases) {
                 expect(response.status(), error).toBe(status);

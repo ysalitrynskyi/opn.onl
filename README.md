@@ -160,6 +160,10 @@ curl https://api.opn.onl/health
 # {"status":"healthy","version":"1.5.0","database":"connected","redis":"connected",...}
 ```
 
+`status` is `healthy`, `degraded` or `unhealthy`. Only the database can fail the check (503, `unhealthy`).
+Redis is optional: when `REDIS_URL` is set but Redis does not answer a PING, `redis` reads `disconnected`
+and `status` is `degraded`, still with a 200 so the container is not restarted for it.
+
 ### Option 2: Portainer (Pre-built Images)
 
 Docker images are automatically built by GitHub Actions on every push to `release`.
@@ -247,7 +251,7 @@ is ignored with a warning in the log and the default applies.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANALYTICS_PII_RETENTION_DAYS` | 396 | Days before per-visitor click identifiers (truncated IP, user agent) and the truncated IP on organization audit entries are anonymized by a daily sweep; aggregate stats and the audit entries themselves are kept. `0` disables the sweep |
-| `ACCOUNT_PURGE_DAYS` | 30 | Days a deleted account (deleted by its owner or an admin) is kept before a daily sweep removes it for good: the user, their links with URLs, titles and notes, click history, passkeys and API keys. An admin can restore the account until then, not after. Team links stay with their organization. An account that still owns an organization with other members is kept until ownership moves. `0` disables the sweep |
+| `ACCOUNT_PURGE_DAYS` | 30 | Days a deleted account (deleted by its owner or an admin) is kept before a daily sweep removes it for good: the user, their links with URLs, titles and notes, click history, passkeys and API keys. An admin can restore the account until then, not after. Team links stay with their organization. An account that still owns an organization with other members is kept until ownership moves. A link deleted on its own (by its owner, or by an admin) is removed for good after the same window, with its click history, tags and routing rules; its short code stays reserved. `0` disables both |
 
 Click analytics never store the full visitor IP: addresses are truncated at
 collection (IPv4 to /24, IPv6 to /48) after an in-memory, local GeoIP city
@@ -619,7 +623,7 @@ Blocked content cannot be shortened via any endpoint (single, bulk, API).
   bcrypt's input limit
 - Email verification and password-reset tokens stored only as SHA-256 hashes
 - JWT tokens with expiration
-- Soft-delete for links and users; deleted accounts are removed for good after
+- Soft-delete for links and users; deleted accounts and deleted links are removed for good after
   a grace window (`ACCOUNT_PURGE_DAYS`, default 30 days)
 - Email verification required before creating links
 - The account owner is emailed when their password is changed or reset

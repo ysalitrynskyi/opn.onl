@@ -15,7 +15,7 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{link_tags, links, org_members, tags};
-use crate::handlers::link_access::{LinkAction, authorize_link};
+use crate::handlers::link_access::{LinkAction, live_link_for};
 use crate::handlers::links::{LinkPage, LinkPageQuery, link_page, page_links};
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::{check_id_list, check_name, check_optional_color};
@@ -94,16 +94,6 @@ async fn can_edit_tag(db: &sea_orm::DatabaseConnection, tag: &tags::Model, user_
         Some(org_id) => crate::handlers::organizations::member_can_edit(db, org_id, user_id).await,
         None => tag.user_id == Some(user_id),
     }
-}
-
-async fn can_edit_link(
-    db: &sea_orm::DatabaseConnection,
-    link: &links::Model,
-    user_id: i32,
-) -> bool {
-    authorize_link(db, user_id, link, LinkAction::Write)
-        .await
-        .is_ok()
 }
 
 /// Tags and links cannot cross personal/organization ownership boundaries.
@@ -578,8 +568,7 @@ pub async fn delete_tag(
         (status = 200, description = "Tags added (`{\"added\": N}`). `added` counts the tags this request attached; ones already on the link, unknown, or out of scope for it are not counted"),
         (status = 400, description = "More than 500 tag ids"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Link not found"),
+        (status = 403, description = "Missing, deleted, or not yours to change (the same answer for all three)"),
         (status = 500, description = "The tags could not be added"),
     ),
     tag = "Tags",
@@ -607,30 +596,8 @@ pub async fn add_tags_to_link(
         )
     })?;
 
-    // Verify link exists, not deleted, and user has access
-    let link = links::Entity::find_by_id(link_id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database error"})),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Link not found"})),
-            )
-        })?;
-
-    if !can_edit_link(&state.db, &link, user_id).await {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
-        ));
-    }
+    // A missing, deleted or foreign link is the same 403, so ids cannot be probed.
+    let link = live_link_for(&state.db, link_id, user_id, LinkAction::Write).await?;
 
     let mut added_count = 0;
     if !tag_ids.is_empty() {
@@ -705,8 +672,7 @@ pub async fn add_tags_to_link(
         (status = 200, description = "Tags removed (`{\"removed\": N}`)"),
         (status = 400, description = "More than 500 tag ids"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Link not found"),
+        (status = 403, description = "Missing, deleted, or not yours to change (the same answer for all three)"),
     ),
     tag = "Tags",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -733,30 +699,8 @@ pub async fn remove_tags_from_link(
         )
     })?;
 
-    // Verify link exists, not deleted, and user has access
-    let link = links::Entity::find_by_id(link_id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database error"})),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Link not found"})),
-            )
-        })?;
-
-    if !can_edit_link(&state.db, &link, user_id).await {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Access denied"})),
-        ));
-    }
+    // A missing, deleted or foreign link is the same 403, so ids cannot be probed.
+    let link = live_link_for(&state.db, link_id, user_id, LinkAction::Write).await?;
 
     // Only tags the link could carry are touched, whatever ids were sent.
     let mut removed_count = 0;

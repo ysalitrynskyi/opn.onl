@@ -1,5 +1,6 @@
 use redis::{Client, Script};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -73,7 +74,13 @@ impl RedisCache {
             .and_then(|s| s.parse().ok())
             .unwrap_or(300); // Default 5 minutes
 
-        match Client::open(redis_url.as_str()) {
+        Self::connect(&redis_url, ttl).await
+    }
+
+    /// Connect to the Redis server at `redis_url`. Returns None (cache
+    /// disabled) when the URL is invalid or the first connection fails.
+    pub async fn connect(redis_url: &str, ttl: u64) -> Option<Self> {
+        match Client::open(redis_url) {
             Ok(client) => match client.get_connection_manager().await {
                 Ok(conn) => {
                     info!("Redis cache connected successfully");
@@ -240,6 +247,17 @@ impl RedisCache {
     /// Check if Redis is connected
     pub fn is_connected(&self) -> bool {
         self.client.is_some()
+    }
+
+    /// Whether Redis answers a PING within `timeout`. `is_connected` only says
+    /// a client was built at startup; this says the server is there now.
+    pub async fn ping(&self, timeout: Duration) -> bool {
+        let Some(mut conn) = self.connection.read().await.clone() else {
+            return false;
+        };
+        let reply: Result<Result<String, redis::RedisError>, _> =
+            tokio::time::timeout(timeout, redis::cmd("PING").query_async(&mut conn)).await;
+        matches!(reply, Ok(Ok(_)))
     }
 }
 

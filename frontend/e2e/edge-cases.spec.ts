@@ -700,7 +700,7 @@ test.describe('Changes from elsewhere while editing', () => {
         expect(stored.has_password).toBe(true);
     });
 
-    test('saving a link that was deleted elsewhere reports it is gone', async ({ page, request }) => {
+    test('saving a link that was deleted elsewhere is refused and keeps the dialog open', async ({ page, request }) => {
         const user = await createUser(request);
         const link = await createLink(request, user.token, { original_url: 'https://www.iana.org/domains/root/db' });
         await openDashboard(page, user);
@@ -715,7 +715,11 @@ test.describe('Changes from elsewhere while editing', () => {
         await dialog.getByLabel('Destination URL').fill('https://www.iana.org/domains/root/files');
         await dialog.getByRole('button', { name: 'Save changes' }).click();
 
-        await expect(dialog.getByRole('alert')).toHaveText('Link not found');
+        // A deleted link is refused like one the caller does not own, so ids
+        // cannot be probed. The dialog says what the user can act on.
+        await expect(dialog.getByRole('alert')).toHaveText(
+            'This link no longer exists or you no longer have access to it.',
+        );
         await expect(dialog).toBeVisible();
     });
 });

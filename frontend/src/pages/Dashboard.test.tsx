@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act } from '@testing-library/react';
-import { fireEvent, render, screen, wait, waitFor } from '../test/test-utils';
+import { fireEvent, render, screen, wait, waitFor, within } from '../test/test-utils';
 import Dashboard from './Dashboard';
 import { mockFetchError, mockFetchResponse, mockToken, mockLink } from '../test/test-utils';
 import { ToastContainer } from '../components/Toast';
@@ -308,6 +308,46 @@ describe('Dashboard Page', () => {
       expect(screen.getByRole('heading', { name: /edit link/i })).toBeInTheDocument();
       expect(screen.getAllByText('Update rejected').length).toBeGreaterThan(0);
     });
+  });
+
+  /** Open the edit dialog of the only link and save, with the update endpoint refusing it. */
+  async function saveRefusedWith(status: number, message: string) {
+    vi.mocked(global.fetch).mockImplementation((url, options) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/auth/settings')) {
+        return mockFetchResponse({
+          custom_aliases_enabled: true,
+          min_alias_length: 5,
+          max_alias_length: 50,
+          conditional_routing_enabled: false,
+        }) as any;
+      }
+      if (requestUrl.endsWith('/links/1') && options?.method === 'PUT') {
+        return mockFetchError(message, status) as any;
+      }
+      if (requestUrl.includes('/links/sparklines')) {
+        return mockFetchResponse({ sparklines: [] }) as any;
+      }
+      return mockFetchResponse([mockLink]) as any;
+    });
+
+    const { user } = render(<Dashboard />);
+    await user.click(await screen.findByRole('button', { name: /edit link/i }));
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+    return within(await screen.findByRole('dialog')).findByRole('alert');
+  }
+
+  it('tells the user a link deleted elsewhere is gone when the save is refused as a permission error', async () => {
+    const alert = await saveRefusedWith(403, "You don't have permission to modify this link");
+
+    expect(alert).toHaveTextContent('This link no longer exists or you no longer have access to it.');
+    expect(alert).not.toHaveTextContent(/permission/i);
+  });
+
+  it('keeps the message of any other refused save, including another 403', async () => {
+    const alert = await saveRefusedWith(403, 'This domain is blocked');
+
+    expect(alert).toHaveTextContent('This domain is blocked');
   });
 
   const linkA = {

@@ -55,6 +55,19 @@ function linksUrl(limit: number, offset: number, search: string) {
     return `${API_ENDPOINTS.links}?${params}`;
 }
 
+// A link that was deleted elsewhere is refused with the same 403 as one the
+// user may not edit, so link ids cannot be probed. Either way the link is no
+// longer theirs to edit, and that is what the dialog says. The other 403s on
+// an update (a blocked destination, a folder out of reach, the bio page) keep
+// their own messages.
+const EDIT_DENIED_MESSAGE = "You don't have permission to modify this link";
+const LINK_GONE_MESSAGE = 'This link no longer exists or you no longer have access to it.';
+
+function updateFailureMessage(status: number, message: string | undefined) {
+    if (status === 403 && message === EDIT_DENIED_MESSAGE) return LINK_GONE_MESSAGE;
+    return message || 'Failed to update link';
+}
+
 export default function Dashboard() {
     const [links, setLinks] = useState<LinkData[]>([]);
     // How many links match what `links` was fetched with (all of the account's,
@@ -610,7 +623,7 @@ export default function Dashboard() {
             });
             if (!res.ok) {
                 const response = await res.json().catch(() => null) as { error?: string } | null;
-                throw new Error(response?.error || 'Failed to update link');
+                throw new Error(updateFailureMessage(res.status, response?.error));
             }
 
             await fetchLinks();

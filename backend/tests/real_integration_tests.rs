@@ -169,7 +169,7 @@ async fn deleted_link_cannot_be_updated() {
         .await;
     assert_eq!(
         res.status_code(),
-        404,
+        403,
         "soft-deleted link must not be updateable: {}",
         res.text()
     );

@@ -344,3 +344,237 @@ async fn sse_stream_ends_after_token_is_revoked() {
     .await
     .expect("revoked SSE stream stayed open");
 }
+
+// ------------------------------------------------------------- keep-alive
+
+/// Milliseconds are enough: the server pings every 100 ms and gives up on a
+/// connection that has said nothing for 400 ms. Production uses 30 s and 90 s.
+fn quick_keepalive() -> std::sync::Arc<WsState> {
+    std::sync::Arc::new(
+        WsState::new().with_keepalive(Duration::from_millis(100), Duration::from_millis(400)),
+    )
+}
+
+/// A half-open peer: connected, but nothing reads from the socket, so no Ping
+/// is ever answered (tungstenite replies to a Ping only when the application
+/// reads). The server stops waiting and closes the connection instead of
+/// holding it open, and counting it against the user's limit, forever.
+#[tokio::test]
+async fn ws_closes_a_connection_that_stops_answering() {
+    let (server, db, ws) = common::spawn_real_app_ws_with_state(quick_keepalive()).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let _socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+    assert_eq!(ws.open_connections(user_id), 1);
+
+    for _ in 0..250 {
+        if ws.open_connections(user_id) == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("a WebSocket that never answers a ping stayed open");
+}
+
+/// Control: a client that reads, which is what makes a browser answer pings,
+/// is never dropped for silence, and still gets its events.
+#[tokio::test]
+async fn ws_keeps_a_connection_that_answers_pings() {
+    let (server, db, ws) = common::spawn_real_app_ws_with_state(quick_keepalive()).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    // Three times the idle timeout, answering every ping on the way.
+    let until = tokio::time::Instant::now() + Duration::from_millis(1200);
+    let mut pings = 0;
+    while let Ok(message) = tokio::time::timeout_at(until, socket.receive_message()).await {
+        match message {
+            axum_test::WsMessage::Ping(_) => pings += 1,
+            other => panic!("unexpected frame while idle: {other:?}"),
+        }
+    }
+    assert!(
+        pings >= 3,
+        "pings keep coming while the peer answers: {pings}"
+    );
+
+    ws.broadcast_click(click_for(user_id, "STILL-HERE"));
+    let message = loop {
+        match socket.receive_message().await {
+            axum_test::WsMessage::Ping(_) => continue,
+            other => break other,
+        }
+    };
+    let axum_test::WsMessage::Text(text) = message else {
+        panic!("expected the click event, got {message:?}");
+    };
+    let msg: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(msg["link_code"], "STILL-HERE", "{msg}");
+}
+
+/// The SSE stream carries a comment line on the keep-alive interval, so a quiet
+/// stream is not closed by a proxy and a vanished client fails a write.
+#[tokio::test]
+async fn sse_sends_a_comment_line_while_idle() {
+    let (server, db, _ws) = common::spawn_real_app_ws_with_state(quick_keepalive()).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let mut body = response.bytes_stream();
+
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(chunk) = body.next().await {
+            seen.extend_from_slice(&chunk.expect("read SSE body"));
+            if String::from_utf8_lossy(&seen)
+                .lines()
+                .any(|line| line.starts_with(':'))
+            {
+                return;
+            }
+        }
+        panic!("the SSE stream ended");
+    })
+    .await
+    .expect("no keep-alive comment arrived on an idle SSE stream");
+}
+
+// ------------------------------------------------------------- timestamps
+
+/// A verified user with one link: `(jwt, link_id, code)`.
+async fn user_with_link(
+    server: &axum_test::TestServer,
+    db: &sea_orm::DatabaseConnection,
+) -> (String, i32, String) {
+    let (token, user_id) = register(server, &unique_email()).await;
+    mark_email_verified(db, user_id).await;
+    let res = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/realtime-stamp" }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create link: {}", res.text());
+    let body: Value = res.json();
+    (
+        token,
+        body["id"].as_i64().unwrap() as i32,
+        body["code"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Every time the API emits is RFC 3339 in UTC with an explicit `Z`; a client
+/// that parses `+00:00` and `Z` differently, or compares the strings, must not
+/// meet two spellings of the same instant.
+fn assert_utc_z(timestamp: &Value) {
+    let text = timestamp.as_str().expect("timestamp is a string");
+    assert!(text.ends_with('Z'), "{text}");
+    let parsed = chrono::DateTime::parse_from_rfc3339(text).expect("RFC 3339");
+    let skew = chrono::Utc::now() - parsed.with_timezone(&chrono::Utc);
+    assert!(
+        skew.num_minutes().abs() < 5,
+        "{text} is not the time of the click"
+    );
+}
+
+#[tokio::test]
+async fn ws_click_event_timestamp_is_utc_with_z() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, _, code) = user_with_link(&server, &db).await;
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    let visit = server.get(&format!("/{code}")).await;
+    assert_eq!(visit.status_code(), 307, "redirect: {}", visit.text());
+
+    let msg: Value = socket.receive_json().await;
+    assert_eq!(msg["type"], "click", "{msg}");
+    assert_eq!(msg["link_code"], code, "{msg}");
+    assert_utc_z(&msg["timestamp"]);
+    socket.close().await;
+}
+
+#[tokio::test]
+async fn sse_click_event_timestamp_is_utc_with_z() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, _, code) = user_with_link(&server, &db).await;
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    let mut body = response.bytes_stream();
+    wait_for_subscriber(&ws).await;
+
+    let visit = server.get(&format!("/{code}")).await;
+    assert_eq!(visit.status_code(), 307, "redirect: {}", visit.text());
+
+    let mut acc = Vec::new();
+    let event = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(chunk) = body.next().await {
+            acc.extend_from_slice(&chunk.expect("read SSE body"));
+            let text = String::from_utf8_lossy(&acc);
+            if let Some(start) = text.find("data:")
+                && let Ok(event) =
+                    serde_json::from_str::<Value>(text[start + 5..].lines().next().unwrap_or(""))
+            {
+                return event;
+            }
+        }
+        panic!("SSE stream ended before a click event");
+    })
+    .await
+    .expect("timed out waiting for the SSE click");
+    assert_eq!(event["link_code"], code, "{event}");
+    assert_utc_z(&event["timestamp"]);
+}
+
+#[tokio::test]
+async fn realtime_click_count_timestamp_is_utc_with_z() {
+    let (server, db, _ws) = spawn_real_app_ws().await;
+    let (token, link_id, _) = user_with_link(&server, &db).await;
+
+    let res = server
+        .get(&format!("/links/{link_id}/clicks/realtime"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    assert_utc_z(&res.json::<Value>()["timestamp"]);
+}

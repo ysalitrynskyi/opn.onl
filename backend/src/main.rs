@@ -54,7 +54,7 @@ async fn main() {
     // so a password containing `@` / `:` / `/` does not split the URL.
     let database_url = utils::database_url::resolve_database_url();
 
-    let db = Database::connect(&database_url)
+    let db = Database::connect(utils::database_url::connect_options(database_url))
         .await
         .expect("Failed to connect to database");
 

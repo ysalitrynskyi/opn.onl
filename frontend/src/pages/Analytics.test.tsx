@@ -395,6 +395,21 @@ describe('Analytics Page', () => {
             expect(await screen.findByText('Link not found.')).toBeInTheDocument();
         });
 
+        it('does not say which of the two it is when the API refuses the link', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: false,
+                status: 403,
+                json: () => Promise.resolve({ error: "You don't have permission to access this link" }),
+            });
+
+            render(<Analytics />);
+
+            expect(
+                await screen.findByText("This link doesn't exist or you don't have access to it."),
+            ).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: /back to dashboard/i })).toBeInTheDocument();
+        });
+
         it('says the session ended instead of a network error when the stored session is rejected', async () => {
             global.fetch = vi.fn().mockResolvedValue({
                 ok: false,

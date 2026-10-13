@@ -183,7 +183,9 @@ export default function Analytics() {
                 if (gen !== requestGen.current) return;
                 setStats(data);
             } else if (res.status === 403) {
-                setError('You do not have permission to view this link\'s analytics.');
+                // A link that does not exist is refused like one the user may
+                // not read, so ids cannot be probed.
+                setError("This link doesn't exist or you don't have access to it.");
             } else if (res.status === 404) {
                 setError('Link not found.');
             } else {

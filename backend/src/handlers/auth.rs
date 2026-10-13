@@ -1437,12 +1437,14 @@ pub async fn delete_account(
                 .into_response();
         }
 
-        // Refusing the last live admin avoids a window with no admin until
-        // process restart (`ensure_admin_exists` runs only at boot).
+        // Refusing the last admin who can sign in avoids a window with no
+        // usable admin until process restart (`ensure_admin_exists` runs only
+        // at boot). A disabled admin cannot sign in, so it does not count.
         if user.is_admin {
             let live_admins = match users::Entity::find()
                 .filter(users::Column::IsAdmin.eq(true))
                 .filter(users::Column::DeletedAt.is_null())
+                .filter(users::Column::DisabledAt.is_null())
                 .count(&txn)
                 .await
             {
@@ -1634,6 +1636,7 @@ pub struct AppSettingsResponse {
     /// operator turned that sweep off (`ANALYTICS_PII_RETENTION_DAYS=0`).
     pub analytics_pii_retention_days: Option<i32>,
     pub custom_aliases_enabled: bool,
+    /// Links one account may own. `null` when there is no limit.
     pub max_links_per_user: Option<i32>,
     pub passkeys_enabled: bool,
     pub min_alias_length: usize,
@@ -1661,9 +1664,11 @@ pub async fn get_app_settings() -> impl IntoResponse {
 
     let custom_aliases_enabled = env_flag("ENABLE_CUSTOM_ALIASES", true);
 
-    let max_links_per_user = std::env::var("MAX_LINKS_PER_USER")
-        .ok()
-        .and_then(|v| v.parse().ok());
+    // The cap link creation enforces, so the two cannot disagree: unset, 0 and
+    // anything unreadable are no cap and read `null`. A cap too large for the
+    // field is reported as the largest one it holds, never as "no cap".
+    let max_links_per_user = crate::handlers::links::get_max_links_per_user()
+        .map(|cap| i32::try_from(cap).unwrap_or(i32::MAX));
 
     let min_alias_length = std::env::var("MIN_ALIAS_LENGTH")
         .ok()

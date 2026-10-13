@@ -19,6 +19,17 @@ use tokio::sync::{broadcast, watch};
 
 const DEFAULT_AUTH_REVALIDATE_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How often an idle `/ws` connection is sent a Ping and an idle `/sse` stream
+/// a comment line. Reverse proxies and NAT tables drop a connection that stays
+/// quiet for a minute or two, and a peer that vanished without closing is only
+/// noticed when something is written to it.
+const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// A `/ws` connection that has sent nothing, not even the Pong a browser
+/// answers a Ping with automatically, for this long is closed. Three missed
+/// pings.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Open `/ws` and `/sse` connections one user may hold at once, together
 /// (`WS_MAX_CONNECTIONS_PER_USER`). Each connection is a task, a broadcast
 /// receiver and a user lookup every revalidation interval; a handful covers
@@ -40,6 +51,8 @@ pub struct WsState {
     /// state to leak.
     pub click_tx: broadcast::Sender<ClickEvent>,
     auth_revalidate_interval: Duration,
+    keepalive_interval: Duration,
+    idle_timeout: Duration,
     /// 0 means no limit.
     max_connections_per_user: usize,
     open_connections: Arc<Mutex<HashMap<i32, usize>>>,
@@ -88,10 +101,21 @@ impl WsState {
         Self {
             click_tx,
             auth_revalidate_interval,
+            keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
             max_connections_per_user: DEFAULT_MAX_CONNECTIONS_PER_USER,
             open_connections: Arc::default(),
             shutting_down: Arc::new(watch::channel(false).0),
         }
+    }
+
+    /// Override how often idle connections are pinged and how long a `/ws`
+    /// connection may stay silent before it is closed, primarily for
+    /// deterministic transport tests. Production keeps 30 and 90 seconds.
+    pub fn with_keepalive(mut self, interval: Duration, idle_timeout: Duration) -> Self {
+        self.keepalive_interval = interval;
+        self.idle_timeout = idle_timeout;
+        self
     }
 
     /// Cap the `/ws` and `/sse` connections one user may hold at once; 0 lifts
@@ -364,6 +388,16 @@ async fn handle_socket(
     let mut org_ids = current_org_ids(&db, user_id).await;
     let mut revalidate = tokio::time::interval(ws_state.auth_revalidate_interval);
     revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Ping on a timer and drop a peer that has gone quiet. Without it a socket
+    // whose other end vanished (a phone leaving the network, a proxy that
+    // dropped the mapping) stayed open for good, counted against the user's
+    // connection limit, and nothing was ever written to find out.
+    let mut last_heard = tokio::time::Instant::now();
+    let mut keepalive = tokio::time::interval_at(
+        last_heard + ws_state.keepalive_interval,
+        ws_state.keepalive_interval,
+    );
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -375,6 +409,20 @@ async fn handle_socket(
                     })))
                     .await;
                 break;
+            }
+            _ = keepalive.tick() => {
+                if last_heard.elapsed() >= ws_state.idle_timeout {
+                    let _ = sender
+                        .send(Message::Close(Some(CloseFrame {
+                            code: close_code::POLICY,
+                            reason: "no reply to ping".into(),
+                        })))
+                        .await;
+                    break;
+                }
+                if sender.send(Message::Ping(Vec::new())).await.is_err() {
+                    break;
+                }
             }
             _ = revalidate.tick() => {
                 let current_user = resolve_ws_user(
@@ -405,6 +453,7 @@ async fn handle_socket(
             },
             incoming = receiver.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
+                    last_heard = tokio::time::Instant::now();
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                         match ws_msg {
                             WsMessage::Ping => {
@@ -430,7 +479,8 @@ async fn handle_socket(
                     break;
                 }
                 Some(Ok(Message::Close(_))) | None => break,
-                Some(Ok(_)) => {}
+                // Pong, Ping or binary: the peer is there.
+                Some(Ok(_)) => last_heard = tokio::time::Instant::now(),
             },
         }
     }
@@ -545,7 +595,9 @@ pub async fn sse_handler(
         }
     });
 
+    // A comment line on a timer keeps proxies from closing a quiet stream, and
+    // makes a vanished client fail the write so the stream is dropped.
     Sse::new(stream)
-        .keep_alive(KeepAlive::default())
+        .keep_alive(KeepAlive::new().interval(ws_state.keepalive_interval))
         .into_response()
 }

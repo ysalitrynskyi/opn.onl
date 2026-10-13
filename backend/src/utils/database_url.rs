@@ -1,9 +1,16 @@
-//! Assemble `DATABASE_URL` from discrete Postgres pieces.
+//! Assemble `DATABASE_URL` from discrete Postgres pieces, and the options the
+//! app connects with.
 //!
 //! Compose interpolates `${POSTGRES_PASSWORD}` into a URL verbatim. A password
 //! containing `@`, `:`, `/`, or `#` then splits the URL (userinfo vs host), so
 //! the backend never reaches Postgres even though the server accepted the
 //! password. Percent-encode userinfo here instead.
+
+use sea_orm::ConnectOptions;
+use std::time::Duration;
+
+/// A statement slower than this is logged at WARN.
+const SLOW_STATEMENT: Duration = Duration::from_secs(1);
 
 /// Wrap an IPv6 literal so `url::Url` / libpq see a host rather than a port.
 /// Hostnames and already-bracketed values are returned unchanged.
@@ -31,6 +38,20 @@ pub fn assemble_database_url(
         port,
         db
     )
+}
+
+/// Options for the app's database pool.
+///
+/// sqlx logs every statement at INFO by default, so a production `RUST_LOG=info`
+/// wrote one line per query to the console and the log files, drowning the
+/// lines worth reading. Statements go to DEBUG instead, and one that runs for
+/// over a second is a WARN.
+pub fn connect_options(url: impl Into<String>) -> ConnectOptions {
+    let mut options = ConnectOptions::new(url);
+    options
+        .sqlx_logging_level(log::LevelFilter::Debug)
+        .sqlx_slow_statements_logging_settings(log::LevelFilter::Warn, SLOW_STATEMENT);
+    options
 }
 
 /// `DATABASE_URL` if set and non-empty; otherwise assemble from `POSTGRES_*`.
