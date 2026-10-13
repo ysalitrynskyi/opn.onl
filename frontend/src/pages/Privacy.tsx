@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Shield, Eye, Database, Lock, Trash2, Mail } from 'lucide-react';
 import SEO from '../components/SEO';
+import { API_ENDPOINTS } from '../config/api';
 
 /**
  * What this deployment's operator configured for Google Analytics (GA_ID and
@@ -22,8 +23,71 @@ function analyticsDisclosure(): { known: boolean; enabled: boolean; optOut: bool
     return { known, enabled, optOut: enabled && window.GA_CONSENT_MODE === 'opt-out' };
 }
 
+// The defaults of ACCOUNT_PURGE_DAYS and ANALYTICS_PII_RETENTION_DAYS. The page
+// is prerendered once for every deployment, so the static HTML quotes these and
+// the instance's own numbers replace them once /auth/settings answers.
+const DEFAULT_PURGE_DAYS = 30;
+const DEFAULT_RETENTION_DAYS = 396;
+
+interface RetentionWindows {
+    /** Days until a deleted account is removed for good; null when that sweep is off. */
+    purgeDays: number | null;
+    /** Days until click identifiers are anonymized; null when that sweep is off. */
+    retentionDays: number | null;
+}
+
+// A number is the operator's window, null means the sweep is switched off, and
+// an absent field (an older server) leaves the default in place.
+function configuredWindow(value: unknown, fallback: number | null): number | null {
+    if (typeof value === 'number') return value;
+    return value === null ? null : fallback;
+}
+
+function useRetentionWindows(): RetentionWindows {
+    const [windows, setWindows] = useState<RetentionWindows>({
+        purgeDays: DEFAULT_PURGE_DAYS,
+        retentionDays: DEFAULT_RETENTION_DAYS,
+    });
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await fetch(API_ENDPOINTS.appSettings);
+                if (!res.ok) return;
+                const data = await res.json();
+                if (cancelled) return;
+                setWindows((current) => ({
+                    purgeDays: configuredWindow(data.account_purge_days, current.purgeDays),
+                    retentionDays: configuredWindow(data.analytics_pii_retention_days, current.retentionDays),
+                }));
+            } catch {
+                // Offline, or no API behind this page: the defaults stand.
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    return windows;
+}
+
+function formatDays(days: number): string {
+    return `${days} ${days === 1 ? 'day' : 'days'}`;
+}
+
+// Whole months when the window is one (396 days, the default, is 13), exact days otherwise.
+function formatRetention(days: number): string {
+    const averageMonth = 30.4375;
+    const months = Math.round(days / averageMonth);
+    if (days >= 60 && Math.abs(days - months * averageMonth) < 2) return `${months} months`;
+    return formatDays(days);
+}
+
 export default function Privacy() {
     const analytics = analyticsDisclosure();
+    const { purgeDays, retentionDays } = useRetentionWindows();
 
     return (
         <div className="pb-24">
@@ -79,8 +143,10 @@ export default function Privacy() {
                                 <li>Passkey credentials (if you enable passwordless login)</li>
                                 <li>
                                     Organization activity logs (if you use teams) record who changed a
-                                    membership or setting, with a truncated IP address that is removed after
-                                    13 months
+                                    membership or setting, with a truncated IP address that{' '}
+                                    {retentionDays === null
+                                        ? 'this deployment does not remove automatically'
+                                        : `is removed after ${formatRetention(retentionDays)}`}
                                 </li>
                             </ul>
 
@@ -156,19 +222,24 @@ export default function Privacy() {
                                     <strong>Account data:</strong> Kept while your account is open. When you
                                     delete your account it closes immediately, and your email address, password
                                     hash, profile, links (destinations, titles and notes), click history,
-                                    passkeys and API keys are permanently removed 30 days later. Until then an
+                                    passkeys and API keys {purgeDays === null ? 'are kept until an administrator permanently removes them' : `are permanently removed ${formatDays(purgeDays)} later`}. Until then an
                                     administrator can restore the account; after that nobody can
                                 </li>
                                 <li>
                                     <strong>Link data:</strong> A link you delete stops redirecting at once, and
-                                    its record (destination, title and notes) is permanently removed 30 days
-                                    later, as for a deleted account. Links you created inside an organization
+                                    its record (destination, title and notes){' '}
+                                    {purgeDays === null
+                                        ? 'is kept until an administrator permanently removes it'
+                                        : `is permanently removed ${formatDays(purgeDays)} later`}
+                                    , as for a deleted account. Links you created inside an organization
                                     belong to that organization and stay with it
                                 </li>
                                 <li>
                                     <strong>Per-visitor analytics identifiers:</strong> The truncated IP address
-                                    and raw user-agent string of a click are automatically anonymized after
-                                    13 months by a scheduled job
+                                    and raw user-agent string of a click are{' '}
+                                    {retentionDays === null
+                                        ? 'not automatically anonymized on this deployment'
+                                        : `automatically anonymized after ${formatRetention(retentionDays)} by a scheduled job`}
                                 </li>
                                 <li>
                                     <strong>Aggregate analytics:</strong> Non-identifying dimensions (click counts,
@@ -182,8 +253,11 @@ export default function Privacy() {
                                 Depending on where you live (e.g. under the GDPR or similar laws), you have the
                                 right to access, correct, export, object to the processing of, and delete your
                                 personal data. Where self-service deletion is enabled you can delete your account
-                                from Settings: it closes immediately and the data is permanently removed after the
-                                30 days described above. Otherwise email us and we will process verified deletion
+                                from Settings: it closes immediately and{' '}
+                                {purgeDays === null
+                                    ? 'the data is kept until an administrator permanently removes it'
+                                    : `the data is permanently removed after the ${formatDays(purgeDays)} described above`}
+                                . Otherwise email us and we will process verified deletion
                                 requests within 30 days.
                             </p>
                             <p>

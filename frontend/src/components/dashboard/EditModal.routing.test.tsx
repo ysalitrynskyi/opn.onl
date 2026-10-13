@@ -75,6 +75,16 @@ describe('EditModal routing rules: loading', () => {
         expect(rulePuts()).toEqual([]);
     });
 
+    it('says the session ended, and offers no retry, when the rules request is rejected as unauthorized', async () => {
+        mockFetch(() => Promise.resolve({ status: 401, ok: false } as Response));
+        renderModal();
+
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveTextContent('Session expired. Please log in again.');
+        expect(alert).not.toHaveTextContent(/couldn't load/i);
+        expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+    });
+
     it('does not replace the stored rules when the rules request never reached the server', async () => {
         mockFetch(() => Promise.reject(new TypeError('Failed to fetch')));
         const { user, onSave } = renderModal();

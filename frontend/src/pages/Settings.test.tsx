@@ -525,6 +525,24 @@ describe('Settings Page', () => {
             expect(screen.queryByText('Total Links')).not.toBeInTheDocument();
         });
 
+        it('says the session ended instead of a load failure when the stored session is rejected', async () => {
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 401,
+                        json: () => Promise.resolve({ error: 'Invalid or expired credentials' }),
+                    });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert')).toHaveTextContent('Session expired. Please log in again.');
+            expect(screen.queryByText(/failed to load account settings/i)).not.toBeInTheDocument();
+        });
+
         it('shows a retryable error when the settings fetch throws', async () => {
             global.fetch = vi.fn().mockRejectedValue(new Error('Network down'));
 

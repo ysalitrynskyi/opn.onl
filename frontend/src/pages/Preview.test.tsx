@@ -63,26 +63,76 @@ describe('Preview page', () => {
         expect(screen.queryByText(/no longer active/i)).not.toBeInTheDocument();
     });
 
-    it('says a link that is no longer active is, and disables Visit Link', async () => {
-        // The API withholds the destination of a used-up, scheduled or blocked link.
-        mockPreview({ is_active: false, original_url: '', domain: '' });
+    it('says a link that has not started yet is not active yet, and disables Visit Link', async () => {
+        // A scheduled link is not "no longer" active: it has not begun.
+        mockPreview({ is_active: false, inactive_reason: 'not_started', original_url: '', domain: '' });
         render(<Preview />);
 
-        expect(await screen.findByText('This link is no longer active')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Link Unavailable' })).toBeDisabled();
+        expect(await screen.findByText('This link is not active yet')).toBeInTheDocument();
+        expect(screen.queryByText(/no longer active/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/has expired/i)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Not Active Yet' })).toBeDisabled();
         expect(screen.queryByRole('link', { name: /visit link/i })).not.toBeInTheDocument();
         expect(screen.queryByText(/looks safe/i)).not.toBeInTheDocument();
         expect(screen.queryByText('Destination')).not.toBeInTheDocument();
         expect(screen.queryByRole('link', { name: /in a new tab/i })).not.toBeInTheDocument();
     });
 
+    it('says a used-up link has reached its click limit', async () => {
+        mockPreview({ is_active: false, inactive_reason: 'used_up', original_url: '', domain: '' });
+        render(<Preview />);
+
+        expect(await screen.findByText('This link has reached its click limit')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Link Unavailable' })).toBeDisabled();
+    });
+
+    it('says an opened one-time link has already been opened', async () => {
+        mockPreview({
+            is_active: false,
+            inactive_reason: 'used_up',
+            burn_after_reading: true,
+            original_url: '',
+            domain: '',
+        });
+        render(<Preview />);
+
+        expect(await screen.findByText('This one-time link has already been opened')).toBeInTheDocument();
+        expect(screen.queryByText(/click limit/i)).not.toBeInTheDocument();
+    });
+
+    it('says a blocked link has been disabled', async () => {
+        mockPreview({ is_active: false, inactive_reason: 'blocked', original_url: '', domain: '' });
+        render(<Preview />);
+
+        expect(await screen.findByText('This link has been disabled')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Link Unavailable' })).toBeDisabled();
+        expect(screen.queryByRole('link', { name: /visit link/i })).not.toBeInTheDocument();
+    });
+
+    it('falls back to the generic line when an older API sends no reason', async () => {
+        mockPreview({ is_active: false, original_url: '', domain: '' });
+        render(<Preview />);
+
+        expect(await screen.findByText('This link is no longer active')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Link Unavailable' })).toBeDisabled();
+        expect(screen.queryByRole('link', { name: /visit link/i })).not.toBeInTheDocument();
+    });
+
     it('keeps the expired wording for an expired link', async () => {
-        mockPreview({ is_active: false, is_expired: true, original_url: '', domain: '' });
+        mockPreview({ is_active: false, is_expired: true, inactive_reason: 'expired', original_url: '', domain: '' });
         render(<Preview />);
 
         expect(await screen.findByText('This link has expired')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Link Expired' })).toBeDisabled();
         expect(screen.queryByRole('link', { name: /visit link/i })).not.toBeInTheDocument();
+    });
+
+    it('still reads the expired flag when an older API sends no reason', async () => {
+        mockPreview({ is_active: false, is_expired: true, original_url: '', domain: '' });
+        render(<Preview />);
+
+        expect(await screen.findByText('This link has expired')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Link Expired' })).toBeDisabled();
     });
 
     it('explains a one-time link instead of showing an empty destination', async () => {

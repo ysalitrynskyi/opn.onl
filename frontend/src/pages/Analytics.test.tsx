@@ -410,6 +410,27 @@ describe('Analytics Page', () => {
             expect(screen.getByRole('link', { name: /back to dashboard/i })).toBeInTheDocument();
         });
 
+        it('says the session ended instead of a network error when the stored session is rejected', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: false,
+                status: 401,
+                json: () => Promise.resolve({ error: 'Invalid or expired credentials' }),
+            });
+
+            render(<Analytics />);
+
+            expect(await screen.findByText('Session expired. Please log in again.')).toBeInTheDocument();
+            expect(screen.queryByText(/network error/i)).not.toBeInTheDocument();
+        });
+
+        it('still reports a network error when the request never reached the server', async () => {
+            global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+            render(<Analytics />);
+
+            expect(await screen.findByText('Network error. Please try again.')).toBeInTheDocument();
+        });
+
         it('clears a previous error when a later fetch succeeds', async () => {
             global.fetch = vi.fn()
                 .mockResolvedValueOnce({

@@ -16,12 +16,39 @@ interface LinkPreview {
     is_expired: boolean;
     /** False when the link is not live (used up, expired, not started, blocked). */
     is_active?: boolean;
+    /** Why it is not live: not_started, expired, used_up or blocked. Null while live. */
+    inactive_reason?: string | null;
     burn_after_reading?: boolean;
     created_at: string;
     click_count: number;
     reputation?: { verdict: string; source: string };
     interstitial_enabled?: boolean;
     safe_link_interstitial?: boolean;
+}
+
+/**
+ * What to tell a visitor about a link that is not live. A scheduled link is
+ * not "no longer" anything, so each reason gets its own sentence; an API that
+ * sends no reason falls back to the expired flag and then to the generic line.
+ */
+function inactiveCopy(preview: LinkPreview): { notice: string; button: string } {
+    switch (preview.inactive_reason ?? (preview.is_expired ? 'expired' : null)) {
+        case 'not_started':
+            return { notice: 'This link is not active yet', button: 'Not Active Yet' };
+        case 'expired':
+            return { notice: 'This link has expired', button: 'Link Expired' };
+        case 'used_up':
+            return {
+                notice: preview.burn_after_reading
+                    ? 'This one-time link has already been opened'
+                    : 'This link has reached its click limit',
+                button: 'Link Unavailable',
+            };
+        case 'blocked':
+            return { notice: 'This link has been disabled', button: 'Link Unavailable' };
+        default:
+            return { notice: 'This link is no longer active', button: 'Link Unavailable' };
+    }
 }
 
 export default function Preview() {
@@ -89,6 +116,7 @@ export default function Preview() {
     // original_url means there is nothing to show or open.
     const inactive = preview.is_active === false || preview.is_expired;
     const destinationShown = !inactive && Boolean(preview.original_url);
+    const { notice: inactiveNotice, button: inactiveButton } = inactiveCopy(preview);
     const hiddenReason = preview.burn_after_reading
         ? 'One-time link: the destination stays hidden until it is opened, and it can be opened only once.'
         : "This link's destination is not shown in advance.";
@@ -204,7 +232,7 @@ export default function Preview() {
                                 {inactive && (
                                     <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
                                         <Clock className="h-4 w-4 flex-shrink-0" />
-                                        {preview.is_expired ? 'This link has expired' : 'This link is no longer active'}
+                                        {inactiveNotice}
                                     </div>
                                 )}
                             </div>
@@ -249,7 +277,7 @@ export default function Preview() {
                                     disabled
                                     className="w-full flex items-center justify-center gap-2 bg-slate-200 text-slate-500 px-6 py-3 rounded-xl font-medium cursor-not-allowed"
                                 >
-                                    {preview.is_expired ? 'Link Expired' : 'Link Unavailable'}
+                                    {inactiveButton}
                                 </button>
                             )}
                         </div>

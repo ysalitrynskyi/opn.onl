@@ -1847,6 +1847,10 @@ pub struct LinkPreviewResponse {
     /// False when the link is not currently live (scheduled, expired, capped,
     /// burned, or blocked). The destination is always withheld then.
     pub is_active: bool,
+    /// Why the link is not live: `not_started`, `expired`, `used_up` (a
+    /// one-time link that was opened, or a click cap that was reached) or
+    /// `blocked`. `null` while it is live.
+    pub inactive_reason: Option<String>,
     /// Whether this is a one-time link. Its destination is never shown ahead of
     /// the visit that uses it up.
     pub burn_after_reading: bool,
@@ -1989,6 +1993,14 @@ pub async fn preview_link(
                 "unknown"
             };
 
+            // Same precedence as GET /{code}: the link's own state is reported
+            // before the blocklist.
+            let inactive_reason = link
+                .inactive_kind()
+                .map(|kind| kind.code())
+                .or(blocked.then_some("blocked"))
+                .map(str::to_string);
+
             let (shown_url, shown_domain) = match destination {
                 Some(url) => {
                     let domain = url::Url::parse(&url)
@@ -2009,6 +2021,7 @@ pub async fn preview_link(
                     has_password: link.password_hash.is_some(),
                     is_expired,
                     is_active: link.is_active() && !blocked,
+                    inactive_reason,
                     burn_after_reading: link.burn_after_reading,
                     created_at: utc_rfc3339(link.created_at),
                     click_count: link.click_count,

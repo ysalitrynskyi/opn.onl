@@ -1631,6 +1631,10 @@ pub struct AppSettingsResponse {
     /// `null` when the operator keeps deleted accounts until an admin removes
     /// them (`ACCOUNT_PURGE_DAYS=0`).
     pub account_purge_days: Option<i32>,
+    /// Days after which the truncated IP address and user agent of a click, and
+    /// the IP on an organization audit entry, are anonymized. `null` when the
+    /// operator turned that sweep off (`ANALYTICS_PII_RETENTION_DAYS=0`).
+    pub analytics_pii_retention_days: Option<i32>,
     pub custom_aliases_enabled: bool,
     /// Links one account may own. `null` when there is no limit.
     pub max_links_per_user: Option<i32>,
@@ -1704,6 +1708,7 @@ pub async fn get_app_settings() -> impl IntoResponse {
         Json(AppSettingsResponse {
             account_deletion_enabled,
             account_purge_days: crate::utils::account_purge::account_purge_days(),
+            analytics_pii_retention_days: crate::utils::privacy::pii_retention_days(),
             custom_aliases_enabled,
             max_links_per_user,
             passkeys_enabled,

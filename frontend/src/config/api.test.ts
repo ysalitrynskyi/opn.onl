@@ -6,6 +6,7 @@ import {
     getAuthHeaders,
     apiCall,
     authFetch,
+    failureMessage,
     shortLinkBase,
     shortLinkHost,
     responseError,
@@ -227,6 +228,21 @@ describe('authFetch', () => {
         expect((failure as Error).message).toBe('Session expired. Please log in again.');
         expect(localStorage.getItem('token')).toBeNull();
         expect(localStorage.getItem('is_admin')).toBeNull();
+    });
+});
+
+describe('failureMessage', () => {
+    it('names the ended session instead of the caller\'s generic wording', () => {
+        expect(failureMessage(new SessionExpiredError(), 'Network error. Please try again.')).toBe(
+            'Session expired. Please log in again.',
+        );
+    });
+
+    it('keeps the caller\'s wording for every other failure', () => {
+        expect(failureMessage(new TypeError('Failed to fetch'), 'Network error. Please try again.')).toBe(
+            'Network error. Please try again.',
+        );
+        expect(failureMessage('boom', 'Action failed')).toBe('Action failed');
     });
 });
 
