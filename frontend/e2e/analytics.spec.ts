@@ -363,8 +363,12 @@ test.describe('Analytics Page - Error Handling', () => {
         expect(deleted.status()).toBe(200);
 
         await signIn(page, owner);
-        expect((await openAnalytics(page, link.id)).status()).toBe(404);
-        await expect(page.getByText('Link not found.', { exact: true })).toBeVisible();
+        // A deleted link is refused like one the user may not read, so ids
+        // cannot be probed.
+        expect((await openAnalytics(page, link.id)).status()).toBe(403);
+        await expect(
+            page.getByText("This link doesn't exist or you don't have access to it.", { exact: true }),
+        ).toBeVisible();
         await expect(page.getByRole('link', { name: 'Back to Dashboard' })).toBeVisible();
         await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0);
     });
@@ -376,7 +380,7 @@ test.describe('Analytics Page - Error Handling', () => {
         await signIn(page, intruder);
         expect((await openAnalytics(page, link.id)).status()).toBe(403);
         await expect(
-            page.getByText("You do not have permission to view this link's analytics.", { exact: true }),
+            page.getByText("This link doesn't exist or you don't have access to it.", { exact: true }),
         ).toBeVisible();
         // None of the owner's numbers leak into the page.
         await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0);
