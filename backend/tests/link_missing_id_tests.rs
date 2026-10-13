@@ -247,3 +247,60 @@ async fn an_owner_still_reaches_qr_clone_pin_and_analytics_of_a_live_link() {
         .unwrap();
     assert_eq!(copies, 2, "the original and its clone");
 }
+
+/// `(status, raw body)` of attaching (`POST`) or detaching (`DELETE`) tags on
+/// link `id` as `who`.
+async fn tags_call(method: &str, id: i32, who: &Person) -> (u16, String) {
+    let server = app().await;
+    let path = format!("/links/{id}/tags");
+    let body = json!({ "tag_ids": [] });
+    let res = match method {
+        "POST" => {
+            server
+                .post(&path)
+                .authorization_bearer(&who.token)
+                .json(&body)
+                .await
+        }
+        "DELETE" => {
+            server
+                .delete(&path)
+                .authorization_bearer(&who.token)
+                .json(&body)
+                .await
+        }
+        other => panic!("unexpected method {other}"),
+    };
+    (res.status_code().as_u16(), res.text())
+}
+
+#[tokio::test]
+async fn link_tags_answer_a_missing_or_deleted_link_like_a_foreign_one() {
+    let (_, db) = spawn_real_app().await;
+    let caller = person(&db).await;
+    let stranger = person(&db).await;
+    let foreign = insert_link(&db, stranger.id, false).await;
+    let gone = insert_link(&db, caller.id, true).await;
+
+    for method in ["POST", "DELETE"] {
+        let not_yours = tags_call(method, foreign.id, &caller).await;
+        assert_eq!(not_yours.0, 403, "{method} foreign: {}", not_yours.1);
+        assert_eq!(
+            tags_call(method, MISSING_ID, &caller).await,
+            not_yours,
+            "{method}: a missing link and someone else's must be indistinguishable"
+        );
+        assert_eq!(
+            tags_call(method, gone.id, &caller).await,
+            not_yours,
+            "{method}: a deleted link and someone else's must be indistinguishable"
+        );
+    }
+
+    // Control: the owner of a live link still gets through.
+    let own = insert_link(&db, caller.id, false).await;
+    for method in ["POST", "DELETE"] {
+        let (status, body) = tags_call(method, own.id, &caller).await;
+        assert_eq!(status, 200, "{method} own link: {body}");
+    }
+}
