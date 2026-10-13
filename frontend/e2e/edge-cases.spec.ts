@@ -716,8 +716,10 @@ test.describe('Changes from elsewhere while editing', () => {
         await dialog.getByRole('button', { name: 'Save changes' }).click();
 
         // A deleted link is refused like one the caller does not own, so ids
-        // cannot be probed: the same 403 and message either way.
-        await expect(dialog.getByRole('alert')).toHaveText("You don't have permission to modify this link");
+        // cannot be probed. The dialog says what the user can act on.
+        await expect(dialog.getByRole('alert')).toHaveText(
+            'This link no longer exists or you no longer have access to it.',
+        );
         await expect(dialog).toBeVisible();
     });
 });
