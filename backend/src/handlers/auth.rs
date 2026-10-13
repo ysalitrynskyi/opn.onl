@@ -1437,12 +1437,14 @@ pub async fn delete_account(
                 .into_response();
         }
 
-        // Refusing the last live admin avoids a window with no admin until
-        // process restart (`ensure_admin_exists` runs only at boot).
+        // Refusing the last admin who can sign in avoids a window with no
+        // usable admin until process restart (`ensure_admin_exists` runs only
+        // at boot). A disabled admin cannot sign in, so it does not count.
         if user.is_admin {
             let live_admins = match users::Entity::find()
                 .filter(users::Column::IsAdmin.eq(true))
                 .filter(users::Column::DeletedAt.is_null())
+                .filter(users::Column::DisabledAt.is_null())
                 .count(&txn)
                 .await
             {
