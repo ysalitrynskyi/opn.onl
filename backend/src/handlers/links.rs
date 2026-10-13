@@ -19,7 +19,7 @@ use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::json_error;
 use crate::handlers::link_access::{
-    CallerAccess, LinkAction, authorize_link, listed_links, live_link_for, readable_links,
+    CallerAccess, LinkAction, listed_links, live_link_for, readable_links,
 };
 use crate::handlers::websocket::ClickEvent;
 use crate::utils::env::env_flag;
@@ -2864,8 +2864,7 @@ pub async fn verify_link_password(
     responses(
         (status = 200, description = "QR code image: PNG, or SVG with `format=svg`", body = Vec<u8>, content_type = ["image/png", "image/svg+xml"]),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Link not found"),
+        (status = 403, description = "Forbidden, also for a link that does not exist"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -2882,43 +2881,34 @@ pub async fn get_qr_code(
         None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
-    let link = links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Read).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
+    };
 
-    if let Some(link) = link {
-        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Read).await {
-            return denied.into_response();
-        }
+    let url = format!("{}/{}", get_base_url(), link.code);
 
-        let url = format!("{}/{}", get_base_url(), link.code);
-
-        // QR branding is a non-destructive kill-switch (default ON). When disabled,
-        // all options are ignored and we serve the plain black/white PNG, which is
-        // byte-identical to the legacy behavior.
-        let branding_enabled = env_flag("ENABLE_QR_BRANDING", true);
-        let effective = if branding_enabled {
-            opts
-        } else {
-            QrOptions::default()
-        };
-
-        match build_qr_image(&url, &effective) {
-            Some((bytes, content_type)) => (
-                StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, content_type)],
-                bytes,
-            )
-                .into_response(),
-            None => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to generate QR code",
-            ),
-        }
+    // QR branding is a non-destructive kill-switch (default ON). When disabled,
+    // all options are ignored and we serve the plain black/white PNG, which is
+    // byte-identical to the legacy behavior.
+    let branding_enabled = env_flag("ENABLE_QR_BRANDING", true);
+    let effective = if branding_enabled {
+        opts
     } else {
-        json_error(StatusCode::NOT_FOUND, "Link not found")
+        QrOptions::default()
+    };
+
+    match build_qr_image(&url, &effective) {
+        Some((bytes, content_type)) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, content_type)],
+            bytes,
+        )
+            .into_response(),
+        None => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to generate QR code",
+        ),
     }
 }
 
@@ -5178,8 +5168,7 @@ pub struct CloneLinkResponse {
         (status = 201, description = "Link cloned", body = CloneLinkResponse),
         (status = 400, description = "The destination is no longer acceptable"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden, link cap reached, or a destination is blocked"),
-        (status = 404, description = "Link not found"),
+        (status = 403, description = "Forbidden (also for a link that does not exist), link cap reached, or a destination is blocked"),
         (status = 500, description = "The link could not be cloned; nothing was created"),
     ),
     tag = "Links",
@@ -5203,207 +5192,190 @@ pub async fn clone_link(
         }
     };
 
-    let link = links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
+    // The clone is created in the source link's organization, so the caller
+    // needs the same standing there as for creating a link in it.
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Clone).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
+    };
+
+    // Re-check the destination. A link stored before this rule, or written
+    // straight into the database, must not be cloned into a fresh code.
+    if let Err(e) = validate_url(&link.original_url) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+    if let Err(e) = ensure_public_destination(&link.original_url).await {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+
+    // So is the blocklist: a destination blocked after the link was made
+    // must not come back under a new code, and neither must a rule's.
+    let rules = match crate::entity::routing_rules::Entity::find()
+        .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
+        .order_by_asc(crate::entity::routing_rules::Column::Priority)
+        .all(&state.db)
         .await
-        .unwrap_or(None);
-
-    if let Some(link) = link {
-        // The clone is created in the source link's organization, so the caller
-        // needs the same standing there as for creating a link in it.
-        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Clone).await {
-            return denied.into_response();
+    {
+        Ok(rules) => rules,
+        Err(error) => {
+            tracing::error!(
+                "Failed to load routing rules for clone of {}: {}",
+                id,
+                error
+            );
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
         }
-
-        // Re-check the destination. A link stored before this rule, or written
-        // straight into the database, must not be cloned into a fresh code.
-        if let Err(e) = validate_url(&link.original_url) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    };
+    let destinations = std::iter::once(link.original_url.as_str())
+        .chain(rules.iter().map(|r| r.destination_url.as_str()));
+    for destination in destinations {
+        if let Err(e) = check_blocked(&state.db, destination).await {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
         }
-        if let Err(e) = ensure_public_destination(&link.original_url).await {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-        }
+    }
 
-        // So is the blocklist: a destination blocked after the link was made
-        // must not come back under a new code, and neither must a rule's.
-        let rules = match crate::entity::routing_rules::Entity::find()
-            .filter(crate::entity::routing_rules::Column::LinkId.eq(id))
-            .order_by_asc(crate::entity::routing_rules::Column::Priority)
-            .all(&state.db)
+    // Clone inserts a new row, so it must honour the same per-user cap as
+    // create_link / bulk_create_links. Skipping it lets a user at the
+    // advertised MAX_LINKS_PER_USER mint extra active links.
+    if let Some(cap) = get_max_links_per_user() {
+        let existing = links::Entity::find()
+            .filter(links::Column::UserId.eq(user_id))
+            .filter(links::Column::DeletedAt.is_null())
+            .count(&state.db)
             .await
-        {
-            Ok(rules) => rules,
-            Err(error) => {
-                tracing::error!(
-                    "Failed to load routing rules for clone of {}: {}",
-                    id,
-                    error
-                );
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
-            }
-        };
-        let destinations = std::iter::once(link.original_url.as_str())
-            .chain(rules.iter().map(|r| r.destination_url.as_str()));
-        for destination in destinations {
-            if let Err(e) = check_blocked(&state.db, destination).await {
-                return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
-            }
+            .unwrap_or(0);
+        if existing >= cap {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: format!(
+                        "You have reached the maximum of {} links for this account",
+                        cap
+                    ),
+                }),
+            )
+                .into_response();
         }
+    }
 
-        // Clone inserts a new row, so it must honour the same per-user cap as
-        // create_link / bulk_create_links. Skipping it lets a user at the
-        // advertised MAX_LINKS_PER_USER mint extra active links.
-        if let Some(cap) = get_max_links_per_user() {
-            let existing = links::Entity::find()
-                .filter(links::Column::UserId.eq(user_id))
-                .filter(links::Column::DeletedAt.is_null())
-                .count(&state.db)
-                .await
-                .unwrap_or(0);
-            if existing >= cap {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(ErrorResponse {
-                        error: format!(
-                            "You have reached the maximum of {} links for this account",
-                            cap
-                        ),
-                    }),
-                )
-                    .into_response();
-            }
+    // Generate new short code
+    let code = unused_code(&state.db, generate_short_code).await;
+
+    // A burn link is its cap: the clone starts with the same cap and no
+    // clicks, so it is a fresh one-time link. The two features follow the
+    // same switches as on create.
+    let burn_after_reading = link.burn_after_reading && burn_feature_enabled();
+    let max_clicks = if burn_after_reading {
+        link.max_clicks.or(Some(1))
+    } else {
+        link.max_clicks
+    };
+
+    // Create new link with same settings but new code
+    let new_link = links::ActiveModel {
+        original_url: Set(link.original_url.clone()),
+        code: Set(code.clone()),
+        user_id: Set(Some(user_id)),
+        expires_at: Set(link.expires_at),
+        password_hash: Set(link.password_hash.clone()),
+        title: Set(link
+            .title
+            .clone()
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("{} (copy)", t))),
+        notes: Set(link.notes.clone()),
+        folder_id: Set(link.folder_id),
+        org_id: Set(link.org_id),
+        starts_at: Set(link.starts_at),
+        max_clicks: Set(max_clicks),
+        burn_after_reading: Set(burn_after_reading),
+        safe_link_interstitial: Set(link.safe_link_interstitial && interstitial_feature_enabled()),
+        is_pinned: Set(false), // Don't copy pin status
+        ..Default::default()
+    };
+
+    // The link, its tags and its rules are one change: a clone that came
+    // back without its tags or rules would be a different link.
+    let txn = match state.db.begin().await {
+        Ok(txn) => txn,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+    let new_id = match links::Entity::insert(new_link).exec(&txn).await {
+        Ok(res) => res.last_insert_id,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
         }
+    };
 
-        // Generate new short code
-        let code = unused_code(&state.db, generate_short_code).await;
+    // Tags are copied inside the database, so a link with any number of
+    // them is one statement.
+    let copy_tags = match sea_orm::sea_query::Query::insert()
+        .into_table(link_tags::Entity)
+        .columns([link_tags::Column::LinkId, link_tags::Column::TagId])
+        .select_from(
+            sea_orm::sea_query::Query::select()
+                .expr(Expr::val(new_id))
+                .column(link_tags::Column::TagId)
+                .from(link_tags::Entity)
+                .and_where(Expr::col(link_tags::Column::LinkId).eq(id))
+                .to_owned(),
+        ) {
+        Ok(insert) => insert.to_owned(),
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
+        }
+    };
+    if txn
+        .execute(txn.get_database_backend().build(&copy_tags))
+        .await
+        .is_err()
+    {
+        let _ = txn.rollback().await;
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
+    }
 
-        // A burn link is its cap: the clone starts with the same cap and no
-        // clicks, so it is a fresh one-time link. The two features follow the
-        // same switches as on create.
-        let burn_after_reading = link.burn_after_reading && burn_feature_enabled();
-        let max_clicks = if burn_after_reading {
-            link.max_clicks.or(Some(1))
-        } else {
-            link.max_clicks
-        };
-
-        // Create new link with same settings but new code
-        let new_link = links::ActiveModel {
-            original_url: Set(link.original_url.clone()),
-            code: Set(code.clone()),
-            user_id: Set(Some(user_id)),
-            expires_at: Set(link.expires_at),
-            password_hash: Set(link.password_hash.clone()),
-            title: Set(link
-                .title
-                .clone()
-                .filter(|t| !t.is_empty())
-                .map(|t| format!("{} (copy)", t))),
-            notes: Set(link.notes.clone()),
-            folder_id: Set(link.folder_id),
-            org_id: Set(link.org_id),
-            starts_at: Set(link.starts_at),
-            max_clicks: Set(max_clicks),
-            burn_after_reading: Set(burn_after_reading),
-            safe_link_interstitial: Set(
-                link.safe_link_interstitial && interstitial_feature_enabled()
-            ),
-            is_pinned: Set(false), // Don't copy pin status
-            ..Default::default()
-        };
-
-        // The link, its tags and its rules are one change: a clone that came
-        // back without its tags or rules would be a different link.
-        let txn = match state.db.begin().await {
-            Ok(txn) => txn,
-            Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
-        };
-        let new_id = match links::Entity::insert(new_link).exec(&txn).await {
-            Ok(res) => res.last_insert_id,
-            Err(_) => {
-                let _ = txn.rollback().await;
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
-            }
-        };
-
-        // Tags are copied inside the database, so a link with any number of
-        // them is one statement.
-        let copy_tags = match sea_orm::sea_query::Query::insert()
-            .into_table(link_tags::Entity)
-            .columns([link_tags::Column::LinkId, link_tags::Column::TagId])
-            .select_from(
-                sea_orm::sea_query::Query::select()
-                    .expr(Expr::val(new_id))
-                    .column(link_tags::Column::TagId)
-                    .from(link_tags::Entity)
-                    .and_where(Expr::col(link_tags::Column::LinkId).eq(id))
-                    .to_owned(),
-            ) {
-            Ok(insert) => insert.to_owned(),
-            Err(_) => {
-                let _ = txn.rollback().await;
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
-            }
-        };
-        if txn
-            .execute(txn.get_database_backend().build(&copy_tags))
+    if !rules.is_empty() {
+        let copies = rules
+            .into_iter()
+            .map(|rule| crate::entity::routing_rules::ActiveModel {
+                link_id: Set(new_id),
+                priority: Set(rule.priority),
+                match_device: Set(rule.match_device),
+                match_os: Set(rule.match_os),
+                match_country: Set(rule.match_country),
+                match_lang: Set(rule.match_lang),
+                destination_url: Set(rule.destination_url),
+                weight: Set(rule.weight),
+                ..Default::default()
+            });
+        if crate::entity::routing_rules::Entity::insert_many(copies)
+            .exec(&txn)
             .await
             .is_err()
         {
             let _ = txn.rollback().await;
             return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
         }
-
-        if !rules.is_empty() {
-            let copies = rules
-                .into_iter()
-                .map(|rule| crate::entity::routing_rules::ActiveModel {
-                    link_id: Set(new_id),
-                    priority: Set(rule.priority),
-                    match_device: Set(rule.match_device),
-                    match_os: Set(rule.match_os),
-                    match_country: Set(rule.match_country),
-                    match_lang: Set(rule.match_lang),
-                    destination_url: Set(rule.destination_url),
-                    weight: Set(rule.weight),
-                    ..Default::default()
-                });
-            if crate::entity::routing_rules::Entity::insert_many(copies)
-                .exec(&txn)
-                .await
-                .is_err()
-            {
-                let _ = txn.rollback().await;
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
-            }
-        }
-
-        if txn.commit().await.is_err() {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
-        }
-
-        let base_url = get_base_url();
-        (
-            StatusCode::CREATED,
-            Json(CloneLinkResponse {
-                id: new_id,
-                code: code.clone(),
-                short_url: format!("{}/{}", base_url, code),
-                original_url: link.original_url,
-                message: "Link cloned successfully".to_string(),
-            }),
-        )
-            .into_response()
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Link not found".to_string(),
-            }),
-        )
-            .into_response()
     }
+
+    if txn.commit().await.is_err() {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clone link");
+    }
+
+    let base_url = get_base_url();
+    (
+        StatusCode::CREATED,
+        Json(CloneLinkResponse {
+            id: new_id,
+            code: code.clone(),
+            short_url: format!("{}/{}", base_url, code),
+            original_url: link.original_url,
+            message: "Link cloned successfully".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 // ============= New Feature: Toggle Pin =============
@@ -5424,8 +5396,7 @@ pub struct PinResponse {
     responses(
         (status = 200, description = "Pin status toggled", body = PinResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Link not found"),
+        (status = 403, description = "Forbidden, also for a link that does not exist"),
     ),
     tag = "Links",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -5448,50 +5419,35 @@ pub async fn toggle_pin(
         }
     };
 
-    let link = links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-        .unwrap_or(None);
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Write).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
+    };
 
-    if let Some(link) = link {
-        if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Write).await {
-            return denied.into_response();
-        }
+    let new_pin_status = !link.is_pinned;
+    let mut active_link: links::ActiveModel = link.into();
+    active_link.is_pinned = Set(new_pin_status);
 
-        let new_pin_status = !link.is_pinned;
-        let mut active_link: links::ActiveModel = link.into();
-        active_link.is_pinned = Set(new_pin_status);
-
-        match active_link.update(&state.db).await {
-            Ok(_) => (
-                StatusCode::OK,
-                Json(PinResponse {
-                    is_pinned: new_pin_status,
-                    message: if new_pin_status {
-                        "Link pinned".to_string()
-                    } else {
-                        "Link unpinned".to_string()
-                    },
-                }),
-            )
-                .into_response(),
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to update pin status".to_string(),
-                }),
-            )
-                .into_response(),
-        }
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Link not found".to_string(),
+    match active_link.update(&state.db).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(PinResponse {
+                is_pinned: new_pin_status,
+                message: if new_pin_status {
+                    "Link pinned".to_string()
+                } else {
+                    "Link unpinned".to_string()
+                },
             }),
         )
-            .into_response()
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to update pin status".to_string(),
+            }),
+        )
+            .into_response(),
     }
 }
 

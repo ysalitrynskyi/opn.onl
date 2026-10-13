@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{click_events, links};
-use crate::handlers::link_access::{LinkAction, authorize_link, own_links};
+use crate::handlers::link_access::{LinkAction, live_link_for, own_links};
 use crate::handlers::links::get_user_id_from_header;
 use crate::utils::time::utc_rfc3339;
 
@@ -201,8 +201,7 @@ pub struct TopLink {
     responses(
         (status = 200, description = "Link statistics", body = LinkStatsResponse),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Not found"),
+        (status = 403, description = "Forbidden, also for a link that does not exist"),
     ),
     tag = "Analytics",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -224,24 +223,10 @@ pub async fn get_link_stats(
         }
     };
 
-    let link = match links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-    {
-        Ok(Some(link)) => link,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Link not found"})),
-            )
-                .into_response();
-        }
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Read).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
     };
-
-    if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Read).await {
-        return denied.into_response();
-    }
 
     // Get time range. Clamp so a huge/negative `days` cannot panic inside
     // `TimeDelta::days` or load a link's entire click history into memory.
@@ -712,8 +697,7 @@ pub async fn get_dashboard_stats(
     responses(
         (status = 200, description = "Current click count"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Link not found"),
+        (status = 403, description = "Forbidden, also for a link that does not exist"),
     ),
     tag = "Analytics",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -734,24 +718,10 @@ pub async fn get_realtime_clicks(
         }
     };
 
-    let link = match links::Entity::find_by_id(id)
-        .filter(links::Column::DeletedAt.is_null())
-        .one(&state.db)
-        .await
-    {
-        Ok(Some(link)) => link,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Link not found"})),
-            )
-                .into_response();
-        }
+    let link = match live_link_for(&state.db, id, user_id, LinkAction::Read).await {
+        Ok(link) => link,
+        Err(denied) => return denied.into_response(),
     };
-
-    if let Err(denied) = authorize_link(&state.db, user_id, &link, LinkAction::Read).await {
-        return denied.into_response();
-    }
 
     (
         StatusCode::OK,
