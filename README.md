@@ -50,7 +50,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Click Buffering** - Batch click events for better DB performance
 - **Real-time Updates** - WebSocket/SSE for live click notifications
 - **GeoIP Lookup** - Country and city detection (optional MaxMind)
-- **Database Indexes** - Optimized for billions of rows with composite indexes
+- **Database Indexes** - Composite and partial indexes on the redirect, listing and analytics paths
 
 ### Developer Experience
 - **API Documentation** - OpenAPI/Swagger UI included at `/swagger-ui/`
@@ -87,6 +87,10 @@ docker-compose -f docker-compose.dev.yml up -d
 # Backend setup
 cd backend
 cp .env.example .env
+# The server refuses to start without a signing secret (JWT_SECRET is empty in
+# the template); generate one into .env. The `.bak` suffix keeps this working
+# with both GNU and BSD/macOS sed.
+sed -i.bak "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env && rm .env.bak
 cargo run
 
 # Frontend setup (new terminal)
@@ -264,7 +268,7 @@ privacy policy in sync — the bundled one describes whichever mode is active.
 | `REDIS_URL` | - | Redis connection URL |
 | `REDIS_CACHE_TTL` | 300 | Cache TTL in seconds |
 | `CLICK_BUFFER_SIZE` | 100 | Click events before DB flush |
-| `CLICK_FLUSH_INTERVAL` | 10 | Flush interval in seconds |
+| `CLICK_FLUSH_INTERVAL` | 10 | Flush interval in seconds (10 in the shipped compose files and `.env.example`; the backend's own default when unset is 5) |
 
 ### Backups (S3-compatible)
 
@@ -364,7 +368,7 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET, HEAD | `/{code}` | Redirect to original URL. A `HEAD` never counts as a click. On a one-time or click-capped link, a `HEAD` and a `GET` from a known link-preview bot get a `200` without the destination and use nothing up |
-| GET | `/{code}/preview` | Link preview + safety/reputation signal (append `+` to any short link). The destination is left out (empty `original_url` and `domain`) for a link that is not live, is password-protected, or is one-time |
+| GET | `/{code}/preview` | Link preview + safety/reputation signal (append `+` to any short link). The destination is left out (empty `original_url` and `domain`) for a link that is not live, is password-protected, or is one-time. `inactive_reason` says why a link is not live (`not_started`, `expired`, `used_up` or `blocked`) and is `null` while it is |
 | POST | `/{code}/verify` | Verify a password-protected link. A correct password answers `{"redirect_url", "expires_in_seconds"}`; open `redirect_url` (it carries a short-lived `?unlock=` proof) to be redirected |
 
 ### Link-in-Bio

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, Flame, ShieldCheck, Route, ChevronDown, LayoutList } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, responseError } from '../../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, responseError } from '../../config/api';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { localIsoDate } from '../../utils/localIsoDate';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
@@ -43,6 +43,8 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     // Saving replaces every stored rule, so rules are only ever sent once the
     // stored ones have been read: an unread list looks the same as "no rules".
     const [rulesLoad, setRulesLoad] = useState<'loading' | 'loaded' | 'failed'>('loading');
+    // Set when the rules could not load because the session ended, which a retry cannot fix.
+    const [rulesSessionMessage, setRulesSessionMessage] = useState('');
     const [loadedSignature, setLoadedSignature] = useState('');
     const [rulesAttempt, setRulesAttempt] = useState(0);
     const [showRouting, setShowRouting] = useState(false);
@@ -66,14 +68,17 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                 setLoadedSignature(rulesSignature(loaded));
                 setRulesLoad('loaded');
                 if (loaded.length) setShowRouting(true);
-            } catch {
-                if (!cancelled) setRulesLoad('failed');
+            } catch (error) {
+                if (cancelled) return;
+                setRulesSessionMessage(failureMessage(error, ''));
+                setRulesLoad('failed');
             }
         })();
         return () => { cancelled = true; };
     }, [routingEnabled, link.id, rulesAttempt]);
 
     const retryRulesLoad = () => {
+        setRulesSessionMessage('');
         setRulesLoad('loading');
         setRulesAttempt(n => n + 1);
     };
@@ -284,13 +289,19 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                             </button>
                             {rulesLoad === 'failed' && (
                                 <div role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
-                                    <p>
-                                        Couldn't load this link's routing rules, so they can't be edited right now.
-                                        The rules it has stay as they are and your other changes still save.
-                                    </p>
-                                    <button type="button" onClick={retryRulesLoad} className="mt-1 font-medium underline">
-                                        Try again
-                                    </button>
+                                    {rulesSessionMessage ? (
+                                        <p>{rulesSessionMessage}</p>
+                                    ) : (
+                                        <>
+                                            <p>
+                                                Couldn't load this link's routing rules, so they can't be edited right now.
+                                                The rules it has stay as they are and your other changes still save.
+                                            </p>
+                                            <button type="button" onClick={retryRulesLoad} className="mt-1 font-medium underline">
+                                                Try again
+                                            </button>
+                                        </>
+                                    )}
                                 </div>
                             )}
                             {showRouting && rulesLoad !== 'failed' && (

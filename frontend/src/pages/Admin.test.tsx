@@ -412,6 +412,57 @@ describe('Admin Page', () => {
             expect(screen.queryByText(/create backup/i)).not.toBeInTheDocument();
         });
 
+        it('says the session ended, not that the data failed to load, when the stats request is rejected', async () => {
+            const base = global.fetch as unknown as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.includes('/admin/stats')) {
+                    return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+                }
+                return base(url, init);
+            }) as any;
+
+            render(<Admin />);
+
+            expect(await screen.findByText('Session expired. Please log in again.')).toBeInTheDocument();
+            expect(screen.queryByText(/failed to load admin data/i)).not.toBeInTheDocument();
+        });
+
+        it('says the session ended, not that the list failed to load, when a tab is rejected', async () => {
+            render(<Admin />);
+            await screen.findByText('Total Users');
+
+            const base = global.fetch as unknown as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.includes('/admin/users')) {
+                    return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+                }
+                return base(url, init);
+            }) as any;
+            fireEvent.click(screen.getByRole('button', { name: /^users$/i }));
+
+            expect(await screen.findByText('Session expired. Please log in again.')).toBeInTheDocument();
+            expect(screen.queryByText(/failed to load users/i)).not.toBeInTheDocument();
+        });
+
+        it('says the session ended, not that the action failed, when an action is rejected', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: /^links$/i }));
+            const deleteButtons = await screen.findAllByRole('button', { name: /^delete$/i });
+
+            const base = global.fetch as unknown as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (init?.method === 'DELETE') {
+                    return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+                }
+                return base(url, init);
+            }) as any;
+            fireEvent.click(deleteButtons[0]);
+
+            expect(await screen.findByText('Session expired. Please log in again.')).toBeInTheDocument();
+            expect(screen.queryByText('Action failed')).not.toBeInTheDocument();
+        });
+
         it('shows a suspicious-links banner and jumps to the filtered Links tab', async () => {
             render(<Admin />);
 

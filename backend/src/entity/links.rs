@@ -151,6 +151,12 @@ impl Model {
 
     /// Get the reason why link is inactive
     pub fn inactive_reason(&self) -> Option<&'static str> {
+        self.inactive_kind().map(InactiveKind::message)
+    }
+
+    /// Why the link is not live, or `None` while it is. The one place the
+    /// precedence between the reasons is decided.
+    pub fn inactive_kind(&self) -> Option<InactiveKind> {
         let now = chrono::Utc::now().naive_utc();
 
         // Burn state takes priority so a consumed one-time link shows the
@@ -162,28 +168,60 @@ impl Model {
                     .map(|m| self.click_count >= i64::from(m))
                     .unwrap_or(false))
         {
-            return Some("This one-time link has already been opened");
+            return Some(InactiveKind::OneTimeOpened);
         }
 
         if let Some(starts_at) = self.starts_at
             && now < starts_at
         {
-            return Some("Link is scheduled to activate later");
+            return Some(InactiveKind::NotStarted);
         }
 
         if let Some(expires_at) = self.expires_at
             && now > expires_at
         {
-            return Some("Link has expired");
+            return Some(InactiveKind::Expired);
         }
 
         if let Some(max_clicks) = self.max_clicks
             && self.click_count >= i64::from(max_clicks)
         {
-            return Some("Link has reached maximum clicks");
+            return Some(InactiveKind::ClickCapReached);
         }
 
         None
+    }
+}
+
+/// Why a link is not currently live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InactiveKind {
+    OneTimeOpened,
+    NotStarted,
+    Expired,
+    ClickCapReached,
+}
+
+impl InactiveKind {
+    /// The sentence a visitor to `GET /{code}` is given.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::OneTimeOpened => "This one-time link has already been opened",
+            Self::NotStarted => "Link is scheduled to activate later",
+            Self::Expired => "Link has expired",
+            Self::ClickCapReached => "Link has reached maximum clicks",
+        }
+    }
+
+    /// Stable identifier for API clients that word the reason themselves. A
+    /// one-time link and a capped one are both `used_up`; the preview already
+    /// says which of the two it is.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::OneTimeOpened | Self::ClickCapReached => "used_up",
+            Self::NotStarted => "not_started",
+            Self::Expired => "expired",
+        }
     }
 }
 
@@ -294,5 +332,40 @@ mod burn_tests {
         m.click_count = 0;
         assert!(!m.is_active());
         assert_eq!(m.inactive_reason(), Some("Link has reached maximum clicks"));
+    }
+
+    #[test]
+    fn inactive_codes_tell_clients_why_without_parsing_prose() {
+        assert_eq!(model().inactive_kind(), None);
+
+        let mut scheduled = model();
+        scheduled.starts_at = Some(chrono::Utc::now().naive_utc() + chrono::Duration::hours(1));
+        assert_eq!(
+            scheduled.inactive_kind().map(InactiveKind::code),
+            Some("not_started")
+        );
+
+        let mut expired = model();
+        expired.expires_at = Some(chrono::Utc::now().naive_utc() - chrono::Duration::hours(1));
+        assert_eq!(
+            expired.inactive_kind().map(InactiveKind::code),
+            Some("expired")
+        );
+
+        let mut capped = model();
+        capped.max_clicks = Some(1);
+        capped.click_count = 1;
+        assert_eq!(
+            capped.inactive_kind().map(InactiveKind::code),
+            Some("used_up")
+        );
+
+        let mut burned = model();
+        burned.burn_after_reading = true;
+        burned.burned_at = Some(chrono::Utc::now().naive_utc());
+        assert_eq!(
+            burned.inactive_kind().map(InactiveKind::code),
+            Some("used_up")
+        );
     }
 }

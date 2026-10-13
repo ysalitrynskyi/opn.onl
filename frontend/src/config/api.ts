@@ -178,6 +178,14 @@ export class SessionExpiredError extends Error {
     }
 }
 
+// What to tell the user when a request failed: that their session ended, when
+// that is why, since "network error" or "failed to load" would send them to
+// retry something that can only succeed after signing in again. Otherwise the
+// caller's own wording.
+export function failureMessage(error: unknown, fallback: string): string {
+    return error instanceof SessionExpiredError ? error.message : fallback;
+}
+
 // Authenticated fetch wrapper - handles 401 automatically
 export async function authFetch(
     url: string,
