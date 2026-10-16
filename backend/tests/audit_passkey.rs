@@ -425,6 +425,72 @@ async fn every_passkey_signs_in_through_the_padded_list() {
     }
 }
 
+// ------------------------------------------------------------- the cap
+
+/// One passkey past the cap is refused before a ceremony starts, with a JSON
+/// error that says why.
+#[tokio::test]
+async fn an_account_holds_at_most_the_cap() {
+    let (server, db) = app().await;
+    let (account, _) = enrolled_with(&server, &db, MAX_PASSKEYS_PER_ACCOUNT).await;
+
+    let res = server
+        .post("/auth/passkey/register/start")
+        .authorization_bearer(&account.token)
+        .json(&json!({ "username": &account.email }))
+        .await;
+    assert_eq!(res.status_code(), 403, "{}", res.text());
+    let error = res.json::<Value>()["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        error.contains(&format!("maximum of {MAX_PASSKEYS_PER_ACCOUNT} passkeys")),
+        "{error}"
+    );
+    assert_eq!(
+        stored_passkeys(&db, account.id).await.len(),
+        MAX_PASSKEYS_PER_ACCOUNT
+    );
+}
+
+/// The cap holds for a ceremony that started below it, when the account
+/// reached it before the ceremony finished.
+#[tokio::test]
+async fn the_cap_is_checked_again_when_registration_finishes() {
+    let (server, db) = app().await;
+    let (account, _) = enrolled_with(&server, &db, MAX_PASSKEYS_PER_ACCOUNT - 1).await;
+
+    let start = server
+        .post("/auth/passkey/register/start")
+        .authorization_bearer(&account.token)
+        .json(&json!({ "username": &account.email }))
+        .await;
+    assert_eq!(start.status_code(), 200, "{}", start.text());
+    let options = start.json::<Value>()["options"].clone();
+
+    // The last free place is taken meanwhile. The id has a length real
+    // passkeys use, so it does not change the lengths decoys draw from.
+    passkey(account.id, &SoftPasskey::new().id_text())
+        .insert(&db)
+        .await
+        .expect("fill the last place");
+
+    let res = server
+        .post("/auth/passkey/register/finish")
+        .authorization_bearer(&account.token)
+        .json(&json!({
+            "username": &account.email,
+            "credential": SoftPasskey::new().registration(&options),
+        }))
+        .await;
+    assert_eq!(res.status_code(), 403, "{}", res.text());
+    assert_eq!(
+        stored_passkeys(&db, account.id).await.len(),
+        MAX_PASSKEYS_PER_ACCOUNT
+    );
+}
+
 /// An account that had more passkeys than the cap before it existed keeps
 /// signing in with every one of them: its list holds them all, padded to the
 /// next multiple of the cap.

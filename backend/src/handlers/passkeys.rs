@@ -281,10 +281,21 @@ pub struct PasskeyAuthResponse {
     pub is_admin: bool,
 }
 
+/// The refusal for one passkey more than [`MAX_PASSKEYS_PER_ACCOUNT`].
+fn passkey_limit_reached() -> axum::response::Response {
+    json_error(
+        StatusCode::FORBIDDEN,
+        format!(
+            "You have reached the maximum of {MAX_PASSKEYS_PER_ACCOUNT} passkeys for this account. \
+             Delete one to add another."
+        ),
+    )
+}
+
 /// Begin passkey enrollment for the authenticated caller. Returns a WebAuthn
 /// `CreationChallengeResponse` to pass to the browser's credential API. The
 /// response is a standard WebAuthn ceremony object and is not expanded into
-/// the schema.
+/// the schema. An account holds at most 10 passkeys; one more is refused (403).
 #[utoipa::path(
     post,
     path = "/auth/passkey/register/start",
@@ -292,7 +303,7 @@ pub struct PasskeyAuthResponse {
     responses(
         (status = 200, description = "WebAuthn creation challenge"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Passkeys are disabled on this instance"),
+        (status = 403, description = "Passkeys are disabled on this instance, the caller's email is not verified, or the account already holds the maximum of 10 passkeys"),
         (status = 404, description = "User not found"),
     ),
     tag = "Authentication",
@@ -334,6 +345,21 @@ pub async fn register_start(
             "Verify your email before registering a passkey",
         );
     }
+    match passkeys::Entity::find()
+        .filter(passkeys::Column::UserId.eq(user.id))
+        .count(&state.db)
+        .await
+    {
+        Ok(held) if held >= MAX_PASSKEYS_PER_ACCOUNT as u64 => return passkey_limit_reached(),
+        Ok(_) => {}
+        Err(_) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to start registration",
+            );
+        }
+    }
+
     // Deterministic UUID from ID for demo purposes
     let user_unique_id =
         Uuid::from_bytes(user.id.to_le_bytes().repeat(4)[0..16].try_into().unwrap());
@@ -365,7 +391,8 @@ pub async fn register_start(
 }
 
 /// Complete passkey enrollment for the authenticated caller. Rejects a
-/// credential already registered to any account (409).
+/// credential already registered to any account (409), and an eleventh passkey
+/// (403).
 #[utoipa::path(
     post,
     path = "/auth/passkey/register/finish",
@@ -374,7 +401,7 @@ pub async fn register_start(
         (status = 200, description = "Passkey registered", body = MessageResponse),
         (status = 400, description = "Invalid or expired registration ceremony"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Passkeys are disabled on this instance"),
+        (status = 403, description = "Passkeys are disabled on this instance, the caller's email is not verified, or the account already holds the maximum of 10 passkeys"),
         (status = 404, description = "User not found"),
         (status = 409, description = "This passkey is already registered"),
     ),
@@ -468,6 +495,27 @@ pub async fn register_finish(
     if already_registered {
         let _ = txn.rollback().await;
         return json_error(StatusCode::CONFLICT, "This passkey is already registered");
+    }
+
+    // Checked again under the user row lock: `register_start` refused at the
+    // cap, but the account may have reached it since.
+    match passkeys::Entity::find()
+        .filter(passkeys::Column::UserId.eq(user.id))
+        .count(&txn)
+        .await
+    {
+        Ok(held) if held >= MAX_PASSKEYS_PER_ACCOUNT as u64 => {
+            let _ = txn.rollback().await;
+            return passkey_limit_reached();
+        }
+        Ok(_) => {}
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to register passkey",
+            );
+        }
     }
 
     let passkey_model = passkeys::ActiveModel {
