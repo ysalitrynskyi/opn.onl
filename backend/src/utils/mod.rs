@@ -9,6 +9,7 @@ pub mod email_limits;
 pub mod env;
 pub mod geoip;
 pub mod jwt;
+pub mod link_expiry;
 pub mod link_owner;
 pub mod link_unlock;
 pub mod logging;

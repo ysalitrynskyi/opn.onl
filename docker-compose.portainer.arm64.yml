@@ -114,6 +114,9 @@ services:
       # Set to false only if your instance has no SMTP; anyone can then sign up
       # with an address they do not own. Default true. Missing SMTP does not turn this off.
       REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
+      # Once a day, mail owners whose personal links expire within 3 days
+      # (users can turn it off in Settings). Default true; needs SMTP.
+      LINK_EXPIRY_REMINDERS: ${LINK_EXPIRY_REMINDERS:-true}
       BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
       BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
       BACKUP_S3_ACCESS_KEY: ${BACKUP_S3_ACCESS_KEY:-}

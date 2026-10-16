@@ -111,6 +111,14 @@ async fn main() {
         email_service.is_some(),
     );
 
+    // Daily reminder to owners whose links expire within three days
+    // (LINK_EXPIRY_REMINDERS, default on; needs SMTP).
+    utils::link_expiry::spawn_link_expiry_task(
+        db.clone(),
+        email_service.clone(),
+        require_email_verification,
+    );
+
     // Initialize backup service
     let backup = Arc::new(BackupService::new().await);
     if backup.is_configured() {

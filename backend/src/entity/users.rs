@@ -34,6 +34,9 @@ pub struct Model {
     #[sea_orm(default_value = "false")]
     pub bio_enabled: bool,
     pub bio_theme: Option<String>,
+    /// Mail a reminder before a personal link expires. On by default.
+    #[sea_orm(default_value = "true")]
+    pub notify_link_expiry: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

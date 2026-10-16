@@ -1705,6 +1705,10 @@ pub struct AppSettingsResponse {
     /// Whether this process can send mail. Distinct from the switch above:
     /// missing SMTP does not turn the requirement off.
     pub email_configured: bool,
+    /// Whether owners are mailed before their links expire:
+    /// `LINK_EXPIRY_REMINDERS` is on and SMTP is configured. While it is false
+    /// the account setting `notify_link_expiry` does nothing.
+    pub link_expiry_reminders_enabled: bool,
 }
 
 /// Get app settings
@@ -1767,6 +1771,8 @@ pub async fn get_app_settings(State(state): State<AppState>) -> impl IntoRespons
         .email_service
         .as_ref()
         .is_some_and(|service| service.is_configured());
+    let link_expiry_reminders_enabled =
+        crate::utils::link_expiry::link_expiry_reminders_enabled(state.email_service.as_deref());
 
     (
         StatusCode::OK,
@@ -1788,6 +1794,7 @@ pub async fn get_app_settings(State(state): State<AppState>) -> impl IntoRespons
             api_keys_enabled,
             require_email_verification,
             email_configured,
+            link_expiry_reminders_enabled,
         }),
     )
 }
@@ -1811,6 +1818,8 @@ pub struct UserProfileResponse {
     pub bio_username: Option<String>,
     pub bio_enabled: bool,
     pub bio_theme: Option<String>,
+    /// Email a reminder before a personal link expires. On by default.
+    pub notify_link_expiry: bool,
 }
 
 /// How much of each profile field the server keeps, in characters. The
@@ -1830,6 +1839,8 @@ pub struct UpdateProfileRequest {
     pub website: Option<String>,
     pub avatar_url: Option<String>,
     pub location: Option<String>,
+    /// Turn the reminder before a personal link expires on or off.
+    pub notify_link_expiry: Option<bool>,
 }
 
 /// A profile text field as stored. A blank value means "cleared" and is
@@ -1900,6 +1911,7 @@ pub async fn get_current_user(
                 bio_username: user.bio_username,
                 bio_enabled: user.bio_enabled,
                 bio_theme: user.bio_theme,
+                notify_link_expiry: user.notify_link_expiry,
             }),
         )
             .into_response();
@@ -1999,6 +2011,9 @@ pub async fn update_profile(
             }
             active_user.location = Set(profile_text(location));
         }
+        if let Some(notify) = payload.notify_link_expiry {
+            active_user.notify_link_expiry = Set(notify);
+        }
 
         match active_user.update(&state.db).await {
             Ok(updated) => {
@@ -2023,6 +2038,7 @@ pub async fn update_profile(
                         bio_username: updated.bio_username,
                         bio_enabled: updated.bio_enabled,
                         bio_theme: updated.bio_theme,
+                        notify_link_expiry: updated.notify_link_expiry,
                     }),
                 )
                     .into_response()

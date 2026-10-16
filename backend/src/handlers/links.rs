@@ -4794,6 +4794,21 @@ pub async fn delete_link(
     }
 }
 
+/// Store `new` as a link's expiry. The reminder already mailed for the old
+/// date says nothing about the new one, so a real change clears the reminder
+/// stamp and the new date gets a reminder of its own. Sending the stored value
+/// back keeps the stamp.
+fn set_link_expiry(
+    link: &mut links::ActiveModel,
+    current: Option<chrono::NaiveDateTime>,
+    new: Option<chrono::NaiveDateTime>,
+) {
+    if new != current {
+        link.expiry_notice_sent_at = Set(None);
+    }
+    link.expires_at = Set(new);
+}
+
 /// The burn flag and click cap a link ends up with after an update.
 ///
 /// A burn-after-reading link is enforced through its click cap
@@ -5043,9 +5058,9 @@ pub async fn update_link(
     }
 
     if payload.remove_expiration == Some(true) {
-        active_link.expires_at = Set(None);
+        set_link_expiry(&mut active_link, link.expires_at, None);
     } else if let Some(expires) = payload.expires_at {
-        active_link.expires_at = Set(Some(expires.naive_utc()));
+        set_link_expiry(&mut active_link, link.expires_at, Some(expires.naive_utc()));
     }
 
     // "" is not a new password (see create_link); clearing one is what
@@ -5891,6 +5906,7 @@ pub async fn bulk_update_links(
 
             let code = link.code.clone();
             let org_id = link.org_id;
+            let current_expiry = link.expires_at;
             let mut active_link: links::ActiveModel = link.into();
 
             let txn = match state.db.begin().await {
@@ -5914,9 +5930,9 @@ pub async fn bulk_update_links(
             }
 
             if payload.remove_expiration == Some(true) {
-                active_link.expires_at = Set(None);
+                set_link_expiry(&mut active_link, current_expiry, None);
             } else if let Some(expires) = payload.expires_at {
-                active_link.expires_at = Set(Some(expires.naive_utc()));
+                set_link_expiry(&mut active_link, current_expiry, Some(expires.naive_utc()));
             }
 
             match active_link.update(&txn).await {

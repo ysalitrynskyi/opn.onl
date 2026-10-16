@@ -32,6 +32,7 @@ fn base_link() -> links::Model {
         bio_visible: false,
         bio_position: None,
         bio_label: None,
+        expiry_notice_sent_at: None,
     }
 }
 

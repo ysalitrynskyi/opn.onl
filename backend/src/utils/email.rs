@@ -1,3 +1,4 @@
+use chrono::NaiveDateTime;
 use lettre::{
     Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{Mailbox, MultiPart},
@@ -10,6 +11,9 @@ use super::env::env_nonempty;
 
 /// Hourly mail budget when `EMAIL_RATE_LIMIT_PER_HOUR` is unset or invalid.
 const DEFAULT_HOURLY_LIMIT: u64 = 500;
+
+/// Longest title or destination an expiry reminder shows, in characters.
+const MAX_REMINDER_LABEL_CHARS: usize = 100;
 
 /// How the password changed, which decides what the security notice can say
 /// was revoked. A reset is account recovery, so it also removes the API keys
@@ -161,10 +165,10 @@ impl EmailService {
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_HOURLY_LIMIT);
         let pools = Pools::from_total(hourly_limit);
-        let (account, security, contact) = pools.sizes();
+        let (account, security, contact, notices) = pools.sizes();
         info!(
-            "Email rate limit configured: {} emails/hour (account {}, security notices {}, contact form {})",
-            hourly_limit, account, security, contact
+            "Email rate limit configured: {} emails/hour (account {}, security notices {}, contact form {}, expiry reminders {})",
+            hourly_limit, account, security, contact, notices
         );
 
         Self {
@@ -394,6 +398,49 @@ impl EmailService {
         )
     }
 
+    /// The reminder that `links` expire within the reminder window. `more`
+    /// says the owner has further links due that this mail does not list.
+    fn link_expiry_email(&self, links: &[ExpiringLink], more: bool) -> (String, EmailBody) {
+        let days = super::link_expiry::NOTICE_WINDOW_DAYS;
+        let subject = match links.len() {
+            1 => "Your link expires soon".to_string(),
+            n => format!("{n} of your links expire soon"),
+        };
+        let intro = if links.len() == 1 {
+            format!(
+                "This short link stops working within the next {days} days. To keep it working, change or remove its expiry date in your dashboard."
+            )
+        } else {
+            format!(
+                "These short links stop working within the next {days} days. To keep one working, change or remove its expiry date in your dashboard."
+            )
+        };
+        let items: Vec<Vec<String>> = links
+            .iter()
+            .map(|link| {
+                vec![
+                    self.app_url(&link.code),
+                    reminder_label(&link.label),
+                    format!("Expires {}", link.expires_at.format("%Y-%m-%d %H:%M UTC")),
+                ]
+            })
+            .collect();
+        let url = self.app_url("dashboard");
+        let more_due = format!(
+            "More of your links expire within the same {days} days. Your dashboard lists them all."
+        );
+        let after: &[&str] = if more { &[&more_due] } else { &[] };
+        let body = EmailBody::with_list(
+            &subject,
+            &[&intro],
+            &items,
+            Some(("Go to Dashboard", &url)),
+            after,
+            "You get this email because expiry reminders are on for your account. You can turn them off in Settings.",
+        );
+        (subject, body)
+    }
+
     pub async fn send_verification_email(&self, to: &str, token: &str) -> Result<(), String> {
         self.send_email(
             MailKind::Verification,
@@ -441,6 +488,60 @@ impl EmailService {
         )
         .await
     }
+
+    /// Remind the owner that `links` expire soon. `more` says they have
+    /// further links due that this mail does not list. The pool is checked
+    /// first, so a caller can tell a spent budget (stop for now) from a send
+    /// that failed (try the next owner).
+    pub async fn send_link_expiry_email(
+        &self,
+        to: &str,
+        links: &[ExpiringLink],
+        more: bool,
+    ) -> Result<(), NoticeError> {
+        self.pools
+            .check(MailKind::LinkExpiry)
+            .map_err(|_| NoticeError::PoolSpent)?;
+        let (subject, body) = self.link_expiry_email(links, more);
+        self.send_email(
+            MailKind::LinkExpiry,
+            to,
+            &format!("{subject} - opn.onl"),
+            &body,
+        )
+        .await
+        .map_err(NoticeError::Failed)
+    }
+}
+
+/// One link in an expiry reminder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpiringLink {
+    pub code: String,
+    /// The title, or the destination when the link has none.
+    pub label: String,
+    pub expires_at: NaiveDateTime,
+}
+
+/// Why a scheduled notice was not sent. Either way nothing reached the
+/// recipient.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NoticeError {
+    /// The hourly pool that notices draw on is spent.
+    PoolSpent,
+    /// The message could not be built, or SMTP did not take it.
+    Failed(String),
+}
+
+/// A title or destination as one short line: whitespace (line breaks
+/// included) collapsed, and cut at [`MAX_REMINDER_LABEL_CHARS`].
+fn reminder_label(label: &str) -> String {
+    let line = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= MAX_REMINDER_LABEL_CHARS {
+        return line;
+    }
+    let cut: String = line.chars().take(MAX_REMINDER_LABEL_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// The two renderings of one transactional email.
@@ -467,6 +568,20 @@ impl EmailBody {
         after: &[&str],
         footer: &str,
     ) -> Self {
+        Self::with_list(heading, before, &[], button, after, footer)
+    }
+
+    /// [`EmailBody::new`] with a list after the opening paragraphs. Each item
+    /// is a few lines of plain text, which may carry what a user typed (a link
+    /// title), so the HTML part escapes them.
+    fn with_list(
+        heading: &str,
+        before: &[&str],
+        items: &[Vec<String>],
+        button: Option<(&str, &str)>,
+        after: &[&str],
+        footer: &str,
+    ) -> Self {
         let mut html = String::from(
             r#"<!DOCTYPE html>
 <html>
@@ -487,6 +602,17 @@ impl EmailBody {
         for paragraph in before {
             html.push_str(&format!("        <p>{paragraph}</p>\n"));
             text.push_str(&format!("{paragraph}\n\n"));
+        }
+        if !items.is_empty() {
+            html.push_str("        <ul>\n");
+            for lines in items {
+                let escaped: Vec<String> =
+                    lines.iter().map(|line| super::html_escape(line)).collect();
+                html.push_str(&format!("            <li>{}</li>\n", escaped.join("<br>")));
+                text.push_str(&format!("- {}\n", lines.join("\n  ")));
+            }
+            html.push_str("        </ul>\n");
+            text.push('\n');
         }
         if let Some((label, url)) = button {
             html.push_str(&format!(
@@ -579,7 +705,9 @@ pub async fn wait_for_background_mail(timeout: std::time::Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailService, PasswordChange, Pools, TriggerLimiter, generate_token};
+    use super::{
+        EmailService, ExpiringLink, PasswordChange, Pools, TriggerLimiter, generate_token,
+    };
 
     fn service() -> EmailService {
         EmailService {
@@ -762,6 +890,125 @@ mod tests {
             .expect("message builds");
         let raw = String::from_utf8(message.formatted()).expect("utf-8");
         assert!(raw.contains("From: noreply@opn.example"), "{raw}");
+    }
+
+    fn expiring(code: &str, label: &str) -> ExpiringLink {
+        ExpiringLink {
+            code: code.to_string(),
+            label: label.to_string(),
+            expires_at: chrono::NaiveDate::from_ymd_opt(2026, 10, 19)
+                .unwrap()
+                .and_hms_opt(14, 5, 30)
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn the_expiry_reminder_lists_each_short_link_with_its_label_and_utc_expiry() {
+        let svc = service();
+        let (subject, body) = svc.link_expiry_email(
+            &[
+                expiring("spring1", "Spring sale"),
+                expiring("docs22", "https://example.com/a?b=1&c=2"),
+            ],
+            false,
+        );
+        assert_eq!(subject, "2 of your links expire soon");
+        assert!(
+            body.text.contains(
+                "- https://opn.example/spring1\n  Spring sale\n  Expires 2026-10-19 14:05 UTC\n"
+            ),
+            "{}",
+            body.text
+        );
+        assert!(
+            body.text.contains(
+                "- https://opn.example/docs22\n  https://example.com/a?b=1&c=2\n  Expires 2026-10-19 14:05 UTC\n"
+            ),
+            "{}",
+            body.text
+        );
+        assert!(
+            body.html.contains(
+                "<li>https://opn.example/docs22<br>https://example.com/a?b=1&amp;c=2<br>Expires 2026-10-19 14:05 UTC</li>"
+            ),
+            "{}",
+            body.html
+        );
+        assert!(
+            body.html.contains("href=\"https://opn.example/dashboard\""),
+            "{}",
+            body.html
+        );
+        assert!(
+            body.text.contains("turn them off in Settings"),
+            "{}",
+            body.text
+        );
+        assert!(!body.text.contains("More of your links"), "{}", body.text);
+        assert!(!body.text.contains('<'), "{}", body.text);
+
+        let message = svc
+            .build_message("user@opn.example", &subject, &body, None)
+            .expect("message builds");
+        let raw = String::from_utf8(message.formatted()).expect("utf-8");
+        assert!(raw.contains("multipart/alternative"), "{raw}");
+    }
+
+    #[test]
+    fn one_expiring_link_is_named_in_the_singular() {
+        let (subject, body) = service().link_expiry_email(&[expiring("solo1", "Solo")], false);
+        assert_eq!(subject, "Your link expires soon");
+        assert!(
+            body.text.contains("This short link stops working"),
+            "{}",
+            body.text
+        );
+    }
+
+    /// A title is whatever the owner typed: it must not become markup in the
+    /// HTML part or extra lines in the text part.
+    #[test]
+    fn a_title_cannot_add_markup_or_lines_to_the_reminder() {
+        let (_, body) = service().link_expiry_email(
+            &[expiring(
+                "xss123",
+                "<script>alert(1)</script>\r\nBcc: someone",
+            )],
+            false,
+        );
+        assert!(!body.html.contains("<script>"), "{}", body.html);
+        assert!(
+            body.html
+                .contains("&lt;script&gt;alert(1)&lt;/script&gt; Bcc: someone"),
+            "{}",
+            body.html
+        );
+        assert!(
+            body.text
+                .contains("  <script>alert(1)</script> Bcc: someone\n"),
+            "{}",
+            body.text
+        );
+    }
+
+    #[test]
+    fn a_long_label_is_cut_and_links_left_out_are_mentioned() {
+        let long = format!("https://example.com/{}", "a".repeat(300));
+        let (_, body) = service().link_expiry_email(&[expiring("long12", &long)], true);
+        let shown = body
+            .text
+            .lines()
+            .find(|line| line.starts_with("  https://example.com/"))
+            .expect("label line");
+        assert_eq!(shown.trim().chars().count(), 100, "{shown}");
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(
+            body.text
+                .contains("More of your links expire within the same 3 days"),
+            "{}",
+            body.text
+        );
     }
 
     #[test]

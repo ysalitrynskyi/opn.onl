@@ -13,9 +13,11 @@
 //!   instance-wide budget.
 //! - **Per pool** ([`Pools`]): the instance-wide hourly budget
 //!   (`EMAIL_RATE_LIMIT_PER_HOUR`) is split into an account pool, a security
-//!   pool and a contact pool, so a flood of one kind cannot starve the others.
-//!   In particular the "your password was changed" notice, which may be the
-//!   owner's only warning of a takeover, has a pool nobody else draws on.
+//!   pool, a contact pool and a pool for scheduled notices, so a flood of one
+//!   kind cannot starve the others. In particular the "your password was
+//!   changed" notice, which may be the owner's only warning of a takeover, has
+//!   a pool nobody else draws on, and the daily expiry reminders cannot use up
+//!   the verification and reset mail of the hour they go out in.
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -47,6 +49,9 @@ pub enum MailKind {
     Welcome,
     PasswordChanged,
     Contact,
+    /// The daily reminder that links are about to expire. Sent by a
+    /// background task, not a request, so only its pool limits it.
+    LinkExpiry,
 }
 
 impl MailKind {
@@ -57,6 +62,7 @@ impl MailKind {
             MailKind::Welcome => "welcome",
             MailKind::PasswordChanged => "password changed",
             MailKind::Contact => "contact",
+            MailKind::LinkExpiry => "link expiry reminder",
         }
     }
 
@@ -67,6 +73,7 @@ impl MailKind {
             }
             MailKind::PasswordChanged => PoolKind::Security,
             MailKind::Contact => PoolKind::Contact,
+            MailKind::LinkExpiry => PoolKind::Notices,
         }
     }
 }
@@ -76,6 +83,7 @@ enum PoolKind {
     Account,
     Security,
     Contact,
+    Notices,
 }
 
 /// Why a mail may not be sent right now.
@@ -184,14 +192,16 @@ pub struct Pools {
     account: HourlyPool,
     security: HourlyPool,
     contact: HourlyPool,
+    notices: HourlyPool,
     total: u64,
 }
 
 impl Pools {
     /// Split `total` mails per hour: 10% for the contact form, 20% for
-    /// security notices, the rest for account mail (verification, password
-    /// reset, welcome). A total of at least one leaves every pool at least one
-    /// mail, so very small settings still let each kind through.
+    /// security notices, 10% for scheduled notices (expiry reminders), the
+    /// rest for account mail (verification, password reset, welcome). A total
+    /// of at least one leaves every pool at least one mail, so very small
+    /// settings still let each kind through.
     pub fn from_total(total: u64) -> Self {
         Self::from_total_at(total, Instant::now())
     }
@@ -206,15 +216,17 @@ impl Pools {
         };
         let contact = share(10);
         let security = share(20);
+        let notices = share(10);
         let account = if total == 0 {
             0
         } else {
-            total.saturating_sub(contact + security).max(1)
+            total.saturating_sub(contact + security + notices).max(1)
         };
         Self {
             account: HourlyPool::new(account, now),
             security: HourlyPool::new(security, now),
             contact: HourlyPool::new(contact, now),
+            notices: HourlyPool::new(notices, now),
             total,
         }
     }
@@ -224,6 +236,7 @@ impl Pools {
             PoolKind::Account => &self.account,
             PoolKind::Security => &self.security,
             PoolKind::Contact => &self.contact,
+            PoolKind::Notices => &self.notices,
         }
     }
 
@@ -232,9 +245,14 @@ impl Pools {
         self.total
     }
 
-    /// `(account, security, contact)` sizes, for the startup log.
-    pub fn sizes(&self) -> (u64, u64, u64) {
-        (self.account.limit, self.security.limit, self.contact.limit)
+    /// `(account, security, contact, notices)` sizes, for the startup log.
+    pub fn sizes(&self) -> (u64, u64, u64, u64) {
+        (
+            self.account.limit,
+            self.security.limit,
+            self.contact.limit,
+            self.notices.limit,
+        )
     }
 
     /// Take a permit from the pool `kind` draws on. Returns `(used, limit)`
@@ -558,12 +576,12 @@ mod tests {
     }
 
     #[test]
-    fn the_total_is_split_between_account_security_and_contact_mail() {
-        assert_eq!(Pools::from_total(500).sizes(), (350, 100, 50));
-        assert_eq!(Pools::from_total(10).sizes(), (7, 2, 1));
+    fn the_total_is_split_between_account_security_contact_and_notice_mail() {
+        assert_eq!(Pools::from_total(500).sizes(), (300, 100, 50, 50));
+        assert_eq!(Pools::from_total(10).sizes(), (6, 2, 1, 1));
         // Small totals still leave every kind of mail a permit.
-        assert_eq!(Pools::from_total(1).sizes(), (1, 1, 1));
-        assert_eq!(Pools::from_total(0).sizes(), (0, 0, 0));
+        assert_eq!(Pools::from_total(1).sizes(), (1, 1, 1, 1));
+        assert_eq!(Pools::from_total(0).sizes(), (0, 0, 0, 0));
         // No overflow on an absurd setting.
         assert!(Pools::from_total(u64::MAX).sizes().0 > 0);
     }
@@ -571,8 +589,9 @@ mod tests {
     #[test]
     fn spending_one_pool_leaves_the_others() {
         let t0 = Instant::now();
-        let pools = Pools::from_total_at(10, t0); // account 7, security 2, contact 1
-        for _ in 0..7 {
+        // account 6, security 2, contact 1, notices 1
+        let pools = Pools::from_total_at(10, t0);
+        for _ in 0..6 {
             pools.try_acquire_at(MailKind::Verification, t0).unwrap();
         }
         assert!(matches!(
@@ -592,12 +611,40 @@ mod tests {
             pools.try_acquire_at(MailKind::Contact, t0),
             Err(MailDenied::PoolSpent { .. })
         ));
+        assert_eq!(pools.try_acquire_at(MailKind::LinkExpiry, t0), Ok((1, 1)));
+        assert!(matches!(
+            pools.check_at(MailKind::LinkExpiry, t0),
+            Err(MailDenied::PoolSpent { .. })
+        ));
 
         // A fresh hour refills every pool.
         assert!(
             pools
                 .try_acquire_at(MailKind::Verification, later(t0, 3600))
                 .is_ok()
+        );
+    }
+
+    /// The reminders go out in one burst a day. However many there are, the
+    /// verification and reset mail of that hour must still get through.
+    #[test]
+    fn expiry_reminders_cannot_spend_the_account_pool() {
+        let t0 = Instant::now();
+        let pools = Pools::from_total_at(500, t0);
+        for _ in 0..50 {
+            pools.try_acquire_at(MailKind::LinkExpiry, t0).unwrap();
+        }
+        assert!(matches!(
+            pools.try_acquire_at(MailKind::LinkExpiry, t0),
+            Err(MailDenied::PoolSpent { .. })
+        ));
+        assert_eq!(
+            pools.try_acquire_at(MailKind::Verification, t0),
+            Ok((1, 300))
+        );
+        assert_eq!(
+            pools.try_acquire_at(MailKind::PasswordChanged, t0),
+            Ok((1, 100))
         );
     }
 

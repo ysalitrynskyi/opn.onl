@@ -330,9 +330,9 @@ async fn registering_sends_the_first_verification_mail_and_a_resend_waits() {
 /// instance-wide budget is still there for everyone else.
 #[tokio::test]
 async fn one_client_cannot_trigger_more_than_twenty_mails_an_hour() {
-    // 30 an hour in total leaves the account pool 21: one more than a single
+    // 33 an hour in total leaves the account pool 21: one more than a single
     // client may take, and fewer than the 30 requests the attacker makes.
-    let (server, db) = mail_app(30).await;
+    let (server, db) = mail_app(33).await;
     let stub = smtp_stub();
 
     let mut targets = Vec::new();
@@ -436,11 +436,12 @@ async fn a_refused_request_does_not_put_the_address_in_cooldown() {
 /// "your password was changed" notice has a pool of its own.
 #[tokio::test]
 async fn a_password_changed_notice_is_sent_when_the_account_pool_is_spent() {
-    // 10 an hour: 7 for account mail, 2 for security notices, 1 for contact.
+    // 10 an hour: 6 for account mail, 2 for security notices, 1 for contact,
+    // 1 for expiry reminders.
     let (server, db) = mail_app(10).await;
     let stub = smtp_stub();
 
-    for _ in 0..7 {
+    for _ in 0..6 {
         let user = account(&db, false).await;
         let res = resend(&server, CLIENT_A, &user.email).await;
         assert_eq!(res.status_code(), 200);
@@ -516,7 +517,8 @@ async fn the_contact_form_cannot_use_up_the_account_pool() {
     let _env = CONTACT_ENV.lock().await;
     let owner = format!("owner-{}@contact.test", uuid::Uuid::new_v4());
     common::set_env("ADMIN_EMAIL", &owner);
-    // 3 an hour: one mail each for account mail, security notices and contact.
+    // 3 an hour: one mail each for account mail, security notices, contact
+    // and expiry reminders.
     let (server, db) = mail_app(3).await;
     let stub = smtp_stub();
 
