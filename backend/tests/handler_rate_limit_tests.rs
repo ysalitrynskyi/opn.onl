@@ -10,7 +10,7 @@ mod common;
 use chrono::{Duration, Utc};
 use common::{mark_email_verified, set_env, spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::entity::links;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 use serde_json::{Value, json};
 
 async fn register_verified(
