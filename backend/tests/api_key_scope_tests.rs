@@ -2,7 +2,9 @@
 //!
 //! A read-only key is refused in the router middleware, so a write handler
 //! cannot forget the check. An expired key answers 401, the same as an
-//! unknown key, and does not move `last_used_at`.
+//! unknown key, and does not move `last_used_at`. A failed lookup on a
+//! write does not fall through: the handler would authenticate the key on
+//! its own and perform the write.
 //!
 //! Each test stays under the per-IP limit of 10 requests a second.
 
@@ -11,10 +13,13 @@ mod common;
 use axum_test::TestServer;
 use common::{mark_email_verified, spawn_real_app, unique_email};
 use opn_onl_backend::entity::api_keys;
-use opn_onl_backend::handlers::links::hash_api_key;
+use opn_onl_backend::handlers::links::{
+    ApiKeyMiddlewareFault, ApiKeyMiddlewareFaultGuard, hash_api_key,
+};
 use opn_onl_backend::utils::time::utc_rfc3339;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
+    PaginatorTrait, QueryFilter,
 };
 use serde_json::{Value, json};
 
@@ -451,4 +456,149 @@ async fn jwt_only_endpoints_refuse_api_keys() {
             }))
             .await,
     );
+}
+
+async fn post_link(server: &TestServer, token: &str, url: &str) -> axum_test::TestResponse {
+    server
+        .post("/links")
+        .authorization_bearer(token)
+        .json(&json!({ "original_url": url }))
+        .await
+}
+
+async fn links_with_url(db: &DatabaseConnection, user_id: i32, url: &str) -> u64 {
+    use opn_onl_backend::entity::links;
+    links::Entity::find()
+        .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::OriginalUrl.eq(url))
+        .count(db)
+        .await
+        .expect("count links")
+}
+
+#[tokio::test]
+async fn read_only_write_does_not_run_when_key_lookup_fails() {
+    let (server, db) = spawn_real_app().await;
+    let account = register(&server, &db).await;
+    let read_only = create_key(&server, &account.token, json!({ "scope": "read_only" })).await;
+    assert_eq!(read_only.status_code(), 201, "{}", read_only.text());
+    let read_only = key_secret(&read_only.json());
+    let full = create_key(&server, &account.token, json!({ "scope": "full" })).await;
+    assert_eq!(full.status_code(), 201, "{}", full.text());
+    let full = key_secret(&full.json());
+
+    let _read_only_fault =
+        ApiKeyMiddlewareFaultGuard::arm(&read_only, ApiKeyMiddlewareFault::KeyLookup);
+
+    // The fault is the write gate only. A read still resolves the key.
+    let listed = server.get("/links").authorization_bearer(&read_only).await;
+    assert_eq!(listed.status_code(), 200, "{}", listed.text());
+
+    let allowed = unique_url("lookup-ok");
+    let created = post_link(&server, &full, &allowed).await;
+    assert_eq!(created.status_code(), 201, "{}", created.text());
+    assert_eq!(links_with_url(&db, account.id, &allowed).await, 1);
+
+    let denied = unique_url("lookup-denied");
+    let refused = post_link(&server, &read_only, &denied).await;
+    assert_eq!(refused.status_code(), 503, "{}", refused.text());
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        "Unable to verify credentials"
+    );
+    assert_eq!(
+        links_with_url(&db, account.id, &denied).await,
+        0,
+        "a failed key lookup must not create the link"
+    );
+
+    // Same failure for a full key: the gate does not know the scope yet.
+    let _full_fault = ApiKeyMiddlewareFaultGuard::arm(&full, ApiKeyMiddlewareFault::KeyLookup);
+    let full_denied = unique_url("lookup-full-denied");
+    let full_refused = post_link(&server, &full, &full_denied).await;
+    assert_eq!(full_refused.status_code(), 503, "{}", full_refused.text());
+    assert_eq!(
+        full_refused.json::<Value>()["error"],
+        "Unable to verify credentials"
+    );
+    assert_eq!(links_with_url(&db, account.id, &full_denied).await, 0);
+    drop(_full_fault);
+    drop(_read_only_fault);
+
+    let still_denied = unique_url("lookup-still-denied");
+    assert_read_only(post_link(&server, &read_only, &still_denied).await);
+    assert_eq!(links_with_url(&db, account.id, &still_denied).await, 0);
+}
+
+#[tokio::test]
+async fn read_only_write_is_refused_when_owner_lookup_fails() {
+    let (server, db) = spawn_real_app().await;
+    let account = register(&server, &db).await;
+    let read_only = create_key(&server, &account.token, json!({ "scope": "read_only" })).await;
+    assert_eq!(read_only.status_code(), 201, "{}", read_only.text());
+    let read_only = key_secret(&read_only.json());
+    let full = create_key(&server, &account.token, json!({ "scope": "full" })).await;
+    assert_eq!(full.status_code(), 201, "{}", full.text());
+    let full = key_secret(&full.json());
+
+    let allowed = unique_url("owner-ok");
+    let created = post_link(&server, &full, &allowed).await;
+    assert_eq!(created.status_code(), 201, "{}", created.text());
+    assert_eq!(links_with_url(&db, account.id, &allowed).await, 1);
+
+    let _read_only_fault =
+        ApiKeyMiddlewareFaultGuard::arm(&read_only, ApiKeyMiddlewareFault::OwnerLookup);
+    let denied = unique_url("owner-denied");
+    let refused = post_link(&server, &read_only, &denied).await;
+    assert_eq!(refused.status_code(), 403, "{}", refused.text());
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        "This API key is read-only"
+    );
+    assert_eq!(
+        links_with_url(&db, account.id, &denied).await,
+        0,
+        "an owner-lookup error must not let a read-only key write"
+    );
+    drop(_read_only_fault);
+
+    // The key row was not read-only, so an owner-lookup error cannot be a
+    // 403. It is still a failed check, and the handler must not run.
+    let _full_fault = ApiKeyMiddlewareFaultGuard::arm(&full, ApiKeyMiddlewareFault::OwnerLookup);
+    let full_denied = unique_url("owner-full-denied");
+    let full_refused = post_link(&server, &full, &full_denied).await;
+    assert_eq!(full_refused.status_code(), 503, "{}", full_refused.text());
+    assert_eq!(
+        full_refused.json::<Value>()["error"],
+        "Unable to verify credentials"
+    );
+    assert_eq!(links_with_url(&db, account.id, &full_denied).await, 0);
+}
+
+#[tokio::test]
+async fn read_only_key_of_a_deleted_owner_falls_through_to_unauthorized() {
+    let (server, db) = spawn_real_app().await;
+    let account = register(&server, &db).await;
+    let read_only = create_key(&server, &account.token, json!({ "scope": "read_only" })).await;
+    assert_eq!(read_only.status_code(), 201, "{}", read_only.text());
+    let read_only = key_secret(&read_only.json());
+
+    use opn_onl_backend::entity::users;
+    let user = users::Entity::find_by_id(account.id)
+        .one(&db)
+        .await
+        .expect("db")
+        .expect("user");
+    let mut active: users::ActiveModel = user.into();
+    active.deleted_at = Set(Some(chrono::Utc::now().naive_utc()));
+    active.update(&db).await.expect("soft-delete owner");
+
+    let denied = unique_url("deleted-owner");
+    let write = post_link(&server, &read_only, &denied).await;
+    assert_eq!(write.status_code(), 401, "{}", write.text());
+    assert_eq!(
+        write.json::<Value>()["error"],
+        "Invalid or expired credentials"
+    );
+    assert_eq!(links_with_url(&db, account.id, &denied).await, 0);
 }

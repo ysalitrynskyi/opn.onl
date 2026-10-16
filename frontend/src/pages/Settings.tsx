@@ -1123,7 +1123,7 @@ export default function Settings() {
                                                     {k.scope === 'read_only' ? 'Read-only' : 'Full access'}
                                                     {' · '}
                                                     {k.expired ? (
-                                                        <span className="text-danger/70">Expired</span>
+                                                        <span className="text-danger">Expired</span>
                                                     ) : k.expires_at ? (
                                                         `Expires ${formatDate(k.expires_at)}`
                                                     ) : (
