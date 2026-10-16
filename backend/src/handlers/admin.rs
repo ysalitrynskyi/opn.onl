@@ -2,7 +2,7 @@ use axum::{
     Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use chrono::{Duration, Utc};
 use sea_orm::sea_query::Expr;
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::{IntoParams, ToSchema};
 
+use super::json_error;
 use crate::AppState;
 use crate::entity::{
     api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events, links,
@@ -28,6 +29,13 @@ use crate::utils::url_policy::{
     canonical_blocked_url, domain_matches, normalize_domain_input, normalize_hostname,
 };
 use crate::utils::validation::{MAX_IDS_PER_REQUEST, ilike_pattern};
+
+/// A failed count or page is a 500. An empty 200 would show the admin an
+/// account that has nothing, when the database could not be read.
+fn list_failed(what: &str, error: DbErr) -> Response {
+    tracing::error!("Failed to list {what}: {error}");
+    json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+}
 
 /// Clamp pagination params: 1-based page, 1..=100 per_page (default 25).
 fn clamp_pagination(page: Option<u64>, per_page: Option<u64>) -> (u64, u64) {
@@ -1307,6 +1315,7 @@ pub async fn enable_user(
     responses(
         (status = 200, description = "Backup created successfully", body = BackupResponse),
         (status = 403, description = "Admin access required"),
+        (status = 409, description = "A backup is already running", body = BackupResponse),
         (status = 503, description = "Backup service not configured"),
         (status = 500, description = "Backup failed"),
     ),
@@ -1340,15 +1349,22 @@ pub async fn create_backup(State(state): State<AppState>, headers: HeaderMap) ->
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(BackupResponse {
-                success: false,
-                filename: None,
-                message: format!("Backup failed: {}", e),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            if matches!(error, crate::utils::backup::BackupRejected::Busy) {
+                tracing::warn!("Manual backup refused: a backup is already running");
+            }
+            let status = StatusCode::from_u16(error.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            (
+                status,
+                Json(BackupResponse {
+                    success: false,
+                    filename: None,
+                    message: error.client_message(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -2621,6 +2637,7 @@ pub async fn unblock_email_domain(
     responses(
         (status = 200, description = "Paginated list of users with link/click aggregates", body = AdminUsersListResponse),
         (status = 403, description = "Admin access required"),
+        (status = 500, description = "Database error"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -2678,14 +2695,26 @@ pub async fn get_all_users(
         );
     }
 
+    // `id` breaks ties. Many rows can share `created_at`, and without a unique
+    // trailing key the database may order them differently for each page.
     finder = match query.order.as_deref() {
-        Some("asc") => finder.order_by_asc(users::Column::CreatedAt),
-        _ => finder.order_by_desc(users::Column::CreatedAt),
+        Some("asc") => finder
+            .order_by_asc(users::Column::CreatedAt)
+            .order_by_asc(users::Column::Id),
+        _ => finder
+            .order_by_desc(users::Column::CreatedAt)
+            .order_by_desc(users::Column::Id),
     };
 
     let paginator = finder.paginate(&state.db, per_page);
-    let total = paginator.num_items().await.unwrap_or(0);
-    let users_page = paginator.fetch_page(page - 1).await.unwrap_or_default();
+    let total = match paginator.num_items().await {
+        Ok(total) => total,
+        Err(error) => return list_failed("admin users", error),
+    };
+    let users_page = match paginator.fetch_page(page - 1).await {
+        Ok(rows) => rows,
+        Err(error) => return list_failed("admin users", error),
+    };
 
     // Aggregates for just the users on this page — grouped queries instead of
     // per-user lookups.
@@ -2867,6 +2896,7 @@ pub struct AdminLinksListResponse {
     responses(
         (status = 200, description = "Paginated list of all links with owner info", body = AdminLinksListResponse),
         (status = 403, description = "Admin access required"),
+        (status = 500, description = "Database error"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -2917,16 +2947,33 @@ pub async fn get_all_links(
     }
 
     let descending = !matches!(query.order.as_deref(), Some("asc"));
+    // `id` is the tie-break, in the same direction as the requested order.
+    // Click counts and creation times are not unique, so a page boundary can
+    // otherwise repeat a row and drop another.
     finder = match (query.sort.as_deref(), descending) {
-        (Some("clicks"), true) => finder.order_by_desc(links::Column::ClickCount),
-        (Some("clicks"), false) => finder.order_by_asc(links::Column::ClickCount),
-        (_, false) => finder.order_by_asc(links::Column::CreatedAt),
-        (_, true) => finder.order_by_desc(links::Column::CreatedAt),
+        (Some("clicks"), true) => finder
+            .order_by_desc(links::Column::ClickCount)
+            .order_by_desc(links::Column::Id),
+        (Some("clicks"), false) => finder
+            .order_by_asc(links::Column::ClickCount)
+            .order_by_asc(links::Column::Id),
+        (_, false) => finder
+            .order_by_asc(links::Column::CreatedAt)
+            .order_by_asc(links::Column::Id),
+        (_, true) => finder
+            .order_by_desc(links::Column::CreatedAt)
+            .order_by_desc(links::Column::Id),
     };
 
     let paginator = finder.paginate(&state.db, per_page);
-    let total = paginator.num_items().await.unwrap_or(0);
-    let rows = paginator.fetch_page(page - 1).await.unwrap_or_default();
+    let total = match paginator.num_items().await {
+        Ok(total) => total,
+        Err(error) => return list_failed("admin links", error),
+    };
+    let rows = match paginator.fetch_page(page - 1).await {
+        Ok(rows) => rows,
+        Err(error) => return list_failed("admin links", error),
+    };
 
     let responses: Vec<AdminLinkResponse> = rows
         .into_iter()
@@ -3584,6 +3631,7 @@ pub struct AdminOrgsListResponse {
     responses(
         (status = 200, description = "Paginated list of all organizations", body = AdminOrgsListResponse),
         (status = 403, description = "Admin access required"),
+        (status = 500, description = "Database error"),
     ),
     tag = "Admin",
     security(("bearer_auth" = []))
@@ -3622,9 +3670,16 @@ pub async fn get_all_orgs(
 
     let paginator = finder
         .order_by_desc(organizations::Column::CreatedAt)
+        .order_by_desc(organizations::Column::Id)
         .paginate(&state.db, per_page);
-    let total = paginator.num_items().await.unwrap_or(0);
-    let orgs_page = paginator.fetch_page(page - 1).await.unwrap_or_default();
+    let total = match paginator.num_items().await {
+        Ok(total) => total,
+        Err(error) => return list_failed("admin orgs", error),
+    };
+    let orgs_page = match paginator.fetch_page(page - 1).await {
+        Ok(rows) => rows,
+        Err(error) => return list_failed("admin orgs", error),
+    };
 
     let org_ids: Vec<i32> = orgs_page.iter().map(|o| o.id).collect();
     let owner_ids: Vec<i32> = orgs_page.iter().map(|o| o.owner_id).collect();
