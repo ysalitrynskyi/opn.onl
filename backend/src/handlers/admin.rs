@@ -9,14 +9,14 @@ use sea_orm::sea_query::Expr;
 use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::{IntoParams, ToSchema};
 
 use super::json_error;
 use crate::AppState;
 use crate::entity::{
     abuse_reports, api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events,
-    links, org_members, organizations, passkeys, users,
+    links, org_members, organizations, passkeys, routing_rules, users,
 };
 use crate::utils::backup::is_automatic_backup;
 use crate::utils::decode_jwt;
@@ -3933,7 +3933,8 @@ pub struct ResolveReportRequest {
     /// resolved or dismissed.
     #[validate(custom(function = "validate_report_status"))]
     pub status: String,
-    /// When true with `resolved`, block the link's destination the same way
+    /// When true with `resolved`, block the reported URL, the link's current
+    /// fallback, and each routing-rule destination, the same way
     /// `POST /admin/blocked/links` does, then close the report.
     #[serde(default)]
     pub block_link: bool,
@@ -3953,7 +3954,11 @@ pub struct AdminReportResponse {
     pub link_id: Option<i32>,
     /// active, blocked, or deleted.
     pub link_status: String,
-    pub destination_url: Option<String>,
+    /// Destination stored when the report was filed. Blocking uses this URL.
+    pub destination_url: String,
+    /// The link's current fallback. Absent when the link row is gone. The
+    /// same string as `destination_url` until the owner edits the link.
+    pub current_destination_url: Option<String>,
     pub owner_email: Option<String>,
 }
 
@@ -3979,6 +3984,8 @@ async fn cached_destination_blocked(
     Ok(blocked)
 }
 
+/// `(link_status, current fallback, owner email)`. The reported URL is the
+/// row's `destination_url`, not this fallback: the owner may have edited it.
 fn report_link_fields(
     link: Option<&links::Model>,
     owners: &HashMap<i32, String>,
@@ -3988,16 +3995,20 @@ fn report_link_fields(
         return ("deleted".to_string(), None, None);
     };
     let owner_email = link.user_id.and_then(|id| owners.get(&id).cloned());
-    let destination_url = Some(link.original_url.clone());
+    let current_destination_url = Some(link.original_url.clone());
     if link.deleted_at.is_some() {
-        return ("deleted".to_string(), destination_url, owner_email);
+        return ("deleted".to_string(), current_destination_url, owner_email);
     }
     let link_status = if blocked.unwrap_or(false) {
         "blocked"
     } else {
         "active"
     };
-    (link_status.to_string(), destination_url, owner_email)
+    (
+        link_status.to_string(),
+        current_destination_url,
+        owner_email,
+    )
 }
 
 fn admin_error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
@@ -4141,7 +4152,7 @@ pub async fn list_reports(
             }
             _ => None,
         };
-        let (link_status, destination_url, owner_email) =
+        let (link_status, current_destination_url, owner_email) =
             report_link_fields(link, &owners, blocked);
         reports.push(AdminReportResponse {
             id: row.id,
@@ -4155,7 +4166,8 @@ pub async fn list_reports(
             resolved_by: row.resolved_by,
             link_id: row.link_id,
             link_status,
-            destination_url,
+            destination_url: row.destination_url,
+            current_destination_url,
             owner_email,
         });
     }
@@ -4198,41 +4210,70 @@ fn reported_block_error(error: ReportedBlockError) -> axum::response::Response {
     }
 }
 
-/// Block the reported link's destination. `Err` leaves the report open.
-/// `Ok(true)` means the destination was already blocked (no extra
-/// invalidation, same as the public 409 path).
+fn push_unique_url(urls: &mut Vec<String>, seen: &mut HashSet<String>, url: &str) {
+    let url = url.trim();
+    if url.is_empty() || !seen.insert(url.to_string()) {
+        return;
+    }
+    urls.push(url.to_string());
+}
+
+/// Block every destination this report can still send someone to: the URL
+/// stored on the report, the link's current fallback, and each routing rule.
+/// Each URL goes through [`block_destination`], including its cache
+/// invalidation. `Err` leaves the report open. `Ok(true)` means every URL
+/// was already blocked (no extra invalidation, same as the public 409 path).
 async fn block_reported_destination(
     state: &AppState,
     report: &abuse_reports::Model,
     admin_id: i32,
 ) -> Result<bool, ReportedBlockError> {
-    let link = match report.link_id {
-        Some(link_id) => match links::Entity::find_by_id(link_id).one(&state.db).await {
+    let mut urls = Vec::new();
+    let mut seen = HashSet::new();
+    push_unique_url(&mut urls, &mut seen, &report.destination_url);
+
+    if let Some(link_id) = report.link_id {
+        let link = match links::Entity::find_by_id(link_id).one(&state.db).await {
             Ok(link) => link,
             Err(error) => {
                 tracing::error!("abuse report link load failed: {error}");
                 return Err(ReportedBlockError::Unavailable);
             }
-        },
-        None => None,
-    };
-    let Some(link) = link.filter(|link| !link.original_url.is_empty()) else {
-        return Err(ReportedBlockError::NoLink);
-    };
-    // Reason only: the reporter's email and details stay out of the block row.
-    match block_destination(
-        state,
-        &link.original_url,
-        Some(report.reason.clone()),
-        admin_id,
-    )
-    .await
-    {
-        BlockDestination::Created(_) => Ok(false),
-        BlockDestination::AlreadyBlocked => Ok(true),
-        BlockDestination::InvalidUrl => Err(ReportedBlockError::InvalidUrl),
-        BlockDestination::Failed => Err(ReportedBlockError::Failed),
+        };
+        if let Some(link) = link {
+            push_unique_url(&mut urls, &mut seen, &link.original_url);
+            let rules = match routing_rules::Entity::find()
+                .filter(routing_rules::Column::LinkId.eq(link.id))
+                .all(&state.db)
+                .await
+            {
+                Ok(rules) => rules,
+                Err(error) => {
+                    tracing::error!("abuse report routing rules load failed: {error}");
+                    return Err(ReportedBlockError::Unavailable);
+                }
+            };
+            for rule in rules {
+                push_unique_url(&mut urls, &mut seen, &rule.destination_url);
+            }
+        }
     }
+
+    if urls.is_empty() {
+        return Err(ReportedBlockError::NoLink);
+    }
+
+    // Reason only: the reporter's email and details stay out of the block row.
+    let mut created_any = false;
+    for url in &urls {
+        match block_destination(state, url, Some(report.reason.clone()), admin_id).await {
+            BlockDestination::Created(_) => created_any = true,
+            BlockDestination::AlreadyBlocked => {}
+            BlockDestination::InvalidUrl => return Err(ReportedBlockError::InvalidUrl),
+            BlockDestination::Failed => return Err(ReportedBlockError::Failed),
+        }
+    }
+    Ok(!created_any)
 }
 
 /// Close an abuse report. `block_link` reuses the admin block path, including

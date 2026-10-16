@@ -10,6 +10,9 @@ pub struct Model {
     /// the code stays readable after the link is deleted.
     pub code: String,
     pub link_id: Option<i32>,
+    /// Destination the reporter saw (`links.original_url` at insert). Blocking
+    /// uses this, not whatever the owner points the link at later.
+    pub destination_url: String,
     pub reason: String,
     pub details: Option<String>,
     pub reporter_email: Option<String>,

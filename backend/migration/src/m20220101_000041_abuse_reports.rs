@@ -24,6 +24,13 @@ impl MigrationTrait for Migration {
                     )
                     .col(ColumnDef::new(AbuseReports::Code).text().not_null())
                     .col(ColumnDef::new(AbuseReports::LinkId).integer().null())
+                    // The destination the reporter saw. The owner can edit
+                    // links.original_url afterwards; blocking uses this copy.
+                    .col(
+                        ColumnDef::new(AbuseReports::DestinationUrl)
+                            .text()
+                            .not_null(),
+                    )
                     .col(ColumnDef::new(AbuseReports::Reason).text().not_null())
                     .col(ColumnDef::new(AbuseReports::Details).text().null())
                     .col(ColumnDef::new(AbuseReports::ReporterEmail).text().null())
@@ -117,6 +124,7 @@ enum AbuseReports {
     Id,
     Code,
     LinkId,
+    DestinationUrl,
     Reason,
     Details,
     ReporterEmail,

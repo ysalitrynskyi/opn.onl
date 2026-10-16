@@ -141,6 +141,7 @@ async fn anonymous_report_is_stored_without_an_ip_column() {
     let expected = [
         "code",
         "created_at",
+        "destination_url",
         "details",
         "id",
         "link_id",
@@ -202,6 +203,7 @@ async fn anonymous_report_is_stored_without_an_ip_column() {
     assert_eq!(row["link_id"].as_i64(), Some(link_id as i64));
     assert_eq!(row["link_status"], "active");
     assert_eq!(row["destination_url"], url);
+    assert_eq!(row["current_destination_url"], url);
     assert_eq!(row["owner_email"], owner_email);
     assert!(row["resolved_at"].is_null());
     assert!(row["resolved_by"].is_null());
@@ -604,54 +606,78 @@ async fn resolve_with_block_link_stops_the_redirect() {
     );
 }
 
+async fn open_report_count(server: &axum_test::TestServer, admin_token: &str) -> i64 {
+    let res = server
+        .get("/admin/stats")
+        .authorization_bearer(admin_token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    res.json::<Value>()["open_reports"]
+        .as_i64()
+        .expect("open_reports")
+}
+
 #[tokio::test]
 async fn open_reports_counts_the_report_this_test_created() {
     let (server, db) = spawn_app().await;
     let (admin_token, _) = register_admin(&server, &db).await;
     let (owner_token, _, _) = register_verified(&server, &db).await;
-    let (_id, code) = create_link(
-        &server,
-        &owner_token,
-        &format!("https://iana.org/abuse-count-{}", unique_code()),
-    )
-    .await;
 
-    let before = server
-        .get("/admin/stats")
-        .authorization_bearer(&admin_token)
+    // The counter is global and these tests share one database. A sample that
+    // moved by anything other than this report was crossed by another test,
+    // so it is discarded. The assertion on a quiet sample is still exactly one.
+    let mut last = String::new();
+    for _ in 0..8 {
+        let (_id, code) = create_link(
+            &server,
+            &owner_token,
+            &format!("https://iana.org/abuse-count-{}", unique_code()),
+        )
         .await;
-    assert_eq!(before.status_code(), 200, "{}", before.text());
-    let before_body: Value = before.json();
-    assert!(before_body["open_reports"].as_i64().is_some_and(|n| n >= 0));
+        let before_n = open_report_count(&server, &admin_token).await;
 
-    let filed = server
-        .post("/report")
-        .json(&report_body(&code, "other"))
-        .await;
-    assert_eq!(filed.status_code(), 201, "{}", filed.text());
+        let filed = server
+            .post("/report")
+            .json(&report_body(&code, "other"))
+            .await;
+        assert_eq!(filed.status_code(), 201, "{}", filed.text());
 
-    let after = server
-        .get("/admin/stats")
-        .authorization_bearer(&admin_token)
-        .await;
-    let after_body: Value = after.json();
-    // Other tests share this database, so the count is only a lower bound.
-    assert!(after_body["open_reports"].as_i64().unwrap() >= 1);
+        let after_n = open_report_count(&server, &admin_token).await;
+        if after_n - before_n != 1 {
+            last = format!("filed {before_n} -> {after_n}");
+            continue;
+        }
 
-    let open = reports_for_code(&server, &admin_token, &code, Some("open")).await;
-    assert_eq!(open["reports"][0]["code"], code);
-    let report_id = open["reports"][0]["id"].as_i64().unwrap();
+        let open = reports_for_code(&server, &admin_token, &code, Some("open")).await;
+        assert_eq!(open["total"].as_u64(), Some(1));
+        assert_eq!(open["reports"][0]["code"], code);
+        let report_id = open["reports"][0]["id"].as_i64().unwrap();
 
-    let resolved = server
-        .post(&format!("/admin/reports/{report_id}/resolve"))
-        .authorization_bearer(&admin_token)
-        .json(&json!({ "status": "resolved" }))
-        .await;
-    assert_eq!(resolved.status_code(), 200, "{}", resolved.text());
+        let resolved = server
+            .post(&format!("/admin/reports/{report_id}/resolve"))
+            .authorization_bearer(&admin_token)
+            .json(&json!({ "status": "resolved" }))
+            .await;
+        assert_eq!(resolved.status_code(), 200, "{}", resolved.text());
 
-    let gone = reports_for_code(&server, &admin_token, &code, Some("open")).await;
-    assert!(gone["reports"].as_array().unwrap().is_empty());
+        let gone = reports_for_code(&server, &admin_token, &code, Some("open")).await;
+        assert!(gone["reports"].as_array().unwrap().is_empty());
+
+        let closed_n = open_report_count(&server, &admin_token).await;
+        if closed_n != before_n {
+            last = format!("resolved {after_n} -> {closed_n}, before {before_n}");
+            continue;
+        }
+        assert_eq!(after_n - closed_n, 1);
+        return;
+    }
+    panic!("open_reports never moved by exactly this report ({last})");
 }
+
+const IPHONE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) \
+AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+const DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /// The code `report` can already exist in this database. Point that one row
 /// at `url` and clear anything that would stop a plain redirect.
@@ -752,4 +778,115 @@ async fn get_and_head_report_redirect_an_existing_code() {
         .json(&report_body("report", "phishing"))
         .await;
     assert_eq!(filed.status_code(), 201, "{}", filed.text());
+}
+
+/// Blocking from the queue stops every destination the link can still send
+/// someone to: the URL stored on the report, the fallback the owner pointed
+/// it at afterwards, and each routing rule. A link that was never reported
+/// keeps working.
+#[tokio::test]
+async fn block_and_resolve_stops_the_stored_url_the_new_fallback_and_the_rule() {
+    let (server, db) = spawn_app().await;
+    let (admin_token, _) = register_admin(&server, &db).await;
+    let (owner_token, _, _) = register_verified(&server, &db).await;
+    let (bystander_token, _, _) = register_verified(&server, &db).await;
+    let marker = unique_code();
+    let stored = format!("https://iana.org/abuse-stored-{marker}");
+    let moved = format!("https://iana.org/abuse-moved-{marker}");
+    let rule = format!("https://iana.org/abuse-rule-{marker}");
+    let control_url = format!("https://iana.org/abuse-control-{marker}");
+
+    let (link_id, code) = create_link(&server, &owner_token, &stored).await;
+    let (_stored_id, stored_code) = create_link(&server, &bystander_token, &stored).await;
+    let (_rule_id, rule_code) = create_link(&server, &bystander_token, &rule).await;
+    let (_control_id, control_code) = create_link(&server, &bystander_token, &control_url).await;
+
+    let rules = server
+        .put(&format!("/links/{link_id}/rules"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({
+            "rules": [{
+                "match_device": "Mobile",
+                "destination_url": rule,
+                "weight": 1,
+                "priority": 0
+            }]
+        }))
+        .await;
+    assert_eq!(rules.status_code(), 200, "{}", rules.text());
+
+    let filed = server
+        .post("/report")
+        .json(&report_body(&code, "phishing"))
+        .await;
+    assert_eq!(filed.status_code(), 201, "{}", filed.text());
+
+    let edited = server
+        .put(&format!("/links/{link_id}"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "original_url": moved }))
+        .await;
+    assert_eq!(edited.status_code(), 200, "{}", edited.text());
+
+    let listed = reports_for_code(&server, &admin_token, &code, Some("open")).await;
+    assert_eq!(listed["reports"][0]["destination_url"], stored);
+    assert_eq!(listed["reports"][0]["current_destination_url"], moved);
+    let report_id = listed["reports"][0]["id"].as_i64().unwrap();
+
+    let desktop = server
+        .get(&format!("/{code}"))
+        .add_header(header::USER_AGENT, DESKTOP_UA)
+        .await;
+    assert_eq!(desktop.status_code(), 307, "{}", desktop.text());
+    assert_eq!(location_of(&desktop), moved);
+    let iphone = server
+        .get(&format!("/{code}"))
+        .add_header(header::USER_AGENT, IPHONE_UA)
+        .await;
+    assert_eq!(iphone.status_code(), 307, "{}", iphone.text());
+    assert_eq!(location_of(&iphone), rule);
+
+    let resolved = server
+        .post(&format!("/admin/reports/{report_id}/resolve"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "status": "resolved", "block_link": true }))
+        .await;
+    assert_eq!(resolved.status_code(), 200, "{}", resolved.text());
+    assert_eq!(
+        resolved.json::<Value>()["message"],
+        "Report resolved and the destination is blocked"
+    );
+
+    for (which, ua) in [("desktop", DESKTOP_UA), ("iphone", IPHONE_UA)] {
+        let res = server
+            .get(&format!("/{code}"))
+            .add_header(header::USER_AGENT, ua)
+            .await;
+        assert_eq!(res.status_code(), 410, "{which}: {}", res.text());
+    }
+    let stored_visit = server.get(&format!("/{stored_code}")).await;
+    assert_eq!(stored_visit.status_code(), 410, "{}", stored_visit.text());
+    let rule_visit = server.get(&format!("/{rule_code}")).await;
+    assert_eq!(rule_visit.status_code(), 410, "{}", rule_visit.text());
+    let control = server.get(&format!("/{control_code}")).await;
+    assert_eq!(control.status_code(), 307, "{}", control.text());
+    assert_eq!(location_of(&control), control_url);
+
+    let blocked = server
+        .get("/admin/blocked/links")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(blocked.status_code(), 200, "{}", blocked.text());
+    let rows: Vec<Value> = blocked.json();
+    for url in [&stored, &moved, &rule] {
+        let row = rows
+            .iter()
+            .find(|row| row["url"] == *url)
+            .unwrap_or_else(|| panic!("missing block for {url}"));
+        assert_eq!(row["reason"], "phishing");
+    }
+    assert!(
+        rows.iter().all(|row| row["url"] != control_url),
+        "the control destination was blocked"
+    );
 }

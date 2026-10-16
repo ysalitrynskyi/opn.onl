@@ -131,6 +131,9 @@ pub async fn submit_report(
     let report = abuse_reports::ActiveModel {
         code: Set(fields.code.clone()),
         link_id: Set(Some(link.id)),
+        // Freeze the fallback the reporter could have been sent to. A later
+        // edit of the link must not erase it from the queue.
+        destination_url: Set(link.original_url.clone()),
         reason: Set(fields.reason.clone()),
         details: Set(fields.details),
         reporter_email: Set(fields.email),
