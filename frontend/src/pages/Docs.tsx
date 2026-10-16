@@ -427,8 +427,8 @@ export default function Docs() {
                         { icon: BarChart2, title: 'Analytics', desc: 'Track clicks, locations, devices' },
                         { icon: Shield, title: 'Password Protection', desc: 'Secure sensitive links' },
                         { icon: Clock, title: 'Expiration Dates', desc: 'Auto-expire links' },
-                        { icon: Folder, title: 'Folders', desc: 'Organize your links, via the API' },
-                        { icon: Tag, title: 'Tags', desc: 'Label and filter links, via the API' },
+                        { icon: Folder, title: 'Folders', desc: 'Organize your links on the dashboard' },
+                        { icon: Tag, title: 'Tags', desc: 'Label and filter links on the dashboard' },
                         { icon: Users, title: 'Teams', desc: 'Collaborate with others, in the app' },
                         { icon: Globe, title: 'GeoIP Analytics', desc: 'See where clicks come from' },
                     ].map((feature, i) => (

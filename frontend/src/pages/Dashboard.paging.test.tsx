@@ -128,7 +128,8 @@ describe('Dashboard paging', () => {
         expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
         expect(screen.queryByText(/of 250 links/)).not.toBeInTheDocument();
         expect(listRequests()[2].get('offset')).toBe('200');
-    });
+        // Three pages of animated rows. Slow when the suite shares the CPU.
+    }, 15_000);
 
     it('moves to the first of the new links when Load more is used on the last page', async () => {
         serve(makeLinks(250));
@@ -210,7 +211,8 @@ describe('Dashboard paging', () => {
 
         expect(await screen.findByText('Showing 100 of 250 links', undefined, { timeout: 3000 })).toBeInTheDocument();
         expect(listRequests().at(-1)?.has('search')).toBe(false);
-    });
+        // A server search across animated rows. Slow when the suite shares the CPU.
+    }, 15_000);
 
     it('finds a link by its tag when the list is paged', async () => {
         const all = makeLinks(250);

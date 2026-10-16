@@ -5,6 +5,7 @@ import { API_ENDPOINTS, authFetch, failureMessage, responseError } from '../../c
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { localIsoDate } from '../../utils/localIsoDate';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
+import { swatchColor, type CatalogItem } from './linkScope';
 import RoutingRulesEditor from './RoutingRulesEditor';
 import { rulesPayload, rulesSignature, sortByPriority } from './routingRules';
 import CharCount from './CharCount';
@@ -31,6 +32,8 @@ interface EditModalProps {
     interstitialEnabled?: boolean;
     routingEnabled?: boolean;
     bioEnabled?: boolean;
+    folders?: CatalogItem[];
+    tags?: CatalogItem[];
 }
 
 /**
@@ -44,7 +47,17 @@ function expiryDateInputValue(value: string | null): string {
     return Number.isNaN(date.getTime()) ? '' : localIsoDate(date);
 }
 
-export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false, routingEnabled = false, bioEnabled = false }: EditModalProps) {
+export default function EditModal({
+    link,
+    onClose,
+    onSave,
+    burnEnabled = false,
+    interstitialEnabled = false,
+    routingEnabled = false,
+    bioEnabled = false,
+    folders = [],
+    tags = [],
+}: EditModalProps) {
     const [url, setUrl] = useState(link.original_url);
     const [title, setTitle] = useState(link.title ?? '');
     const [notes, setNotes] = useState(link.notes ?? '');
@@ -63,6 +76,10 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     const destination = useDestinationCheck(url);
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(link.safe_link_interstitial ?? false);
     const [bioVisible, setBioVisible] = useState(link.bio_visible ?? false);
+    // Kept as the link's folder id even when that folder is not in the list,
+    // so a save does not clear a folder the select cannot draw.
+    const [folderValue, setFolderValue] = useState(link.folder_id != null ? String(link.folder_id) : '');
+    const [selectedTagIds, setSelectedTagIds] = useState<number[]>(() => (link.tags ?? []).map(tag => tag.id));
     const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
     // Saving replaces every stored rule, so rules are only ever sent once the
     // stored ones have been read: an unread list looks the same as "no rules".
@@ -179,8 +196,33 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
         if (limit.max_clicks != null) payload.max_clicks = limit.max_clicks;
         if (limit.remove_max_clicks) payload.remove_max_clicks = true;
 
+        const beforeFolder = link.folder_id ?? null;
+        const nextFolder = folderValue ? Number(folderValue) : null;
+        if (nextFolder !== beforeFolder) {
+            if (nextFolder == null) payload.remove_folder = true;
+            else payload.folder_id = nextFolder;
+        }
+
         try {
             await onSave(link.id, payload);
+
+            const beforeTags = (link.tags ?? []).map(tag => tag.id);
+            const added = selectedTagIds.filter(id => !beforeTags.includes(id));
+            const removed = beforeTags.filter(id => !selectedTagIds.includes(id));
+            if (added.length > 0) {
+                const response = await authFetch(API_ENDPOINTS.linkTags(link.id), {
+                    method: 'POST',
+                    body: JSON.stringify({ tag_ids: added }),
+                });
+                if (!response.ok) throw new Error(await responseError(response, 'Failed to update tags'));
+            }
+            if (removed.length > 0) {
+                const response = await authFetch(API_ENDPOINTS.linkTags(link.id), {
+                    method: 'DELETE',
+                    body: JSON.stringify({ tag_ids: removed }),
+                });
+                if (!response.ok) throw new Error(await responseError(response, 'Failed to update tags'));
+            }
 
             const rules = routingRules.filter(r => r.destination_url.trim());
             if (routingEnabled && rulesLoad === 'loaded' && rulesSignature(rules) !== loadedSignature) {
@@ -288,6 +330,58 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                             className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint resize-y"
                         />
                         <CharCount length={notes.length} max={MAX_NOTES_CHARS} />
+                    </div>
+
+                    <div className="grid sm:grid-cols-2 gap-4">
+                        <div>
+                            <label htmlFor="edit-folder" className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">Folder</label>
+                            <select
+                                id="edit-folder"
+                                value={folderValue}
+                                onChange={(event) => setFolderValue(event.target.value)}
+                                className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
+                            >
+                                <option value="">No folder</option>
+                                {folders.map(folder => (
+                                    <option key={folder.id} value={folder.id}>{folder.name}</option>
+                                ))}
+                                {link.folder_id != null && !folders.some(folder => folder.id === link.folder_id) && (
+                                    <option value={link.folder_id}>Current folder</option>
+                                )}
+                            </select>
+                        </div>
+                        <fieldset>
+                            <legend className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">Tags</legend>
+                            {tags.length === 0 ? (
+                                <p className="text-sm text-muted">No tags yet</p>
+                            ) : (
+                                <div className="flex flex-wrap gap-2">
+                                    {tags.map(tag => {
+                                        const color = swatchColor(tag.color);
+                                        return (
+                                            <label key={tag.id} className="inline-flex items-center gap-1.5 text-sm text-muted">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedTagIds.includes(tag.id)}
+                                                    onChange={() => {
+                                                        setSelectedTagIds(current => (
+                                                            current.includes(tag.id)
+                                                                ? current.filter(id => id !== tag.id)
+                                                                : [...current, tag.id]
+                                                        ));
+                                                    }}
+                                                    className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
+                                                />
+                                                {color && (
+                                                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
+                                                )}
+                                                {tag.name}
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </fieldset>
                     </div>
 
                     <div>

@@ -23,9 +23,9 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 - **Branded QR Codes** - Generate a QR for any link, with optional brand colour, centre logo and PNG/SVG export
 
 ### Organization & Management
-- **Organizations** - Team workspaces with role-based access (owner, admin, editor, viewer; see [Organizations](#organizations))
-- **Folders** - Organize links into folders with color coding
-- **Tags** - Add colored tags to categorize links
+- **Organizations** - Team workspaces with role-based access (owner, admin, editor, viewer; see [Organizations](#organizations)). A team's links open on the dashboard
+- **Folders** - Organize links into folders with color coding, on the dashboard
+- **Tags** - Add colored tags to categorize and filter links, on the dashboard
 - **Bulk Operations** - Create, update, delete links in batches
 - **CSV Export** - Export all your link data
 

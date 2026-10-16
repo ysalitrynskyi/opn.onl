@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { CalendarClock, Clock, Trash2, X } from 'lucide-react';
+import { CalendarClock, Clock, FolderInput, Trash2, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { pluralize } from '../../utils/plural';
 import { localIsoDate } from '../../utils/localIsoDate';
 import { endOfLocalDayIso } from './bulkActions';
+import type { CatalogItem } from './linkScope';
 
 interface BulkActionBarProps {
     count: number;
@@ -13,9 +14,12 @@ interface BulkActionBarProps {
     onDelete: () => Promise<boolean>;
     onSetExpiry: (expiresAt: string) => Promise<boolean>;
     onRemoveExpiry: () => Promise<boolean>;
+    /** `null` clears the folder (`remove_folder`). A number files the links there. */
+    onMoveToFolder: (folderId: number | null) => Promise<boolean>;
+    folders?: CatalogItem[];
 }
 
-type BulkDialog = 'delete' | 'expiry';
+type BulkDialog = 'delete' | 'expiry' | 'move';
 
 const buttonClass =
     'inline-flex items-center gap-1.5 rounded-lg border border-line2 bg-surface px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:border-ink/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-wait disabled:opacity-50';
@@ -25,7 +29,15 @@ const buttonClass =
  * in normal flow on a wide one. Dialogs live here so closing one returns
  * focus to the button that opened it.
  */
-export default function BulkActionBar({ count, busy, onDelete, onSetExpiry, onRemoveExpiry }: BulkActionBarProps) {
+export default function BulkActionBar({
+    count,
+    busy,
+    onDelete,
+    onSetExpiry,
+    onRemoveExpiry,
+    onMoveToFolder,
+    folders = [],
+}: BulkActionBarProps) {
     const [dialog, setDialog] = useState<BulkDialog | null>(null);
     const alive = useRef(true);
     useEffect(() => {
@@ -70,6 +82,10 @@ export default function BulkActionBar({ count, busy, onDelete, onSetExpiry, onRe
                     <Clock className="h-4 w-4 text-muted" />
                     Remove expiry
                 </button>
+                <button type="button" onClick={() => setDialog('move')} disabled={busy} className={buttonClass}>
+                    <FolderInput className="h-4 w-4 text-muted" />
+                    Move to folder
+                </button>
             </div>
             {dialog === 'delete' && (
                 <ConfirmDeleteDialog
@@ -85,6 +101,14 @@ export default function BulkActionBar({ count, busy, onDelete, onSetExpiry, onRe
                     busy={busy}
                     onCancel={() => setDialog(null)}
                     onConfirm={(ymd) => { void run(() => onSetExpiry(endOfLocalDayIso(ymd))); }}
+                />
+            )}
+            {dialog === 'move' && (
+                <MoveFolderDialog
+                    folders={folders}
+                    busy={busy}
+                    onCancel={() => setDialog(null)}
+                    onConfirm={(folderId) => { void run(() => onMoveToFolder(folderId)); }}
                 />
             )}
         </>
@@ -251,6 +275,49 @@ function SetExpiryDialog({
                     className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     Set expiry
+                </button>
+            </div>
+        </DialogFrame>
+    );
+}
+
+function MoveFolderDialog({
+    folders,
+    busy,
+    onCancel,
+    onConfirm,
+}: {
+    folders: CatalogItem[];
+    busy: boolean;
+    onCancel: () => void;
+    onConfirm: (folderId: number | null) => void;
+}) {
+    const [choice, setChoice] = useState('');
+    return (
+        <DialogFrame titleId="bulk-move-title" title="Move to folder" busy={busy} onClose={onCancel}>
+            <label htmlFor="bulk-folder" className="mb-1.5 block font-mono text-xs uppercase tracking-[0.14em] text-faint">
+                Folder
+            </label>
+            <select
+                id="bulk-folder"
+                value={choice}
+                onChange={(event) => setChoice(event.target.value)}
+                className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
+            >
+                <option value="">No folder</option>
+                {folders.map(folder => (
+                    <option key={folder.id} value={String(folder.id)}>{folder.name}</option>
+                ))}
+            </select>
+            <div className="mt-6 flex justify-end gap-2">
+                <button type="button" onClick={onCancel} disabled={busy} className={buttonClass}>Cancel</button>
+                <button
+                    type="button"
+                    onClick={() => onConfirm(choice ? Number(choice) : null)}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-wait disabled:opacity-50"
+                >
+                    Move
                 </button>
             </div>
         </DialogFrame>

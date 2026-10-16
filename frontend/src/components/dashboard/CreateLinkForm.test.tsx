@@ -23,7 +23,15 @@ function jsonResponse(body: unknown, status = 200): Response {
     } as Response;
 }
 
-function renderForm(appSettings: AppSettings = settings) {
+function renderForm(
+    appSettings: AppSettings = settings,
+    extra: {
+        folders?: { id: number; name: string; color: string | null; link_count: number }[];
+        tags?: { id: number; name: string; color: string | null; link_count: number }[];
+        orgId?: number | null;
+        orgName?: string | null;
+    } = {},
+) {
     const onCreated = vi.fn();
     const onError = vi.fn();
     const view = render(
@@ -32,6 +40,7 @@ function renderForm(appSettings: AppSettings = settings) {
             initialUrl=""
             onCreated={onCreated}
             onError={onError}
+            {...extra}
         />,
     );
     return { ...view, onCreated, onError };
@@ -438,6 +447,33 @@ describe('CreateLinkForm', () => {
             expect(await screen.findByRole('status')).toHaveTextContent('Reachable · HTTP 204');
             expect(button).toBeEnabled();
             expect(fetch).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('files a new link in the open team, folder and tags', async () => {
+        const { user, onCreated } = renderForm(settings, {
+            orgId: 8,
+            orgName: 'Acme',
+            folders: [{ id: 4, name: 'Campaigns', color: '#2563eb', link_count: 0 }],
+            tags: [
+                { id: 9, name: 'launch', color: '#e11d48', link_count: 0 },
+                { id: 2, name: 'press', color: null, link_count: 0 },
+            ],
+        });
+        expect(screen.getByText('Creating in Acme')).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('Destination URL'), { target: { value: 'https://example.com/a' } });
+        await openAdvanced();
+        await user.selectOptions(screen.getByLabelText('Folder'), '4');
+        await user.click(screen.getByRole('checkbox', { name: 'launch' }));
+        await user.click(screen.getByRole('checkbox', { name: 'press' }));
+        await user.click(screen.getByRole('button', { name: /^Create$/ }));
+
+        await waitFor(() => expect(onCreated).toHaveBeenCalledOnce());
+        expect(JSON.parse(String(createPosts()[0][1]?.body))).toEqual({
+            original_url: 'https://example.com/a',
+            org_id: 8,
+            folder_id: 4,
+            tag_ids: [2, 9],
         });
     });
 });

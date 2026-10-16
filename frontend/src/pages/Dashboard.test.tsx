@@ -142,10 +142,16 @@ describe('Dashboard Page', () => {
   });
 
   it('creates new link on form submission', async () => {
-    vi.mocked(global.fetch)
-      .mockResolvedValueOnce(mockFetchResponse([]) as any) // Initial fetch
-      .mockResolvedValueOnce(mockFetchResponse(mockLink) as any) // Create link
-      .mockResolvedValueOnce(mockFetchResponse([mockLink]) as any); // Refresh links
+    // Folders, tags and teams are fetched beside the link list, so a
+    // once-chain would be spent before the create request.
+    vi.mocked(global.fetch).mockImplementation((url, init) => {
+      const href = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'POST' && href.split('?')[0].endsWith('/links')) {
+        return mockFetchResponse(mockLink) as any;
+      }
+      return mockFetchResponse([]) as any;
+    });
 
     const { user } = render(<Dashboard />);
 
