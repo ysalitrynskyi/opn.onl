@@ -313,9 +313,10 @@ async fn click_buffer_shutdown_joins_in_flight_flush() {
     let token = register_verified(&server, &db).await;
     let link_id = create_link_id(&server, &token).await;
 
-    // Hold FOR UPDATE on this link so the in-flight flush blocks at its
-    // parent lock_shared, after taking events out of the queue. Row-level
-    // so parallel tests on other links are unaffected.
+    // Hold FOR UPDATE on this link. The background flush skips a held row and
+    // puts its clicks back; the shutdown flush waits for it, so the clicks are
+    // written once the row is free. Row-level, so parallel tests on other
+    // links are unaffected.
     let lock_db = sea_orm::Database::connect(
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
     )
@@ -337,10 +338,10 @@ async fn click_buffer_shutdown_joins_in_flight_flush() {
     let handle = buffer.clone().start_flush_task(db.clone());
 
     let started = std::time::Instant::now();
-    while buffer.queued_event_count() != 0 {
+    while buffer.flush_attempt_count() == 0 || buffer.queued_event_count() != 5 {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
-            "background flush never took the queued events"
+            "background flush never ran, or dropped the held link's clicks"
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -372,6 +373,79 @@ async fn click_buffer_shutdown_joins_in_flight_flush() {
         persisted, 5,
         "in-flight flush must persist rather than be dropped on shutdown"
     );
+}
+
+/// A link row held by another transaction (a domain block, an account
+/// deletion) used to stall the whole flush under its global lock, and once the
+/// queue filled, everyone's clicks were dropped. The background flush now
+/// writes the other links and retries the held one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_flush_does_not_wait_for_a_held_link() {
+    let (server, db) = spawn_real_app().await;
+    let token = register_verified(&server, &db).await;
+    let held = create_link_id(&server, &token).await;
+    let free = create_link_id(&server, &token).await;
+
+    let lock_db = sea_orm::Database::connect(
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+    )
+    .await
+    .expect("lock conn");
+    let txn = lock_db.begin().await.expect("begin");
+    txn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT id FROM links WHERE id = $1 FOR UPDATE",
+        [held.into()],
+    ))
+    .await
+    .expect("lock link");
+
+    let buffer = std::sync::Arc::new(ClickBuffer::with_limits(1, 50, 1));
+    for _ in 0..4 {
+        buffer.add_click(click(held));
+    }
+    for _ in 0..3 {
+        buffer.add_click(click(free));
+    }
+    let handle = buffer.clone().start_flush_task(db.clone());
+
+    let persisted = |link_id: i32| {
+        let db = db.clone();
+        async move {
+            opn_onl_backend::entity::click_events::Entity::find()
+                .filter(opn_onl_backend::entity::click_events::Column::LinkId.eq(link_id))
+                .count(&db)
+                .await
+                .unwrap()
+        }
+    };
+    let started = std::time::Instant::now();
+    while persisted(free).await != 3 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the free link's clicks waited for the held row"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(persisted(held).await, 0, "the held link is not written yet");
+    assert_eq!(
+        buffer.queued_event_count(),
+        4,
+        "its clicks are kept, not dropped"
+    );
+
+    txn.rollback().await.expect("release link lock");
+    let started = std::time::Instant::now();
+    while persisted(held).await != 4 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the held link's clicks were not retried"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    buffer.request_stop();
+    let _ = handle.await;
+    assert_eq!(buffer.queued_event_count(), 0);
 }
 
 #[tokio::test]
