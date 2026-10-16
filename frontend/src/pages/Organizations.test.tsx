@@ -512,6 +512,7 @@ describe('Organizations page', () => {
         const user = await openAcme();
         const activity = () => screen.getByRole('list', { name: 'Activity' });
         await waitFor(() => expect(within(activity()).getAllByRole('listitem')).toHaveLength(50));
+        expect(within(activity()).queryByText(/203\.0\.113/)).toBeNull();
         await user.click(screen.getByRole('button', { name: 'Older' }));
         await waitFor(() => expect(within(activity()).getAllByRole('listitem')).toHaveLength(1));
         const urls = calls('GET', '/orgs/7/audit').map((call) => String(call[0]));

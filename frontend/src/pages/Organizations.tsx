@@ -52,6 +52,8 @@ interface AuditEntry {
     resource_type: string;
     resource_id: number | null;
     details: unknown;
+    // The entry also carries the member's truncated network address. It is
+    // not shown: teammates do not need each other's network.
     ip_address: string | null;
     created_at: string;
 }
@@ -219,7 +221,6 @@ function ActivityLog({ orgId }: { orgId: number }) {
                                     <p className="mt-0.5 font-mono text-xs text-faint break-all">
                                         {formatWhen(entry.created_at)}
                                         {detail ? ` · ${detail}` : ''}
-                                        {entry.ip_address ? ` · ${entry.ip_address}` : ''}
                                     </p>
                                 </li>
                             );
