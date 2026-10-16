@@ -110,6 +110,9 @@ test.describe('Organizations in the admin panel', () => {
 
         const deleted = await api(request, 'delete', `/orgs/${org.id}`, owner.token);
         expect(deleted.status()).toBe(204);
+        // A new address for the reload: with the dev server's doubled requests,
+        // two page loads inside one second can pass the 20-per-second burst limit.
+        await page.setExtraHTTPHeaders(clientIpHeader());
         await page.reload();
         await expect(page.getByRole('heading', { name: 'Admin Dashboard' })).toBeVisible({ timeout: 15_000 });
         await switchAdminTab(page, 'Organizations');

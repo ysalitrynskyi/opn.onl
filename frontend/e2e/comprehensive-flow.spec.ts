@@ -194,6 +194,11 @@ test('a visitor signs up, is verified, signs in, shortens a link and sees its cl
         expect((await listed).status()).toBe(200);
         await expect(page).toHaveURL(/\/dashboard$/);
 
+        // A new address for the delete and the list reload after it: the dev
+        // server's StrictMode sends every Dashboard request twice, so the page
+        // load above and the reload can pass the real 20-per-second burst limit
+        // inside one second and answer the reload with 429.
+        await page.setExtraHTTPHeaders({ 'CF-Connecting-IP': freshClientIp() });
         const dialogs: string[] = [];
         page.once('dialog', (dialog) => {
             dialogs.push(dialog.message());

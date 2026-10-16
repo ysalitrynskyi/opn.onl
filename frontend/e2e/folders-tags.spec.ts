@@ -163,6 +163,9 @@ test.describe('Folders and the dashboard', () => {
         // Deleting the folder unfiles its links instead of taking them with it.
         const deleted = await api(request, 'delete', `/folders/${folder.id}`, user.token);
         expect(deleted.status()).toBe(204);
+        // A new address for the reload: with the dev server's doubled requests,
+        // two Dashboard loads inside one second pass the 20-per-second burst limit.
+        await page.setExtraHTTPHeaders(clientIpHeader());
         await page.reload();
         await expect(page.getByText('2 links', { exact: true })).toBeVisible();
         await expect(linkRow(page, filed.code)).toBeVisible();
