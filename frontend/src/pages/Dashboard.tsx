@@ -36,6 +36,7 @@ import {
     linksQuery,
     orgOptions,
     parsePositiveId,
+    readOnlyIn,
     sameScope,
     type CatalogItem,
     type LinkListScope,
@@ -113,6 +114,8 @@ export default function Dashboard() {
     const folderId = parsePositiveId(searchParams.get('folder'));
     const tagId = parsePositiveId(searchParams.get('tag'));
     const [orgs, setOrgs] = useState<OrgOption[]>([]);
+    // True once GET /orgs has answered, so an empty list means "no teams".
+    const [orgsLoaded, setOrgsLoaded] = useState(false);
     const [folders, setFolders] = useState<CatalogItem[]>([]);
     const [tags, setTags] = useState<CatalogItem[]>([]);
     // The folder/tag/org the rows on screen were fetched with. The URL can
@@ -361,7 +364,10 @@ export default function Dashboard() {
                     // Delete/pin bumped the generation so this snapshot must
                     // not replace the optimistic list (that would resurrect a
                     // deleted row). Still fold in ids we do not have, or a
-                    // create that raced the mutation never appears.
+                    // create that raced the mutation never appears. Only into
+                    // the list it was asked for: after a quick switch of team,
+                    // folder, tag or search, its rows belong to another view.
+                    if (!sameScope(scope, listRef.current.scope)) return;
                     setLinks(prev => {
                         const have = new Set(prev.map(l => l.id));
                         const extras = data.filter(
@@ -845,7 +851,12 @@ export default function Dashboard() {
     const loadOrgs = useCallback(async () => {
         try {
             const res = await authFetch(API_ENDPOINTS.orgs);
-            setOrgs(res.ok ? orgOptions(await res.json()) : []);
+            if (res.ok) {
+                setOrgs(orgOptions(await res.json()));
+                setOrgsLoaded(true);
+            } else {
+                setOrgs([]);
+            }
         } catch (error) {
             if (error instanceof SessionExpiredError) return;
             logger.error('Failed to load teams', error);
@@ -861,13 +872,12 @@ export default function Dashboard() {
         const failed = kind === 'folder' ? 'Failed to load folders' : 'Failed to load tags';
         try {
             const res = await authFetch(`${kind === 'folder' ? API_ENDPOINTS.folders : API_ENDPOINTS.tags}${query}`);
+            const items = res.ok ? catalogItems(await res.json()) : [];
+            const message = res.ok ? '' : await responseError(res, failed);
+            // Checked after the body is read: a team switch meanwhile owns the list now.
             if (requestId !== req.current) return;
-            if (res.ok) {
-                setItems(catalogItems(await res.json()));
-            } else {
-                setItems([]);
-                setError(await responseError(res, failed));
-            }
+            setItems(items);
+            if (message) setError(message);
         } catch (error) {
             if (requestId !== req.current) return;
             if (error instanceof SessionExpiredError) return;
@@ -884,9 +894,28 @@ export default function Dashboard() {
 
     useEffect(() => {
         if (!safeLocalStorage.getItem('token')) return;
+        // The previous team's folders and tags are not offered while this
+        // team's load: picking one would filter, or file a link, across teams.
+        setFolders(prev => (prev.length === 0 ? prev : []));
+        setTags(prev => (prev.length === 0 ? prev : []));
         void loadScopedList('folder', orgId);
         void loadScopedList('tag', orgId);
     }, [orgId, loadScopedList]);
+
+    // A team the user is not (or no longer) a member of, from an old link or
+    // a bookmark: its list is empty, its folders and tags are refused, and a
+    // create would be too. Show the personal links and say why.
+    useEffect(() => {
+        if (!orgsLoaded || orgId == null || orgs.some(org => org.id === orgId)) return;
+        setSearchParams(prev => {
+            const next = new URLSearchParams(prev);
+            next.delete('org');
+            next.delete('folder');
+            next.delete('tag');
+            return next;
+        }, { replace: true });
+        setError('You are not a member of that team. Showing your personal links.');
+    }, [orgsLoaded, orgs, orgId, setSearchParams]);
 
     const replaceParams = (mutate: (next: URLSearchParams) => void) => {
         const next = new URLSearchParams(searchParams);
@@ -895,7 +924,14 @@ export default function Dashboard() {
     };
 
     const folderById = new Map(folders.map(folder => [folder.id, folder]));
-    const activeOrgName = orgId != null ? orgs.find(org => org.id === orgId)?.name ?? null : null;
+    const activeOrg = orgId != null ? orgs.find(org => org.id === orgId) ?? null : null;
+    const activeOrgName = activeOrg?.name ?? null;
+    // A viewer can read a team's links and nothing more: create, import,
+    // edit, pin, clone, delete, bulk actions and folder or tag changes all
+    // answer 403, so they are not offered. Until GET /orgs says the role, the
+    // controls stay and the server decides.
+    const readOnly = readOnlyIn(activeOrg);
+    const showBulkBar = selectedOnPage.length > 0 && !readOnly;
 
     if (loading) {
         return (
@@ -971,16 +1007,18 @@ export default function Dashboard() {
                     </div>
                 </div>
                 <div className="flex gap-2">
-                    <button
-                        onClick={() => {
-                            setBulkReport(null);
-                            setShowBulkImport(true);
-                        }}
-                        className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
-                    >
-                        <Upload className="h-4 w-4 text-muted" />
-                        Bulk Import
-                    </button>
+                    {!readOnly && (
+                        <button
+                            onClick={() => {
+                                setBulkReport(null);
+                                setShowBulkImport(true);
+                            }}
+                            className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
+                        >
+                            <Upload className="h-4 w-4 text-muted" />
+                            Bulk Import
+                        </button>
+                    )}
                     <button
                         onClick={handleExport}
                         className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
@@ -1020,16 +1058,22 @@ export default function Dashboard() {
             )}
 
             {/* Create Link Form */}
-            <CreateLinkForm
-                appSettings={appSettings}
-                initialUrl={createInitialUrl}
-                onCreated={() => { fetchLinks(); }}
-                onError={setError}
-                folders={folders}
-                tags={tags}
-                orgId={orgId}
-                orgName={activeOrgName}
-            />
+            {readOnly ? (
+                <p className="mb-8 rounded-2xl border border-dashed border-line2 bg-paper px-6 py-4 text-sm text-muted">
+                    You can view the links in {activeOrgName}. Editors and admins can add and change them.
+                </p>
+            ) : (
+                <CreateLinkForm
+                    appSettings={appSettings}
+                    initialUrl={createInitialUrl}
+                    onCreated={() => { fetchLinks(); }}
+                    onError={setError}
+                    folders={folders}
+                    tags={tags}
+                    orgId={orgId}
+                    orgName={activeOrgName}
+                />
+            )}
 
             {/* Search and filter stay up with no links, so the first folder can be created here. */}
             <LinkFilters
@@ -1065,6 +1109,7 @@ export default function Dashboard() {
                         else next.set('tag', String(id));
                     });
                 }}
+                canManage={!readOnly}
                 onOrganizeChanged={(kind) => { void loadScopedList(kind, orgId); }}
                 onFolderDeleted={(id) => {
                     if (folderId === id) {
@@ -1081,8 +1126,8 @@ export default function Dashboard() {
             />
 
             {/* Links List */}
-            <div className={selectedOnPage.length > 0 ? 'pb-24 sm:pb-0' : undefined}>
-                {paginatedLinks.length > 0 && (
+            <div className={showBulkBar ? 'pb-24 sm:pb-0' : undefined}>
+                {paginatedLinks.length > 0 && !readOnly && (
                     <div className="flex items-center gap-2 py-3">
                         <SelectAllCheckbox
                             checked={allOnPage}
@@ -1091,7 +1136,7 @@ export default function Dashboard() {
                         />
                     </div>
                 )}
-                {selectedOnPage.length > 0 && (
+                {showBulkBar && (
                     <BulkActionBar
                         count={selectedOnPage.length}
                         busy={bulkBusy}
@@ -1129,6 +1174,7 @@ export default function Dashboard() {
                                     onEdit={setEditingLink}
                                     onDelete={handleDelete}
                                     folder={link.folder_id != null ? folderById.get(link.folder_id) ?? null : null}
+                                    readOnly={readOnly}
                                 />
                             );
                         })}

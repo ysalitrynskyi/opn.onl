@@ -20,7 +20,7 @@ const base: LinkData = {
     tags: [],
 };
 
-function row(link: LinkData) {
+function row(link: LinkData, extra: { readOnly?: boolean } = {}) {
     return (
         <LinkRow
             link={link}
@@ -39,6 +39,7 @@ function row(link: LinkData) {
             onQr={vi.fn()}
             onEdit={vi.fn()}
             onDelete={vi.fn()}
+            {...extra}
         />
     );
 }
@@ -264,6 +265,29 @@ describe('LinkRow status badges', () => {
         rerender(row(link));
 
         expect(screen.getByText('Expired')).toHaveAttribute('title', INACTIVE_REASON.expired);
+    });
+});
+
+describe('LinkRow for a team viewer', () => {
+    it('offers only what a viewer may do', () => {
+        render(row({ ...base, is_pinned: true }, { readOnly: true }));
+        expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+        for (const name of ['Unpin link abc123', 'Clone link abc123', 'Edit link abc123', 'Delete link abc123']) {
+            expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+        }
+        expect(screen.getByLabelText('Pinned')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Copy short URL for abc123' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Preview destination for abc123' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Share link abc123' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Show QR code for abc123' })).toBeInTheDocument();
+    });
+
+    it('keeps every action for anyone else', () => {
+        render(row(base));
+        expect(screen.getByRole('checkbox', { name: 'Select link abc123' })).toBeInTheDocument();
+        for (const name of ['Pin link abc123', 'Clone link abc123', 'Edit link abc123', 'Delete link abc123']) {
+            expect(screen.getByRole('button', { name })).toBeInTheDocument();
+        }
     });
 });
 

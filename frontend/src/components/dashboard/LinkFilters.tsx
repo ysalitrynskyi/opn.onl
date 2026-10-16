@@ -19,6 +19,8 @@ interface LinkFiltersProps {
     tags: CatalogItem[];
     tagId: number | null;
     onTagChange: (id: number | null) => void;
+    /** False for a team viewer: the API refuses their folder and tag changes. */
+    canManage?: boolean;
     /** A folder or tag was created, renamed or recoloured. */
     onOrganizeChanged: (kind: 'folder' | 'tag') => void;
     onFolderDeleted: (id: number) => void;
@@ -51,6 +53,7 @@ export default function LinkFilters({
     tags,
     tagId,
     onTagChange,
+    canManage = true,
     onOrganizeChanged,
     onFolderDeleted,
     onTagDeleted,
@@ -162,16 +165,18 @@ export default function LinkFilters({
                         )}
                     </div>
                 )}
-                <div className="sm:ml-auto">
-                    <OrganizeMenu
-                        orgId={orgId}
-                        folders={folders}
-                        tags={tags}
-                        onChanged={onOrganizeChanged}
-                        onFolderDeleted={onFolderDeleted}
-                        onTagDeleted={onTagDeleted}
-                    />
-                </div>
+                {canManage && (
+                    <div className="sm:ml-auto">
+                        <OrganizeMenu
+                            orgId={orgId}
+                            folders={folders}
+                            tags={tags}
+                            onChanged={onOrganizeChanged}
+                            onFolderDeleted={onFolderDeleted}
+                            onTagDeleted={onTagDeleted}
+                        />
+                    </div>
+                )}
             </div>
         </div>
     );

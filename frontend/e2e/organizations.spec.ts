@@ -241,4 +241,27 @@ test.describe('Teams page', () => {
         await expect(page.getByRole('button', { name: 'Transfer ownership' })).toHaveCount(0);
         await expect(page.getByRole('heading', { name: 'Activity' })).toHaveCount(0);
     });
+
+    test("a viewer sees the team's links without the controls the API refuses them", async ({ page, request }) => {
+        const [owner, viewer] = await Promise.all([createUser(request), createUser(request)]);
+        const org = await createOrg(request, owner);
+        await addMember(request, org, owner, viewer, 'viewer');
+        const link = await createLink(request, owner.token, { org_id: org.id, title: `Team page ${randomUUID().slice(0, 8)}` });
+
+        await signIn(page, viewer);
+        await page.goto(`/dashboard?org=${org.id}`);
+        await expect(page.getByText(link.title)).toBeVisible(LAZY_PAGE);
+        await expect(page.getByText(`You can view the links in ${org.name}. Editors and admins can add and change them.`)).toBeVisible();
+
+        await expect(page.getByPlaceholder('https://example.com/long-url')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Bulk Import' })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Manage' })).toHaveCount(0);
+        await expect(page.getByRole('checkbox', { name: `Select link ${link.code}` })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: `Edit link ${link.code}` })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: `Delete link ${link.code}` })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: `Pin link ${link.code}` })).toHaveCount(0);
+        // What a viewer may do is still there.
+        await expect(page.getByRole('button', { name: `Copy short URL for ${link.code}` })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Export CSV' })).toBeVisible();
+    });
 });

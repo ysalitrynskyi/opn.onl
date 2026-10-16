@@ -24,6 +24,20 @@ export interface CatalogItem {
 export interface OrgOption {
     id: number;
     name: string;
+    /** The caller's role there, from GET /orgs. Null when the server did not say. */
+    role: string | null;
+}
+
+/** The roles the API lets add, change and delete a team's links, folders and tags. */
+const EDIT_ROLES = new Set(['owner', 'admin', 'editor']);
+
+/**
+ * True when the caller's role in this team is known and cannot change
+ * anything: a viewer (or a role this client does not know, which the server
+ * also treats as read-only). An unknown role is left to the server.
+ */
+export function readOnlyIn(org: OrgOption | null | undefined): boolean {
+    return org?.role != null && !EDIT_ROLES.has(org.role);
 }
 
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -96,7 +110,7 @@ export function orgOptions(data: unknown): OrgOption[] {
     for (const item of data) {
         const row = record(item);
         if (!row || typeof row.id !== 'number' || typeof row.name !== 'string' || typeof row.slug !== 'string') continue;
-        items.push({ id: row.id, name: row.name });
+        items.push({ id: row.id, name: row.name, role: typeof row.role === 'string' ? row.role : null });
     }
     return items;
 }
