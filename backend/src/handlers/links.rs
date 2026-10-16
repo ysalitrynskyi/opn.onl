@@ -1006,24 +1006,107 @@ fn generate_short_code() -> String {
         .collect()
 }
 
-/// The first code `next` produces that no link row holds (live or soft-deleted:
-/// the column is globally unique) and that was not retired. Callers pass the
-/// random generator; a test passes a scripted sequence. A failed lookup counts
-/// as free, as it did before retired codes existed: the insert's UNIQUE
-/// constraint still guards link rows.
-pub async fn unused_code<C: ConnectionTrait>(db: &C, mut next: impl FnMut() -> String) -> String {
-    loop {
+/// How many candidates a random short code may try. The same bound bulk create
+/// already uses when an insert loses a race on `links.code`.
+const CODE_ATTEMPTS: usize = 8;
+
+/// Whether a candidate is free to hand out.
+///
+/// `Ok(true)` only when both lookups say it is unused. A lookup that says the
+/// code is taken wins over the other lookup failing, so a database error cannot
+/// hide a row that is there. `Err` when a lookup failed and nothing has shown
+/// the code is taken: that must not be treated as free. A purged code lives
+/// only in `retired_codes`, and the UNIQUE constraint on `links.code` does not
+/// see it.
+pub(crate) fn code_availability<E>(
+    in_use: Result<bool, E>,
+    retired: Result<bool, E>,
+) -> Result<bool, E> {
+    match (in_use, retired) {
+        (Ok(true), _) | (_, Ok(true)) => Ok(false),
+        (Ok(false), Ok(false)) => Ok(true),
+        (Ok(false), Err(error)) | (Err(error), Ok(false)) | (Err(_), Err(error)) => Err(error),
+    }
+}
+
+async fn code_is_free<C: ConnectionTrait>(db: &C, code: &str) -> Result<bool, DbErr> {
+    let in_use = links::Entity::find()
+        .filter(links::Column::Code.eq(code))
+        .one(db)
+        .await
+        .map(|row| row.is_some());
+    // A row already holds the code. The retired lookup cannot change that, and
+    // a failure there must not turn a taken code into an error.
+    let retired = if matches!(in_use, Ok(true)) {
+        Ok(false)
+    } else {
+        retired_codes::is_retired(db, code).await
+    };
+    code_availability(in_use, retired)
+}
+
+/// Why `allocate_code` stopped without a code.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg(test)]
+enum AllocateError<E> {
+    /// A lookup failed, and no later candidate was known to be free.
+    Lookup(E),
+    /// Every candidate was taken. No lookup failed.
+    Exhausted,
+}
+
+/// The first code `next` produces that `free` reports as unused, within
+/// `CODE_ATTEMPTS`. A failed check spends an attempt and is never treated as
+/// free. The last lookup error is the one returned.
+///
+/// Production calls the same loop inside `unused_code`. This stays a test
+/// helper because a closure borrowing the database connection is not `Send`.
+#[cfg(test)]
+async fn allocate_code<E>(
+    mut next: impl FnMut() -> String,
+    mut free: impl AsyncFnMut(String) -> Result<bool, E>,
+) -> Result<String, AllocateError<E>> {
+    let mut last_error = None;
+    for _ in 0..CODE_ATTEMPTS {
         let code = next();
-        let in_use = links::Entity::find()
-            .filter(links::Column::Code.eq(&code))
-            .one(db)
-            .await
-            .unwrap_or(None)
-            .is_some();
-        if !in_use && !retired_codes::is_retired(db, &code).await.unwrap_or(false) {
-            return code;
+        match free(code.clone()).await {
+            Ok(true) => return Ok(code),
+            Ok(false) => {}
+            Err(error) => last_error = Some(error),
         }
     }
+    Err(match last_error {
+        Some(error) => AllocateError::Lookup(error),
+        None => AllocateError::Exhausted,
+    })
+}
+
+/// The first code `next` produces that no link row holds (live or soft-deleted:
+/// the column is globally unique) and that was not retired. Callers pass the
+/// random generator; a test passes a scripted sequence. A failed lookup is not
+/// a free code: the UNIQUE constraint does not cover a code that only
+/// `retired_codes` still remembers.
+///
+/// The attempt loop is inlined, rather than going through `allocate_code`,
+/// because a closure that borrows `db` is not `Send` for every lifetime and
+/// the handlers that call this have to be.
+pub async fn unused_code<C: ConnectionTrait>(
+    db: &C,
+    mut next: impl FnMut() -> String,
+) -> Result<String, DbErr> {
+    let mut last_error = None;
+    for _ in 0..CODE_ATTEMPTS {
+        let code = next();
+        match code_is_free(db, &code).await {
+            Ok(true) => return Ok(code),
+            Ok(false) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(match last_error {
+        Some(error) => error,
+        None => DbErr::Custom("Could not allocate a short code".to_string()),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1695,7 +1778,13 @@ pub async fn create_link(
 
         alias
     } else {
-        unused_code(&state.db, generate_short_code).await
+        match unused_code(&state.db, generate_short_code).await {
+            Ok(code) => code,
+            Err(error) => {
+                tracing::error!("Failed to allocate a short code: {error}");
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            }
+        }
     };
 
     let password_hash = if let Some(password) = link_password {
@@ -2456,7 +2545,7 @@ pub async fn redirect_link(
         // any click is recorded. The authoritative check is the atomic
         // conditional UPDATE below (consume_capped_click), which runs once the
         // request is actually going to be served a destination.
-        if let Some(max) = link.max_clicks
+        if let Some(max) = link.effective_max_clicks()
             && link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max)
         {
             let msg = if link.burn_after_reading {
@@ -2617,7 +2706,7 @@ pub async fn redirect_link(
         // concurrent request took the last slot (or, transiently, that the cap
         // was just removed / the link soft-deleted by a concurrent update — a
         // retry then sees the link's new state).
-        let accounting = if link.max_clicks.is_some() {
+        let accounting = if link.effective_max_clicks().is_some() {
             match consume_capped_click(&state.db, link.id).await {
                 Ok(Some(new_count)) => ClickAccounting::Consumed {
                     new_click_count: new_count,
@@ -2659,7 +2748,7 @@ pub async fn redirect_link(
         // Cache the link for future requests (only plain redirects — no password,
         // click cap, or interstitial, which need the DB path).
         if link.password_hash.is_none()
-            && link.max_clicks.is_none()
+            && link.effective_max_clicks().is_none()
             && !link.safe_link_interstitial
             && let (Some(cache), Some(generation)) = (&state.redis_cache, cache_generation)
         {
@@ -2716,27 +2805,31 @@ enum ClickAccounting {
     Consumed { new_click_count: i64 },
 }
 
-/// Atomically consume one click slot on a capped (`max_clicks`) link.
+/// Atomically consume one click slot on a capped link.
 ///
-/// A single conditional UPDATE so concurrent redirects cannot overshoot the
-/// cap: only a row with `click_count < max_clicks` is incremented, and
-/// `burned_at` is stamped in the same statement when this click exhausts a
+/// The cap is `max_clicks`, or 1 when a one-time link was saved without one
+/// (the same rule as `Model::effective_max_clicks`). The statement reads the
+/// row's own columns, not the cap the handler saw, so a concurrent edit cannot
+/// be overwritten by a stale value. A single conditional UPDATE so concurrent
+/// redirects cannot overshoot: only a row still under its cap is incremented,
+/// and `burned_at` is stamped in the same statement when this click exhausts a
 /// burn-after-reading link. Returns `Ok(Some(new_click_count))` when a slot
-/// was consumed, `Ok(None)` when the cap is already exhausted.
+/// was consumed, `Ok(None)` when the cap is already exhausted (or the link is
+/// not capped).
 async fn consume_capped_click(db: &DatabaseConnection, link_id: i32) -> Result<Option<i64>, DbErr> {
     let stmt = Statement::from_sql_and_values(
         DbBackend::Postgres,
         r#"UPDATE links
            SET click_count = click_count + 1,
                burned_at = CASE
-                   WHEN burn_after_reading AND burned_at IS NULL AND click_count + 1 >= max_clicks
+                   WHEN burn_after_reading AND burned_at IS NULL
+                        AND click_count + 1 >= COALESCE(max_clicks, 1)
                        THEN $2
                    ELSE burned_at
                END
            WHERE id = $1
              AND deleted_at IS NULL
-             AND max_clicks IS NOT NULL
-             AND click_count < max_clicks
+             AND click_count < COALESCE(max_clicks, CASE WHEN burn_after_reading THEN 1 END)
            RETURNING click_count"#,
         [link_id.into(), chrono::Utc::now().naive_utc().into()],
     );
@@ -2889,7 +2982,7 @@ pub async fn verify_link_password(
             .into_response();
     }
 
-    if let Some(max) = link.max_clicks
+    if let Some(max) = link.effective_max_clicks()
         && link.click_count + state.click_buffer.pending_count(link.id) >= i64::from(max)
     {
         let msg = if link.burn_after_reading {
@@ -4795,7 +4888,19 @@ pub async fn bulk_create_links(
         let mut created = false;
         let mut last_duplicate: Option<String> = None;
         for _ in 0..8 {
-            let code = unused_code(&state.db, generate_short_code).await;
+            let code = match unused_code(&state.db, generate_short_code).await {
+                Ok(code) => code,
+                Err(error) => {
+                    tracing::error!("Failed to allocate a short code: {error}");
+                    record_bulk_failure(
+                        &mut errors,
+                        &mut failed,
+                        &url,
+                        format!("Failed to shorten {url}: Database error"),
+                    );
+                    break;
+                }
+            };
 
             let txn = match state.db.begin().await {
                 Ok(txn) => txn,
@@ -5386,7 +5491,13 @@ pub async fn clone_link(
     }
 
     // Generate new short code
-    let code = unused_code(&state.db, generate_short_code).await;
+    let code = match unused_code(&state.db, generate_short_code).await {
+        Ok(code) => code,
+        Err(error) => {
+            tracing::error!("Failed to allocate a short code: {error}");
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        }
+    };
 
     // A burn link is its cap: the clone starts with the same cap and no
     // clicks, so it is a fresh one-time link. The two features follow the
@@ -5599,6 +5710,7 @@ pub struct CheckCodeResponse {
     params(CheckCodeQuery),
     responses(
         (status = 200, description = "Code availability checked", body = CheckCodeResponse),
+        (status = 500, description = "Database error"),
     ),
     tag = "Links"
 )]
@@ -5623,18 +5735,18 @@ pub async fn check_code_availability(
 
     // Consider deleted links too: their code is still held by the global UNIQUE
     // constraint on links.code, so it is not actually available for reuse.
-    // Purged links' codes are held by retired_codes instead.
-    let exists = links::Entity::find()
-        .filter(links::Column::Code.eq(code))
-        .one(&state.db)
-        .await
-        .unwrap_or(None)
-        .is_some()
-        || retired_codes::is_retired(&state.db, code)
-            .await
-            .unwrap_or(false);
+    // Purged links' codes are held by retired_codes instead. A failed lookup is
+    // not "available": the caller would then save an alias the insert rejects,
+    // or one that only the retired-code table still remembers.
+    let available = match code_is_free(&state.db, code).await {
+        Ok(available) => available,
+        Err(error) => {
+            tracing::error!("Failed to check alias availability: {error}");
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        }
+    };
 
-    if exists {
+    if !available {
         (
             StatusCode::OK,
             Json(CheckCodeResponse {
@@ -6462,4 +6574,62 @@ fn html_decode(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
+}
+
+#[cfg(test)]
+mod code_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn code_availability_fails_closed() {
+        assert_eq!(code_availability::<&str>(Ok(false), Ok(false)), Ok(true));
+        assert_eq!(code_availability::<&str>(Ok(true), Ok(false)), Ok(false));
+        assert_eq!(code_availability::<&str>(Ok(false), Ok(true)), Ok(false));
+        // Taken wins over the other lookup failing.
+        assert_eq!(code_availability(Ok(true), Err("db")), Ok(false));
+        assert_eq!(code_availability(Err("db"), Ok(true)), Ok(false));
+        // Unknown is not free. The later error is the one reported.
+        assert_eq!(code_availability(Ok(false), Err("db")), Err("db"));
+        assert_eq!(code_availability(Err("db"), Ok(false)), Err("db"));
+        assert_eq!(
+            code_availability(Err("links"), Err("retired")),
+            Err("retired")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_is_retried_and_then_refused() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let result = allocate_code(
+            || "abc".to_string(),
+            async |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err::<bool, _>("down")
+            },
+        )
+        .await;
+        assert_eq!(result, Err(AllocateError::Lookup("down")));
+        assert_eq!(calls.load(Ordering::SeqCst), CODE_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_does_not_hand_out_that_candidate() {
+        let mut answers = [Ok(false), Err("down"), Ok(true)].into_iter();
+        let mut codes = ["taken", "err", "free"].into_iter();
+        let got = allocate_code(
+            || codes.next().unwrap().to_string(),
+            async |_| answers.next().unwrap(),
+        )
+        .await
+        .expect("the third candidate is free");
+        assert_eq!(got, "free");
+    }
+
+    #[tokio::test]
+    async fn every_candidate_taken_is_exhausted_not_a_lookup_error() {
+        let result = allocate_code(|| "taken".to_string(), async |_| Ok::<bool, &str>(false)).await;
+        assert_eq!(result, Err(AllocateError::Exhausted));
+    }
 }

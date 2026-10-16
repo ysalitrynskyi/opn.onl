@@ -302,7 +302,8 @@ async fn code_generation_skips_retired_live_and_soft_deleted_codes() {
         tried += 1;
         candidates.next().expect("ran out of candidates")
     })
-    .await;
+    .await
+    .expect("the free candidate is issued");
     assert_eq!(got, free, "the first three candidates are all unavailable");
     assert_eq!(tried, 4);
 }

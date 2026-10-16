@@ -9,7 +9,7 @@ use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -85,6 +85,8 @@ pub struct BackupService {
     bucket: String,
     database_url: String,
     schedule: Option<BackupSchedule>,
+    /// Manual and scheduled backups share this, so two dumps never run at once.
+    slot: Arc<RunSlot>,
 }
 
 impl BackupService {
@@ -130,6 +132,7 @@ impl BackupService {
             bucket,
             database_url,
             schedule,
+            slot: Arc::new(RunSlot::default()),
         }
     }
 
@@ -143,9 +146,17 @@ impl BackupService {
     }
 
     /// Create a backup on request and upload it to S3. Retention for the
-    /// schedule never touches it.
-    pub async fn create_backup(&self) -> Result<String, String> {
-        self.upload_backup(BackupKind::Manual).await
+    /// schedule never touches it. Refuses with [`BackupRejected::Busy`] when a
+    /// backup, manual or scheduled, is already running in this process: the
+    /// object name only has second resolution, so two dumps in the same UTC
+    /// second would overwrite one object.
+    pub async fn create_backup(&self) -> Result<String, BackupRejected> {
+        // Take the slot before looking at storage, so a second caller is
+        // refused even when this one is about to fail for lack of a bucket.
+        let _hold = self.slot.try_hold().ok_or(BackupRejected::Busy)?;
+        self.upload_backup(BackupKind::Manual)
+            .await
+            .map_err(BackupRejected::Failed)
     }
 
     async fn upload_backup(&self, kind: BackupKind) -> Result<String, String> {
@@ -320,6 +331,36 @@ impl Clone for BackupService {
             bucket: self.bucket.clone(),
             database_url: self.database_url.clone(),
             schedule: None, // No client, so nothing to schedule.
+            // The run slot is the one thing a clone must keep: dropping it
+            // would let the clone start a second dump beside the original.
+            slot: Arc::clone(&self.slot),
+        }
+    }
+}
+
+/// Why a manual backup did not start.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BackupRejected {
+    /// Another backup, manual or scheduled, is still running.
+    Busy,
+    /// The dump or the upload failed. The string is the internal reason.
+    Failed(String),
+}
+
+impl BackupRejected {
+    pub fn http_status(&self) -> u16 {
+        match self {
+            Self::Busy => 409,
+            Self::Failed(_) => 500,
+        }
+    }
+
+    /// The sentence a client is shown. A failure keeps the reason the upload
+    /// returned, as the admin backup action already displayed it.
+    pub fn client_message(&self) -> String {
+        match self {
+            Self::Busy => "A backup is already running".to_string(),
+            Self::Failed(error) => format!("Backup failed: {error}"),
         }
     }
 }
@@ -350,17 +391,28 @@ pub fn spawn_backup_task(backup: Arc<BackupService>, shutdown: watch::Receiver<b
         schedule.interval_hours, schedule.keep, schedule.interval_hours
     );
 
-    tokio::spawn(run_schedule(schedule.interval(), shutdown, move || {
-        let backup = backup.clone();
-        async move { backup.run_scheduled(schedule.keep).await }
-    }));
+    let slot = Arc::clone(&backup.slot);
+    tokio::spawn(run_schedule(
+        schedule.interval(),
+        shutdown,
+        slot,
+        move || {
+            let backup = backup.clone();
+            async move { backup.run_scheduled(schedule.keep).await }
+        },
+    ));
 }
 
 /// Call `job` every `period`, starting one `period` from now, until `shutdown`
-/// flips to true. A tick that arrives while the previous run is still going
-/// starts nothing, so runs never overlap.
-async fn run_schedule<F, Fut>(period: Duration, mut shutdown: watch::Receiver<bool>, job: F)
-where
+/// flips to true. A tick that arrives while a backup is still going — the
+/// previous scheduled run, or a manual one holding `slot` — starts nothing,
+/// so runs never overlap.
+async fn run_schedule<F, Fut>(
+    period: Duration,
+    mut shutdown: watch::Receiver<bool>,
+    slot: Arc<RunSlot>,
+    job: F,
+) where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<ScheduledRun, String>> + Send + 'static,
 {
@@ -368,7 +420,6 @@ where
     // After a stall (a suspended host) wait for the next regular tick instead of
     // firing the missed ones back to back.
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut slot = RunSlot::default();
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
@@ -380,7 +431,8 @@ where
         }
     }
     // Nothing is uploaded after shutdown begins. A `pg_dump` already running
-    // finishes on its own.
+    // finishes on its own. A manual hold is not a task this loop spawned, so
+    // abort does not clear it.
     slot.abort();
 }
 
@@ -401,28 +453,87 @@ async fn log_outcome(run: impl Future<Output = Result<ScheduledRun, String>>) {
     }
 }
 
-/// The scheduled run in flight, if any.
-#[derive(Default)]
-struct RunSlot(Option<JoinHandle<()>>);
+/// One backup at a time. The schedule stores its task here; a manual backup
+/// holds the same slot for the length of the upload.
+struct RunSlot {
+    inner: Mutex<RunSlotInner>,
+}
+
+struct RunSlotInner {
+    task: Option<JoinHandle<()>>,
+    held: bool,
+}
+
+impl Default for RunSlot {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(RunSlotInner {
+                task: None,
+                held: false,
+            }),
+        }
+    }
+}
+
+/// Clears the manual hold when the backup that took it finishes or is dropped.
+struct Hold {
+    slot: Arc<RunSlot>,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut inner = self.slot.inner.lock().unwrap_or_else(|p| p.into_inner());
+        inner.held = false;
+    }
+}
 
 impl RunSlot {
-    /// Start `run` unless the previous one has not finished. Returns whether
-    /// it started.
-    fn start_unless_busy<Fut>(&mut self, run: impl FnOnce() -> Fut) -> bool
+    fn lock(&self) -> std::sync::MutexGuard<'_, RunSlotInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn busy(inner: &RunSlotInner) -> bool {
+        inner.held || inner.task.as_ref().is_some_and(|task| !task.is_finished())
+    }
+
+    /// Reserve the slot for a manual backup. `None` when one is already running.
+    fn try_hold(self: &Arc<Self>) -> Option<Hold> {
+        let mut inner = self.lock();
+        if Self::busy(&inner) {
+            return None;
+        }
+        inner.held = true;
+        Some(Hold {
+            slot: Arc::clone(self),
+        })
+    }
+
+    /// Start `run` unless a backup is already going. Returns whether it started.
+    /// The spawned task is the hold: `run_scheduled` must not also call
+    /// `try_hold`, or the job would refuse itself.
+    fn start_unless_busy<Fut>(&self, run: impl FnOnce() -> Fut) -> bool
     where
         Fut: Future<Output = ()> + Send + 'static,
     {
-        if self.0.as_ref().is_some_and(|run| !run.is_finished()) {
+        let mut inner = self.lock();
+        if Self::busy(&inner) {
             return false;
         }
-        self.0 = Some(tokio::spawn(run()));
+        inner.task = Some(tokio::spawn(run()));
         true
     }
 
-    fn abort(&mut self) {
-        if let Some(run) = self.0.take() {
+    fn abort(&self) {
+        if let Some(run) = self.lock().task.take() {
             run.abort();
         }
+    }
+
+    #[cfg(test)]
+    fn take_task(&self) -> Option<JoinHandle<()>> {
+        self.lock().task.take()
     }
 }
 
@@ -1054,7 +1165,7 @@ mod tests {
     #[tokio::test]
     async fn a_tick_while_a_run_is_going_starts_nothing() {
         let runs = FakeRuns::default();
-        let mut slot = RunSlot::default();
+        let slot = RunSlot::default();
 
         assert!(slot.start_unless_busy(|| log_outcome(runs.clone().run())));
         wait_until("first run to start", || runs.started() == 1).await;
@@ -1067,7 +1178,7 @@ mod tests {
 
         // Once it finishes, the next tick starts a run again.
         runs.release.notify_one();
-        let handle = slot.0.take().expect("run handle");
+        let handle = slot.take_task().expect("run handle");
         handle.await.expect("run finishes");
         assert!(slot.start_unless_busy(|| log_outcome(runs.clone().run())));
         wait_until("second run to start", || runs.started() == 2).await;
@@ -1078,10 +1189,15 @@ mod tests {
     async fn the_first_backup_is_one_interval_after_startup_not_at_startup() {
         let runs = FakeRuns::default();
         let (stop, shutdown) = watch::channel(false);
-        let task = tokio::spawn(run_schedule(Duration::from_millis(500), shutdown, {
-            let runs = runs.clone();
-            move || runs.clone().run()
-        }));
+        let task = tokio::spawn(run_schedule(
+            Duration::from_millis(500),
+            shutdown,
+            Arc::new(RunSlot::default()),
+            {
+                let runs = runs.clone();
+                move || runs.clone().run()
+            },
+        ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(runs.started(), 0, "a restarting container must not back up");
@@ -1100,10 +1216,15 @@ mod tests {
 
         let runs = FakeRuns::default();
         let (stop, shutdown) = watch::channel(false);
-        let task = tokio::spawn(run_schedule(Duration::from_millis(60), shutdown, {
-            let runs = runs.clone();
-            move || runs.clone().run()
-        }));
+        let task = tokio::spawn(run_schedule(
+            Duration::from_millis(60),
+            shutdown,
+            Arc::new(RunSlot::default()),
+            {
+                let runs = runs.clone();
+                move || runs.clone().run()
+            },
+        ));
 
         wait_until("first scheduled run", || runs.started() == 1).await;
         // Several more ticks arrive while that run is held open.
@@ -1128,10 +1249,15 @@ mod tests {
     async fn shutdown_stops_the_schedule_and_abandons_a_run_in_flight() {
         let runs = FakeRuns::default();
         let (stop, shutdown) = watch::channel(false);
-        let task = tokio::spawn(run_schedule(Duration::from_millis(20), shutdown, {
-            let runs = runs.clone();
-            move || runs.clone().run()
-        }));
+        let task = tokio::spawn(run_schedule(
+            Duration::from_millis(20),
+            shutdown,
+            Arc::new(RunSlot::default()),
+            {
+                let runs = runs.clone();
+                move || runs.clone().run()
+            },
+        ));
         wait_until("a run to start", || runs.started() == 1).await;
 
         let _ = stop.send(true);
@@ -1147,5 +1273,77 @@ mod tests {
         let started = runs.started();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(runs.started(), started, "no run starts after shutdown");
+    }
+
+    /// No bucket, so `create_backup` fails at the upload. Built by hand: `new`
+    /// reads the process environment and might actually be configured.
+    fn unconfigured_service() -> BackupService {
+        BackupService {
+            s3_client: None,
+            bucket: String::new(),
+            database_url: String::new(),
+            schedule: None,
+            slot: Arc::new(RunSlot::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_backup_is_refused_while_one_is_held() {
+        let service = unconfigured_service();
+        let hold = service.slot.try_hold().expect("the slot starts free");
+
+        let rejected = service.create_backup().await.expect_err("busy");
+        assert_eq!(rejected, BackupRejected::Busy);
+        assert_eq!(rejected.http_status(), 409);
+        assert_eq!(rejected.client_message(), "A backup is already running");
+        assert!(
+            !service.slot.start_unless_busy(|| async {}),
+            "the schedule uses the same slot"
+        );
+
+        drop(hold);
+        let rejected = service.create_backup().await.expect_err("no bucket");
+        assert!(matches!(rejected, BackupRejected::Failed(_)));
+        assert_eq!(rejected.http_status(), 500);
+        assert!(
+            rejected.client_message().contains("not configured"),
+            "once the slot is free the refusal is the missing bucket, got {}",
+            rejected.client_message()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manual_hold_blocks_the_schedule_on_the_same_slot() {
+        let service = unconfigured_service();
+        let hold = service.slot.try_hold().expect("hold");
+        let runs = FakeRuns::default();
+        let (stop, shutdown) = watch::channel(false);
+        let task = tokio::spawn(run_schedule(
+            Duration::from_millis(30),
+            shutdown,
+            Arc::clone(&service.slot),
+            {
+                let runs = runs.clone();
+                move || runs.clone().run()
+            },
+        ));
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            runs.started(),
+            0,
+            "a manual backup holds the schedule's slot"
+        );
+
+        drop(hold);
+        wait_until("the schedule runs once the manual hold drops", || {
+            runs.started() == 1
+        })
+        .await;
+        let _ = stop.send(true);
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("the task stops on shutdown")
+            .expect("no panic");
     }
 }

@@ -40,12 +40,15 @@ mod m20220101_000037_fold_user_email_case;
 mod m20220101_000038_retired_codes;
 mod m20220101_000039_canonicalise_blocklists;
 mod m20220101_000040_api_key_scope_expiry;
+mod m20220101_000045_cap_uncapped_burn_links;
 
 // Public so the backend's tests can pin its blocklist canonicalisation to the
 // frozen copy this migration applies to existing rows.
 pub use m20220101_000039_canonicalise_blocklists::{
     canonical_blocked_url, canonical_host, canonicalise_blocklists,
 };
+// Public so a test can apply the repair to rows it inserts after startup.
+pub use m20220101_000045_cap_uncapped_burn_links::cap_uncapped_burn_links;
 
 pub struct Migrator;
 
@@ -93,6 +96,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000038_retired_codes::Migration),
             Box::new(m20220101_000039_canonicalise_blocklists::Migration),
             Box::new(m20220101_000040_api_key_scope_expiry::Migration),
+            Box::new(m20220101_000045_cap_uncapped_burn_links::Migration),
         ]
     }
 }

@@ -111,6 +111,12 @@ impl Model {
         self.deleted_at.is_some()
     }
 
+    /// The click cap that applies. A stored cap wins, including zero. A one-time
+    /// link saved before the writers always stored a cap of 1 is still one visit.
+    pub fn effective_max_clicks(&self) -> Option<i32> {
+        self.max_clicks.or(self.burn_after_reading.then_some(1))
+    }
+
     /// Check if link is currently active (considering starts_at, expires_at, max_clicks, and soft delete)
     pub fn is_active(&self) -> bool {
         // Check soft delete first
@@ -139,9 +145,10 @@ impl Model {
             return false;
         }
 
-        // Check if max clicks reached
-        if let Some(max_clicks) = self.max_clicks
-            && self.click_count >= i64::from(max_clicks)
+        // Check if max clicks reached. An uncapped one-time link counts as 1.
+        if self
+            .effective_max_clicks()
+            .is_some_and(|max_clicks| self.click_count >= i64::from(max_clicks))
         {
             return false;
         }
@@ -159,15 +166,14 @@ impl Model {
     pub fn inactive_kind(&self) -> Option<InactiveKind> {
         let now = chrono::Utc::now().naive_utc();
 
+        // Same cap `is_active` uses, so the two cannot disagree.
+        let cap_reached = self
+            .effective_max_clicks()
+            .is_some_and(|max_clicks| self.click_count >= i64::from(max_clicks));
+
         // Burn state takes priority so a consumed one-time link shows the
         // dedicated message rather than the generic max-clicks one.
-        if self.burned_at.is_some()
-            || (self.burn_after_reading
-                && self
-                    .max_clicks
-                    .map(|m| self.click_count >= i64::from(m))
-                    .unwrap_or(false))
-        {
+        if self.burned_at.is_some() || (self.burn_after_reading && cap_reached) {
             return Some(InactiveKind::OneTimeOpened);
         }
 
@@ -183,9 +189,7 @@ impl Model {
             return Some(InactiveKind::Expired);
         }
 
-        if let Some(max_clicks) = self.max_clicks
-            && self.click_count >= i64::from(max_clicks)
-        {
+        if cap_reached {
             return Some(InactiveKind::ClickCapReached);
         }
 
@@ -254,6 +258,38 @@ mod burn_tests {
             bio_position: None,
             bio_label: None,
         }
+    }
+
+    #[test]
+    fn burn_link_without_a_stored_cap_is_one_visit() {
+        let mut m = model();
+        m.burn_after_reading = true;
+        assert_eq!(m.effective_max_clicks(), Some(1));
+        assert!(m.is_active());
+        assert!(m.inactive_reason().is_none());
+
+        m.click_count = 1;
+        assert!(!m.is_active());
+        assert_eq!(
+            m.inactive_reason(),
+            Some("This one-time link has already been opened")
+        );
+    }
+
+    #[test]
+    fn a_stored_cap_wins_over_the_one_time_default() {
+        let mut m = model();
+        m.burn_after_reading = true;
+        m.max_clicks = Some(5);
+        assert_eq!(m.effective_max_clicks(), Some(5));
+        m.click_count = 1;
+        assert!(m.is_active());
+
+        // Zero is a real cap, not "missing".
+        m.max_clicks = Some(0);
+        m.click_count = 0;
+        assert_eq!(m.effective_max_clicks(), Some(0));
+        assert!(!m.is_active());
     }
 
     #[test]
