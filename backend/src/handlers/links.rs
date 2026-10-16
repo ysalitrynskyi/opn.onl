@@ -14,6 +14,8 @@ use sea_orm::sea_query::{Alias, Expr};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -1322,39 +1324,80 @@ struct LiveApiKey {
     last_used_at: Option<chrono::NaiveDateTime>,
 }
 
-/// An `opn_` key that would authenticate right now. Does not stamp
-/// `last_used_at`. Expired keys return `None` before that stamp, same as an
-/// unknown or revoked key.
-async fn live_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<LiveApiKey> {
+/// Unexpired key row with a scope this build understands. The owner has
+/// not been checked yet.
+struct StoredApiKey {
+    id: i32,
+    user_id: i32,
+    scope: ApiKeyScope,
+    last_used_at: Option<chrono::NaiveDateTime>,
+}
+
+/// Key row that is unexpired and has a known scope. `Ok(None)` is not a
+/// database error: keys are off, the hash is unknown, the scope text is
+/// not one this build understands, or the key has expired.
+async fn stored_api_key(
+    db: &sea_orm::DatabaseConnection,
+    key: &str,
+) -> Result<Option<StoredApiKey>, DbErr> {
     use crate::entity::api_keys;
     // Instance kill-switch: when ENABLE_API_KEYS=false, keys stop authenticating.
     if !env_flag("ENABLE_API_KEYS", true) {
-        return None;
+        return Ok(None);
     }
     let hash = hash_api_key(key);
-    let rec = api_keys::Entity::find()
+    let Some(rec) = api_keys::Entity::find()
         .filter(api_keys::Column::KeyHash.eq(hash))
         .one(db)
-        .await
-        .ok()??;
-    let scope = ApiKeyScope::parse(&rec.scope)?;
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(scope) = ApiKeyScope::parse(&rec.scope) else {
+        return Ok(None);
+    };
     let now = chrono::Utc::now().naive_utc();
     // Checked before the owner lookup and before `last_used_at` is written:
     // an expired key must look the same as one that does not exist.
     if rec.expires_at.is_some_and(|expires| expires <= now) {
-        return None;
+        return Ok(None);
     }
-    let user = users::Entity::find_by_id(rec.user_id)
+    Ok(Some(StoredApiKey {
+        id: rec.id,
+        user_id: rec.user_id,
+        scope,
+        last_used_at: rec.last_used_at,
+    }))
+}
+
+/// Live owner id, or `Ok(None)` when that account is missing, deleted or
+/// disabled. A database error stays an error.
+async fn live_owner_id(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i32,
+) -> Result<Option<i32>, DbErr> {
+    let user = users::Entity::find_by_id(user_id)
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::DisabledAt.is_null())
         .one(db)
-        .await
-        .ok()??;
+        .await?;
+    Ok(user.map(|user| user.id))
+}
+
+/// An `opn_` key that would authenticate right now. Does not stamp
+/// `last_used_at`. Expired keys return `None` before that stamp, same as an
+/// unknown or revoked key. A database error is also `None`: this is the
+/// handler path, and a handler that cannot look the key up must not sign
+/// the caller in. The write gate must not use this — it has to tell an
+/// error apart from "no such key".
+async fn live_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<LiveApiKey> {
+    let stored = stored_api_key(db, key).await.ok()??;
+    let user_id = live_owner_id(db, stored.user_id).await.ok()??;
     Some(LiveApiKey {
-        id: rec.id,
-        user_id: user.id,
-        scope,
-        last_used_at: rec.last_used_at,
+        id: stored.id,
+        user_id,
+        scope: stored.scope,
+        last_used_at: stored.last_used_at,
     })
 }
 
@@ -1383,26 +1426,157 @@ async fn resolve_api_key(
     Some((live.user_id, live.scope))
 }
 
-/// Scope of an `opn_` bearer token that would authenticate. No database
-/// lookup unless the token really is an `opn_` key, and `last_used_at` is
-/// left alone: the handler stamps it when the request is allowed through.
-async fn authentic_api_key_scope(
-    db: &sea_orm::DatabaseConnection,
-    headers: &HeaderMap,
-) -> Option<ApiKeyScope> {
-    let token = bearer_token(headers)?;
-    if !token.starts_with("opn_") {
+/// Why a test forces the write-gate lookup to fail.
+///
+/// The handler resolves the same key on its own. Starving the pool fails
+/// that second lookup too, so the write is skipped because authentication
+/// failed rather than because this gate refused to call the handler. A
+/// fault fails only the gate. Production never arms one: the flag stays
+/// clear, and a request does not lock the map.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApiKeyMiddlewareFault {
+    /// The key-row query fails before a scope is known.
+    KeyLookup,
+    /// The key row was read; the owner query fails.
+    OwnerLookup,
+}
+
+#[doc(hidden)]
+#[must_use = "the lookup fault clears when the guard is dropped"]
+pub struct ApiKeyMiddlewareFaultGuard {
+    token: String,
+}
+
+type ApiKeyMiddlewareFaults = HashMap<String, ApiKeyMiddlewareFault>;
+
+static API_KEY_MIDDLEWARE_FAULTS: OnceLock<Mutex<ApiKeyMiddlewareFaults>> = OnceLock::new();
+static API_KEY_MIDDLEWARE_FAULTS_ARMED: AtomicBool = AtomicBool::new(false);
+
+fn api_key_middleware_faults() -> &'static Mutex<ApiKeyMiddlewareFaults> {
+    API_KEY_MIDDLEWARE_FAULTS.get_or_init(Default::default)
+}
+
+fn lock_api_key_middleware_faults() -> std::sync::MutexGuard<'static, ApiKeyMiddlewareFaults> {
+    api_key_middleware_faults()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl ApiKeyMiddlewareFaultGuard {
+    /// Fail this raw `opn_` token's write-gate lookup until the guard drops.
+    /// One guard per token: a second `arm` replaces the fault, and the first
+    /// drop clears it.
+    pub fn arm(token: &str, fault: ApiKeyMiddlewareFault) -> Self {
+        let token = token.to_string();
+        let mut faults = lock_api_key_middleware_faults();
+        faults.insert(token.clone(), fault);
+        API_KEY_MIDDLEWARE_FAULTS_ARMED.store(true, Ordering::Release);
+        Self { token }
+    }
+}
+
+impl Drop for ApiKeyMiddlewareFaultGuard {
+    fn drop(&mut self) {
+        let mut faults = lock_api_key_middleware_faults();
+        faults.remove(&self.token);
+        API_KEY_MIDDLEWARE_FAULTS_ARMED.store(!faults.is_empty(), Ordering::Release);
+    }
+}
+
+fn middleware_fault(token: &str) -> Option<ApiKeyMiddlewareFault> {
+    if !API_KEY_MIDDLEWARE_FAULTS_ARMED.load(Ordering::Acquire) {
         return None;
     }
-    live_api_key(db, token).await.map(|key| key.scope)
+    lock_api_key_middleware_faults().get(token).copied()
+}
+
+enum ApiKeyWriteGate {
+    /// Not a live read-only key. The handler decides, including 401.
+    FallThrough,
+    ReadOnly,
+    /// The lookup failed. Do not call the handler: its own lookup can
+    /// succeed a moment later and perform the write.
+    Unavailable,
+}
+
+/// `stored_api_key`, plus a test fault that is a real [`DbErr`]. The
+/// handler calls [`stored_api_key`] directly and never sees the fault.
+async fn stored_api_key_for_gate(
+    db: &sea_orm::DatabaseConnection,
+    key: &str,
+) -> Result<Option<StoredApiKey>, DbErr> {
+    if middleware_fault(key) == Some(ApiKeyMiddlewareFault::KeyLookup) {
+        return Err(DbErr::Custom("injected api key lookup failure".to_string()));
+    }
+    stored_api_key(db, key).await
+}
+
+/// `live_owner_id`, plus a test fault that is a real [`DbErr`]. The
+/// handler calls [`live_owner_id`] directly and never sees the fault.
+async fn live_owner_for_gate(
+    db: &sea_orm::DatabaseConnection,
+    key: &str,
+    user_id: i32,
+) -> Result<Option<i32>, DbErr> {
+    if middleware_fault(key) == Some(ApiKeyMiddlewareFault::OwnerLookup) {
+        return Err(DbErr::Custom(
+            "injected api key owner lookup failure".to_string(),
+        ));
+    }
+    live_owner_id(db, user_id).await
+}
+
+/// Scope check for one non-read request. No database lookup unless the
+/// bearer really is an `opn_` key, and `last_used_at` is left alone.
+///
+/// `FallThrough` is an unknown, expired, or unreadable key, a key whose
+/// owner is gone, or a live full key. A read-only key that is still in
+/// date is `ReadOnly` even when the owner query errors, because the row
+/// is already enough to refuse. Any other database error is `Unavailable`.
+async fn api_key_write_gate(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> ApiKeyWriteGate {
+    let Some(token) = bearer_token(headers).filter(|token| token.starts_with("opn_")) else {
+        return ApiKeyWriteGate::FallThrough;
+    };
+    let stored = match stored_api_key_for_gate(db, token).await {
+        Ok(Some(stored)) => stored,
+        Ok(None) => return ApiKeyWriteGate::FallThrough,
+        Err(error) => {
+            tracing::error!("API key lookup failed during a write: {error}");
+            return ApiKeyWriteGate::Unavailable;
+        }
+    };
+    let owner = match live_owner_for_gate(db, token, stored.user_id).await {
+        Ok(owner) => owner,
+        Err(error) => {
+            // The key row is already enough to refuse a read-only write.
+            // Falling through would let the handler's own lookup succeed
+            // and perform it.
+            tracing::error!("API key owner lookup failed during a write: {error}");
+            if stored.scope == ApiKeyScope::ReadOnly {
+                return ApiKeyWriteGate::ReadOnly;
+            }
+            return ApiKeyWriteGate::Unavailable;
+        }
+    };
+    if owner.is_some() && stored.scope == ApiKeyScope::ReadOnly {
+        ApiKeyWriteGate::ReadOnly
+    } else {
+        ApiKeyWriteGate::FallThrough
+    }
 }
 
 /// Refuse every non-read method that presents a live read-only API key.
 ///
 /// Handlers authenticate themselves, so a per-handler check would be missed
 /// by the next route. GET, HEAD and OPTIONS are not looked up here. An
-/// expired or unknown key falls through and the handler answers 401.
-/// POST routes that only compute (`/links/build-utm`, `/links/health-check`,
+/// expired, unknown, or owner-less key falls through and the handler
+/// answers 401. A failed lookup does not: the handler looks the key up
+/// again, and a read-only key would write if this called `next`. POST
+/// routes that only compute (`/links/build-utm`, `/links/health-check`,
 /// `/links/preview-metadata`, `/{code}/verify`) are refused as well.
 pub async fn reject_read_only_api_key_writes(
     State(state): State<AppState>,
@@ -1412,10 +1586,14 @@ pub async fn reject_read_only_api_key_writes(
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return next.run(req).await;
     }
-    if authentic_api_key_scope(&state.db, req.headers()).await == Some(ApiKeyScope::ReadOnly) {
-        return json_error(StatusCode::FORBIDDEN, "This API key is read-only");
+    match api_key_write_gate(&state.db, req.headers()).await {
+        ApiKeyWriteGate::ReadOnly => json_error(StatusCode::FORBIDDEN, "This API key is read-only"),
+        ApiKeyWriteGate::Unavailable => json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Unable to verify credentials",
+        ),
+        ApiKeyWriteGate::FallThrough => next.run(req).await,
     }
-    next.run(req).await
 }
 
 fn get_base_url() -> String {
