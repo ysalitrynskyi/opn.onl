@@ -36,9 +36,10 @@ export function cityBreakdownLabel(city: string, country?: string | null): strin
     return country ? `${city}, ${country}` : city;
 }
 
-/** `<code>-analytics-YYYY-MM-DD.csv`, dated in UTC like the day buckets. */
-export function analyticsCsvFilename(code: string, now = new Date()): string {
-    return `${code}-analytics-${now.toISOString().slice(0, 10)}.csv`;
+/** `<code>-analytics-<days>d-YYYY-MM-DD.csv`, so a 7-day file and a
+ *  365-day file saved the same UTC day do not share a name. */
+export function analyticsCsvFilename(code: string, days: number, now = new Date()): string {
+    return `${code}-analytics-${days}d-${now.toISOString().slice(0, 10)}.csv`;
 }
 
 /** A CSV cell. See the file comment for the spreadsheet rule. */
