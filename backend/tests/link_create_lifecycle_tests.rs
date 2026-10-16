@@ -5,8 +5,25 @@ mod common;
 
 use chrono::{Duration, Utc};
 use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
+use opn_onl_backend::utils::rate_limiter::{RateLimitConfig, RateLimiter, RateLimiters};
 use sea_orm::DatabaseConnection;
 use serde_json::{Value, json};
+use std::sync::Arc;
+
+/// The real router with a per-second budget wide enough for a test that sends
+/// a dozen requests back to back from one client. Every other limit stays at
+/// its default.
+async fn spawn_app_without_burst_limit() -> (axum_test::TestServer, DatabaseConnection) {
+    let (_, db) = spawn_real_app().await;
+    let mut state = opn_onl_backend::AppState::for_tests(db.clone()).await;
+    state.rate_limiters = Arc::new(RateLimiters {
+        per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(1_000, 1))),
+        ..RateLimiters::default()
+    });
+    let server =
+        axum_test::TestServer::new(opn_onl_backend::build_router(state)).expect("test server");
+    (server, db)
+}
 
 async fn register_verified(server: &axum_test::TestServer, db: &DatabaseConnection) -> String {
     let res = server
@@ -97,7 +114,9 @@ async fn create_accepts_http_urls_with_path_query_and_port() {
 
 #[tokio::test]
 async fn custom_alias_validation_on_create() {
-    let (server, db) = spawn_real_app().await;
+    // Eleven refusals in a row: the default 10-per-second gate would answer
+    // the last one with 429 on a fast machine.
+    let (server, db) = spawn_app_without_burst_limit().await;
     let token = register_verified(&server, &db).await;
     let dest = format!("https://iana.org/alias-{}", unique_code());
 
@@ -131,6 +150,10 @@ async fn custom_alias_validation_on_create() {
         ("my@link", "letters, numbers, hyphens"),
         ("my link", "letters, numbers, hyphens"),
         ("about", "reserved"),
+        ("overview", "reserved"),
+        ("Overview", "reserved"),
+        ("organizations", "reserved"),
+        ("report", "reserved"),
     ];
     for (alias, needle) in rejected {
         let res = server

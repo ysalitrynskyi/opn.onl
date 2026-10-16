@@ -17,7 +17,6 @@ export function formatDayBucketLabel(isoDate: string): string {
     return `${MONTH_SHORT[month - 1]} ${day}`;
 }
 
-const UTC_DAY_MS = 24 * 60 * 60 * 1000;
 const UTC_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 function utcDayAfter(isoDate: string): string {
@@ -27,31 +26,28 @@ function utcDayAfter(isoDate: string): string {
     return next.toISOString().slice(0, 10);
 }
 
-/** One row per UTC day from `windowDays` before `now` through today.
- *  Missing days are 0. A day later than today that is already present
- *  stays, and the gap up to it is filled; days before the window are
- *  dropped. `windowDays` is a duration (`now - N days`), the same cut as
- *  `zero_filled_days` in the analytics handler. The overview chart passes
- *  30, which is the dashboard series. */
-export function zeroFillUtcDays(
-    clicks: DayCount[],
-    windowDays: number,
-    now: Date = new Date(),
-): DayCount[] {
+/** One row per UTC day from the earliest payload day through the latest.
+ *  Missing days in that span are 0. The server already chose the window
+ *  (`clicks_by_day`); the browser clock must not drop a day it sent or
+ *  invent one it did not. Days that are not `YYYY-MM-DD` are ignored. */
+export function zeroFillUtcDays(clicks: DayCount[]): DayCount[] {
     const counts = new Map<string, number>();
     for (const row of clicks) {
         if (!UTC_DATE.test(row.date)) continue;
         counts.set(row.date, (counts.get(row.date) ?? 0) + row.count);
     }
+    if (counts.size === 0) return [];
 
-    const today = now.toISOString().slice(0, 10);
-    const first = new Date(now.getTime() - windowDays * UTC_DAY_MS).toISOString().slice(0, 10);
-    let last = today;
+    let first = '';
+    let last = '';
     for (const date of counts.keys()) {
-        if (date > last) last = date;
+        if (first === '' || date < first) first = date;
+        if (last === '' || date > last) last = date;
     }
 
     const filled: DayCount[] = [];
+    // 400 stops a bogus pair of dates from looping. The overview series is
+    // about 30 days.
     for (let date = first, guard = 0; date <= last && guard < 400; date = utcDayAfter(date), guard += 1) {
         filled.push({ date, count: counts.get(date) ?? 0 });
     }

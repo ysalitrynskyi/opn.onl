@@ -712,6 +712,7 @@ describe('Analytics Page', () => {
                     truncated: false,
                     clicks_by_day: [
                         { date: '2024-01-03', count: 1 },
+                        { date: '2024-01-02', count: 0 },
                         { date: '2024-01-01', count: 50 },
                     ],
                     clicks_by_country: countries,
@@ -730,11 +731,12 @@ describe('Analytics Page', () => {
             expect(text.startsWith('\uFEFFsection,key,clicks\n')).toBe(true);
             expect(text).not.toContain('#');
 
-            // Days stay in chart order, including a quiet day. Breakdowns are
-            // the top 10 the page lists, highest first.
+            // Days stay in chart order, including a quiet day in the middle.
+            // Breakdowns are the top 10 the page lists, highest first.
             const dayRows = text.split('\n').filter(line => line.startsWith('"day",'));
             expect(dayRows).toEqual([
                 '"day","2024-01-03",1',
+                '"day","2024-01-02",0',
                 '"day","2024-01-01",50',
             ]);
             const countryRows = text.split('\n').filter(line => line.startsWith('"country",'));
@@ -796,7 +798,50 @@ describe('Analytics Page', () => {
             vi.setSystemTime(new Date('2026-10-16T02:00:00.000Z'));
 
             const { name } = await download();
-            expect(name).toBe('abc123-analytics-2026-10-16.csv');
+            expect(name).toBe('abc123-analytics-30d-2026-10-16.csv');
+        });
+
+        it('does not save the previous range while the next one is loading', async () => {
+            const sevenDay = {
+                ...mockLinkStats,
+                clicks_by_day: [{ date: '2024-01-03', count: 3 }],
+            };
+            let release: (value: { ok: boolean; status: number; json: () => Promise<unknown> }) => void = () => {};
+            const pending = new Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>((resolve) => {
+                release = resolve;
+            });
+            global.fetch = vi.fn()
+                .mockResolvedValueOnce({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(mockLinkStats),
+                })
+                .mockImplementationOnce(() => pending);
+
+            const { user } = render(<Analytics />);
+            const downloadButton = await screen.findByRole('button', { name: 'Download CSV' });
+            expect(downloadButton).toBeEnabled();
+
+            await user.selectOptions(screen.getByRole('combobox', { name: 'Time range' }), '7');
+
+            expect(downloadButton).toBeDisabled();
+            expect(downloads).toHaveLength(0);
+            expect(global.fetch).toHaveBeenCalledTimes(2);
+            expect(String(vi.mocked(global.fetch).mock.calls[1][0])).toContain('days=7');
+
+            release({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve(sevenDay),
+            });
+            await waitFor(() => expect(downloadButton).toBeEnabled());
+            await user.click(downloadButton);
+
+            expect(downloads).toHaveLength(1);
+            expect(downloads[0]).toBe(`abc123-analytics-7d-${new Date().toISOString().slice(0, 10)}.csv`);
+            const saved = await readBlob(blobs[0]);
+            expect(saved.text).toContain('"day","2024-01-03",3');
+            expect(saved.text).not.toContain('"day","2024-01-01",50');
         });
 
         it('notes a sampled period before the header and leaves a full period unmarked', async () => {

@@ -22,7 +22,7 @@ test.beforeEach(async ({ page }) => {
 
 test('shows totals for an account with one link and one click', async ({ page, request }) => {
     const user = await createUser(request);
-    const link: { id: number; code: string } = await createLink(request, user.token);
+    const link: { id: number; code: string; original_url: string } = await createLink(request, user.token);
     const redirect = await request.get(`${API_URL}/${link.code}`, {
         maxRedirects: 0,
         headers: {
@@ -57,7 +57,10 @@ test('shows totals for an account with one link and one click', async ({ page, r
     await expect(metric(page, 'Today')).toHaveText('1');
     await expect(metric(page, 'Last 7 Days')).toHaveText('1');
     await expect(metric(page, 'Last 30 Days')).toHaveText('1');
-    await expect(page.getByRole('link', { name: `${link.code}, 1 click` })).toHaveAttribute('href', `/analytics/${link.id}`);
+    const destination = link.original_url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(page.getByRole('link', {
+        name: new RegExp(`${link.code}\\s+${destination}\\s+1 click`),
+    })).toHaveAttribute('href', `/analytics/${link.id}`);
     await expect(page.getByRole('heading', { name: 'Clicks over time' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Account menu' }).click();

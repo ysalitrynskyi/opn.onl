@@ -260,7 +260,7 @@ export default function Analytics() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = analyticsCsvFilename(stats.code);
+        a.download = analyticsCsvFilename(stats.code, days);
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -278,7 +278,13 @@ export default function Analytics() {
                 <div className="flex flex-wrap items-center justify-end gap-2">
                     <select
                         value={days}
-                        onChange={(e) => setDays(Number(e.target.value))}
+                        onChange={(e) => {
+                            setDays(Number(e.target.value));
+                            // The previous stats stay on screen until the new
+                            // response. Mark loading in this same update so
+                            // Download CSV cannot save them under the new range.
+                            setLoading(true);
+                        }}
                         aria-label="Time range"
                         className="rounded-lg border border-line2 bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
                     >
@@ -290,7 +296,8 @@ export default function Analytics() {
                     <button
                         type="button"
                         onClick={downloadCsv}
-                        className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-3 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
+                        disabled={loading}
+                        className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-3 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30 disabled:cursor-not-allowed disabled:opacity-70"
                     >
                         <Download className="h-4 w-4 text-muted" />
                         Download CSV
