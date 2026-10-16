@@ -157,9 +157,9 @@ export default function Privacy() {
                                 <li>Creation timestamps</li>
                                 <li>Expiration dates (if set)</li>
                                 <li>
-                                    Abuse reports of a short link: the code, the reason, an optional note of up to
-                                    2,000 characters, and an optional email address. The reporter's IP address and
-                                    user agent are not stored.
+                                    Abuse reports of a short link: the code, the URL it pointed to when reported, the
+                                    reason, an optional note of up to 2,000 characters, and an optional email address.
+                                    The reporter's IP address and user agent are not stored.
                                 </li>
                             </ul>
 

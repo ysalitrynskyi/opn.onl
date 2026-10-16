@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { API_ENDPOINTS } from '../config/api';
 import { useFocusTrap } from '../hooks/useFocusTrap';
@@ -33,6 +33,11 @@ export default function ReportLinkDialog({ code, onClose }: ReportLinkDialogProp
     const [sending, setSending] = useState(false);
     const [error, setError] = useState('');
     const [done, setDone] = useState(false);
+    const doneRef = useRef<HTMLParagraphElement>(null);
+
+    useEffect(() => {
+        if (done) doneRef.current?.focus();
+    }, [done]);
 
     const submit = async (event: React.FormEvent) => {
         event.preventDefault();
@@ -113,7 +118,12 @@ export default function ReportLinkDialog({ code, onClose }: ReportLinkDialogProp
                 </div>
 
                 {done ? (
-                    <p className="text-sm text-slate-700">
+                    <p
+                        ref={doneRef}
+                        role="status"
+                        tabIndex={0}
+                        className="rounded text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    >
                         Thanks, an administrator will review this link
                     </p>
                 ) : (

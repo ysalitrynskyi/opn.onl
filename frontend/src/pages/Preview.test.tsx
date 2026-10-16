@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '../test/test-utils';
+import { fireEvent, render, screen, waitFor, within } from '../test/test-utils';
 import Preview from './Preview';
 
 vi.mock('react-router-dom', async () => {
@@ -230,6 +230,17 @@ describe('Report this link', () => {
             code: 'abc123',
             reason: 'phishing',
             details: 'Looks wrong',
+        });
+    });
+
+    it('moves focus to the success status', async () => {
+        mockReport({ status: 201, body: { status: 'received' } });
+        await submitReport();
+
+        const status = within(await screen.findByRole('dialog')).getByRole('status');
+        expect(status).toHaveTextContent('Thanks, an administrator will review this link');
+        await waitFor(() => {
+            expect(status).toHaveFocus();
         });
     });
 

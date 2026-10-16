@@ -92,9 +92,9 @@ export default function Terms() {
                             <li><strong>Circumvent restrictions:</strong> Using the service to bypass access controls on other platforms</li>
                         </ul>
                         <p className="mt-4">
-                            Anyone may report a short link. The report stores the code, the reason, an optional
-                            note of up to 2,000 characters, and an optional email address. The reporter's IP
-                            address is not stored.
+                            Anyone may report a short link. The report stores the code, the URL it pointed to when
+                            reported, the reason, an optional note of up to 2,000 characters, and an optional
+                            email address. The reporter's IP address is not stored.
                         </p>
                     </TermsSection>
 
