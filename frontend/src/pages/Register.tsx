@@ -41,9 +41,8 @@ export default function Register() {
                 body: JSON.stringify({ email, password }),
             });
 
+            if (!res.ok) throw new Error(await responseError(res, 'Registration failed'));
             const data = await res.json();
-
-            if (!res.ok) throw new Error(data.error || 'Registration failed');
 
             // Store token but show verification message
             if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
