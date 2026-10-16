@@ -100,23 +100,63 @@ pub fn pii_retention_days() -> Option<i32> {
     }
 }
 
+/// Rows touched by one short transaction of a retention sweep. Large enough
+/// that a daily pass finishes, small enough that one transaction does not
+/// rewrite millions of `click_events` rows while holding locks.
+pub const PII_SCRUB_BATCH: u64 = 5_000;
+
+/// How many rows a batched sweep changed, and how many statements did the
+/// changing. A trailing probe that matches nothing is not counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrubStats {
+    pub rows: u64,
+    pub batches: u32,
+}
+
 /// Null `ip_address` and `user_agent` on click events older than `days`.
 /// Aggregate columns (country, city, region, device, browser, os, referer,
 /// coordinates) are kept so historical analytics stay useful.
+///
+/// One statement per batch of [`PII_SCRUB_BATCH`], each in its own transaction,
+/// so a multi-million-row backlog cannot hold one lock until the pool times out.
 pub async fn scrub_expired_click_pii(
     db: &DatabaseConnection,
     days: i32,
 ) -> Result<u64, sea_orm::DbErr> {
-    let res = db
-        .execute(Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Postgres,
-            "UPDATE click_events SET ip_address = NULL, user_agent = NULL \
+    Ok(
+        scrub_expired_click_pii_in_batches(db, days, PII_SCRUB_BATCH)
+            .await?
+            .rows,
+    )
+}
+
+/// [`scrub_expired_click_pii`] with an explicit batch size. Tests pass a small
+/// size to prove the sweep loops; production uses [`PII_SCRUB_BATCH`].
+pub async fn scrub_expired_click_pii_in_batches(
+    db: &DatabaseConnection,
+    days: i32,
+    batch_size: u64,
+) -> Result<ScrubStats, sea_orm::DbErr> {
+    // Same predicate as the old single UPDATE: only rows past the window that
+    // still carry an identifier. Referer stays (it is already host-only).
+    scrub_in_batches(
+        db,
+        batch_size,
+        "WITH batch AS ( \
+             SELECT id FROM click_events \
              WHERE created_at < NOW() - make_interval(days => $1) \
-               AND (ip_address IS NOT NULL OR user_agent IS NOT NULL)",
-            [days.into()],
-        ))
-        .await?;
-    Ok(res.rows_affected())
+               AND (ip_address IS NOT NULL OR user_agent IS NOT NULL) \
+             ORDER BY id \
+             LIMIT $2 \
+             FOR UPDATE SKIP LOCKED \
+         ) \
+         UPDATE click_events AS c \
+         SET ip_address = NULL, user_agent = NULL \
+         FROM batch \
+         WHERE c.id = batch.id",
+        vec![days.into()],
+    )
+    .await
 }
 
 /// Null `ip_address` on organization audit-log entries older than `days`, the
@@ -125,36 +165,162 @@ pub async fn scrub_expired_audit_ips(
     db: &DatabaseConnection,
     days: i32,
 ) -> Result<u64, sea_orm::DbErr> {
-    let res = db
-        .execute(Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Postgres,
-            "UPDATE audit_log SET ip_address = NULL \
+    Ok(
+        scrub_expired_audit_ips_in_batches(db, days, PII_SCRUB_BATCH)
+            .await?
+            .rows,
+    )
+}
+
+/// [`scrub_expired_audit_ips`] with an explicit batch size.
+pub async fn scrub_expired_audit_ips_in_batches(
+    db: &DatabaseConnection,
+    days: i32,
+    batch_size: u64,
+) -> Result<ScrubStats, sea_orm::DbErr> {
+    scrub_in_batches(
+        db,
+        batch_size,
+        "WITH batch AS ( \
+             SELECT id FROM audit_log \
              WHERE created_at < NOW() - make_interval(days => $1) \
-               AND ip_address IS NOT NULL",
-            [days.into()],
-        ))
-        .await?;
-    Ok(res.rows_affected())
+               AND ip_address IS NOT NULL \
+             ORDER BY id \
+             LIMIT $2 \
+             FOR UPDATE SKIP LOCKED \
+         ) \
+         UPDATE audit_log AS a \
+         SET ip_address = NULL \
+         FROM batch \
+         WHERE a.id = batch.id",
+        vec![days.into()],
+    )
+    .await
 }
 
 /// Erase visitor PII (IP, user-agent, referer) from every click event on a
-/// user's personal links. Called on account deletion so a departing user's link
-/// analytics stop retaining per-visitor identifiers immediately, rather than
-/// waiting out the retention window. Aggregate dimensions (country, city,
-/// device, browser, …) are kept so historical counts still work.
-pub async fn purge_click_pii_for_user<C: ConnectionTrait>(
-    db: &C,
+/// user's personal links. Called after an account deletion commits, so the
+/// request transaction stays the soft-delete itself. Aggregate dimensions
+/// (country, city, device, browser, …) are kept so historical counts still work.
+///
+/// Organization links are left alone: they belong to the team.
+pub async fn purge_click_pii_for_user(
+    db: &DatabaseConnection,
     user_id: i32,
 ) -> Result<u64, sea_orm::DbErr> {
-    let res = db
-        .execute(Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Postgres,
-            "UPDATE click_events SET ip_address = NULL, user_agent = NULL, referer = NULL \
-             WHERE link_id IN (SELECT id FROM links WHERE user_id = $1 AND org_id IS NULL)",
-            [user_id.into()],
-        ))
-        .await?;
-    Ok(res.rows_affected())
+    Ok(
+        purge_click_pii_for_user_in_batches(db, user_id, PII_SCRUB_BATCH)
+            .await?
+            .rows,
+    )
+}
+
+/// [`purge_click_pii_for_user`] with an explicit batch size.
+pub async fn purge_click_pii_for_user_in_batches(
+    db: &DatabaseConnection,
+    user_id: i32,
+    batch_size: u64,
+) -> Result<ScrubStats, sea_orm::DbErr> {
+    scrub_in_batches(
+        db,
+        batch_size,
+        "WITH batch AS ( \
+             SELECT c.id FROM click_events c \
+             INNER JOIN links l ON l.id = c.link_id \
+             WHERE l.user_id = $1 AND l.org_id IS NULL \
+               AND (c.ip_address IS NOT NULL OR c.user_agent IS NOT NULL \
+                    OR c.referer IS NOT NULL) \
+             ORDER BY c.id \
+             LIMIT $2 \
+             FOR UPDATE OF c SKIP LOCKED \
+         ) \
+         UPDATE click_events AS c \
+         SET ip_address = NULL, user_agent = NULL, referer = NULL \
+         FROM batch \
+         WHERE c.id = batch.id",
+        vec![user_id.into()],
+    )
+    .await
+}
+
+/// Personal-link click PII of accounts that are already soft-deleted.
+///
+/// The deletion request scrubs immediately after it commits. If that process
+/// dies first, this is what the daily task runs so the identifiers cannot sit
+/// until the age window. Same columns as [`purge_click_pii_for_user`]: IP,
+/// user-agent and referer. Organization links are not the departing user's.
+pub async fn scrub_deleted_users_click_pii(
+    db: &DatabaseConnection,
+    batch_size: u64,
+) -> Result<ScrubStats, sea_orm::DbErr> {
+    scrub_in_batches(
+        db,
+        batch_size,
+        "WITH batch AS ( \
+             SELECT c.id FROM click_events c \
+             INNER JOIN links l ON l.id = c.link_id \
+             INNER JOIN users u ON u.id = l.user_id \
+             WHERE l.org_id IS NULL \
+               AND u.deleted_at IS NOT NULL \
+               AND (c.ip_address IS NOT NULL OR c.user_agent IS NOT NULL \
+                    OR c.referer IS NOT NULL) \
+             ORDER BY c.id \
+             LIMIT $1 \
+             FOR UPDATE OF c SKIP LOCKED \
+         ) \
+         UPDATE click_events AS c \
+         SET ip_address = NULL, user_agent = NULL, referer = NULL \
+         FROM batch \
+         WHERE c.id = batch.id",
+        Vec::new(),
+    )
+    .await
+}
+
+/// Run `sql` until a batch changes fewer rows than `batch_size`.
+///
+/// `sql` is a single UPDATE whose last bind is the limit. Earlier binds are
+/// `params` (the retention window, or a user id) and are integers from the
+/// caller, never request text. Each batch is its own transaction. `SKIP LOCKED`
+/// lets a second sweep pass rows another transaction holds; a short batch means
+/// nothing unlocked is left, and the next daily run picks up what was locked.
+/// A yield between full batches keeps the runtime able to serve redirects.
+async fn scrub_in_batches(
+    db: &DatabaseConnection,
+    batch_size: u64,
+    sql: &str,
+    params: Vec<sea_orm::Value>,
+) -> Result<ScrubStats, sea_orm::DbErr> {
+    use sea_orm::TransactionTrait;
+
+    let batch_size = batch_size.max(1);
+    let mut rows = 0u64;
+    let mut batches = 0u32;
+    loop {
+        let txn = db.begin().await?;
+        let mut values = params.clone();
+        values.push(batch_size.into());
+        let changed = txn
+            .execute(Statement::from_sql_and_values(
+                sea_orm::DatabaseBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?
+            .rows_affected();
+        if changed == 0 {
+            txn.rollback().await?;
+            break;
+        }
+        txn.commit().await?;
+        rows += changed;
+        batches = batches.saturating_add(1);
+        if changed < batch_size {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    Ok(ScrubStats { rows, batches })
 }
 
 /// Spawn the daily retention sweeps: click and audit identifiers, and the
@@ -186,7 +352,9 @@ pub fn spawn_retention_task(db: DatabaseConnection) {
         ),
     }
     if pii_days.is_none() && purge_days.is_none() {
-        return;
+        tracing::info!(
+            "Analytics PII retention and account purge are off; the daily task still anonymizes click PII on personal links of deleted accounts"
+        );
     }
 
     tokio::spawn(async move {
@@ -212,6 +380,21 @@ pub fn spawn_retention_task(db: DatabaseConnection) {
                     ),
                     Err(e) => tracing::error!("Audit log IP retention sweep failed: {}", e),
                 }
+            }
+            // Account deletion scrubs immediately after it commits. This catches
+            // a process that died between the commit and that scrub, so a
+            // deleted account's personal-link visitors are not identifiable
+            // until the age window (or forever, if the age sweep is off).
+            match scrub_deleted_users_click_pii(&db, PII_SCRUB_BATCH).await {
+                Ok(stats) if stats.rows > 0 => tracing::info!(
+                    "Retention sweep anonymized {} click events on personal links of deleted accounts",
+                    stats.rows
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::error!(
+                    "Retention sweep of deleted accounts' click PII failed: {}",
+                    e
+                ),
             }
             if let Some(days) = purge_days {
                 match purge_expired_accounts(&db, days).await {

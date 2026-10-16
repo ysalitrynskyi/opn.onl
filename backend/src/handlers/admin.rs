@@ -647,8 +647,6 @@ pub async fn delete_user(
         )
         .await?;
 
-        crate::utils::privacy::purge_click_pii_for_user(&txn, user_id).await?;
-
         api_keys::Entity::delete_many()
             .filter(api_keys::Column::UserId.eq(user_id))
             .exec(&txn)
@@ -690,6 +688,15 @@ pub async fn delete_user(
 
     crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
 
+    // After the commit, so this request does not rewrite every click of the
+    // account inside the delete transaction. The daily retention task retries
+    // personal-link click PII of deleted users if this pass does not finish.
+    if let Err(error) = crate::utils::privacy::purge_click_pii_for_user(&state.db, user_id).await {
+        tracing::error!(
+            "User soft-deleted but click PII scrub failed; the daily retention task will retry: {error}"
+        );
+    }
+
     (
         StatusCode::OK,
         Json(AdminResponse {
@@ -722,7 +729,15 @@ pub(crate) enum HardDeleteError {
 /// the transaction so a concurrent invite/transfer can't slip between check
 /// and delete; the owner_id ON DELETE RESTRICT FK is the final backstop either
 /// way.
+///
+/// `db` is the pool, not `txn`. Click rows of the links this delete removes
+/// are cleared on the pool first, in short batches, so `txn` does not cascade
+/// millions of `click_events` in one transaction. A crash after those batches
+/// and before the commit leaves the account in place with some clicks already
+/// gone; the next attempt finishes the rest. Clicks that arrive in the gap
+/// go with the link rows through `ON DELETE CASCADE`.
 pub(crate) async fn hard_delete_user_in(
+    db: &DatabaseConnection,
     txn: &DatabaseTransaction,
     user_id: i32,
 ) -> Result<(), HardDeleteError> {
@@ -740,6 +755,25 @@ pub(crate) async fn hard_delete_user_in(
         .map_err(HardDeleteError::Db)?;
     if !split.blocking.is_empty() {
         return Err(HardDeleteError::OwnsOrganizations(split.blocking));
+    }
+
+    // Only the links this delete actually removes. Organization links that
+    // will be reassigned to the org owner keep their click history.
+    crate::utils::account_purge::delete_personal_link_clicks(
+        db,
+        user_id,
+        crate::utils::account_purge::CLICK_DELETE_BATCH,
+    )
+    .await
+    .map_err(HardDeleteError::Db)?;
+    for org in &split.solo {
+        crate::utils::account_purge::delete_org_link_clicks(
+            db,
+            org.id,
+            crate::utils::account_purge::CLICK_DELETE_BATCH,
+        )
+        .await
+        .map_err(HardDeleteError::Db)?;
     }
 
     let result = async {
@@ -850,7 +884,7 @@ pub async fn hard_delete_user(
         }
     };
 
-    match hard_delete_user_in(&txn, user_id).await {
+    match hard_delete_user_in(&state.db, &txn, user_id).await {
         Ok(()) => {
             if txn.commit().await.is_err() {
                 return (

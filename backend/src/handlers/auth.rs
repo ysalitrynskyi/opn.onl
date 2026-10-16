@@ -1608,8 +1608,6 @@ pub async fn delete_account(
             )
             .await?;
 
-            crate::utils::privacy::purge_click_pii_for_user(&txn, user_id).await?;
-
             api_keys::Entity::delete_many()
                 .filter(api_keys::Column::UserId.eq(user_id))
                 .exec(&txn)
@@ -1648,6 +1646,17 @@ pub async fn delete_account(
         }
 
         crate::handlers::links::invalidate_cached_codes(&state, &cached_codes).await;
+
+        // After the commit, so the request transaction is only the delete.
+        // A failure here still returns 200: the account is gone, and the daily
+        // retention task scrubs personal-link click PII of deleted users.
+        if let Err(error) =
+            crate::utils::privacy::purge_click_pii_for_user(&state.db, user_id).await
+        {
+            tracing::error!(
+                "Account deleted but click PII scrub failed; the daily retention task will retry: {error}"
+            );
+        }
 
         return (
             StatusCode::OK,

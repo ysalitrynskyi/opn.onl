@@ -17,8 +17,8 @@
 
 use chrono::{Duration, NaiveDateTime, Utc};
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
-    TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
+    QuerySelect, Statement, TransactionTrait,
 };
 
 use crate::entity::{links, users};
@@ -36,6 +36,78 @@ const MAX_ACCOUNT_PURGE_DAYS: i32 = 36_500;
 /// transaction and links a batch at a time, so a backlog never holds one long
 /// transaction or one huge id list.
 const BATCH_SIZE: u64 = 100;
+
+/// Click rows deleted per transaction ahead of the link rows they belong to.
+/// `click_events.link_id` cascades, so deleting a busy link in one statement
+/// would also delete (and write WAL for) every one of its clicks in one
+/// transaction while holding the link row locks.
+pub const CLICK_DELETE_BATCH: u64 = 5_000;
+
+/// Delete the click events selected by `scope` (a condition on the `links`
+/// row `l`, with `$1` bound to `scope_param`) in batches of `batch_size`,
+/// each its own transaction, until none are left. Returns how many went.
+async fn delete_clicks_in_batches(
+    db: &DatabaseConnection,
+    scope: &str,
+    scope_param: sea_orm::Value,
+    batch_size: u64,
+) -> Result<u64, DbErr> {
+    let batch_size = batch_size.max(1);
+    let sql = format!(
+        "DELETE FROM click_events WHERE id IN ( \
+             SELECT c.id FROM click_events c \
+             INNER JOIN links l ON l.id = c.link_id \
+             WHERE {scope} \
+             ORDER BY c.id \
+             LIMIT $2 \
+             FOR UPDATE OF c SKIP LOCKED \
+         )"
+    );
+    let mut deleted = 0u64;
+    loop {
+        let txn = db.begin().await?;
+        let changed = txn
+            .execute(Statement::from_sql_and_values(
+                sea_orm::DatabaseBackend::Postgres,
+                &sql,
+                [scope_param.clone(), batch_size.into()],
+            ))
+            .await?
+            .rows_affected();
+        txn.commit().await?;
+        deleted += changed;
+        if changed < batch_size {
+            return Ok(deleted);
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Click events of `user_id`'s personal links (soft-deleted ones included):
+/// the rows a hard delete of that account removes.
+pub async fn delete_personal_link_clicks(
+    db: &DatabaseConnection,
+    user_id: i32,
+    batch_size: u64,
+) -> Result<u64, DbErr> {
+    delete_clicks_in_batches(
+        db,
+        "l.user_id = $1 AND l.org_id IS NULL",
+        user_id.into(),
+        batch_size,
+    )
+    .await
+}
+
+/// Click events of every link of organization `org_id`: the rows purging that
+/// organization removes.
+pub async fn delete_org_link_clicks(
+    db: &DatabaseConnection,
+    org_id: i32,
+    batch_size: u64,
+) -> Result<u64, DbErr> {
+    delete_clicks_in_batches(db, "l.org_id = $1", org_id.into(), batch_size).await
+}
 
 /// Grace window in days, from `ACCOUNT_PURGE_DAYS`. `0` disables the purge
 /// (deleted accounts then stay until an admin removes them); unset or invalid
@@ -142,11 +214,17 @@ pub async fn purge_expired_deleted_links(db: &DatabaseConnection, days: i32) -> 
         return Ok(0);
     };
 
+    // Clicks first, in short batches, so the transaction below only removes
+    // link rows. Each batch matches the link as still deleted past the cutoff:
+    // a link restored meanwhile stops losing clicks at the next batch.
+    delete_clicks_in_batches(db, "l.deleted_at < $1", cutoff.into(), CLICK_DELETE_BATCH).await?;
+
     let mut purged = 0;
     loop {
         let txn = db.begin().await?;
         // Locked, and matched again once the lock is won: a link an admin
         // restores meanwhile is no longer deleted and drops out of the batch.
+        // Any click recorded since the pass above goes with the row (cascade).
         let batch: Vec<i32> = links::Entity::find()
             .select_only()
             .column(links::Column::Id)
@@ -193,7 +271,7 @@ async fn purge_account(
         return Ok(Outcome::Gone);
     }
 
-    match hard_delete_user_in(&txn, user_id).await {
+    match hard_delete_user_in(db, &txn, user_id).await {
         Ok(()) => {
             txn.commit().await?;
             Ok(Outcome::Purged)
