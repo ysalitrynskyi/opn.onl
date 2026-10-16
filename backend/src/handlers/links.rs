@@ -28,6 +28,7 @@ use crate::utils::env::env_flag;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
 use crate::utils::link_owner::link_owner_is_active;
+use crate::utils::rate_limiter::too_many_requests;
 use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::ilike_pattern;
@@ -1493,6 +1494,22 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 
 // ============= Handlers =============
 
+/// How many times one account may shorten one URL inside [`SAME_URL_WINDOW_MINUTES`].
+const SAME_URL_LIMIT: u32 = 10;
+const SAME_URL_WINDOW_MINUTES: i64 = 10;
+
+/// Seconds until `opens_at`, rounded up, and never zero. Zero would tell the
+/// client to retry immediately, into a window this request just found full.
+fn secs_until(opens_at: chrono::NaiveDateTime, now: chrono::NaiveDateTime) -> u64 {
+    let remaining = opens_at.signed_duration_since(now);
+    if remaining <= chrono::Duration::zero() {
+        return 1;
+    }
+    let secs = u64::try_from(remaining.num_seconds()).unwrap_or(u64::MAX);
+    let round_up = u64::from(remaining.subsec_nanos() > 0);
+    secs.saturating_add(round_up).max(1)
+}
+
 /// Create a new shortened link
 ///
 /// Credentials are optional. Without them the link is anonymous and cannot be
@@ -1500,8 +1517,8 @@ async fn get_link_tags(db: &DatabaseConnection, link_id: i32) -> Vec<TagInfo> {
 /// sent but do not authenticate (expired, revoked, unknown key) are refused
 /// with 401 instead of creating an anonymous link; omit the `Authorization`
 /// header to create one. An account can shorten the same URL at most 10 times
-/// in 10 minutes; the next request is answered 429 with only an `error` field
-/// and no `Retry-After`.
+/// in 10 minutes. The next request is a 429 in the rate-limit shape, and
+/// `Retry-After` is when one of those ten leaves the window.
 #[utoipa::path(
     post,
     path = "/links",
@@ -1601,26 +1618,33 @@ pub async fn create_link(
         }
     }
 
-    // Rate limit: same URL can only be shortened 10 times in 10 minutes
+    // Same URL, 10 times in 10 minutes, counted per account. A database error
+    // fail-opens, as the old count did: the insert below still has to succeed.
     if let Some(uid) = user_id {
-        let ten_mins_ago = chrono::Utc::now() - chrono::Duration::minutes(10);
-        let recent_same_url_count = links::Entity::find()
+        let now = chrono::Utc::now().naive_utc();
+        let window = chrono::Duration::minutes(SAME_URL_WINDOW_MINUTES);
+        let recent = links::Entity::find()
             .filter(links::Column::UserId.eq(uid))
             .filter(links::Column::OriginalUrl.eq(&validated_url))
-            .filter(links::Column::CreatedAt.gte(ten_mins_ago.naive_utc()))
-            .count(&state.db)
+            .filter(links::Column::CreatedAt.gte(now - window))
+            .order_by_asc(links::Column::CreatedAt)
+            .order_by_asc(links::Column::Id)
+            .all(&state.db)
             .await
-            .unwrap_or(0);
+            .unwrap_or_default();
 
-        if recent_same_url_count >= 10 {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    error: "You have shortened this URL too many times. Please wait a few minutes."
-                        .to_string(),
-                }),
-            )
-                .into_response();
+        if recent.len() >= SAME_URL_LIMIT as usize {
+            // Allowed again once fewer than SAME_URL_LIMIT of these rows are
+            // still inside the window, which is when this one ages out.
+            let gate = &recent[recent.len() - SAME_URL_LIMIT as usize];
+            let retry_after_secs = secs_until(gate.created_at + window, now);
+            return too_many_requests(
+                retry_after_secs,
+                SAME_URL_LIMIT,
+                0,
+                "You have shortened this URL too many times. Please wait a few minutes."
+                    .to_string(),
+            );
         }
     }
 
@@ -2284,11 +2308,11 @@ fn unfurler_page() -> axum::response::Response {
         RedirectQuery
     ),
     responses(
-        (status = 200, description = "A HEAD on a one-time or click-capped link, or a GET from a known link-preview bot: no destination, nothing consumed"),
-        (status = 307, description = "Redirect to original URL"),
-        (status = 401, description = "Password required"),
+        (status = 410, description = "Checked first. The link is not live, its owner is disabled, its destination is blocked, or a one-time or click-capped link is already used up"),
+        (status = 307, description = "Temporary redirect. No X-Link-Password and no valid unlock on a password-protected link goes to the password page at {FRONTEND_URL}/password/{code}. A link behind the safe-link interstitial goes to {FRONTEND_URL}/r/{code} until confirm=1, including a HEAD. Otherwise this is the destination"),
+        (status = 401, description = "Only a wrong X-Link-Password. The body is plain text: Invalid password. A missing header is a 307 to the password page, not a 401"),
+        (status = 200, description = "A HEAD, or a GET from a known link-preview bot, on a one-time or click-capped link that is neither password-protected nor behind the interstitial: no destination, and nothing is used up"),
         (status = 404, description = "Link not found"),
-        (status = 410, description = "Link expired or inactive"),
     ),
     tag = "Links"
 )]
@@ -2511,15 +2535,18 @@ pub async fn redirect_link(
             ] {
                 if let crate::utils::rate_limiter::RateLimitResult::Limited {
                     retry_after_secs,
-                    ..
+                    limit,
+                    remaining,
                 } = limiter.check(&key)
                 {
-                    return (
-                        StatusCode::TOO_MANY_REQUESTS,
-                        [("Retry-After", retry_after_secs.to_string())],
-                        "Too many password attempts. Try again later.",
-                    )
-                        .into_response();
+                    return too_many_requests(
+                        retry_after_secs,
+                        limit,
+                        remaining,
+                        format!(
+                            "Rate limit exceeded. Please try again in {retry_after_secs} seconds."
+                        ),
+                    );
                 }
             }
 

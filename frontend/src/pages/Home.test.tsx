@@ -166,6 +166,28 @@ describe('Home Page', () => {
     expect(sessionStorage.getItem('opn.pendingUrl')).toBeNull();
   });
 
+  it('shows the rate-limit message, not the generic error', async () => {
+    vi.mocked(localStorage.getItem).mockReturnValue(mockToken);
+    vi.mocked(global.fetch).mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => ({
+        error: 'Too many requests',
+        retry_after: 42,
+        message: 'You have shortened this URL too many times. Please wait a few minutes.',
+      }),
+    } as Response);
+
+    const { user } = render(<Home />);
+    await user.type(screen.getByPlaceholderText(/your-very-long-link/i), 'https://example.com/test');
+    await user.click(screen.getByRole('button', { name: /shorten/i }));
+
+    expect(
+      await screen.findByText('You have shortened this URL too many times. Please wait a few minutes.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Too many requests')).not.toBeInTheDocument();
+  });
+
   it('shows error on API failure', async () => {
     vi.mocked(localStorage.getItem).mockReturnValue(mockToken);
     vi.mocked(global.fetch).mockResolvedValue(mockFetchError('Invalid URL') as any);

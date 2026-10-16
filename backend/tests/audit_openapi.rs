@@ -435,6 +435,44 @@ async fn redirect_is_documented_as_307() {
     assert!(responses.get("302").is_none(), "{responses}");
 }
 
+/// A password-protected link with no header is a 307 to the password page.
+/// 401 is only a wrong `X-Link-Password`, and the no-destination 200 does not
+/// apply while the link is still awaiting a password or the interstitial.
+#[tokio::test]
+async fn redirect_documents_the_password_page_before_a_401() {
+    let spec = served_spec().await;
+    let responses = &spec["paths"]["/{code}"]["get"]["responses"];
+    let text = |status: &str| {
+        responses[status]["description"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    };
+    let redirect = text("307");
+    assert!(
+        redirect.contains("password page"),
+        "307 should name the password page: {redirect}"
+    );
+    assert!(
+        redirect.contains("/r/"),
+        "307 should name the interstitial route: {redirect}"
+    );
+    let unauthorized = text("401");
+    assert!(
+        unauthorized.contains("x-link-password"),
+        "401 should name the header: {unauthorized}"
+    );
+    assert!(
+        !unauthorized.contains("password required"),
+        "a missing password is not a 401: {unauthorized}"
+    );
+    let ok = text("200");
+    assert!(
+        ok.contains("password") && ok.contains("interstitial"),
+        "200 should say when it does not apply: {ok}"
+    );
+}
+
 /// Names of the query parameters an operation declares.
 fn query_parameters(spec: &Value, path: &str, method: &str) -> BTreeSet<String> {
     spec["paths"][path][method]["parameters"]

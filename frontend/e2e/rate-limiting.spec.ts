@@ -327,8 +327,15 @@ test.describe('link creation', () => {
         await createButton.click();
         let res = await response;
         expect(res.status()).toBe(429);
+        const retryAfter = Number(res.headers()['retry-after']);
+        expect(retryAfter).toBeGreaterThanOrEqual(1);
+        expect(retryAfter).toBeLessThanOrEqual(600);
+        expect(res.headers()['x-ratelimit-limit']).toBe('10');
+        expect(res.headers()['x-ratelimit-remaining']).toBe('0');
         expect(await res.json()).toEqual({
-            error: 'You have shortened this URL too many times. Please wait a few minutes.',
+            error: 'Too many requests',
+            retry_after: retryAfter,
+            message: 'You have shortened this URL too many times. Please wait a few minutes.',
         });
         await expect(page.getByRole('alert')).toHaveText(
             'You have shortened this URL too many times. Please wait a few minutes.',
