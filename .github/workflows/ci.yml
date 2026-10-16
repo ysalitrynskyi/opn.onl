@@ -79,6 +79,12 @@ jobs:
         working-directory: backend
         run: cargo test --all-features
 
+      # The container entrypoint downloads GeoIP before the server listens;
+      # a stalled download must not keep the API down.
+      - name: GeoIP download script
+        working-directory: backend
+        run: sh scripts/test-download-geoip.sh
+
   frontend-test:
     name: Frontend (vitest + lint + build)
     runs-on: ubuntu-latest
