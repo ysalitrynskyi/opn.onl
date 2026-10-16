@@ -46,8 +46,14 @@ interface Call {
     authorization: string | undefined;
 }
 
-function reply(body: unknown, status = 200) {
-    return Promise.resolve({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) });
+function reply(body: unknown, status = 200, headers: Record<string, string> = {}) {
+    const lower = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
+    return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+        headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
+    });
 }
 
 /**
@@ -445,6 +451,396 @@ describe('Settings account correctness', () => {
             expect(await screen.findByText(/could not copy automatically/i)).toBeInTheDocument();
             expect(screen.queryByText('Copied to clipboard')).not.toBeInTheDocument();
             expect(window.getSelection()?.toString()).toBe(key);
+        });
+    });
+
+    describe('Public profile', () => {
+        const shown = { timeout: 8000 };
+        const hello = {
+            id: 1,
+            code: 'hello',
+            title: 'Hello',
+            bio_visible: true,
+            bio_label: null,
+            bio_position: 0,
+            org_id: null,
+            created_at: '2024-01-01T00:00:00Z',
+        };
+        const world = {
+            id: 2,
+            code: 'world',
+            title: 'World',
+            bio_visible: true,
+            bio_label: null,
+            bio_position: 1,
+            org_id: null,
+            created_at: '2024-01-02T00:00:00Z',
+        };
+        // Returned newest-position first, so the page has to sort.
+        const rows = [
+            world,
+            hello,
+            { id: 3, code: 'hid', title: 'Hidden', bio_visible: false, bio_label: null, bio_position: 0, org_id: null, created_at: '2024-01-03T00:00:00Z' },
+            { id: 4, code: 'org', title: 'Org link', bio_visible: true, bio_label: 'Org', bio_position: null, org_id: 9, created_at: '2024-01-04T00:00:00Z' },
+        ];
+
+        const publicProfile = { ...profile, bio_username: 'ada', bio_enabled: true, bio_theme: null as string | null };
+
+        function withLinks(extra: (call: Call) => Promise<unknown> | undefined = () => undefined) {
+            return installApi((call) => {
+                const custom = extra(call);
+                if (custom) return custom;
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply(rows);
+                return undefined;
+            });
+        }
+
+        function puts(calls: Call[], suffix: string) {
+            return calls.filter((call) => call.method === 'PUT' && call.url.endsWith(suffix));
+        }
+
+        it('sorts personal bio links, offers up and down, and leaves hidden and organization links out', async () => {
+            const calls = withLinks();
+            render(<Settings />);
+
+            const helloLabel = await screen.findByLabelText('Label for Hello', {}, shown);
+            const items = screen.getAllByRole('listitem');
+            expect(items[0]).toHaveTextContent('Hello');
+            expect(items[1]).toHaveTextContent('World');
+            expect(items).toHaveLength(2);
+            expect(screen.queryByText('Hidden')).not.toBeInTheDocument();
+            expect(screen.getByText(/1 organization link stays at the end of the page/)).toBeInTheDocument();
+            expect(calls.some((call) => call.method === 'GET' && call.url.includes('bio_visible=true'))).toBe(true);
+            expect(screen.getByRole('button', { name: 'Move Hello up' })).toBeDisabled();
+            expect(screen.getByRole('button', { name: 'Move World down' })).toBeDisabled();
+            expect(helloLabel).toHaveValue('');
+        });
+
+        it('reverts the list when reordering is refused', async () => {
+            const calls = withLinks((call) =>
+                call.method === 'PUT' && call.url.endsWith('/auth/bio/order')
+                    ? reply({ error: 'List every personal link on your bio page' }, 400)
+                    : undefined,
+            );
+            const view = render(<Settings />);
+            await screen.findByLabelText('Label for Hello', {}, shown);
+
+            await view.user.click(screen.getByRole('button', { name: 'Move Hello down' }));
+
+            expect(await screen.findByRole('alert', {}, shown)).toHaveTextContent('List every personal link on your bio page');
+            const items = screen.getAllByRole('listitem');
+            expect(items[0]).toHaveTextContent('Hello');
+            expect(items[1]).toHaveTextContent('World');
+            expect(puts(calls, '/auth/bio/order')[0].body).toEqual({ link_ids: [2, 1] });
+        });
+
+        it('sends the reordered ids and keeps the buttons disabled until that finishes', async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const calls = withLinks((call) => {
+                if (call.method === 'PUT' && call.url.endsWith('/auth/bio/order')) {
+                    const ids = (call.body as { link_ids: number[] }).link_ids;
+                    return gate.then(() => reply({ link_ids: ids }));
+                }
+                return undefined;
+            });
+            const view = render(<Settings />);
+            await screen.findByLabelText('Label for Hello', {}, shown);
+
+            const pending = view.user.click(screen.getByRole('button', { name: 'Move Hello down' }));
+            // "Move Hello up" starts disabled because Hello is first. It stays
+            // disabled through the request, and is enabled only once Hello is
+            // second and the request has finished.
+            await waitFor(() => {
+                expect(screen.getAllByRole('listitem')[0]).toHaveTextContent('World');
+                expect(screen.getByRole('button', { name: 'Move Hello up' })).toBeDisabled();
+            }, shown);
+            release();
+            await pending;
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Move Hello up' })).toBeEnabled(), shown);
+            expect(puts(calls, '/auth/bio/order')[0].body).toEqual({ link_ids: [2, 1] });
+            expect(screen.getAllByRole('listitem')[0]).toHaveTextContent('World');
+        });
+
+        it('saves a label on blur and skips a blur that changed nothing', async () => {
+            const calls = withLinks((call) =>
+                call.method === 'PUT' && call.url.endsWith('/links/1')
+                    ? reply({ ...hello, bio_label: (call.body as { bio_label: string }).bio_label || null })
+                    : undefined,
+            );
+            render(<Settings />);
+            const input = await screen.findByLabelText('Label for Hello', {}, shown);
+
+            fireEvent.blur(input);
+            expect(puts(calls, '/links/1')).toHaveLength(0);
+
+            fireEvent.change(input, { target: { value: 'Shop' } });
+            fireEvent.blur(input);
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(1));
+            expect(puts(calls, '/links/1')[0].body).toEqual({ bio_label: 'Shop' });
+
+            fireEvent.blur(input);
+            expect(puts(calls, '/links/1')).toHaveLength(1);
+        });
+
+        it('clears a label by sending an empty string', async () => {
+            const labeled = { ...hello, bio_label: 'Shop' };
+            const calls = installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply([labeled, world]);
+                if (call.method === 'PUT' && call.url.endsWith('/links/1')) return reply({ ...labeled, bio_label: null });
+                return undefined;
+            });
+            render(<Settings />);
+            const input = await screen.findByLabelText('Label for Shop', {}, shown);
+            expect(input).toHaveValue('Shop');
+
+            fireEvent.change(input, { target: { value: '' } });
+            fireEvent.blur(input);
+
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(1));
+            expect(puts(calls, '/links/1')[0].body).toEqual({ bio_label: '' });
+        });
+
+        it('sends the theme with the bio settings, and an unchanged avatar is not saved', async () => {
+            const calls = installApi((call) => {
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply([]);
+                if (call.method === 'PUT' && call.url.endsWith('/auth/bio')) {
+                    return reply({ bio_username: '', bio_enabled: false, bio_theme: (call.body as { bio_theme: string }).bio_theme || null });
+                }
+                return undefined;
+            });
+            const view = render(<Settings />);
+            expect(await screen.findByLabelText('Username', {}, shown)).toBeInTheDocument();
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
+
+            await view.user.click(screen.getByRole('button', { name: 'Save' }));
+            await screen.findByText('Bio page settings saved', {}, shown);
+            expect(puts(calls, '/auth/bio')[0].body).toEqual({
+                bio_username: '',
+                bio_enabled: false,
+                bio_theme: '',
+            });
+            expect(puts(calls, '/auth/profile')).toHaveLength(0);
+
+            await view.user.click(screen.getByRole('radio', { name: 'Ink' }));
+            await view.user.click(screen.getByRole('button', { name: 'Save' }));
+            await waitFor(() => expect(puts(calls, '/auth/bio')).toHaveLength(2));
+            expect(puts(calls, '/auth/bio')[1].body).toEqual({
+                bio_username: '',
+                bio_enabled: false,
+                bio_theme: 'ink',
+            });
+        });
+
+        it('refuses an unsafe avatar before saving, and previews a saved http avatar through the proxy', async () => {
+            const avatar = 'https://cdn.iana.org/a.png';
+            const calls = installApi((call) => {
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply([]);
+                if (call.method === 'PUT' && call.url.endsWith('/auth/bio')) {
+                    return reply({
+                        bio_username: (call.body as { bio_username: string }).bio_username,
+                        bio_enabled: (call.body as { bio_enabled: boolean }).bio_enabled,
+                        bio_theme: (call.body as { bio_theme: string }).bio_theme || null,
+                    });
+                }
+                if (call.method === 'PUT' && call.url.endsWith('/auth/profile')) {
+                    return reply({ avatar_url: (call.body as { avatar_url: string }).avatar_url });
+                }
+                return undefined;
+            });
+            const view = render(<Settings />);
+            const avatarInput = await screen.findByLabelText('Avatar URL', {}, shown);
+
+            fireEvent.change(avatarInput, { target: { value: 'javascript:alert(1)' } });
+            await view.user.click(screen.getByRole('button', { name: 'Save' }));
+            expect(await screen.findByRole('alert', {}, shown)).toHaveTextContent('Avatar must be an http or https URL');
+            expect(puts(calls, '/auth/bio')).toHaveLength(0);
+            expect(puts(calls, '/auth/profile')).toHaveLength(0);
+
+            fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ada' } });
+            await view.user.click(screen.getByRole('checkbox', { name: 'Make my bio page public' }));
+            fireEvent.change(avatarInput, { target: { value: avatar } });
+            await view.user.click(screen.getByRole('button', { name: 'Save' }));
+
+            await screen.findByText('Bio page settings saved', {}, shown);
+            expect(puts(calls, '/auth/bio')[0].body).toEqual({
+                bio_username: 'ada',
+                bio_enabled: true,
+                bio_theme: '',
+            });
+            expect(puts(calls, '/auth/profile')[0].body).toEqual({ avatar_url: avatar });
+            expect(screen.getByRole('img', { name: 'Avatar preview' })).toHaveAttribute('src', expect.stringContaining('/api/bio/avatar?url='));
+        });
+
+        it('does not load bio links until the page is public or the list is opened', async () => {
+            const calls = installApi();
+            const view = render(<Settings />);
+            await screen.findByLabelText('Username', {}, shown);
+
+            expect(calls.some((call) => call.url.includes('/links?'))).toBe(false);
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
+
+            await view.user.click(screen.getByRole('button', { name: 'Show links on your page' }));
+
+            expect(await screen.findByText(/No links on your bio page yet/, {}, shown)).toBeInTheDocument();
+            const lists = calls.filter((call) => call.method === 'GET' && call.url.includes('/links?'));
+            expect(lists).toHaveLength(1);
+            expect(lists[0].url).toContain('bio_visible=true');
+        });
+
+        it('orders a fractional second by the instant, then the higher id', async () => {
+            const rows = [
+                { id: 2, code: 'early', title: 'Early', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-01T00:00:00.1Z' },
+                { id: 1, code: 'later', title: 'Later', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-01T00:00:00.12Z' },
+                { id: 10, code: 'low', title: 'Low', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-02T00:00:00Z' },
+                { id: 11, code: 'high', title: 'High', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-02T00:00:00Z' },
+            ];
+            installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply(rows);
+                return undefined;
+            });
+            render(<Settings />);
+
+            const items = await screen.findAllByRole('listitem', {}, shown);
+            expect(items.map((item) => item.textContent)).toEqual([
+                expect.stringContaining('High'),
+                expect.stringContaining('Low'),
+                expect.stringContaining('Later'),
+                expect.stringContaining('Early'),
+            ]);
+        });
+
+        it('keeps newer label text when an earlier save returns', async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const calls = withLinks((call) => {
+                if (call.method === 'PUT' && call.url.endsWith('/links/1')) {
+                    const label = (call.body as { bio_label: string }).bio_label;
+                    if (label === 'Shop') return gate.then(() => reply({ ...hello, bio_label: 'Shop' }));
+                    return reply({ ...hello, bio_label: label || null });
+                }
+                return undefined;
+            });
+            render(<Settings />);
+            const input = await screen.findByLabelText('Label for Hello', {}, shown);
+
+            fireEvent.change(input, { target: { value: 'Shop' } });
+            fireEvent.blur(input);
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(1), shown);
+
+            fireEvent.change(input, { target: { value: 'Shop window' } });
+            fireEvent.blur(input);
+            release();
+
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(2), shown);
+            expect(puts(calls, '/links/1')[0].body).toEqual({ bio_label: 'Shop' });
+            expect(puts(calls, '/links/1')[1].body).toEqual({ bio_label: 'Shop window' });
+            expect(await screen.findByLabelText('Label for Shop window', {}, shown)).toHaveValue('Shop window');
+        });
+
+        it('saves again when the text goes back to the value before an earlier save returns', async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const calls = withLinks((call) => {
+                if (call.method === 'PUT' && call.url.endsWith('/links/1')) {
+                    const label = (call.body as { bio_label: string }).bio_label;
+                    if (label === 'Shop') return gate.then(() => reply({ ...hello, bio_label: 'Shop' }));
+                    return reply({ ...hello, bio_label: label || null });
+                }
+                return undefined;
+            });
+            render(<Settings />);
+            const input = await screen.findByLabelText('Label for Hello', {}, shown);
+
+            fireEvent.change(input, { target: { value: 'Shop' } });
+            fireEvent.blur(input);
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(1), shown);
+
+            // Back to what the row held before the first save: the page still
+            // has to clear the label the first request is about to store.
+            fireEvent.change(input, { target: { value: '' } });
+            fireEvent.blur(input);
+            release();
+
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(2), shown);
+            expect(puts(calls, '/links/1')[1].body).toEqual({ bio_label: '' });
+            expect(await screen.findByLabelText('Label for Hello', {}, shown)).toHaveValue('');
+        });
+
+        it('does not reorder when a bio link is missing from the list', async () => {
+            const calls = installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) {
+                    return reply([hello, world], 200, { 'X-Total-Count': '3' });
+                }
+                return undefined;
+            });
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert', {}, shown)).toHaveTextContent(/Could not load every link on your bio page/);
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Move Hello down')).toBeDisabled();
+            fireEvent.click(screen.getByLabelText('Move Hello down'));
+            expect(puts(calls, '/auth/bio/order')).toHaveLength(0);
+        });
+
+        it('loads a later page before offering a reorder', async () => {
+            const orgs = Array.from({ length: 1000 }, (_, index) => ({
+                id: 3000 + index,
+                code: `o${index}`,
+                title: `Org ${index}`,
+                bio_visible: true,
+                bio_label: null,
+                bio_position: null,
+                org_id: 9,
+                created_at: '2024-06-01T00:00:00Z',
+            }));
+            const older = { id: 1, code: 'old', title: 'Older personal', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2020-01-01T00:00:00Z' };
+            const newer = { id: 2, code: 'new', title: 'Newer personal', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2021-01-01T00:00:00Z' };
+            const calls = installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) {
+                    const offset = Number(new URL(call.url).searchParams.get('offset') ?? '0');
+                    const page = offset === 0 ? orgs : [older, newer];
+                    return reply(page, 200, { 'X-Total-Count': '1002' });
+                }
+                if (call.method === 'PUT' && call.url.endsWith('/auth/bio/order')) {
+                    return reply({ link_ids: (call.body as { link_ids: number[] }).link_ids });
+                }
+                return undefined;
+            });
+            const view = render(<Settings />);
+
+            expect(await screen.findByLabelText('Label for Newer personal', {}, shown)).toBeInTheDocument();
+            const items = screen.getAllByRole('listitem');
+            expect(items).toHaveLength(2);
+            expect(items[0]).toHaveTextContent('Newer personal');
+            expect(items[1]).toHaveTextContent('Older personal');
+            expect(screen.getByText(/1000 organization links stay at the end of the page/)).toBeInTheDocument();
+            expect(calls.filter((call) => call.url.includes('/links?')).map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000']);
+
+            await view.user.click(screen.getByRole('button', { name: 'Move Newer personal down' }));
+            await waitFor(() => expect(puts(calls, '/auth/bio/order')).toHaveLength(1), shown);
+            expect(puts(calls, '/auth/bio/order')[0].body).toEqual({ link_ids: [1, 2] });
+        });
+
+        // The 500-link cap itself is unit-tested in bioOrder.test.ts: rendering
+        // 501 rows in jsdom takes minutes.
+
+        it('shows a failed link load instead of the empty bio page', async () => {
+            installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply({ error: 'Database error' }, 500);
+                return undefined;
+            });
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert', {}, shown)).toHaveTextContent('Database error');
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
+            expect(screen.queryByRole('listitem')).not.toBeInTheDocument();
         });
     });
 });

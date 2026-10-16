@@ -145,6 +145,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
 
         // Link-in-bio
         bio::update_bio_settings,
+        bio::update_bio_order,
         bio::get_public_bio,
         links::proxy_bio_avatar,
 
@@ -289,6 +290,8 @@ pub struct TooManyRequests(pub RateLimitResponse);
             // Link-in-bio schemas
             bio::BioSettingsRequest,
             bio::BioSettingsResponse,
+            bio::BioOrderRequest,
+            bio::BioOrderResponse,
             bio::BioLink,
             bio::BioProfileResponse,
 

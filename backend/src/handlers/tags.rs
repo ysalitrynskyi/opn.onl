@@ -865,6 +865,8 @@ pub async fn get_links_by_tag(
             burned_at: l.burned_at.map(utc_rfc3339),
             safe_link_interstitial: l.safe_link_interstitial,
             bio_visible: l.bio_visible,
+            bio_label: l.bio_label.clone(),
+            bio_position: l.bio_position,
             is_active: l.is_active(),
             is_pinned: l.is_pinned,
             tags: tags_by_link.remove(&l.id).unwrap_or_default(),
