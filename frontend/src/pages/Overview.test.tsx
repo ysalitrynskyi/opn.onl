@@ -58,8 +58,15 @@ describe('Overview page', () => {
         expect(within(card('Last 7 Days')).getByText('28')).toBeInTheDocument();
         expect(within(card('Last 30 Days')).getByText('300')).toBeInTheDocument();
 
-        expect(screen.getByRole('link', { name: 'abc123, 80 clicks' })).toHaveAttribute('href', '/analytics/7');
+        const topLink = screen.getByRole('link', { name: /abc123/ });
+        expect(topLink).toHaveAttribute('href', '/analytics/7');
+        expect(topLink).toHaveAccessibleName('abc123 https://example.com/docs 80 clicks');
         expect(screen.getByText('https://example.com/docs')).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: 'Clicks over time' }).parentElement).toHaveTextContent('Last 30 days');
+        expect(screen.getByRole('heading', { name: 'Top Links' }).parentElement).toHaveTextContent('All-time');
+        expect(screen.getByRole('heading', { name: 'Top Countries' }).parentElement).toHaveTextContent('Last 30 days');
+        expect(screen.getByRole('heading', { name: 'Browsers' }).parentElement).toHaveTextContent('Last 30 days');
+        expect(screen.getAllByText('Last 30 days')).toHaveLength(3);
         expect(screen.getByText('United States')).toBeInTheDocument();
         expect(screen.getByText('40.5%')).toBeInTheDocument();
         expect(screen.getByText('Chrome')).toBeInTheDocument();
@@ -75,10 +82,11 @@ describe('Overview page', () => {
         expect((init as RequestInit).body).toBeUndefined();
     });
 
-    it('zero-fills quiet days in the 30-day series', async () => {
-        // 12:00 UTC keeps the window on 16 Sep–16 Oct, plus a click dated after today.
+    it('fills gaps between the server days and does not use the browser clock', async () => {
+        // A clock a month ahead of the payload used to drop Sep 15 and invent
+        // days through November. The series is the payload's own span.
         vi.useFakeTimers({ toFake: ['Date'] });
-        vi.setSystemTime(new Date('2026-10-16T12:00:00.000Z'));
+        vi.setSystemTime(new Date('2026-11-01T00:00:30.000Z'));
         global.fetch = vi.fn().mockResolvedValue({
             ok: true,
             status: 200,
@@ -97,15 +105,18 @@ describe('Overview page', () => {
 
         const table = await screen.findByRole('table', { name: 'Clicks by day' });
         const headers = within(table).getAllByRole('rowheader');
-        expect(headers).toHaveLength(32);
-        expect(headers[0]).toHaveTextContent('Sep 16');
+        // Sep 15 through Oct 17 inclusive.
+        expect(headers).toHaveLength(33);
+        expect(headers[0]).toHaveTextContent('Sep 15');
         expect(headers[headers.length - 1]).toHaveTextContent('Oct 17');
-        expect(within(table).queryByRole('rowheader', { name: 'Sep 15' })).not.toBeInTheDocument();
+        expect(within(table).queryByRole('rowheader', { name: 'Sep 14' })).not.toBeInTheDocument();
+        expect(within(table).queryByRole('rowheader', { name: 'Oct 18' })).not.toBeInTheDocument();
 
         const cell = (label: string) => {
             const header = within(table).getByRole('rowheader', { name: label });
             return within(header.closest('tr') as HTMLElement).getByRole('cell');
         };
+        expect(cell('Sep 15')).toHaveTextContent('9');
         expect(cell('Sep 16')).toHaveTextContent('0');
         expect(cell('Oct 14')).toHaveTextContent('2');
         expect(cell('Oct 15')).toHaveTextContent('0');
@@ -140,6 +151,8 @@ describe('Overview page', () => {
         expect(within(card('Total Links')).getByText('0')).toBeInTheDocument();
         expect(screen.queryByRole('heading', { name: 'Clicks over time' })).not.toBeInTheDocument();
         expect(screen.queryByRole('heading', { name: 'Top Links' })).not.toBeInTheDocument();
+        expect(screen.queryByText('All-time')).not.toBeInTheDocument();
+        expect(screen.queryByText('Last 30 days')).not.toBeInTheDocument();
         expect(screen.queryByRole('table', { name: 'Clicks by day' })).not.toBeInTheDocument();
     });
 
@@ -153,8 +166,36 @@ describe('Overview page', () => {
         render(<Overview />);
 
         expect(await screen.findByText('Failed to load overview.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
         expect(screen.queryByText('Total Clicks')).not.toBeInTheDocument();
         expect(screen.queryByText('Database error')).not.toBeInTheDocument();
+    });
+
+    it('retries a failed overview load', async () => {
+        global.fetch = vi.fn()
+            .mockResolvedValueOnce({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: 'Database error' }),
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve(stats),
+            });
+
+        const { user } = render(<Overview />);
+
+        await user.click(await screen.findByRole('button', { name: 'Retry' }));
+
+        expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
+        expect(screen.queryByText('Failed to load overview.')).not.toBeInTheDocument();
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        for (const [url, init] of vi.mocked(global.fetch).mock.calls) {
+            expect(url).toBe(API_ENDPOINTS.dashboardStats);
+            expect((init as RequestInit | undefined)?.method).toBeUndefined();
+            expect((init as RequestInit | undefined)?.body).toBeUndefined();
+        }
     });
 
     it('shows a network error when the request never answers', async () => {

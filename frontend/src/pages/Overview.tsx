@@ -15,9 +15,6 @@ import { safeLocalStorage } from '../utils/storage';
 const ACCENT = 'oklch(0.502 0.176 263)';
 const barOpacity = (i: number) => Math.max(0.25, 1 - i * 0.085);
 
-/** Dashboard series: `now - 30 days` through today. See `get_dashboard_stats`. */
-const DASHBOARD_WINDOW_DAYS = 30;
-
 function Skeleton() {
     return (
         <div className="animate-pulse">
@@ -55,15 +52,19 @@ function StatCard({ title, value, icon: Icon, hint }: {
     );
 }
 
-function RankedBars({ title, rows }: {
+function RankedBars({ title, subtitle, rows }: {
     title: string;
+    subtitle: string;
     rows: { label: string; count: number; percentage: number }[];
 }) {
     if (rows.length === 0) return null;
 
     return (
         <div className="rounded-2xl border border-line2 bg-surface p-6 shadow-subtle">
-            <h3 className="font-display text-lg font-bold text-ink tracking-tight mb-4">{title}</h3>
+            <div className="mb-4">
+                <h3 className="font-display text-lg font-bold text-ink tracking-tight">{title}</h3>
+                <p className="mt-1 text-xs text-faint">{subtitle}</p>
+            </div>
             <div className="space-y-3">
                 {rows.map((row, i) => (
                     <div key={`${row.label}-${i}`} className="flex items-center justify-between gap-3">
@@ -132,9 +133,10 @@ export default function Overview() {
         fetchStats();
     }, [navigate, fetchStats]);
 
-    // The handler's month window is `now - 30 days`, not the calendar month,
-    // and "today" is the UTC day. The tiles use those names.
-    const series = stats ? zeroFillUtcDays(stats.clicks_by_day, DASHBOARD_WINDOW_DAYS) : [];
+    // The handler already returns one UTC day per row in its window. Fill
+    // only the gaps inside that series; the browser clock must not add or
+    // drop days. "Today" on the tiles is the server's UTC day.
+    const series = stats ? zeroFillUtcDays(stats.clicks_by_day) : [];
     const chartData = series.map(d => ({
         date: formatDayBucketLabel(d.date),
         clicks: d.count,
@@ -147,8 +149,15 @@ export default function Overview() {
             {loading && !stats ? (
                 <Skeleton />
             ) : error ? (
-                <div className="rounded-2xl border border-danger/30 bg-danger/5 p-6 text-danger">
-                    {error}
+                <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/5 p-6 text-danger">
+                    <p>{error}</p>
+                    <button
+                        type="button"
+                        onClick={fetchStats}
+                        className="mt-4 rounded-lg border border-danger/30 bg-surface px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:border-ink/30"
+                    >
+                        Retry
+                    </button>
                 </div>
             ) : stats ? (
                 <>
@@ -196,7 +205,10 @@ export default function Overview() {
                                     transition={{ delay: 0.05 }}
                                     className="rounded-2xl border border-line2 bg-surface p-6 shadow-subtle mb-8"
                                 >
-                                    <h2 className="font-display text-lg font-bold text-ink tracking-tight mb-4">Clicks over time</h2>
+                                    <div className="mb-4">
+                                        <h2 className="font-display text-lg font-bold text-ink tracking-tight">Clicks over time</h2>
+                                        <p className="mt-1 text-xs text-faint">Last 30 days</p>
+                                    </div>
                                     {/* The table is the chart's text alternative. Both read `series`. */}
                                     <div aria-hidden="true">
                                         <ResponsiveContainer width="100%" height={300}>
@@ -253,13 +265,13 @@ export default function Overview() {
                                 <div className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden mb-8">
                                     <div className="px-6 py-5 border-b border-line">
                                         <h2 className="font-display text-lg font-bold text-ink tracking-tight">Top Links</h2>
+                                        <p className="mt-1 text-xs text-faint">All-time</p>
                                     </div>
                                     <ul className="divide-y divide-line">
                                         {stats.top_links.map(link => (
                                             <li key={link.id}>
                                                 <Link
                                                     to={`/analytics/${link.id}`}
-                                                    aria-label={`${link.code}, ${link.click_count.toLocaleString()} ${pluralize(link.click_count, 'click')}`}
                                                     className="flex items-center justify-between gap-3 px-6 py-4 transition-colors hover:bg-primary-50/40"
                                                 >
                                                     <span className="min-w-0">
@@ -267,7 +279,7 @@ export default function Overview() {
                                                         <span className="block truncate font-mono text-xs text-faint">{link.original_url}</span>
                                                     </span>
                                                     <span className="flex-shrink-0 font-mono text-sm text-muted tabular-nums">
-                                                        {link.click_count.toLocaleString()}
+                                                        {link.click_count.toLocaleString()} {pluralize(link.click_count, 'click')}
                                                     </span>
                                                 </Link>
                                             </li>
@@ -279,6 +291,7 @@ export default function Overview() {
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                                 <RankedBars
                                     title="Top Countries"
+                                    subtitle="Last 30 days"
                                     rows={stats.top_countries.map(row => ({
                                         label: row.country || 'Unknown',
                                         count: row.count,
@@ -287,6 +300,7 @@ export default function Overview() {
                                 />
                                 <RankedBars
                                     title="Browsers"
+                                    subtitle="Last 30 days"
                                     rows={stats.top_browsers.map(row => ({
                                         label: row.browser || 'Unknown',
                                         count: row.count,

@@ -237,6 +237,49 @@ describe('Layout auth and menus', () => {
         links.forEach(link => expect(link).toHaveAttribute('href', '/overview'));
     });
 
+    it('reloads when Overview is chosen and that page is already open', () => {
+        localStorage.setItem('token', 'test-token');
+        const reload = vi.fn();
+        const realLocation = window.location;
+        window.history.pushState({}, '', '/overview');
+        Object.defineProperty(window, 'location', {
+            configurable: true,
+            value: { ...realLocation, reload },
+        });
+        try {
+            render(<Layout />, { route: '/overview' });
+
+            fireEvent.click(screen.getByRole('button', { name: /account menu/i }));
+            fireEvent.click(screen.getByRole('link', { name: 'Overview' }));
+            expect(reload).toHaveBeenCalledTimes(1);
+
+            fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }));
+            fireEvent.click(screen.getByRole('link', { name: 'Overview' }));
+            expect(reload).toHaveBeenCalledTimes(2);
+        } finally {
+            Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+        }
+    });
+
+    it('does not reload when Overview is opened from another page', () => {
+        localStorage.setItem('token', 'test-token');
+        const reload = vi.fn();
+        const realLocation = window.location;
+        window.history.pushState({}, '', '/dashboard');
+        Object.defineProperty(window, 'location', {
+            configurable: true,
+            value: { ...realLocation, reload },
+        });
+        try {
+            render(<Layout />, { route: '/dashboard' });
+            fireEvent.click(screen.getByRole('button', { name: /account menu/i }));
+            fireEvent.click(screen.getByRole('link', { name: 'Overview' }));
+            expect(reload).not.toHaveBeenCalled();
+        } finally {
+            Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+        }
+    });
+
     it('closes the account menu when a menu link is clicked', () => {
         localStorage.setItem('token', 'test-token');
         render(<Layout />);
