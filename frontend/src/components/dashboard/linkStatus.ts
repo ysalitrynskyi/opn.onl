@@ -62,6 +62,33 @@ export function inactiveBadge(link: StatusLink, now = Date.now()): InactiveBadge
     return null;
 }
 
+export interface RowStatus {
+    /** Why the link is not live, or null while it is. */
+    badge: InactiveBadge | null;
+    /** `starts_at` is still ahead. */
+    startsLater: boolean;
+    /** The list said the link is inactive and nothing on the row says why. */
+    inactiveUnexplained: boolean;
+}
+
+/**
+ * The row's status against the clock as it is now. Rows outlive list reloads
+ * (they are keyed by id), so a clock read once per row would keep a link "Not
+ * started" after its start and never mark it expired.
+ */
+export function rowStatus(link: StatusLink & Pick<LinkData, 'is_active'>, now = Date.now()): RowStatus {
+    const badge = inactiveBadge(link, now);
+    const starts = link.starts_at ? Date.parse(link.starts_at) : NaN;
+    const started = !Number.isNaN(starts) && starts <= now;
+    return {
+        badge,
+        startsLater: !Number.isNaN(starts) && !started,
+        // `is_active` was decided when the list was fetched. A start that has
+        // passed since then is why it was false, and the link is live now.
+        inactiveUnexplained: !badge && !link.is_active && !started,
+    };
+}
+
 /** "Oct 12". English, like the created date under the row, on the viewer's calendar day. */
 export function formatBadgeDay(iso: string): string {
     return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });

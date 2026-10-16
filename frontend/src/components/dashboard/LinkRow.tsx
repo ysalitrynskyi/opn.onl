@@ -1,4 +1,4 @@
-import { useState, type Ref } from 'react';
+import type { Ref } from 'react';
 import { Link } from 'react-router-dom';
 import {
     Copy, Trash2, BarChart2, QrCode, Lock, Clock, Edit2, Check,
@@ -10,7 +10,7 @@ import Sparkline from '../Sparkline';
 import MiniStats from './MiniStats';
 import { pluralize } from '../../utils/plural';
 import { swatchColor } from './linkScope';
-import { clickCapReached, clickLimitLabel, formatBadgeDay, inactiveBadge } from './linkStatus';
+import { clickCapReached, clickLimitLabel, formatBadgeDay, rowStatus } from './linkStatus';
 import type { LinkData, SparklineSeries } from './types';
 
 interface LinkRowProps {
@@ -63,10 +63,9 @@ export default function LinkRow({
 }: LinkRowProps) {
     const mainUrl = `${shortLinkBase()}/${link.code}`;
     const apiUrl = link.api_url || link.short_url; // Use api_url from backend
-    // Same clock snapshot as MiniStats: the badge is fixed for this visit.
-    const [now] = useState(() => Date.now());
-    const reason = inactiveBadge(link, now);
-    const startsInFuture = !!link.starts_at && !Number.isNaN(Date.parse(link.starts_at)) && now < Date.parse(link.starts_at);
+    // Read at every render, so a reload of the list moves the badges on.
+    const status = rowStatus(link);
+    const reason = status.badge;
     const capReached = clickCapReached(link);
 
     const neutralBadge = 'inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted';
@@ -167,7 +166,7 @@ export default function LinkRow({
                                     {clickLimitLabel(link.click_count, link.max_clicks)}
                                 </span>
                             )}
-                            {startsInFuture && link.starts_at && (
+                            {status.startsLater && link.starts_at && (
                                 <span className={neutralBadge}>
                                     <Clock className="h-3 w-3" />
                                     Starts {formatBadgeDay(link.starts_at)}
@@ -177,7 +176,7 @@ export default function LinkRow({
                                 <span className={dangerBadge} title={reason.reason}>
                                     {reason.label}
                                 </span>
-                            ) : !link.is_active && (
+                            ) : status.inactiveUnexplained && (
                                 <span className={dangerBadge}>
                                     Inactive
                                 </span>
