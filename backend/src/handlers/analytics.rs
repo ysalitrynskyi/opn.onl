@@ -462,9 +462,9 @@ async fn dashboard_window_counts(
     today_start: chrono::NaiveDateTime,
     week_start: chrono::NaiveDateTime,
     month_start: chrono::NaiveDateTime,
-) -> (i64, i64, i64) {
+) -> Result<(i64, i64, i64), DbErr> {
     if link_ids.is_empty() {
-        return (0, 0, 0);
+        return Ok((0, 0, 0));
     }
     let sql = format!(
         "SELECT COUNT(*) FILTER (WHERE created_at >= $1)::bigint AS today, \
@@ -480,16 +480,14 @@ async fn dashboard_window_counts(
             &sql,
             [today_start.into(), week_start.into(), month_start.into()],
         ))
-        .await
-        .ok()
-        .flatten();
+        .await?;
     match row {
-        Some(row) => (
-            row.try_get::<i64>("", "today").unwrap_or(0),
-            row.try_get::<i64>("", "week").unwrap_or(0),
-            row.try_get::<i64>("", "month").unwrap_or(0),
-        ),
-        None => (0, 0, 0),
+        Some(row) => Ok((
+            row.try_get::<i64>("", "today")?,
+            row.try_get::<i64>("", "week")?,
+            row.try_get::<i64>("", "month")?,
+        )),
+        None => Ok((0, 0, 0)),
     }
 }
 
@@ -497,10 +495,10 @@ async fn dashboard_clicks_by_day(
     db: &DatabaseConnection,
     link_ids: &[i32],
     month_start: chrono::NaiveDateTime,
-) -> Vec<DayStats> {
+) -> Result<Vec<DayStats>, DbErr> {
     let first_day = month_start.date();
     if link_ids.is_empty() {
-        return zero_filled_days(first_day, &HashMap::new());
+        return Ok(zero_filled_days(first_day, &HashMap::new()));
     }
     let sql = format!(
         "SELECT created_at::date AS day, COUNT(*)::bigint AS cnt \
@@ -515,8 +513,7 @@ async fn dashboard_clicks_by_day(
             &sql,
             [month_start.into()],
         ))
-        .await
-        .unwrap_or_default();
+        .await?;
     let clicks_per_day: HashMap<chrono::NaiveDate, i64> = rows
         .into_iter()
         .filter_map(|row| {
@@ -525,7 +522,7 @@ async fn dashboard_clicks_by_day(
             Some((day, count))
         })
         .collect();
-    zero_filled_days(first_day, &clicks_per_day)
+    Ok(zero_filled_days(first_day, &clicks_per_day))
 }
 
 async fn dashboard_grouped_label_counts(
@@ -533,9 +530,9 @@ async fn dashboard_grouped_label_counts(
     link_ids: &[i32],
     month_start: chrono::NaiveDateTime,
     column: click_events::Column,
-) -> Vec<(String, i64)> {
+) -> Result<Vec<(String, i64)>, DbErr> {
     if link_ids.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
     let rows: Vec<(Option<String>, i64)> = click_events::Entity::find()
         .select_only()
@@ -551,11 +548,11 @@ async fn dashboard_grouped_label_counts(
         .group_by(column)
         .into_tuple()
         .all(db)
-        .await
-        .unwrap_or_default();
-    rows.into_iter()
+        .await?;
+    Ok(rows
+        .into_iter()
         .map(|(label, count)| (label.unwrap_or_else(|| "Unknown".to_string()), count))
-        .collect()
+        .collect())
 }
 
 async fn dashboard_top_countries(
@@ -563,19 +560,20 @@ async fn dashboard_top_countries(
     link_ids: &[i32],
     month_start: chrono::NaiveDateTime,
     total_for_percentage: f64,
-) -> Vec<CountryStats> {
+) -> Result<Vec<CountryStats>, DbErr> {
     let mut rows =
         dashboard_grouped_label_counts(db, link_ids, month_start, click_events::Column::Country)
-            .await;
+            .await?;
     rows.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     rows.truncate(10);
-    rows.into_iter()
+    Ok(rows
+        .into_iter()
         .map(|(country, count)| CountryStats {
             country,
             count,
             percentage: (count as f64 / total_for_percentage) * 100.0,
         })
-        .collect()
+        .collect())
 }
 
 async fn dashboard_top_browsers(
@@ -583,19 +581,20 @@ async fn dashboard_top_browsers(
     link_ids: &[i32],
     month_start: chrono::NaiveDateTime,
     total_for_percentage: f64,
-) -> Vec<BrowserStats> {
+) -> Result<Vec<BrowserStats>, DbErr> {
     let mut rows =
         dashboard_grouped_label_counts(db, link_ids, month_start, click_events::Column::Browser)
-            .await;
+            .await?;
     rows.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     rows.truncate(5);
-    rows.into_iter()
+    Ok(rows
+        .into_iter()
         .map(|(browser, count)| BrowserStats {
             browser,
             count,
             percentage: (count as f64 / total_for_percentage) * 100.0,
         })
-        .collect()
+        .collect())
 }
 
 /// Get dashboard analytics
@@ -605,6 +604,7 @@ async fn dashboard_top_browsers(
     responses(
         (status = 200, description = "Dashboard statistics. clicks_today is the UTC calendar day.", body = DashboardStats),
         (status = 401, description = "Unauthorized"),
+        (status = 500, description = "A statistics query failed. Never answered as zero clicks"),
     ),
     tag = "Analytics",
     security(("bearer_auth" = []), ("api_key" = []))
@@ -624,20 +624,73 @@ pub async fn get_dashboard_stats(
         }
     };
 
+    match dashboard_stats(&state.db, user_id).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => {
+            // Zeros here would read as "no clicks" next to a real total.
+            tracing::error!("Dashboard statistics query failed: {error}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Top links on the dashboard.
+const DASHBOARD_TOP_LINKS: u64 = 10;
+
+async fn dashboard_stats(db: &DatabaseConnection, user_id: i32) -> Result<DashboardStats, DbErr> {
     // The caller's own links (exclude deleted). A link of an organization they
-    // have left no longer counts: it is not theirs to read any more.
-    let user_links = links::Entity::find()
+    // have left no longer counts: it is not theirs to read any more. Only the
+    // columns that decide whether a link is live are loaded: an account can
+    // hold a hundred thousand links, each with up to 5,000 characters of notes.
+    type ActivityRow = (
+        i32,
+        Option<chrono::NaiveDateTime>,
+        Option<chrono::NaiveDateTime>,
+        Option<chrono::NaiveDateTime>,
+        Option<i32>,
+        bool,
+        i64,
+    );
+    let rows: Vec<ActivityRow> = links::Entity::find()
+        .select_only()
+        .column(links::Column::Id)
+        .column(links::Column::BurnedAt)
+        .column(links::Column::StartsAt)
+        .column(links::Column::ExpiresAt)
+        .column(links::Column::MaxClicks)
+        .column(links::Column::BurnAfterReading)
+        .column(links::Column::ClickCount)
         .filter(own_links(user_id))
         .filter(links::Column::DeletedAt.is_null())
-        .all(&state.db)
-        .await
-        .unwrap_or_default();
+        .into_tuple()
+        .all(db)
+        .await?;
 
-    let total_links = user_links.len() as i64;
-    let total_clicks: i64 = user_links.iter().map(|l| l.click_count).sum();
-    let active_links = user_links.iter().filter(|l| l.is_active()).count() as i64;
+    let total_links = rows.len() as i64;
+    let total_clicks: i64 = rows.iter().map(|row| row.6).sum();
+    let active_links = rows
+        .iter()
+        .filter(
+            |(_, burned_at, starts_at, expires_at, max_clicks, burn_after_reading, click_count)| {
+                links::LinkActivity {
+                    deleted_at: None,
+                    burned_at: *burned_at,
+                    starts_at: *starts_at,
+                    expires_at: *expires_at,
+                    max_clicks: *max_clicks,
+                    burn_after_reading: *burn_after_reading,
+                    click_count: *click_count,
+                }
+                .is_active()
+            },
+        )
+        .count() as i64;
 
-    let link_ids: Vec<i32> = user_links.iter().map(|l| l.id).collect();
+    let link_ids: Vec<i32> = rows.iter().map(|row| row.0).collect();
 
     // Get time boundaries. "Today" is the UTC calendar day; this endpoint
     // does not take a timezone, so the field is documented as UTC.
@@ -650,28 +703,40 @@ pub async fn get_dashboard_stats(
     // the worker on a busy account; a truncated row cap would silently under-
     // count, so COUNT / GROUP BY over the window is the correct shape.
     let (clicks_today, clicks_this_week, clicks_this_month) =
-        dashboard_window_counts(&state.db, &link_ids, today_start, week_start, month_start).await;
-    let clicks_by_day = dashboard_clicks_by_day(&state.db, &link_ids, month_start).await;
+        dashboard_window_counts(db, &link_ids, today_start, week_start, month_start).await?;
+    let clicks_by_day = dashboard_clicks_by_day(db, &link_ids, month_start).await?;
     let total_for_percentage = clicks_this_month.max(1) as f64;
     let top_countries =
-        dashboard_top_countries(&state.db, &link_ids, month_start, total_for_percentage).await;
+        dashboard_top_countries(db, &link_ids, month_start, total_for_percentage).await?;
     let top_browsers =
-        dashboard_top_browsers(&state.db, &link_ids, month_start, total_for_percentage).await;
+        dashboard_top_browsers(db, &link_ids, month_start, total_for_percentage).await?;
 
-    // Top links
-    let mut top_links: Vec<TopLink> = user_links
-        .iter()
-        .map(|l| TopLink {
-            id: l.id,
-            code: l.code.clone(),
-            original_url: l.original_url.clone(),
-            click_count: l.click_count,
+    // Top links: the database sorts and keeps ten, so only those rows carry
+    // their URL.
+    let top_links: Vec<TopLink> = links::Entity::find()
+        .select_only()
+        .column(links::Column::Id)
+        .column(links::Column::Code)
+        .column(links::Column::OriginalUrl)
+        .column(links::Column::ClickCount)
+        .filter(own_links(user_id))
+        .filter(links::Column::DeletedAt.is_null())
+        .order_by_desc(links::Column::ClickCount)
+        .order_by_desc(links::Column::Id)
+        .limit(DASHBOARD_TOP_LINKS)
+        .into_tuple::<(i32, String, String, i64)>()
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|(id, code, original_url, click_count)| TopLink {
+            id,
+            code,
+            original_url,
+            click_count,
         })
         .collect();
-    top_links.sort_by_key(|b| std::cmp::Reverse(b.click_count));
-    top_links.truncate(10);
 
-    let response = DashboardStats {
+    Ok(DashboardStats {
         total_links,
         total_clicks,
         active_links,
@@ -682,9 +747,7 @@ pub async fn get_dashboard_stats(
         clicks_by_day,
         top_countries,
         top_browsers,
-    };
-
-    (StatusCode::OK, Json(response)).into_response()
+    })
 }
 
 /// Get real-time click count for a link
