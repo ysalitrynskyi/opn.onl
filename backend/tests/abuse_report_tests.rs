@@ -6,13 +6,14 @@ mod common;
 
 use std::sync::Arc;
 
+use axum::http::{Method, header};
 use axum_test::TestServer;
 use common::{mark_email_verified, setup_test_db, spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::entity::links;
 use opn_onl_backend::utils::rate_limiter::{RateLimitConfig, RateLimiter};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseBackend, DatabaseConnection,
-    EntityTrait, Statement,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseBackend,
+    DatabaseConnection, EntityTrait, QueryFilter, Statement,
 };
 use serde_json::{Value, json};
 
@@ -650,4 +651,105 @@ async fn open_reports_counts_the_report_this_test_created() {
 
     let gone = reports_for_code(&server, &admin_token, &code, Some("open")).await;
     assert!(gone["reports"].as_array().unwrap().is_empty());
+}
+
+/// The code `report` can already exist in this database. Point that one row
+/// at `url` and clear anything that would stop a plain redirect.
+async fn upsert_report_code(db: &DatabaseConnection, url: &str) {
+    use opn_onl_backend::entity::routing_rules;
+
+    let existing = links::Entity::find()
+        .filter(links::Column::Code.eq("report"))
+        .one(db)
+        .await
+        .expect("lookup code report");
+    let link = if let Some(row) = existing {
+        let mut active: links::ActiveModel = row.into();
+        active.original_url = Set(url.to_string());
+        active.user_id = Set(None);
+        active.org_id = Set(None);
+        active.deleted_at = Set(None);
+        active.password_hash = Set(None);
+        active.expires_at = Set(None);
+        active.starts_at = Set(None);
+        active.max_clicks = Set(None);
+        active.burn_after_reading = Set(false);
+        active.burned_at = Set(None);
+        active.safe_link_interstitial = Set(false);
+        active.click_count = Set(0);
+        active.update(db).await.expect("reset code report")
+    } else {
+        links::ActiveModel {
+            code: Set("report".to_string()),
+            original_url: Set(url.to_string()),
+            user_id: Set(None),
+            click_count: Set(0),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .expect("insert code report")
+    };
+    routing_rules::Entity::delete_many()
+        .filter(routing_rules::Column::LinkId.eq(link.id))
+        .exec(db)
+        .await
+        .expect("clear rules on code report");
+}
+
+fn location_of(res: &axum_test::TestResponse) -> String {
+    res.header(header::LOCATION)
+        .to_str()
+        .expect("utf-8 location")
+        .to_string()
+}
+
+/// `GET` and `HEAD /report` are the short code, not the intake. They must
+/// keep redirecting, and they must miss the 10-per-second API gate (the
+/// 11th call inside one second would be 429 if they were classified as API).
+/// `POST /report` stays the intake, and a new alias `report` stays reserved.
+#[tokio::test]
+async fn get_and_head_report_redirect_an_existing_code() {
+    let (server, db) = spawn_real_app().await;
+    let url = format!("https://iana.org/code-report-{}", unique_code());
+    upsert_report_code(&db, &url).await;
+
+    for _ in 0..12 {
+        let res = server.get("/report").await;
+        assert_ne!(
+            res.status_code(),
+            429,
+            "GET /report was charged the API per-second budget: {}",
+            res.text()
+        );
+        assert_eq!(res.status_code(), 307, "{}", res.text());
+        assert_eq!(location_of(&res), url);
+    }
+
+    let head = server.method(Method::HEAD, "/report").await;
+    assert_ne!(head.status_code(), 429, "{}", head.text());
+    assert_eq!(head.status_code(), 307, "{}", head.text());
+    assert_eq!(location_of(&head), url);
+
+    let (token, _, _) = register_verified(&server, &db).await;
+    let reserved = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "original_url": format!("https://iana.org/not-the-code-{}", unique_code()),
+            "custom_alias": "report",
+        }))
+        .await;
+    assert_eq!(reserved.status_code(), 400, "{}", reserved.text());
+    assert!(
+        reserved.text().to_lowercase().contains("reserved"),
+        "{}",
+        reserved.text()
+    );
+
+    let filed = server
+        .post("/report")
+        .json(&report_body("report", "phishing"))
+        .await;
+    assert_eq!(filed.status_code(), 201, "{}", filed.text());
 }

@@ -2828,6 +2828,32 @@ fn unfurler_page() -> axum::response::Response {
         .into_response()
 }
 
+/// GET and HEAD `/report` follow the short code `report`. The route is
+/// static, so [`redirect_link`]'s `Path` extractor would see no code.
+#[utoipa::path(
+    get,
+    path = "/report",
+    params(RedirectQuery),
+    responses(
+        (status = 200, description = "A HEAD on a one-time or click-capped link, or a GET from a known link-preview bot: no destination, nothing consumed"),
+        (status = 307, description = "Redirect to original URL"),
+        (status = 401, description = "Password required"),
+        (status = 404, description = "Link not found"),
+        (status = 410, description = "Link expired or inactive"),
+    ),
+    tag = "Links"
+)]
+pub async fn redirect_report_code(
+    state: State<AppState>,
+    query: Query<RedirectQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    redirect_link(state, Path("report".to_string()), query, method, headers)
+        .await
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/{code}",

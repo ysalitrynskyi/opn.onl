@@ -591,6 +591,8 @@ const PUBLIC_OPERATIONS: &[(&str, &str)] = &[
     ("POST", "/links/build-utm"),
     ("POST", "/contact"),
     ("GET", "/{code}"),
+    // The short code `report`, which may already exist: GET follows it.
+    ("GET", "/report"),
     ("GET", "/{code}/preview"),
     ("POST", "/{code}/verify"),
 ];

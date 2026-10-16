@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{ConnectInfo, State},
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -436,6 +436,16 @@ fn is_redirect_path(path: &str) -> bool {
     }
 }
 
+/// `POST /report` is the abuse-report API (and stays on the API buckets,
+/// including the per-second gate). `GET` and `HEAD /report` are the short
+/// code `report`, which may already exist, so they use the redirect budget.
+fn is_redirect_request(method: &Method, path: &str) -> bool {
+    if path == "/report" {
+        return matches!(*method, Method::GET | Method::HEAD);
+    }
+    is_redirect_path(path)
+}
+
 /// The short code a redirect-style path addresses, as the router's `Path`
 /// extractor will see it: the first segment, percent-decoded once. `/%61bc`
 /// and `/abc` are the same link, so they must be the same rate-limit bucket.
@@ -483,7 +493,7 @@ pub async fn rate_limit_middleware(
 
     // Redirects are high-volume and skip the strict per-second gate; everything
     // else (including /contact) is classified by its route, not a path heuristic.
-    let is_redirect = is_redirect_path(path);
+    let is_redirect = is_redirect_request(req.method(), path);
 
     if !is_redirect
         && let RateLimitResult::Limited {
@@ -584,7 +594,14 @@ mod tests {
         // API routes must never be treated as redirects — /contact especially,
         // since the relaxed redirect bucket was an email-flood vector.
         assert!(!is_redirect_path("/contact"));
+        // POST /report is an API route. GET and HEAD follow an existing code.
         assert!(!is_redirect_path("/report"));
+        assert!(is_redirect_request(&Method::GET, "/report"));
+        assert!(is_redirect_request(&Method::HEAD, "/report"));
+        assert!(!is_redirect_request(&Method::POST, "/report"));
+        assert!(!is_redirect_request(&Method::PUT, "/report"));
+        assert!(is_redirect_request(&Method::GET, "/abc123"));
+        assert!(!is_redirect_request(&Method::GET, "/contact"));
         // A code that merely starts with the word is still a redirect.
         assert!(is_redirect_path("/report-me"));
         assert!(!is_redirect_path("/auth/login"));

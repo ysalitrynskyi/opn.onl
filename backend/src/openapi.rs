@@ -37,7 +37,7 @@ two headers, and a `RateLimitResponse` body.
 | Budget | Limit | Requests it covers |
 |---|---|---|
 | Burst | 20 per second | Every request except short-link visits (`/{code}`, `/{code}/preview`, \
-`/{code}/verify`), counted in addition to the request's own budget below |
+`/{code}/verify`, `GET /report`, `HEAD /report`), counted in addition to the request's own budget below |
 | Sign-in | 10 per minute | Every `POST` under `/auth/` |
 | Link creation | 100 per hour | `POST /links` and `POST /links/{id}/clone`. `POST /links/bulk` \
 spends one per URL and lists the URLs past the budget in `errors` instead of answering 429 |
@@ -45,7 +45,7 @@ spends one per URL and lists the URLs past the budget in `errors` instead of ans
 | Reports | 5 per hour | `POST /report` |
 | Link password | 5 per minute per link, 20 per minute in total | `POST /{code}/verify`, and \
 `GET /{code}` with an `X-Link-Password` header |
-| Redirects | 100 per second | `GET /{code}` and `GET /{code}/preview` |
+| Redirects | 100 per second | `GET /{code}`, `GET /{code}/preview`, and `GET` or `HEAD /report` |
 | General | 100 per minute | Every other request, including `GET`, `PUT`, and `DELETE` under \
 `/auth/` |
 
@@ -154,6 +154,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
         // Links
         links::create_link,
         links::redirect_link,
+        links::redirect_report_code,
         links::verify_link_password,
         links::get_qr_code,
         links::get_user_links,
