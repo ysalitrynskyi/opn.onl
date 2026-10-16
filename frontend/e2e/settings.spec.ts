@@ -247,4 +247,33 @@ test.describe('Settings page', () => {
             await expect(page.getByRole('heading', { level: 2, name: 'Passkeys' })).toBeVisible();
         }
     });
+
+    test('shows a bio label on the public page', async ({ page, request }) => {
+        const user = await createUser(request);
+        const link = await createLink(request, user.token, { title: 'Original title' });
+        expect((await api(request, 'put', `/links/${link.id}`, user.token, { bio_visible: true })).status()).toBe(200);
+
+        await openSettings(page, user);
+        const username = `e2e${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+        await page.getByLabel('Username').fill(username);
+        await page.getByRole('checkbox', { name: 'Make my bio page public' }).check();
+        const savedBio = page.waitForResponse(
+            (r) => r.url() === `${API_URL}/auth/bio` && r.request().method() === 'PUT',
+        );
+        await page.getByRole('button', { name: 'Save', exact: true }).click();
+        expect((await savedBio).status()).toBe(200);
+
+        const label = page.getByLabel('Label for Original title');
+        await expect(label).toBeVisible();
+        const savedLabel = page.waitForResponse(
+            (r) => r.url() === `${API_URL}/links/${link.id}` && r.request().method() === 'PUT',
+        );
+        await label.fill('Shop window');
+        await label.blur();
+        expect((await savedLabel).status()).toBe(200);
+
+        await page.goto(`/@${username}`);
+        await expect(page.getByRole('link', { name: 'Shop window' })).toBeVisible();
+        await expect(page.getByText('Original title', { exact: true })).toHaveCount(0);
+    });
 });

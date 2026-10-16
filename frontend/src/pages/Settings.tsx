@@ -6,8 +6,9 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, failureMessage, responseDetail, responseError, shortLinkHost } from '../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, responseDetail, responseError } from '../config/api';
 import SEO from '../components/SEO';
+import BioSettingsSection from './BioSettingsSection';
 import logger from '../utils/logger';
 import { formatDate, isSafeHttpUrl } from '../utils';
 import { safeLocalStorage } from '../utils/storage';
@@ -117,11 +118,6 @@ export default function Settings() {
     const [location, setLocation] = useState('');
     const [savingProfile, setSavingProfile] = useState(false);
 
-    // Link-in-bio state
-    const [bioUsername, setBioUsername] = useState('');
-    const [bioEnabled, setBioEnabled] = useState(false);
-    const [savingBio, setSavingBio] = useState(false);
-
     // API keys state
     const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
     const [newKeyName, setNewKeyName] = useState('');
@@ -140,14 +136,6 @@ export default function Settings() {
         }
         fetchData();
     }, [navigate]);
-
-    // Sync link-in-bio form with the loaded profile.
-    useEffect(() => {
-        if (profile) {
-            setBioUsername(profile.bio_username || '');
-            setBioEnabled(profile.bio_enabled ?? false);
-        }
-    }, [profile]);
 
     const fetchData = async () => {
         try {
@@ -474,33 +462,6 @@ export default function Settings() {
             setError(errorMessage(err));
         } finally {
             setSavingProfile(false);
-        }
-    };
-
-    const handleSaveBio = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setSavingBio(true);
-        setError('');
-        setSuccess('');
-        try {
-            const res = await authFetch(API_ENDPOINTS.bioSettings, {
-                method: 'PUT',
-                body: JSON.stringify({
-                    bio_username: bioUsername || '',
-                    bio_enabled: bioEnabled,
-                }),
-            });
-            if (!res.ok) {
-                throw new Error(await responseError(res, 'Failed to save bio settings'));
-            }
-            const data = await res.json();
-            setBioUsername(data.bio_username || '');
-            setBioEnabled(data.bio_enabled ?? false);
-            setSuccess('Bio page settings saved');
-        } catch (err) {
-            setError(errorMessage(err));
-        } finally {
-            setSavingBio(false);
         }
     };
 
@@ -1201,67 +1162,14 @@ export default function Settings() {
 
                 {/* Public profile (Link-in-Bio) — only shown when the instance enables it */}
                 {appSettings?.link_in_bio_enabled && (
-                    <motion.section
-                        initial={{ opacity: 0, y: 16 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.18 }}
-                        className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
-                    >
-                        <div className="p-6 border-b border-line">
-                            <div className="flex items-center gap-3">
-                                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-line bg-paper">
-                                    <User className="h-5 w-5 text-muted" />
-                                </div>
-                                <div>
-                                    <h2 className="font-display text-lg font-bold text-ink tracking-tight">Public profile</h2>
-                                    <p className="text-sm text-muted">A link-in-bio page for your links — off until you turn it on</p>
-                                </div>
-                            </div>
-                        </div>
-                        <form onSubmit={handleSaveBio} className="p-6 space-y-4">
-                            <div>
-                                <label htmlFor="bio-username" className="block text-sm font-medium text-ink mb-1.5">Username</label>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-sm text-faint">{shortLinkHost()}/@</span>
-                                    <input
-                                        id="bio-username"
-                                        type="text"
-                                        value={bioUsername}
-                                        onChange={(e) => setBioUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
-                                        placeholder="yourname"
-                                        maxLength={30}
-                                        className={inputClass}
-                                    />
-                                </div>
-                            </div>
-                            <label className="flex items-center gap-2.5 text-sm text-ink cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    checked={bioEnabled}
-                                    onChange={(e) => setBioEnabled(e.target.checked)}
-                                    className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
-                                />
-                                Make my bio page public
-                            </label>
-                            <p className="text-xs text-faint">
-                                Choose which links appear from each link's edit dialog ("Show this link on my bio page").
-                            </p>
-                            <div className="flex items-center gap-3">
-                                <button
-                                    type="submit"
-                                    disabled={savingBio}
-                                    className="rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
-                                >
-                                    {savingBio ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
-                                </button>
-                                {bioEnabled && bioUsername && (
-                                    <a href={`/@${bioUsername}`} target="_blank" rel="noreferrer" className="text-sm font-medium text-primary-600 hover:text-primary-700">
-                                        View page →
-                                    </a>
-                                )}
-                            </div>
-                        </form>
-                    </motion.section>
+                    <BioSettingsSection
+                        profile={profile}
+                        onProfile={setProfile}
+                        onError={setError}
+                        onSuccess={setSuccess}
+                        inputClass={inputClass}
+                        labelClass={labelClass}
+                    />
                 )}
 
                 {/* Danger Zone - Only show if account deletion is enabled */}

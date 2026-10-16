@@ -165,7 +165,7 @@ export default function Docs() {
   "is_active": true,
   "tags": []
   // ...plus title, notes, folder_id, org_id, starts_at, max_clicks,
-  // burn_after_reading, burned_at, safe_link_interstitial, bio_visible, is_pinned
+  // burn_after_reading, burned_at, safe_link_interstitial, bio_visible, bio_label, bio_position, is_pinned
 }`}</code>
                             </div>
                         </div>
@@ -224,10 +224,14 @@ export default function Docs() {
                                 <li><code className="bg-slate-100 px-1 rounded">remove_starts_at</code> - Clear <code className="bg-slate-100 px-1 rounded">starts_at</code></li>
                                 <li><code className="bg-slate-100 px-1 rounded">remove_max_clicks</code> - Clear <code className="bg-slate-100 px-1 rounded">max_clicks</code></li>
                                 <li><code className="bg-slate-100 px-1 rounded">remove_folder</code> - Take the link out of its folder</li>
+                                <li><code className="bg-slate-100 px-1 rounded">remove_bio_position</code> - Clear <code className="bg-slate-100 px-1 rounded">bio_position</code> (wins over a position in the same request)</li>
                             </ul>
                             <p className="text-sm text-slate-600">
-                                An empty <code className="bg-slate-100 px-1 rounded">title</code> or{' '}
-                                <code className="bg-slate-100 px-1 rounded">notes</code> clears it.
+                                An empty <code className="bg-slate-100 px-1 rounded">title</code>,{' '}
+                                <code className="bg-slate-100 px-1 rounded">notes</code> or{' '}
+                                <code className="bg-slate-100 px-1 rounded">bio_label</code> clears it.{' '}
+                                <code className="bg-slate-100 px-1 rounded">bio_label</code> is at most 80 characters
+                                and is what the public bio page shows instead of the title.
                             </p>
                             <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
                                 <code className="text-green-400 text-sm whitespace-pre">{`{ "remove_expiration": true, "title": "Renamed" }`}</code>
@@ -275,6 +279,11 @@ export default function Docs() {
                                 <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-bold">PUT</span>
                                 <code className="text-slate-700">/auth/bio</code>
                                 <span className="text-slate-500 text-sm">Update your link-in-bio settings</span>
+                            </div>
+                            <div className="p-4 flex items-center gap-3">
+                                <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-bold">PUT</span>
+                                <code className="text-slate-700">/auth/bio/order</code>
+                                <span className="text-slate-500 text-sm">Reorder the personal links on your bio page</span>
                             </div>
                             <div className="p-4 flex items-center gap-3">
                                 <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-bold">GET</span>
