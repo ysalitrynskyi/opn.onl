@@ -37,6 +37,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Overview = lazy(() => import('./pages/Overview'));
 const Analytics = lazy(() => import('./pages/Analytics'));
 const Settings = lazy(() => import('./pages/Settings'));
+const Organizations = lazy(() => import('./pages/Organizations'));
 const PasswordPrompt = lazy(() => import('./pages/PasswordPrompt'));
 const VerifyEmail = lazy(() => import('./pages/VerifyEmail'));
 const Preview = lazy(() => import('./pages/Preview'));
@@ -84,6 +85,7 @@ function App() {
               <Route path="overview" element={<Overview />} />
               <Route path="analytics/:id" element={<Analytics />} />
               <Route path="settings" element={<Settings />} />
+              <Route path="organizations" element={<Organizations />} />
               <Route path="password/:code" element={<PasswordPrompt />} />
               <Route path="features" element={<Features />} />
               <Route path="pricing" element={<Pricing />} />

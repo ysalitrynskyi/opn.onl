@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import {
     Link2, BarChart2, QrCode, Lock, Clock,
     Zap, Shield, Download, Key, Sparkles,
-    ArrowRight, Check, Flame, ShieldCheck, Route, LayoutList
+    ArrowRight, Check, Flame, ShieldCheck, Route, LayoutList, Users
 } from 'lucide-react';
 import SEO from '../components/SEO';
 
@@ -98,6 +98,13 @@ const features = [
         description: "A profile page for your links — if you want one. Public only when you flip the switch; your page stays private until you enable it. Just your links on your own opn.onl/@you page.",
         color: "text-fuchsia-600",
         bgColor: "bg-fuchsia-100"
+    },
+    {
+        icon: <Users className="h-6 w-6" />,
+        title: "Teams",
+        description: "Create a team in the app, invite people by email and give them a role: admin, editor or viewer. Owners can hand the team over or delete it. The API can do the same.",
+        color: "text-blue-600",
+        bgColor: "bg-blue-100"
     },
 ];
 

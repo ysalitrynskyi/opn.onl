@@ -12,14 +12,16 @@ const hasBackendSource = existsSync(linksRs);
 const backend = hasBackendSource ? readFileSync(linksRs, 'utf8') : '';
 
 describe('API reference', () => {
-    it('says the folders, tags and teams features are used through the API, which is all there is', () => {
-        // The dashboard has no folder, tag or team screens; claiming the
-        // features without saying so promised an interface that is not there.
+    it('says folders and tags are used through the API, and teams are in the app', () => {
+        // Folders and tags still have no screens. Teams are managed at /organizations.
         render(<Docs />);
-        for (const title of ['Folders', 'Tags', 'Teams']) {
+        for (const title of ['Folders', 'Tags']) {
             const card = screen.getByRole('heading', { level: 4, name: title }).parentElement;
             expect(card, `${title} card`).toHaveTextContent(/via the API/i);
         }
+        const teams = screen.getByRole('heading', { level: 4, name: 'Teams' }).parentElement;
+        expect(teams).toHaveTextContent(/in the app/i);
+        expect(teams).not.toHaveTextContent(/via the API/i);
         // The features that do have an interface are not marked.
         expect(screen.getByRole('heading', { level: 4, name: 'Custom Aliases' }).parentElement).not.toHaveTextContent(/api/i);
     });
