@@ -38,6 +38,9 @@ pub struct Model {
     pub bio_visible: bool,
     pub bio_position: Option<i32>,
     pub bio_label: Option<String>,
+    /// When the owner was reminded that the current `expires_at` is near.
+    /// Changing the expiry clears it, so a new date gets its own reminder.
+    pub expiry_notice_sent_at: Option<DateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -237,6 +240,7 @@ mod burn_tests {
             bio_visible: false,
             bio_position: None,
             bio_label: None,
+            expiry_notice_sent_at: None,
         }
     }
 

@@ -214,10 +214,11 @@ the frontend yourself (`docker compose up -d --build` from Option 1, or
 | `SMTP_FROM_EMAIL` | noreply@opn.onl | From email address |
 | `SMTP_FROM_NAME` | opn.onl | From display name (commas and quotes are fine) |
 | `ADMIN_EMAIL` | - | Where contact-form messages are delivered. There is no default: while it is unset the contact form answers `503` and mails nobody |
-| `EMAIL_RATE_LIMIT_PER_HOUR` | 500 | Most emails the instance sends per hour in total. Split 70% account mail (verification, password reset, welcome), 20% security notices (password changed) and 10% contact form, so a flood of one kind cannot starve the others |
+| `EMAIL_RATE_LIMIT_PER_HOUR` | 500 | Most emails the instance sends per hour in total. Split 60% account mail (verification, password reset, welcome), 20% security notices (password changed), 10% contact form and 10% link expiry reminders, so a flood of one kind cannot starve the others |
 | `REQUIRE_EMAIL_VERIFICATION` | true | Set to false only if your instance has no SMTP; anyone can then sign up with an address they do not own. |
+| `LINK_EXPIRY_REMINDERS` | true | Once a day, email each owner the personal links that expire within the next 3 days, soonest first, at most 20 per email (organization links are not included). A link is mentioned once per expiry date; changing the date makes it due again. Users turn the reminders off in Settings. Not sent to unverified accounts while `REQUIRE_EMAIL_VERIFICATION` is on. When the reminders' share of `EMAIL_RATE_LIMIT_PER_HOUR` runs out, the rest go out an hour later |
 
-Without SMTP, verification, password-reset and password-changed emails are not sent.
+Without SMTP, verification, password-reset, password-changed and expiry reminder emails are not sent.
 `POST /auth/resend-verification` then answers `503` (`Email is not configured on this instance`) for every caller, except a signed-in user whose own address is already verified. That refusal does not say whether the address has an account. `REQUIRE_EMAIL_VERIFICATION` stays on unless you set it false: missing SMTP does not turn it off, and accounts stay unable to create links, API keys or passkeys until you do. The contact form answers `503` ("not delivered") instead of accepting a message it has nowhere to send.
 Every email carries a plain-text part alongside the HTML.
 
@@ -233,7 +234,7 @@ one budget. The limits are kept in memory, so a restart clears them.
 
 ### Link Management
 
-Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`, `REQUIRE_EMAIL_VERIFICATION`)
+Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`, `REQUIRE_EMAIL_VERIFICATION`, `LINK_EXPIRY_REMINDERS`)
 accepts `true` or `false`, also written `1`/`0`, `yes`/`no` or `on`/`off`, in any case. Any other value
 is ignored with a warning in the log and the default applies.
 
