@@ -524,12 +524,17 @@ pub async fn rate_limit_middleware(
     match result {
         RateLimitResult::Allowed { limit, remaining } => {
             let mut response = next.run(req).await;
-            let headers = response.headers_mut();
-            headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
-            headers.insert(
-                "X-RateLimit-Remaining",
-                remaining.to_string().parse().unwrap(),
-            );
+            // A handler that already answered 429 named the budget that ran out
+            // (the same-URL cap, a password sent as `X-Link-Password`). Stamping
+            // the budget that allowed the request would hide that.
+            if response.status() != StatusCode::TOO_MANY_REQUESTS {
+                let headers = response.headers_mut();
+                headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
+                headers.insert(
+                    "X-RateLimit-Remaining",
+                    remaining.to_string().parse().unwrap(),
+                );
+            }
             response
         }
         RateLimitResult::Limited {

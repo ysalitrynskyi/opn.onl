@@ -40,7 +40,11 @@ export default function Home() {
             if (res.ok) {
                 setShortUrl(data.short_url);
             } else {
-                setError(data.error || 'Failed to create link');
+                // A 429's `error` is always "Too many requests". The sentence
+                // that says which limit ran out is `message`.
+                setError(
+                    (typeof data.message === 'string' && data.message) || data.error || 'Failed to create link',
+                );
             }
         } catch (err) {
             if (err instanceof SessionExpiredError) {

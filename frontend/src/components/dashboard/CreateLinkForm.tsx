@@ -215,7 +215,11 @@ export default function CreateLinkForm({ appSettings, initialUrl, onCreated, onE
                 onCreated();
             } else {
                 const data = await res.json();
-                onError(data.error || 'Failed to create link');
+                // A 429's `error` is always "Too many requests". The sentence
+                // that says which limit ran out is `message`.
+                onError(
+                    (typeof data.message === 'string' && data.message) || data.error || 'Failed to create link',
+                );
             }
         } catch (error) {
             logger.error('Failed to create link', error);

@@ -303,8 +303,15 @@ test.describe('Security Tests', () => {
             const eleventh = await api(request, 'post', '/links', user.token, { original_url: url });
 
             expect(eleventh.status()).toBe(429);
+            const retryAfter = Number(eleventh.headers()['retry-after']);
+            expect(retryAfter).toBeGreaterThanOrEqual(1);
+            expect(retryAfter).toBeLessThanOrEqual(600);
+            expect(eleventh.headers()['x-ratelimit-limit']).toBe('10');
+            expect(eleventh.headers()['x-ratelimit-remaining']).toBe('0');
             expect(await eleventh.json()).toEqual({
-                error: 'You have shortened this URL too many times. Please wait a few minutes.',
+                error: 'Too many requests',
+                retry_after: retryAfter,
+                message: 'You have shortened this URL too many times. Please wait a few minutes.',
             });
             // The limit is per destination: another URL still goes through.
             const other = await api(request, 'post', '/links', user.token, { original_url: `${url}-other` });
