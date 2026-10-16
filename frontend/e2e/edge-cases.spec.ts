@@ -747,6 +747,12 @@ test.describe('Changes from elsewhere while editing', () => {
         await linkRow(page, link.code).getByRole('button', { name: 'Edit link' }).click();
         const dialog = page.getByRole('dialog');
         await expect(dialog).toBeVisible();
+        // The dialog reads the link's routing rules as it opens. A delete that
+        // lands before that read answers fails the read as well, and the dialog
+        // shows a second alert for it. The rules editor appears only once the
+        // read has succeeded, so wait for it before deleting elsewhere.
+        await dialog.getByRole('button', { name: /^Smart routing/ }).click();
+        await expect(dialog.getByRole('button', { name: 'Add rule' })).toBeVisible();
 
         const res = await api(request, 'delete', `/links/${link.id}`, user.token);
         expect(res.status()).toBe(200);
