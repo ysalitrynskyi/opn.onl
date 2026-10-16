@@ -137,7 +137,7 @@ test.describe('sign-in budget', () => {
             await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
             expect((await response).status()).toBe(429);
-            await expect(page.getByRole('alert')).toHaveText('Too many requests');
+            await expect(page.getByRole('alert')).toHaveText(WINDOW_LIMIT_MESSAGE);
             await expect(page).toHaveURL(/\/login$/);
             expect(await page.evaluate(() => localStorage.getItem('token'))).toBeNull();
         });
@@ -150,7 +150,7 @@ test.describe('sign-in budget', () => {
             await page.getByRole('button', { name: 'Create account' }).click();
 
             expect((await response).status()).toBe(429);
-            await expect(page.getByRole('alert')).toHaveText('Too many requests');
+            await expect(page.getByRole('alert')).toHaveText(WINDOW_LIMIT_MESSAGE);
             await expect(page.getByRole('heading', { name: 'Check your email' })).toBeHidden();
         });
     });
