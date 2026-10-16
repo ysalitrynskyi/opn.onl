@@ -679,6 +679,33 @@ test.describe('Create form state', () => {
         button = (await createButton(page).boundingBox())!;
         expect(button.x).toBeGreaterThan(input.x + input.width); // beside it
     });
+
+    test('between phone and desktop the destination keeps its width, and a long check answer goes under the row', async ({ page, request }) => {
+        const user = await createUser(request);
+        await openDashboard(page, user);
+        await page.setViewportSize({ width: 768, height: 900 });
+        await expect(createButton(page)).toBeVisible();
+
+        // Beside four controls the field shrank to a few characters here.
+        const input = (await urlInput(page).boundingBox())!;
+        let button = (await createButton(page).boundingBox())!;
+        expect(input.width).toBeGreaterThan(400);
+        expect(button.y).toBeGreaterThanOrEqual(input.y + input.height); // the controls share the next line
+        expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+
+        // A literal private address is refused with a sentence before any connection is made.
+        await urlInput(page).fill('http://10.0.0.1/');
+        await page.getByRole('button', { name: 'Check destination' }).click();
+        const status = page.locator('form').filter({ has: urlInput(page) }).getByRole('status');
+        await expect(status).toBeVisible();
+        await expect(status).not.toBeEmpty();
+
+        const after = (await urlInput(page).boundingBox())!;
+        button = (await createButton(page).boundingBox())!;
+        const answer = (await status.boundingBox())!;
+        expect(after.width).toBe(input.width);
+        expect(answer.y).toBeGreaterThanOrEqual(button.y + button.height); // under the row, not in it
+    });
 });
 
 // ============= Concurrent changes =============
