@@ -74,6 +74,11 @@ export default function EditModal({
     const [removeMaxClicks, setRemoveMaxClicks] = useState(false);
     const [burnAfterReading, setBurnAfterReading] = useState(link.burn_after_reading ?? false);
     const destination = useDestinationCheck(url);
+    // Burn rides on the click cap, so the cap is locked while burn is on. With
+    // the feature switched off there is no burn checkbox to turn it off with,
+    // so a link saved as burn keeps an editable cap (the server ends burn when
+    // that cap is removed).
+    const capLocked = burnEnabled && burnAfterReading;
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(link.safe_link_interstitial ?? false);
     const [bioVisible, setBioVisible] = useState(link.bio_visible ?? false);
     // Kept as the link's folder id even when that folder is not in the list,
@@ -171,7 +176,7 @@ export default function EditModal({
             raw: maxClicks,
             stored: link.max_clicks ?? null,
             remove: removeMaxClicks,
-            burnOn: burnAfterReading,
+            burnOn: capLocked,
         });
         if ('error' in limit) {
             setSaveError(limit.error);
@@ -470,10 +475,10 @@ export default function EditModal({
                             min={1}
                             step={1}
                             inputMode="numeric"
-                            disabled={burnAfterReading || removeMaxClicks}
+                            disabled={capLocked || removeMaxClicks}
                             aria-describedby="edit-max-clicks-hint"
                             placeholder={link.max_clicks != null ? 'Leave empty to keep the current limit' : 'No limit'}
-                            value={burnAfterReading ? String(burnCap(link.max_clicks)) : maxClicks}
+                            value={capLocked ? String(burnCap(link.max_clicks)) : maxClicks}
                             onChange={(e) => {
                                 setLimitTouched(true);
                                 setMaxClicks(e.target.value);
@@ -481,14 +486,14 @@ export default function EditModal({
                             className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint disabled:opacity-70"
                         />
                         <p id="edit-max-clicks-hint" className="text-xs text-faint mt-1.5">
-                            {burnAfterReading ? burnCapHint(burnCap(link.max_clicks)) : CLICK_LIMIT_HINT}
+                            {capLocked ? burnCapHint(burnCap(link.max_clicks)) : CLICK_LIMIT_HINT}
                         </p>
                         {link.max_clicks != null && (
                             <label className="flex items-center gap-2 mt-2 text-sm text-muted">
                                 <input
                                     type="checkbox"
-                                    checked={burnAfterReading ? false : removeMaxClicks}
-                                    disabled={burnAfterReading}
+                                    checked={capLocked ? false : removeMaxClicks}
+                                    disabled={capLocked}
                                     onChange={(e) => setRemoveMaxClicks(e.target.checked)}
                                     className="rounded border-line2 text-primary-600 focus:ring-primary-500 disabled:opacity-70"
                                 />
