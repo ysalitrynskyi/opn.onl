@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Plus, ChevronDown, Lock, Calendar, Flame, ShieldCheck, MousePointer } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, SessionExpiredError, authFetch, type CheckCodeResponse } from '../../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch, responseError, type CheckCodeResponse } from '../../config/api';
 import logger from '../../utils/logger';
 import { savePendingUrl } from '../../utils/pendingUrl';
 import { localIsoDate } from '../../utils/localIsoDate';
@@ -101,7 +101,10 @@ export default function CreateLinkForm({
                 });
                 if (ignore) return;
                 if (!res.ok) {
-                    setAliasHint(null);
+                    // A 429 here says how long to wait; anything else that
+                    // failed is still worth a word rather than a silent blank.
+                    const text = await responseError(res, 'Could not check this alias');
+                    if (!ignore) setAliasHint({ text, ok: false });
                     return;
                 }
                 const data = await res.json() as CheckCodeResponse;
@@ -243,12 +246,7 @@ export default function CreateLinkForm({
                 setShowAdvanced(false);
                 onCreated();
             } else {
-                const data = await res.json();
-                // A 429's `error` is always "Too many requests". The sentence
-                // that says which limit ran out is `message`.
-                onError(
-                    (typeof data.message === 'string' && data.message) || data.error || 'Failed to create link',
-                );
+                onError(await responseError(res, 'Failed to create link'));
             }
         } catch (error) {
             logger.error('Failed to create link', error);

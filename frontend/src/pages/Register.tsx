@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Mail, Lock, Check, CheckCircle, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { API_ENDPOINTS, authFetch, emailVerificationRequired, responseDetail } from '../config/api';
+import { API_ENDPOINTS, authFetch, emailVerificationRequired, responseError } from '../config/api';
 import SEO from '../components/SEO';
 import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
@@ -81,7 +81,7 @@ export default function Register() {
                 setResendSuccess(true);
                 setTimeout(() => setResendSuccess(false), 5000);
             } else {
-                setResendError(await responseDetail(res, 'Could not resend the verification email'));
+                setResendError(await responseError(res, 'Could not resend the verification email'));
             }
         } catch {
             setResendError('Could not resend the verification email');

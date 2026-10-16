@@ -6,7 +6,7 @@ import {
     Zap, Link2, Upload, ArrowRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, SessionExpiredError, authFetch, failureMessage, responseError, shortLinkBase, totalCount } from '../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch, errorText, failureMessage, responseError, shortLinkBase, totalCount } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -58,9 +58,9 @@ const SEARCH_DEBOUNCE_MS = 300;
 const EDIT_DENIED_MESSAGE = "You don't have permission to modify this link";
 const LINK_GONE_MESSAGE = 'This link no longer exists or you no longer have access to it.';
 
-function updateFailureMessage(status: number, message: string | undefined) {
+function updateFailureMessage(status: number, message: string) {
     if (status === 403 && message === EDIT_DENIED_MESSAGE) return LINK_GONE_MESSAGE;
-    return message || 'Failed to update link';
+    return message;
 }
 
 export default function Dashboard() {
@@ -249,11 +249,11 @@ export default function Dashboard() {
                     failures,
                 });
             } else {
-                const data = await res.json();
-                const fromList = Array.isArray(data.errors) && data.errors.length > 0
+                const data = await res.json().catch(() => null);
+                const fromList = Array.isArray(data?.errors) && data.errors.length > 0
                     ? data.errors.join(', ')
                     : null;
-                setBulkReport({ message: fromList || data.error || 'Failed to import links', failures: [] });
+                setBulkReport({ message: fromList || errorText(res.status, data, 'Failed to import links'), failures: [] });
             }
         } catch {
             setBulkReport({ message: 'Network error during import', failures: [] });
@@ -361,9 +361,9 @@ export default function Dashboard() {
                 listRef.current = { loaded: data.length, scope };
                 if (isUnfilteredAccount(scope)) setAccountTotal(count);
             } else {
-                const data = await res.json().catch(() => null) as { error?: string } | null;
+                const message = await responseError(res, 'Failed to load links. Please try again.');
                 if (requestId !== linksFetchId.current) return;
-                setError(data?.error || 'Failed to load links. Please try again.');
+                setError(message);
             }
         } catch (error) {
             if (requestId !== linksFetchId.current) return;
@@ -671,8 +671,7 @@ export default function Dashboard() {
                 body: JSON.stringify(data),
             });
             if (!res.ok) {
-                const response = await res.json().catch(() => null) as { error?: string } | null;
-                throw new Error(updateFailureMessage(res.status, response?.error));
+                throw new Error(updateFailureMessage(res.status, await responseError(res, 'Failed to update link')));
             }
 
             await fetchLinks();
@@ -743,8 +742,7 @@ export default function Dashboard() {
                 toast(`Link cloned! New code: ${data.code}`, 'success');
                 fetchLinks();
             } else {
-                const data = await res.json();
-                toast(data.error || 'Failed to clone link', 'error');
+                toast(await responseError(res, 'Failed to clone link'), 'error');
             }
         } catch {
             toast('Network error', 'error');

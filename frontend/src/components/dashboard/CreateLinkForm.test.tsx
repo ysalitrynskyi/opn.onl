@@ -23,6 +23,12 @@ function jsonResponse(body: unknown, status = 200): Response {
     } as Response;
 }
 
+const RATE_LIMITED = {
+    error: 'Too many requests',
+    retry_after: 12,
+    message: 'Rate limit exceeded. Please try again in 12 seconds.',
+};
+
 function renderForm(
     appSettings: AppSettings = settings,
     extra: {
@@ -267,6 +273,17 @@ describe('CreateLinkForm', () => {
             expect(screen.queryByText('Taken')).not.toBeInTheDocument();
         });
 
+        it('says how long to wait when the alias check is rate limited', async () => {
+            vi.mocked(fetch).mockResolvedValue(jsonResponse(RATE_LIMITED, 429));
+            renderForm();
+            fireEvent.change(aliasInput(), { target: { value: 'helloo' } });
+            await advance(300);
+
+            expect(screen.getByRole('status')).toHaveTextContent('Rate limit exceeded. Please try again in 12 seconds.');
+            expect(screen.getByRole('status')).toHaveClass('text-danger');
+            expect(screen.queryByText('Too many requests')).not.toBeInTheDocument();
+        });
+
         it('still creates the link when the alias check says it is taken', async () => {
             vi.mocked(fetch).mockImplementation((input, init) => {
                 const url = String(input);
@@ -345,6 +362,20 @@ describe('CreateLinkForm', () => {
 
             expect(await screen.findByRole('alert')).toHaveTextContent('Invalid URL format');
             expect(screen.getByLabelText('Destination URL')).toHaveValue('not a url');
+        });
+
+        it('says how long to wait when the builder is rate limited', async () => {
+            const { user } = renderForm();
+            fireEvent.change(screen.getByLabelText('Destination URL'), { target: { value: 'https://example.com/a' } });
+            await openAdvanced();
+            await user.click(screen.getByRole('button', { name: 'Add UTM parameters' }));
+            fireEvent.change(screen.getByLabelText('Campaign'), { target: { value: 'spring' } });
+            vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(RATE_LIMITED, 429));
+
+            await user.click(screen.getByRole('button', { name: 'Add to URL' }));
+
+            expect(await screen.findByRole('alert')).toHaveTextContent('Rate limit exceeded. Please try again in 12 seconds.');
+            expect(screen.getByLabelText('Destination URL')).toHaveValue('https://example.com/a');
         });
 
         it('does not send a second request while one is in flight', async () => {
@@ -426,6 +457,16 @@ describe('CreateLinkForm', () => {
             expect(await screen.findByRole('status')).toHaveTextContent(
                 'URL resolves to a disallowed (internal/private) address',
             );
+        });
+
+        it('says how long to wait when the check is rate limited', async () => {
+            arm(RATE_LIMITED, 429);
+            renderForm();
+            fireEvent.change(screen.getByLabelText('Destination URL'), { target: { value: url } });
+            fireEvent.click(screen.getByRole('button', { name: 'Check destination' }));
+
+            expect(await screen.findByRole('status')).toHaveTextContent('Rate limit exceeded. Please try again in 12 seconds.');
+            expect(screen.queryByText('Too many requests')).not.toBeInTheDocument();
         });
 
         it('sends one request per click and stays disabled while that request is pending', async () => {

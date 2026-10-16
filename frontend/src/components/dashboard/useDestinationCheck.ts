@@ -28,7 +28,7 @@ export function useDestinationCheck(url: string) {
             });
             const data = await res.json().catch(() => null) as UrlHealthResponse | null;
             if (urlRef.current.trim() !== requested) return;
-            setStatus(statusFromHealth(res.ok, data));
+            setStatus(statusFromHealth(res.status, data));
         } catch (error) {
             if (urlRef.current.trim() !== requested) return;
             setStatus({

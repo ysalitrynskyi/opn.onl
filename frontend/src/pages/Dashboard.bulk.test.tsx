@@ -256,6 +256,26 @@ describe('Dashboard bulk selection', () => {
         expect(screen.queryByText(/Deleted/)).not.toBeInTheDocument();
     });
 
+    it('says how long to wait when a bulk action is rate limited', async () => {
+        serve(makeLinks(2), () => ({
+            status: 429,
+            body: {
+                error: 'Too many requests',
+                retry_after: 9,
+                message: 'Rate limit exceeded. Please try again in 9 seconds.',
+            },
+        }));
+        const { user } = renderDashboard();
+
+        await screen.findByRole('checkbox', { name: 'Select link code0001' });
+        await user.click(screen.getByRole('checkbox', { name: 'Select link code0001' }));
+        await user.click(screen.getByRole('button', { name: 'Remove expiry' }));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Rate limit exceeded. Please try again in 9 seconds.');
+        expect(screen.getByRole('alert')).not.toHaveTextContent('Too many requests');
+        expect(screen.getByRole('checkbox', { name: 'Select link code0001' })).toBeChecked();
+    });
+
     it('says when the server accepted the call but sent no count', async () => {
         serve(makeLinks(1), () => ({ status: 200, body: {} }));
         const { user } = renderDashboard();
