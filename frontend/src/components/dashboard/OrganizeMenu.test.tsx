@@ -64,12 +64,15 @@ describe('OrganizeMenu', () => {
             color: '#2563eb',
             org_id: 5,
         });
-        expect(onChanged).toHaveBeenCalled();
+        // Only the list that changed is reloaded.
+        expect(onChanged).toHaveBeenCalledWith('folder');
+        expect(onChanged).not.toHaveBeenCalledWith('tag');
 
         fireEvent.change(screen.getByRole('textbox', { name: 'New tag name' }), { target: { value: 'q3' } });
         await user.click(screen.getByRole('button', { name: 'Add tag' }));
         await waitFor(() => expect(posts('POST', '/tags')).toHaveLength(1));
         expect(JSON.parse(String(posts('POST', '/tags')[0][1]?.body))).toMatchObject({ name: 'q3', org_id: 5 });
+        await waitFor(() => expect(onChanged).toHaveBeenCalledWith('tag'));
     });
 
     it('renames a folder with its colour', async () => {
@@ -84,7 +87,7 @@ describe('OrganizeMenu', () => {
             name: 'Archive',
             color: '#2563eb',
         });
-        expect(onChanged).toHaveBeenCalled();
+        expect(onChanged).toHaveBeenCalledWith('folder');
     });
 
     it('confirms that deleting a folder leaves its links, then deletes it', async () => {

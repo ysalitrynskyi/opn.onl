@@ -128,7 +128,8 @@ export default function Dashboard() {
     const listRef = useRef({ loaded: 0, scope: EMPTY_SCOPE });
     const urlScopeRef = useRef({ orgId, folderId, tagId });
     urlScopeRef.current = { orgId, folderId, tagId };
-    const catalogReq = useRef(0);
+    const folderReq = useRef(0);
+    const tagReq = useRef(0);
     // IDs removed locally while a fetchLinks was in flight. Stale responses
     // must not fold these back in when they merge newly created rows.
     const droppedLinkIds = useRef(new Set<number>());
@@ -793,43 +794,55 @@ export default function Dashboard() {
         }
     };
 
-    const loadCatalog = useCallback(async (org: number | null) => {
-        const requestId = ++catalogReq.current;
-        const query = org != null ? `?${new URLSearchParams({ org_id: String(org) })}` : '';
+    // Teams, folders and tags load separately, and a change in the Manage panel
+    // reloads only the list it changed. One page load already sends most of the
+    // per-second request budget; reloading all three after every edit pushed a
+    // quick sequence of edits over it (429).
+    const loadOrgs = useCallback(async () => {
         try {
-            const [orgsRes, foldersRes, tagsRes] = await Promise.all([
-                authFetch(API_ENDPOINTS.orgs),
-                authFetch(`${API_ENDPOINTS.folders}${query}`),
-                authFetch(`${API_ENDPOINTS.tags}${query}`),
-            ]);
-            if (requestId !== catalogReq.current) return;
-            setOrgs(orgsRes.ok ? orgOptions(await orgsRes.json()) : []);
-            if (foldersRes.ok) {
-                setFolders(catalogItems(await foldersRes.json()));
+            const res = await authFetch(API_ENDPOINTS.orgs);
+            setOrgs(res.ok ? orgOptions(await res.json()) : []);
+        } catch (error) {
+            if (error instanceof SessionExpiredError) return;
+            logger.error('Failed to load teams', error);
+            setOrgs([]);
+        }
+    }, []);
+
+    const loadScopedList = useCallback(async (kind: 'folder' | 'tag', org: number | null) => {
+        const req = kind === 'folder' ? folderReq : tagReq;
+        const requestId = ++req.current;
+        const query = org != null ? `?${new URLSearchParams({ org_id: String(org) })}` : '';
+        const setItems = kind === 'folder' ? setFolders : setTags;
+        const failed = kind === 'folder' ? 'Failed to load folders' : 'Failed to load tags';
+        try {
+            const res = await authFetch(`${kind === 'folder' ? API_ENDPOINTS.folders : API_ENDPOINTS.tags}${query}`);
+            if (requestId !== req.current) return;
+            if (res.ok) {
+                setItems(catalogItems(await res.json()));
             } else {
-                setFolders([]);
-                setError(await responseError(foldersRes, 'Failed to load folders'));
-            }
-            if (tagsRes.ok) {
-                setTags(catalogItems(await tagsRes.json()));
-            } else {
-                setTags([]);
-                setError(await responseError(tagsRes, 'Failed to load tags'));
+                setItems([]);
+                setError(await responseError(res, failed));
             }
         } catch (error) {
-            if (requestId !== catalogReq.current) return;
+            if (requestId !== req.current) return;
             if (error instanceof SessionExpiredError) return;
-            logger.error('Failed to load folders and tags', error);
-            setFolders([]);
-            setTags([]);
-            setError('Failed to load folders and tags');
+            logger.error(failed, error);
+            setItems([]);
+            setError(failed);
         }
     }, []);
 
     useEffect(() => {
         if (!safeLocalStorage.getItem('token')) return;
-        void loadCatalog(orgId);
-    }, [orgId, loadCatalog]);
+        void loadOrgs();
+    }, [loadOrgs]);
+
+    useEffect(() => {
+        if (!safeLocalStorage.getItem('token')) return;
+        void loadScopedList('folder', orgId);
+        void loadScopedList('tag', orgId);
+    }, [orgId, loadScopedList]);
 
     const replaceParams = (mutate: (next: URLSearchParams) => void) => {
         const next = new URLSearchParams(searchParams);
@@ -1008,18 +1021,18 @@ export default function Dashboard() {
                         else next.set('tag', String(id));
                     });
                 }}
-                onOrganizeChanged={() => { void loadCatalog(orgId); }}
+                onOrganizeChanged={(kind) => { void loadScopedList(kind, orgId); }}
                 onFolderDeleted={(id) => {
                     if (folderId === id) {
                         replaceParams((next) => { next.delete('folder'); });
                     }
-                    void loadCatalog(orgId);
+                    void loadScopedList('folder', orgId);
                 }}
                 onTagDeleted={(id) => {
                     if (tagId === id) {
                         replaceParams((next) => { next.delete('tag'); });
                     }
-                    void loadCatalog(orgId);
+                    void loadScopedList('tag', orgId);
                 }}
             />
 

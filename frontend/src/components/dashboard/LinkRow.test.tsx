@@ -203,7 +203,7 @@ describe('LinkRow status badges', () => {
 });
 
 describe('LinkRow folder and tags', () => {
-    it('shows the folder and every tag, and a colour dot only for a hex colour', () => {
+    it('shows the folder and its tags, and a colour dot only for a hex colour', () => {
         renderRow(
             {
                 tags: [
@@ -219,5 +219,13 @@ describe('LinkRow folder and tags', () => {
         expect(screen.getByText('Campaigns').querySelector('[aria-hidden="true"]')).toHaveStyle({
             backgroundColor: '#2563eb',
         });
+    });
+
+    it('shows two tags and a count of the rest', () => {
+        renderRow({
+            tags: Array.from({ length: 20 }, (_, i) => ({ id: i + 1, name: `tag-${String(i).padStart(2, '0')}`, color: null })),
+        });
+        expect(screen.getAllByText(/^tag-\d{2}$/)).toHaveLength(2);
+        expect(screen.getByText('+18')).toHaveAttribute('title', expect.stringContaining('tag-19'));
     });
 });

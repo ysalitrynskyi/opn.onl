@@ -19,7 +19,8 @@ interface LinkFiltersProps {
     tags: CatalogItem[];
     tagId: number | null;
     onTagChange: (id: number | null) => void;
-    onOrganizeChanged: () => void;
+    /** A folder or tag was created, renamed or recoloured. */
+    onOrganizeChanged: (kind: 'folder' | 'tag') => void;
     onFolderDeleted: (id: number) => void;
     onTagDeleted: (id: number) => void;
 }

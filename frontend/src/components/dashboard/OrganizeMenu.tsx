@@ -8,7 +8,7 @@ interface OrganizeMenuProps {
     orgId: number | null;
     folders: CatalogItem[];
     tags: CatalogItem[];
-    onChanged: () => void;
+    onChanged: (kind: 'folder' | 'tag') => void;
     onFolderDeleted: (id: number) => void;
     onTagDeleted: (id: number) => void;
 }
@@ -82,14 +82,14 @@ export default function OrganizeMenu({
                         kind="folder"
                         orgId={orgId}
                         items={folders}
-                        onChanged={onChanged}
+                        onChanged={() => onChanged('folder')}
                         onDeleted={onFolderDeleted}
                     />
                     <ResourceSection
                         kind="tag"
                         orgId={orgId}
                         items={tags}
-                        onChanged={onChanged}
+                        onChanged={() => onChanged('tag')}
                         onDeleted={onTagDeleted}
                     />
                 </div>
