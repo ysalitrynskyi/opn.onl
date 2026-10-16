@@ -52,8 +52,8 @@ impl EmailService {
             env_nonempty("SMTP_FROM_EMAIL").unwrap_or_else(|| "noreply@opn.onl".to_string());
         // A blank SMTP_FROM_NAME is kept: it means "send the bare address".
         let from_name = std::env::var("SMTP_FROM_NAME").unwrap_or_else(|_| "opn.onl".to_string());
-        let frontend_url =
-            std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+        // A trailing slash would turn every button into `https://host//verify-email`.
+        let frontend_url = super::env::frontend_base_url();
 
         let mailer = if let (Some(host), Some(user), Some(pass)) = (smtp_host, smtp_user, smtp_pass)
         {
@@ -321,8 +321,17 @@ impl EmailService {
         ))
     }
 
+    /// `{frontend}/{path}` with one slash, even if the stored base still has one.
+    fn app_url(&self, path: &str) -> String {
+        format!(
+            "{}/{}",
+            super::env::public_base_or(Some(&self.frontend_url), "http://localhost:5173"),
+            path
+        )
+    }
+
     fn verification_email(&self, token: &str) -> EmailBody {
-        let url = format!("{}/verify-email?token={}", self.frontend_url, token);
+        let url = self.app_url(&format!("verify-email?token={token}"));
         EmailBody::new(
             "Verify your email",
             &[
@@ -335,7 +344,7 @@ impl EmailService {
     }
 
     fn password_reset_email(&self, token: &str) -> EmailBody {
-        let url = format!("{}/reset-password?token={}", self.frontend_url, token);
+        let url = self.app_url(&format!("reset-password?token={token}"));
         EmailBody::new(
             "Reset your password",
             &[
@@ -348,7 +357,7 @@ impl EmailService {
     }
 
     fn welcome_email(&self) -> EmailBody {
-        let url = format!("{}/dashboard", self.frontend_url);
+        let url = self.app_url("dashboard");
         EmailBody::new(
             "Welcome to opn.onl!",
             &[
@@ -362,7 +371,7 @@ impl EmailService {
     }
 
     fn password_changed_email(&self, change: PasswordChange, changed_at: &str) -> EmailBody {
-        let url = format!("{}/forgot-password", self.frontend_url);
+        let url = self.app_url("forgot-password");
         let (verb, revoked, advice) = match change {
             PasswordChange::Reset => (
                 "reset",
@@ -629,6 +638,30 @@ mod tests {
             assert!(raw.contains("text/html"), "{raw}");
         }
         assert!(bodies[3].0.text.contains("2026-09-30 12:00 UTC"));
+    }
+
+    /// A stored base that still ends with `/` must not double the slash.
+    #[test]
+    fn account_email_links_drop_a_trailing_slash_on_the_frontend_url() {
+        let mut svc = service();
+        svc.frontend_url = "https://opn.example/".to_string();
+        let bodies = [
+            svc.verification_email("tok123").text,
+            svc.password_reset_email("tok456").text,
+            svc.welcome_email().text,
+            svc.password_changed_email(PasswordChange::Change, "2026-09-30 12:00 UTC")
+                .text,
+        ];
+        for text in &bodies {
+            assert!(
+                !text.contains("https://opn.example//"),
+                "doubled slash: {text}"
+            );
+        }
+        assert!(bodies[0].contains("https://opn.example/verify-email?token=tok123"));
+        assert!(bodies[1].contains("https://opn.example/reset-password?token=tok456"));
+        assert!(bodies[2].contains("https://opn.example/dashboard"));
+        assert!(bodies[3].contains("https://opn.example/forgot-password"));
     }
 
     /// The notice is the one place a person learns what a password change

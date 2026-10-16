@@ -131,8 +131,8 @@ fn rp_id_is_parent_or_equal(rp_id: &str, origin_host: &str) -> bool {
 
 /// Fail fast at process start if `WEBAUTHN_RP_ID` cannot be used with `FRONTEND_URL`.
 pub fn validate_webauthn_rp_id() {
-    let rp_origin =
-        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    // Same normalisation as short links: a trailing slash is not part of the origin.
+    let rp_origin = crate::utils::env::frontend_base_url();
     let origin_url = match Url::parse(&rp_origin) {
         Ok(url) => url,
         Err(e) => panic!("Invalid FRONTEND_URL for WebAuthn: {e}"),
@@ -147,8 +147,7 @@ pub fn validate_webauthn_rp_id() {
 /// `WEBAUTHN_RP_ID`. Shared by the real ceremonies and the decoy challenge so
 /// both advertise the same `rpId`.
 fn webauthn_origin_and_rp_id() -> (Url, String) {
-    let rp_origin =
-        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let rp_origin = crate::utils::env::frontend_base_url();
 
     let origin_url = Url::parse(&rp_origin).unwrap_or_else(|e| {
         tracing::error!(

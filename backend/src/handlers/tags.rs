@@ -840,9 +840,8 @@ pub async fn get_links_by_tag(
         .await
         .map_err(|_| db_error())?;
 
-    let base_url =
-        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
-    let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let base_url = crate::handlers::links::get_base_url();
+    let api_url = crate::handlers::links::get_api_url();
     let responses: Vec<crate::handlers::links::LinkResponse> = links_list
         .into_iter()
         .map(|l| crate::handlers::links::LinkResponse {

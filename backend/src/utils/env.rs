@@ -59,6 +59,41 @@ pub fn env_parse<T: FromStr + Display>(name: &str, default: T) -> T {
     })
 }
 
+/// `configured` with surrounding whitespace and trailing slashes removed.
+/// `None` when nothing is left (`""`, `"/"`, `"   "`), which callers treat as unset.
+///
+/// Short links are `{base}/{code}`. A base of `https://opn.onl/` would make
+/// `https://opn.onl//code`, which the frontend proxy does not route as a code.
+pub fn normalize_public_base(configured: &str) -> Option<String> {
+    let trimmed = configured.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// [`normalize_public_base`] of `configured`, or of `default` when that is
+/// missing or blank. Blank means unset, the same rule as [`env_nonempty`].
+pub fn public_base_or(configured: Option<&str>, default: &str) -> String {
+    configured
+        .and_then(normalize_public_base)
+        .or_else(|| normalize_public_base(default))
+        .unwrap_or_default()
+}
+
+/// `FRONTEND_URL` without a trailing slash. Unset or blank is the dev SPA.
+pub fn frontend_base_url() -> String {
+    let configured = std::env::var("FRONTEND_URL").ok();
+    public_base_or(configured.as_deref(), "http://localhost:5173")
+}
+
+/// `BASE_URL` without a trailing slash. Unset or blank is the dev API.
+pub fn api_base_url() -> String {
+    let configured = std::env::var("BASE_URL").ok();
+    public_base_or(configured.as_deref(), "http://localhost:3000")
+}
+
 /// True the first time `name` is seen with `value` in this process.
 fn first_report(name: &str, value: &str) -> bool {
     static SEEN: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
@@ -70,11 +105,56 @@ fn first_report(name: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{env_flag, env_nonempty, env_parse, first_report, parse_flag};
+    use super::{
+        env_flag, env_nonempty, env_parse, first_report, normalize_public_base, parse_flag,
+        public_base_or,
+    };
     use crate::utils::test_env::{remove_env, set_env};
 
     // Each test uses variable names of its own: the environment is process
     // wide and the tests run in parallel.
+
+    #[test]
+    fn public_base_drops_trailing_slashes_and_blank_means_the_default() {
+        assert_eq!(
+            public_base_or(Some("https://opn.onl/"), "http://localhost:5173"),
+            "https://opn.onl"
+        );
+        assert_eq!(
+            public_base_or(Some("https://opn.onl///"), "http://localhost:5173"),
+            "https://opn.onl"
+        );
+        assert_eq!(
+            public_base_or(Some("  https://opn.onl/app/  "), "http://localhost:5173"),
+            "https://opn.onl/app"
+        );
+        assert_eq!(
+            public_base_or(Some("https://opn.onl"), "http://localhost:5173"),
+            "https://opn.onl"
+        );
+        assert_eq!(
+            public_base_or(None, "http://localhost:5173/"),
+            "http://localhost:5173"
+        );
+        assert_eq!(
+            public_base_or(Some(""), "http://localhost:5173/"),
+            "http://localhost:5173"
+        );
+        assert_eq!(
+            public_base_or(Some("   "), "http://localhost:5173"),
+            "http://localhost:5173"
+        );
+        assert_eq!(
+            public_base_or(Some("/"), "http://localhost:5173"),
+            "http://localhost:5173"
+        );
+        assert_eq!(
+            normalize_public_base("https://opn.onl/"),
+            Some("https://opn.onl".to_string())
+        );
+        assert_eq!(normalize_public_base(" / "), None);
+        assert_eq!(normalize_public_base(""), None);
+    }
 
     #[test]
     fn flag_spellings_are_case_insensitive_and_trimmed() {

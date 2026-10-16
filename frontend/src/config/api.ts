@@ -9,8 +9,11 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:30
 // the backend), so that origin is what belongs in front of a code: the
 // configured VITE_FRONTEND_URL, else wherever this app is being served from.
 // Never a hard-coded host, which is wrong on every self-hosted instance.
+// Trailing slashes are stripped the same way as normalizeSiteUrl. An empty
+// VITE_FRONTEND_URL still means this page's origin: normalizeSiteUrl would
+// replace that with the hosted default, which is wrong on a dev server.
 export const shortLinkBase = (): string =>
-    import.meta.env.VITE_FRONTEND_URL || window.location.origin;
+    (import.meta.env.VITE_FRONTEND_URL || window.location.origin).replace(/\/+$/, '');
 
 /** shortLinkBase() without the scheme, for display: "links.example.org". */
 export const shortLinkHost = (): string => shortLinkBase().replace(/^https?:\/\//, '');

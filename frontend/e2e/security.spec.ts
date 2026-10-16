@@ -228,8 +228,9 @@ test.describe('Security Tests', () => {
 
     test.describe('SQL Injection Prevention', () => {
         test('should handle SQL injection attempts in search', async ({ request }) => {
-            // The dashboard filters in the browser; GET /links?search= is the
-            // server-side search that reaches SQL (LIKE over url, code and notes).
+            // The dashboard filters in the browser until the list is paged;
+            // GET /links?search= is the server-side search that reaches SQL
+            // (ILIKE over url, code, title, notes and in-scope tag names).
             const user = await createUser(request);
             const mine = await createLink(request, user.token);
             const search = async (query: string) => {

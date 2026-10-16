@@ -42,6 +42,17 @@ describe('short link base', () => {
         expect(shortLinkBase()).toBe(window.location.origin);
         expect(shortLinkHost()).toBe(window.location.host);
     });
+
+    it('drops a trailing slash so a code is not preceded by //', () => {
+        vi.stubEnv('VITE_FRONTEND_URL', 'https://links.example.org/');
+        expect(shortLinkBase()).toBe('https://links.example.org');
+        expect(shortLinkHost()).toBe('links.example.org');
+        vi.stubEnv('VITE_FRONTEND_URL', 'https://links.example.org///');
+        expect(shortLinkBase()).toBe('https://links.example.org');
+        // A path stays; only the slashes after it go.
+        vi.stubEnv('VITE_FRONTEND_URL', 'https://links.example.org/app/');
+        expect(shortLinkBase()).toBe('https://links.example.org/app');
+    });
 });
 
 describe('API_ENDPOINTS', () => {

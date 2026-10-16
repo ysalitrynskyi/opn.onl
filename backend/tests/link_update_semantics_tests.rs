@@ -3,7 +3,8 @@
 //! * burn-after-reading and the click cap it rides on change together;
 //! * bulk update keeps `starts_at` before `expires_at`;
 //! * a folder, a title and notes can be cleared;
-//! * `GET /links?search=` is case-insensitive and treats `%` and `_` literally;
+//! * `GET /links?search=` is case-insensitive, treats `%` and `_` literally,
+//!   and matches a tag name that is in scope for that link;
 //! * a failed read is a 500, not an empty 200;
 //! * a clone carries everything that makes the original behave as it does;
 //! * `GET /tags/{id}/links` returns each link's tags and `added` counts rows;
@@ -18,7 +19,9 @@ use axum_test::TestServer;
 use chrono::{Duration, SubsecRound, Utc};
 use common::{spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::AppState;
-use opn_onl_backend::entity::{blocked_links, link_tags, links, routing_rules, tags, users};
+use opn_onl_backend::entity::{
+    blocked_links, link_tags, links, org_members, organizations, routing_rules, tags, users,
+};
 use opn_onl_backend::utils::create_jwt;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, Database, DatabaseConnection,
@@ -581,6 +584,281 @@ async fn link_search_is_case_insensitive_and_takes_wildcards_literally() {
         search("\\").await,
         vec![backslash.id as i64],
         "a backslash is literal"
+    );
+}
+
+/// A code and URL that cannot contain a word made of letters outside hex,
+/// so a tag-name search is the only way `search` can find the link.
+fn quiet_code() -> String {
+    format!("c{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
+}
+
+fn quiet_url() -> String {
+    format!("https://iana.org/q-{}", uuid::Uuid::new_v4().simple())
+}
+
+fn assert_no_text(link: &links::Model, needle: &str) {
+    let blob = format!(
+        "{} {} {} {}",
+        link.code,
+        link.original_url,
+        link.title.as_deref().unwrap_or(""),
+        link.notes.as_deref().unwrap_or("")
+    );
+    assert!(
+        !blob.to_lowercase().contains(&needle.to_lowercase()),
+        "{needle} is in a non-tag field of link {}: {blob}",
+        link.id
+    );
+}
+
+/// Once the list is paged the dashboard searches on the server, which used to
+/// look at the URL, code, title and notes only. A link tagged "spring" and
+/// nothing else disappeared. Another account's tag of the same name, and a tag
+/// that is not in scope for the link, must not count.
+#[tokio::test]
+async fn link_search_matches_an_in_scope_tag_and_not_someone_elses() {
+    let (_, db) = spawn_real_app().await;
+    let owner = person(&db).await;
+    let other = person(&db).await;
+
+    let org = organizations::ActiveModel {
+        name: Set("Tag Search Org".to_string()),
+        slug: Set(format!("tg-{}", uuid::Uuid::new_v4().simple())),
+        owner_id: Set(owner.id),
+        created_at: Set(Utc::now().naive_utc()),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert org");
+    org_members::ActiveModel {
+        org_id: Set(org.id),
+        user_id: Set(owner.id),
+        role: Set("owner".to_string()),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("add org member");
+
+    let mut tagged = new_link(owner.id);
+    tagged.code = Set(quiet_code());
+    tagged.original_url = Set(quiet_url());
+    let tagged = insert(&db, tagged).await;
+    assert_no_text(&tagged, "spring");
+    let spring = add_tag(&db, owner.id, "spring").await;
+    attach(&db, tagged.id, spring.id).await;
+
+    // Same account, no tag and no "spring" text: owning the tag is not enough.
+    let mut plain = new_link(owner.id);
+    plain.code = Set(quiet_code());
+    plain.original_url = Set(quiet_url());
+    let plain = insert(&db, plain).await;
+    assert_no_text(&plain, "spring");
+
+    // The other account's own "spring" tag must not show up in the owner's list.
+    let mut theirs = new_link(other.id);
+    theirs.code = Set(quiet_code());
+    theirs.original_url = Set(quiet_url());
+    let theirs = insert(&db, theirs).await;
+    let their_spring = add_tag(&db, other.id, "spring").await;
+    attach(&db, theirs.id, their_spring.id).await;
+
+    // A tag this account owns but never attached must not match every link.
+    add_tag(&db, owner.id, "unusedspring").await;
+
+    // Attached, but out of scope: another account's tag on this link.
+    let foreign = add_tag(&db, other.id, "foreignonly").await;
+    attach(&db, tagged.id, foreign.id).await;
+    // A row that names the caller as well as an organization is still an
+    // organization tag, so it is out of scope on a personal link.
+    let org_tag_on_personal = tags::ActiveModel {
+        name: Set("orgonly".to_string()),
+        user_id: Set(Some(owner.id)),
+        org_id: Set(Some(org.id)),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert org tag");
+    attach(&db, tagged.id, org_tag_on_personal.id).await;
+
+    // `%` and `_` in a tag name are literal, same as on the other columns.
+    let mut percent = new_link(owner.id);
+    percent.code = Set(quiet_code());
+    percent.original_url = Set(quiet_url());
+    let percent = insert(&db, percent).await;
+    attach(&db, percent.id, add_tag(&db, owner.id, "100%off").await.id).await;
+    let mut percent_lookalike = new_link(owner.id);
+    percent_lookalike.code = Set(quiet_code());
+    percent_lookalike.original_url = Set(quiet_url());
+    let percent_lookalike = insert(&db, percent_lookalike).await;
+    attach(
+        &db,
+        percent_lookalike.id,
+        add_tag(&db, owner.id, "100Xoff").await.id,
+    )
+    .await;
+    let mut underscored = new_link(owner.id);
+    underscored.code = Set(quiet_code());
+    underscored.original_url = Set(quiet_url());
+    let underscored = insert(&db, underscored).await;
+    attach(&db, underscored.id, add_tag(&db, owner.id, "a_b").await.id).await;
+    let mut underscore_lookalike = new_link(owner.id);
+    underscore_lookalike.code = Set(quiet_code());
+    underscore_lookalike.original_url = Set(quiet_url());
+    let underscore_lookalike = insert(&db, underscore_lookalike).await;
+    attach(
+        &db,
+        underscore_lookalike.id,
+        add_tag(&db, owner.id, "axb").await.id,
+    )
+    .await;
+
+    // Organization link: only that organization's tag is in scope.
+    let mut org_link = new_link(owner.id);
+    org_link.code = Set(quiet_code());
+    org_link.original_url = Set(quiet_url());
+    org_link.org_id = Set(Some(org.id));
+    let org_link = insert(&db, org_link).await;
+    assert_no_text(&org_link, "orgleaf");
+    assert_no_text(&org_link, "personalonly");
+    let org_spring = tags::ActiveModel {
+        name: Set("orgleaf".to_string()),
+        org_id: Set(Some(org.id)),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert org tag");
+    attach(&db, org_link.id, org_spring.id).await;
+    let personal_only = add_tag(&db, owner.id, "personalonly").await;
+    attach(&db, org_link.id, personal_only.id).await;
+    // Another organization's tag, attached to this organization's link.
+    let other_org = organizations::ActiveModel {
+        name: Set("Other Tag Search Org".to_string()),
+        slug: Set(format!("tg-{}", uuid::Uuid::new_v4().simple())),
+        owner_id: Set(other.id),
+        created_at: Set(Utc::now().naive_utc()),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert other org");
+    let other_org_tag = tags::ActiveModel {
+        name: Set("rivaltag".to_string()),
+        org_id: Set(Some(other_org.id)),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("insert other org tag");
+    attach(&db, org_link.id, other_org_tag.id).await;
+    let mut personal = new_link(owner.id);
+    personal.code = Set(quiet_code());
+    personal.original_url = Set(quiet_url());
+    let personal = insert(&db, personal).await;
+    attach(&db, personal.id, personal_only.id).await;
+
+    let found = |token: String, q: String, org_id: Option<i32>| async move {
+        let mut request = app().await.get("/links").add_query_param("search", &q);
+        if let Some(org_id) = org_id {
+            request = request.add_query_param("org_id", org_id.to_string());
+        }
+        let res = request.authorization_bearer(&token).await;
+        assert_eq!(
+            res.status_code(),
+            200,
+            "search {q:?} org={org_id:?}: {}",
+            res.text()
+        );
+        let mut ids = link_ids(&res.json::<Value>());
+        ids.sort_unstable();
+        ids
+    };
+
+    assert_eq!(
+        found(owner.token.clone(), "spring".to_string(), None).await,
+        vec![tagged.id as i64],
+        "a tag name is enough when nothing else matches"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "SpRiNg".to_string(), None).await,
+        vec![tagged.id as i64],
+        "tag match is case-insensitive"
+    );
+    assert_eq!(
+        found(other.token.clone(), "spring".to_string(), None).await,
+        vec![theirs.id as i64],
+        "the other account finds its own tag"
+    );
+    assert!(
+        !found(other.token.clone(), "spring".to_string(), None)
+            .await
+            .contains(&(tagged.id as i64)),
+        "another account's tag must not leak into this list"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "unusedspring".to_string(), None).await,
+        Vec::<i64>::new(),
+        "a tag that is not on the link does not match it"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "foreignonly".to_string(), None).await,
+        Vec::<i64>::new(),
+        "another account's tag attached to this link is out of scope"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "orgonly".to_string(), None).await,
+        Vec::<i64>::new(),
+        "an organization tag is out of scope on a personal link"
+    );
+    assert_eq!(
+        found(owner.token.clone(), plain.code.clone(), None).await,
+        vec![plain.id as i64],
+        "a non-tag search still finds the untagged link"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "100%off".to_string(), None).await,
+        vec![percent.id as i64],
+        "% in a tag name is literal"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "a_b".to_string(), None).await,
+        vec![underscored.id as i64],
+        "_ in a tag name is literal"
+    );
+
+    assert_eq!(
+        found(owner.token.clone(), "orgleaf".to_string(), Some(org.id)).await,
+        vec![org_link.id as i64],
+        "an organization tag matches that organization's link"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "orgleaf".to_string(), None).await,
+        vec![org_link.id as i64],
+        "the same organization tag matches on the caller's own list"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "rivaltag".to_string(), Some(org.id)).await,
+        Vec::<i64>::new(),
+        "another organization's tag is out of scope on this organization's link"
+    );
+    assert_eq!(
+        found(
+            owner.token.clone(),
+            "personalonly".to_string(),
+            Some(org.id)
+        )
+        .await,
+        Vec::<i64>::new(),
+        "a personal tag is out of scope on an organization link"
+    );
+    assert_eq!(
+        found(owner.token.clone(), "personalonly".to_string(), None).await,
+        vec![personal.id as i64],
+        "a personal tag still matches the personal link it is on"
     );
 }
 
