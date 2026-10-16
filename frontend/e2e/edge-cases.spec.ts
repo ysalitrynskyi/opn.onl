@@ -261,14 +261,23 @@ test.describe('Dead or missing session', () => {
 
     for (const { kind, token } of rejectedTokens) {
         test(`${kind} is discarded and the visitor lands on sign-in`, async ({ page, request }) => {
-            await seedTokenOnce(page, await token(request));
-            const listed = page.waitForResponse(
-                (res) => isLinkListUrl(res.url()) && res.request().method() === 'GET',
+            const seeded = await token(request);
+            await seedTokenOnce(page, seeded);
+            // The dashboard sends the token with several requests at once (the
+            // links, folders, tags, teams, the live stream), and the first 401
+            // sends the page to /login, which drops the ones still in flight.
+            // Waiting for the links request alone never resolved when another
+            // answered first, so wait for whichever request carrying the token
+            // answers first.
+            const rejected = page.waitForResponse(
+                (res) =>
+                    res.url().startsWith(`${API_URL}/`) &&
+                    res.request().headers()['authorization'] === `Bearer ${seeded}`,
             );
 
             await page.goto('/dashboard');
 
-            expect((await listed).status()).toBe(401);
+            expect((await rejected).status()).toBe(401);
             await expect(page).toHaveURL(/\/login$/);
             await expect(page.getByRole('heading', { name: 'Sign in to opn.onl' })).toBeVisible();
             expect(await page.evaluate(() => localStorage.getItem('token'))).toBeNull();
