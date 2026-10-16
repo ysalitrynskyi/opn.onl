@@ -357,6 +357,7 @@ async fn admin_stats_have_full_shape() {
         "blocked_links_count",
         "blocked_domains_count",
         "email_case_collisions",
+        "open_reports",
     ] {
         assert!(
             body[field].as_i64().is_some_and(|v| v >= 0),

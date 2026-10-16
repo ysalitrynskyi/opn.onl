@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { ExternalLink, Lock, Clock, MousePointer, Globe, AlertTriangle, ArrowRight, EyeOff, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
 import { API_ENDPOINTS, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
+import ReportLinkDialog from '../components/ReportLinkDialog';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -56,6 +57,7 @@ export default function Preview() {
     const [preview, setPreview] = useState<LinkPreview | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [reporting, setReporting] = useState(false);
 
     useEffect(() => {
         const fetchPreview = async () => {
@@ -280,6 +282,13 @@ export default function Preview() {
                                     {inactiveButton}
                                 </button>
                             )}
+                            <button
+                                type="button"
+                                onClick={() => setReporting(true)}
+                                className="mt-3 w-full rounded-xl border border-slate-200 px-6 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                            >
+                                Report this link
+                            </button>
                         </div>
                     </div>
 
@@ -307,6 +316,9 @@ export default function Preview() {
                     </RouterLink>
                 </motion.div>
             </motion.div>
+            {reporting && (
+                <ReportLinkDialog code={preview.code} onClose={() => setReporting(false)} />
+            )}
         </div>
     );
 }

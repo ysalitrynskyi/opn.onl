@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams, Link as RouterLink } from 'rea
 import { ExternalLink, ShieldCheck, ShieldAlert, ShieldQuestion, ArrowRight } from 'lucide-react';
 import { API_ENDPOINTS } from '../config/api';
 import SEO from '../components/SEO';
+import ReportLinkDialog from '../components/ReportLinkDialog';
 
 interface Interstitial {
     domain: string;
@@ -30,6 +31,7 @@ export default function Redirect() {
     const [checking, setChecking] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [interstitial, setInterstitial] = useState<Interstitial | null>(null);
+    const [reporting, setReporting] = useState(false);
 
     useEffect(() => {
         if (!code) {
@@ -127,6 +129,7 @@ export default function Redirect() {
                 : "We couldn't verify this destination. Proceed only if you trust it.";
 
         return (
+            <>
             <div className="min-h-[60vh] flex items-center justify-center px-4 py-12">
                 <SEO title="Before you continue" noIndex />
                 <div className="max-w-lg w-full">
@@ -189,10 +192,23 @@ export default function Redirect() {
                                     <ArrowRight className="h-4 w-4" />
                                 </a>
                             </div>
+                            {code && (
+                                <button
+                                    type="button"
+                                    onClick={() => setReporting(true)}
+                                    className="w-full rounded-xl border border-slate-200 px-6 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                >
+                                    Report this link
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
             </div>
+            {reporting && code && (
+                <ReportLinkDialog code={code} onClose={() => setReporting(false)} />
+            )}
+            </>
         );
     }
 

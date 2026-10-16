@@ -588,6 +588,14 @@ pub fn build_router(app_state: AppState) -> Router {
         .route("/tags/:tag_id/links", get(handlers::tags::get_links_by_tag))
         // Contact form
         .route("/contact", post(handlers::contact::send_contact_message))
+        // POST /report is the abuse intake. GET and HEAD still redirect: a
+        // short code named "report" may already exist, and nginx proxies
+        // /report here. The static route has no `{code}` param, so the
+        // handler below supplies it. New aliases are rejected in validate_alias.
+        .route(
+            "/report",
+            get(handlers::links::redirect_report_code).post(handlers::reports::submit_report),
+        )
         // Admin routes (protected)
         .route("/admin/stats", get(handlers::admin::get_admin_stats))
         .route("/admin/activity", get(handlers::admin::get_admin_activity))
@@ -621,6 +629,11 @@ pub fn build_router(app_state: AppState) -> Router {
             post(handlers::admin::admin_verify_email),
         )
         .route("/admin/links", get(handlers::admin::get_all_links))
+        .route("/admin/reports", get(handlers::admin::list_reports))
+        .route(
+            "/admin/reports/:id/resolve",
+            post(handlers::admin::resolve_report),
+        )
         .route(
             "/admin/links/bulk/delete",
             post(handlers::admin::admin_bulk_delete_links),

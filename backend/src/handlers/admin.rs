@@ -9,14 +9,14 @@ use sea_orm::sea_query::Expr;
 use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::{IntoParams, ToSchema};
 
 use super::json_error;
 use crate::AppState;
 use crate::entity::{
-    api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events, links,
-    org_members, organizations, passkeys, users,
+    abuse_reports, api_keys, blocked_domains, blocked_email_domains, blocked_links, click_events,
+    links, org_members, organizations, passkeys, routing_rules, users,
 };
 use crate::utils::backup::is_automatic_backup;
 use crate::utils::decode_jwt;
@@ -28,7 +28,8 @@ use crate::utils::time::utc_rfc3339;
 use crate::utils::url_policy::{
     canonical_blocked_url, domain_matches, normalize_domain_input, normalize_hostname,
 };
-use crate::utils::validation::{MAX_IDS_PER_REQUEST, ilike_pattern};
+use crate::utils::validation::{MAX_IDS_PER_REQUEST, ilike_pattern, validation_error_message};
+use validator::{Validate, ValidationError};
 
 /// A failed count or page is a 500. An empty 200 would show the admin an
 /// account that has nothing, when the database could not be read.
@@ -1761,6 +1762,8 @@ pub struct AdminStatsResponse {
     /// encoding). Such accounts are never merged automatically; search the
     /// user list for the address to find them.
     pub email_case_collisions: u64,
+    /// Abuse reports still waiting for an admin (`status = open`).
+    pub open_reports: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1923,6 +1926,11 @@ pub async fn get_admin_stats(
             tracing::error!("Failed to count email case collisions: {}", e);
             0
         });
+    let open_reports = abuse_reports::Entity::find()
+        .filter(abuse_reports::Column::Status.eq("open"))
+        .count(&state.db)
+        .await
+        .unwrap_or(0) as i64;
 
     (
         StatusCode::OK,
@@ -1944,9 +1952,60 @@ pub async fn get_admin_stats(
             disabled_users_count,
             suspicious_links_count,
             email_case_collisions,
+            open_reports,
         }),
     )
         .into_response()
+}
+
+enum BlockDestination {
+    Created(blocked_links::Model),
+    AlreadyBlocked,
+    InvalidUrl,
+    Failed,
+}
+
+/// Insert one blocked-links row the way `POST /admin/blocked/links` does.
+///
+/// The stored URL is the canonical form. Cache invalidation uses `raw_url`,
+/// the exact string the caller supplied, because that is what
+/// `invalidate_cache_for_url` compares to `links.original_url`. An
+/// already-blocked URL does not invalidate: that matches the 409 the public
+/// block endpoint returns.
+async fn block_destination(
+    state: &AppState,
+    raw_url: &str,
+    reason: Option<String>,
+    admin_id: i32,
+) -> BlockDestination {
+    let Some(url) = canonical_blocked_url(raw_url) else {
+        return BlockDestination::InvalidUrl;
+    };
+
+    let existing = blocked_links::Entity::find()
+        .filter(blocked_links::Column::Url.eq(&url))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten();
+    if existing.is_some() {
+        return BlockDestination::AlreadyBlocked;
+    }
+
+    let blocked = blocked_links::ActiveModel {
+        url: Set(url),
+        reason: Set(reason),
+        blocked_by: Set(Some(admin_id)),
+        ..Default::default()
+    };
+
+    match blocked.insert(&state.db).await {
+        Ok(result) => {
+            invalidate_cache_for_url(state, raw_url).await;
+            BlockDestination::Created(result)
+        }
+        Err(_) => BlockDestination::Failed,
+    }
 }
 
 /// Block a URL (admin only)
@@ -1973,65 +2032,39 @@ pub async fn block_link(
         Err(e) => return e.into_response(),
     };
 
-    // Stored in canonical form so the block matches every spelling of the URL
-    // (see `canonical_blocked_url`); the response shows what was stored.
-    let Some(url) = canonical_blocked_url(&payload.url) else {
-        return (
+    match block_destination(&state, &payload.url, payload.reason, admin_id).await {
+        BlockDestination::InvalidUrl => (
             StatusCode::BAD_REQUEST,
             Json(AdminResponse {
                 success: false,
                 message: "Enter a full http(s) URL, such as https://evil.org/page".to_string(),
             }),
         )
-            .into_response();
-    };
-
-    let existing = blocked_links::Entity::find()
-        .filter(blocked_links::Column::Url.eq(&url))
-        .one(&state.db)
-        .await
-        .ok()
-        .flatten();
-
-    if existing.is_some() {
-        return (
+            .into_response(),
+        BlockDestination::AlreadyBlocked => (
             StatusCode::CONFLICT,
             Json(AdminResponse {
                 success: false,
                 message: "URL is already blocked".to_string(),
             }),
         )
-            .into_response();
-    }
-
-    let blocked = blocked_links::ActiveModel {
-        url: Set(url.clone()),
-        reason: Set(payload.reason.clone()),
-        blocked_by: Set(Some(admin_id)),
-        ..Default::default()
-    };
-
-    match blocked.insert(&state.db).await {
-        Ok(result) => {
-            // Make the block retroactive for any already-cached redirects.
-            invalidate_cache_for_url(&state, &payload.url).await;
-            (
-                StatusCode::CREATED,
-                Json(BlockedLinkResponse {
-                    id: result.id,
-                    url: result.url,
-                    reason: result.reason,
-                    blocked_by: result.blocked_by,
-                    created_at: utc_rfc3339(result.created_at),
-                }),
-            )
-                .into_response()
-        }
-        Err(_) => (
+            .into_response(),
+        BlockDestination::Failed => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(AdminResponse {
                 success: false,
                 message: "Failed to block URL".to_string(),
+            }),
+        )
+            .into_response(),
+        BlockDestination::Created(result) => (
+            StatusCode::CREATED,
+            Json(BlockedLinkResponse {
+                id: result.id,
+                url: result.url,
+                reason: result.reason,
+                blocked_by: result.blocked_by,
+                created_at: utc_rfc3339(result.created_at),
             }),
         )
             .into_response(),
@@ -3857,4 +3890,495 @@ pub async fn get_admin_activity(
     }
 
     (StatusCode::OK, Json(AdminActivityResponse { days: out })).into_response()
+}
+
+// ==================== ADMIN: ABUSE REPORTS ====================
+
+fn validate_report_status(status: &str) -> Result<(), ValidationError> {
+    match status {
+        "resolved" | "dismissed" => Ok(()),
+        _ => {
+            let mut error = ValidationError::new("status");
+            error.message = Some("must be resolved or dismissed".into());
+            Err(error)
+        }
+    }
+}
+
+fn validate_queue_status(status: &str) -> Result<(), ValidationError> {
+    match status {
+        "open" | "resolved" | "dismissed" => Ok(()),
+        _ => {
+            let mut error = ValidationError::new("status");
+            error.message = Some("must be open, resolved, or dismissed".into());
+            Err(error)
+        }
+    }
+}
+
+#[derive(Deserialize, IntoParams)]
+pub struct AdminReportsQuery {
+    /// 1-based page number (default 1)
+    pub page: Option<u64>,
+    /// Items per page, 1-100 (default 25)
+    pub per_page: Option<u64>,
+    /// open (the queue), resolved, or dismissed. Omitted returns every status.
+    pub status: Option<String>,
+    /// Exact short code, so a caller can find the report it just created.
+    pub code: Option<String>,
+}
+
+#[derive(Deserialize, Validate, ToSchema)]
+pub struct ResolveReportRequest {
+    /// resolved or dismissed.
+    #[validate(custom(function = "validate_report_status"))]
+    pub status: String,
+    /// When true with `resolved`, block the reported URL, the link's current
+    /// fallback, and each routing-rule destination, the same way
+    /// `POST /admin/blocked/links` does, then close the report.
+    #[serde(default)]
+    pub block_link: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminReportResponse {
+    pub id: i32,
+    pub code: String,
+    pub reason: String,
+    pub details: Option<String>,
+    pub reporter_email: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub resolved_by: Option<i32>,
+    pub link_id: Option<i32>,
+    /// active, blocked, or deleted.
+    pub link_status: String,
+    /// Destination stored when the report was filed. Blocking uses this URL.
+    pub destination_url: String,
+    /// The link's current fallback. Absent when the link row is gone. The
+    /// same string as `destination_url` until the owner edits the link.
+    pub current_destination_url: Option<String>,
+    pub owner_email: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdminReportsListResponse {
+    pub reports: Vec<AdminReportResponse>,
+    pub total: u64,
+    pub page: u64,
+    pub per_page: u64,
+}
+
+/// Blocked or not, remembered for the page so one destination is checked once.
+async fn cached_destination_blocked(
+    db: &DatabaseConnection,
+    url: &str,
+    blocked_cache: &mut HashMap<String, bool>,
+) -> Result<bool, DbErr> {
+    if let Some(known) = blocked_cache.get(url) {
+        return Ok(*known);
+    }
+    let blocked = super::links::destination_is_blocklisted(db, url).await?;
+    blocked_cache.insert(url.to_string(), blocked);
+    Ok(blocked)
+}
+
+/// `(link_status, current fallback, owner email)`. The reported URL is the
+/// row's `destination_url`, not this fallback: the owner may have edited it.
+fn report_link_fields(
+    link: Option<&links::Model>,
+    owners: &HashMap<i32, String>,
+    blocked: Option<bool>,
+) -> (String, Option<String>, Option<String>) {
+    let Some(link) = link else {
+        return ("deleted".to_string(), None, None);
+    };
+    let owner_email = link.user_id.and_then(|id| owners.get(&id).cloned());
+    let current_destination_url = Some(link.original_url.clone());
+    if link.deleted_at.is_some() {
+        return ("deleted".to_string(), current_destination_url, owner_email);
+    }
+    let link_status = if blocked.unwrap_or(false) {
+        "blocked"
+    } else {
+        "active"
+    };
+    (
+        link_status.to_string(),
+        current_destination_url,
+        owner_email,
+    )
+}
+
+fn admin_error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
+    (
+        status,
+        Json(AdminResponse {
+            success: false,
+            message: message.into(),
+        }),
+    )
+        .into_response()
+}
+
+/// Abuse reports, newest first (admin only).
+#[utoipa::path(
+    get,
+    path = "/admin/reports",
+    params(AdminReportsQuery),
+    responses(
+        (status = 200, description = "Paginated abuse reports", body = AdminReportsListResponse),
+        (status = 400, description = "Unknown status filter"),
+        (status = 403, description = "Admin access required"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn list_reports(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminReportsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e.into_response();
+    }
+
+    let (page, per_page) = clamp_pagination(query.page, query.per_page);
+    let mut finder = abuse_reports::Entity::find();
+
+    if let Some(status) = query
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+    {
+        if validate_queue_status(status).is_err() {
+            return admin_error(
+                StatusCode::BAD_REQUEST,
+                "status: must be open, resolved, or dismissed",
+            );
+        }
+        finder = finder.filter(abuse_reports::Column::Status.eq(status));
+    }
+
+    if let Some(code) = query
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+    {
+        finder = finder.filter(abuse_reports::Column::Code.eq(code));
+    }
+
+    finder = finder
+        .order_by_desc(abuse_reports::Column::CreatedAt)
+        .order_by_desc(abuse_reports::Column::Id);
+
+    let paginator = finder.paginate(&state.db, per_page);
+    let total = match paginator.num_items().await {
+        Ok(total) => total,
+        Err(error) => {
+            tracing::error!("abuse report count failed: {error}");
+            return admin_error(StatusCode::INTERNAL_SERVER_ERROR, "Could not load reports");
+        }
+    };
+    let rows = match paginator.fetch_page(page - 1).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!("abuse report list failed: {error}");
+            return admin_error(StatusCode::INTERNAL_SERVER_ERROR, "Could not load reports");
+        }
+    };
+
+    let link_ids: Vec<i32> = rows.iter().filter_map(|row| row.link_id).collect();
+    let links_by_id: HashMap<i32, links::Model> = if link_ids.is_empty() {
+        HashMap::new()
+    } else {
+        match links::Entity::find()
+            .filter(links::Column::Id.is_in(link_ids))
+            .all(&state.db)
+            .await
+        {
+            Ok(found) => found.into_iter().map(|link| (link.id, link)).collect(),
+            Err(error) => {
+                tracing::error!("abuse report link lookup failed: {error}");
+                return admin_error(StatusCode::INTERNAL_SERVER_ERROR, "Could not load reports");
+            }
+        }
+    };
+
+    let owner_ids: Vec<i32> = links_by_id
+        .values()
+        .filter_map(|link| link.user_id)
+        .collect();
+    let owners: HashMap<i32, String> = if owner_ids.is_empty() {
+        HashMap::new()
+    } else {
+        match users::Entity::find()
+            .filter(users::Column::Id.is_in(owner_ids))
+            .all(&state.db)
+            .await
+        {
+            Ok(found) => found
+                .into_iter()
+                .map(|user| (user.id, user.email))
+                .collect(),
+            Err(error) => {
+                tracing::error!("abuse report owner lookup failed: {error}");
+                return admin_error(StatusCode::INTERNAL_SERVER_ERROR, "Could not load reports");
+            }
+        }
+    };
+
+    let mut blocked_cache: HashMap<String, bool> = HashMap::new();
+    let mut reports = Vec::with_capacity(rows.len());
+    for row in rows {
+        let link = row.link_id.and_then(|id| links_by_id.get(&id));
+        let blocked = match link {
+            Some(link) if link.deleted_at.is_none() => {
+                match cached_destination_blocked(&state.db, &link.original_url, &mut blocked_cache)
+                    .await
+                {
+                    Ok(blocked) => Some(blocked),
+                    Err(error) => {
+                        tracing::error!("abuse report blocklist check failed: {error}");
+                        return admin_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Could not load reports",
+                        );
+                    }
+                }
+            }
+            _ => None,
+        };
+        let (link_status, current_destination_url, owner_email) =
+            report_link_fields(link, &owners, blocked);
+        reports.push(AdminReportResponse {
+            id: row.id,
+            code: row.code,
+            reason: row.reason,
+            details: row.details,
+            reporter_email: row.reporter_email,
+            status: row.status,
+            created_at: utc_rfc3339(row.created_at),
+            resolved_at: row.resolved_at.map(utc_rfc3339),
+            resolved_by: row.resolved_by,
+            link_id: row.link_id,
+            link_status,
+            destination_url: row.destination_url,
+            current_destination_url,
+            owner_email,
+        });
+    }
+
+    (
+        StatusCode::OK,
+        Json(AdminReportsListResponse {
+            reports,
+            total,
+            page,
+            per_page,
+        }),
+    )
+        .into_response()
+}
+
+enum ReportedBlockError {
+    NoLink,
+    InvalidUrl,
+    Unavailable,
+    Failed,
+}
+
+fn reported_block_error(error: ReportedBlockError) -> axum::response::Response {
+    match error {
+        ReportedBlockError::NoLink => {
+            admin_error(StatusCode::BAD_REQUEST, "This report has no link to block")
+        }
+        ReportedBlockError::InvalidUrl => admin_error(
+            StatusCode::BAD_REQUEST,
+            "The link destination cannot be blocked",
+        ),
+        ReportedBlockError::Unavailable => admin_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not update the report",
+        ),
+        ReportedBlockError::Failed => {
+            admin_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to block URL")
+        }
+    }
+}
+
+fn push_unique_url(urls: &mut Vec<String>, seen: &mut HashSet<String>, url: &str) {
+    let url = url.trim();
+    if url.is_empty() || !seen.insert(url.to_string()) {
+        return;
+    }
+    urls.push(url.to_string());
+}
+
+/// Block every destination this report can still send someone to: the URL
+/// stored on the report, the link's current fallback, and each routing rule.
+/// Each URL goes through [`block_destination`], including its cache
+/// invalidation. `Err` leaves the report open. `Ok(true)` means every URL
+/// was already blocked (no extra invalidation, same as the public 409 path).
+async fn block_reported_destination(
+    state: &AppState,
+    report: &abuse_reports::Model,
+    admin_id: i32,
+) -> Result<bool, ReportedBlockError> {
+    let mut urls = Vec::new();
+    let mut seen = HashSet::new();
+    push_unique_url(&mut urls, &mut seen, &report.destination_url);
+
+    if let Some(link_id) = report.link_id {
+        let link = match links::Entity::find_by_id(link_id).one(&state.db).await {
+            Ok(link) => link,
+            Err(error) => {
+                tracing::error!("abuse report link load failed: {error}");
+                return Err(ReportedBlockError::Unavailable);
+            }
+        };
+        if let Some(link) = link {
+            push_unique_url(&mut urls, &mut seen, &link.original_url);
+            let rules = match routing_rules::Entity::find()
+                .filter(routing_rules::Column::LinkId.eq(link.id))
+                .all(&state.db)
+                .await
+            {
+                Ok(rules) => rules,
+                Err(error) => {
+                    tracing::error!("abuse report routing rules load failed: {error}");
+                    return Err(ReportedBlockError::Unavailable);
+                }
+            };
+            for rule in rules {
+                push_unique_url(&mut urls, &mut seen, &rule.destination_url);
+            }
+        }
+    }
+
+    if urls.is_empty() {
+        return Err(ReportedBlockError::NoLink);
+    }
+
+    // Reason only: the reporter's email and details stay out of the block row.
+    let mut created_any = false;
+    for url in &urls {
+        match block_destination(state, url, Some(report.reason.clone()), admin_id).await {
+            BlockDestination::Created(_) => created_any = true,
+            BlockDestination::AlreadyBlocked => {}
+            BlockDestination::InvalidUrl => return Err(ReportedBlockError::InvalidUrl),
+            BlockDestination::Failed => return Err(ReportedBlockError::Failed),
+        }
+    }
+    Ok(!created_any)
+}
+
+/// Close an abuse report. `block_link` reuses the admin block path, including
+/// its cache invalidation, and runs before the report is closed so a failed
+/// block leaves the report open.
+#[utoipa::path(
+    post,
+    path = "/admin/reports/{id}/resolve",
+    params(("id" = i32, Path, description = "Report id")),
+    request_body = ResolveReportRequest,
+    responses(
+        (status = 200, description = "Report closed", body = AdminResponse),
+        (status = 400, description = "Already closed, or the link cannot be blocked"),
+        (status = 403, description = "Admin access required"),
+        (status = 404, description = "No such report"),
+    ),
+    tag = "Admin",
+    security(("bearer_auth" = []))
+)]
+pub async fn resolve_report(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i32>,
+    Json(payload): Json<ResolveReportRequest>,
+) -> impl IntoResponse {
+    let admin_id = match require_admin(&state, &headers).await {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+
+    if let Err(errors) = payload.validate() {
+        return admin_error(StatusCode::BAD_REQUEST, validation_error_message(&errors));
+    }
+
+    if payload.block_link && payload.status != "resolved" {
+        return admin_error(
+            StatusCode::BAD_REQUEST,
+            "Only a resolved report can block the link",
+        );
+    }
+
+    let Some(report) = (match abuse_reports::Entity::find_by_id(id).one(&state.db).await {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::error!("abuse report load failed: {error}");
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not update the report",
+            );
+        }
+    }) else {
+        return admin_error(StatusCode::NOT_FOUND, "Report not found");
+    };
+
+    if report.status != "open" {
+        return admin_error(StatusCode::BAD_REQUEST, "This report is already closed");
+    }
+
+    let code = report.code.clone();
+    // `None` when this resolve does not block. `Some(true)` when the
+    // destination was already on the blocklist. `Some(false)` when this call
+    // inserted the block.
+    let already_blocked = if payload.block_link {
+        match block_reported_destination(&state, &report, admin_id).await {
+            Ok(already) => Some(already),
+            Err(error) => return reported_block_error(error),
+        }
+    } else {
+        None
+    };
+
+    let mut active: abuse_reports::ActiveModel = report.into();
+    active.status = Set(payload.status.clone());
+    active.resolved_at = Set(Some(Utc::now().naive_utc()));
+    active.resolved_by = Set(Some(admin_id));
+    if let Err(error) = active.update(&state.db).await {
+        tracing::error!("abuse report update failed: {error}");
+        return admin_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not update the report",
+        );
+    }
+
+    let message = match (payload.status.as_str(), already_blocked) {
+        ("dismissed", _) => "Report dismissed",
+        ("resolved", Some(false)) => "Report resolved and the destination is blocked",
+        ("resolved", Some(true)) => "Report resolved. The destination was already blocked",
+        _ => "Report resolved",
+    };
+
+    tracing::info!(
+        report_id = id,
+        code = %code,
+        status = %payload.status,
+        admin_id,
+        blocked = already_blocked.is_some(),
+        "abuse report closed"
+    );
+
+    (
+        StatusCode::OK,
+        Json(AdminResponse {
+            success: true,
+            message: message.to_string(),
+        }),
+    )
+        .into_response()
 }

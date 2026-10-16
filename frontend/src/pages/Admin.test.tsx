@@ -33,6 +33,7 @@ describe('Admin Page', () => {
         disabled_users_count: 1,
         suspicious_links_count: 2,
         email_case_collisions: 0,
+        open_reports: 2,
     };
 
     const mockActivity = {
@@ -269,6 +270,7 @@ describe('Admin Page', () => {
             if (url.includes('/admin/users')) return respond(mockUsers);
             if (url.includes('/admin/links')) return respond(mockLinks);
             if (url.includes('/admin/orgs')) return respond(mockOrgs);
+            if (url.includes('/admin/reports')) return respond({ reports: [], total: 0, page: 1, per_page: 25 });
             return respond({});
         }) as any;
     });
@@ -1700,6 +1702,331 @@ describe('Admin Page', () => {
             fireEvent.click(await screen.findByRole('button', { name: /organizations/i }));
 
             expect(await screen.findByText('1 organization')).toBeInTheDocument();
+        });
+    });
+
+    describe('Reports', () => {
+        const sampleReport = {
+            id: 9,
+            code: 'abc123',
+            reason: 'phishing',
+            details: 'looks like a bank',
+            reporter_email: 'bob@example.com',
+            status: 'open',
+            created_at: '2026-10-16T12:00:00Z',
+            resolved_at: null,
+            resolved_by: null,
+            link_id: 4,
+            link_status: 'active',
+            destination_url: 'https://www.iana.org/help/example-domains',
+            current_destination_url: 'https://www.iana.org/help/example-domains',
+            owner_email: 'owner@users.opn.onl',
+        };
+
+        beforeEach(() => {
+            const routed = global.fetch as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/reports') && init?.method === 'POST') {
+                    return respond({ success: true });
+                }
+                if (url.includes('/admin/reports')) {
+                    const status = new URL(url, 'http://localhost').searchParams.get('status');
+                    if (status === 'open') {
+                        return respond({ reports: [sampleReport], total: 1, page: 1, per_page: 25 });
+                    }
+                    return respond({ reports: [], total: 0, page: 1, per_page: 25 });
+                }
+                return routed(url, init);
+            }) as any;
+        });
+
+        async function openReports() {
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: 'Reports, 2 open' }));
+            expect(await screen.findByText('abc123')).toBeInTheDocument();
+        }
+
+        it('lists the open queue with the link and a count badge', async () => {
+            await openReports();
+
+            expect(screen.getByText('phishing')).toBeInTheDocument();
+            expect(screen.getByText('looks like a bank')).toBeInTheDocument();
+            expect(screen.getByText('bob@example.com')).toBeInTheDocument();
+            expect(screen.getByText('active')).toBeInTheDocument();
+            expect(screen.getByText('https://www.iana.org/help/example-domains')).toBeInTheDocument();
+            expect(screen.getByText('owner@users.opn.onl')).toBeInTheDocument();
+            expect(screen.getByText(new Date('2026-10-16T12:00:00Z').toLocaleDateString())).toBeInTheDocument();
+            expect(screen.getByText('1 report')).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: 'https://www.iana.org/help/example-domains' })).toHaveAttribute(
+                'rel',
+                'noopener noreferrer nofollow',
+            );
+            expect(screen.queryByText(/^Now/)).not.toBeInTheDocument();
+        });
+
+        it('shows the live destination when the owner changed it after the report', async () => {
+            const routed = global.fetch as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/reports') && init?.method !== 'POST') {
+                    return respond({
+                        reports: [{
+                            ...sampleReport,
+                            current_destination_url: 'https://iana.org/moved-after-the-report',
+                        }],
+                        total: 1,
+                        page: 1,
+                        per_page: 25,
+                    });
+                }
+                return routed(url, init);
+            }) as any;
+
+            await openReports();
+
+            expect(screen.getByText(/^Now/)).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: 'https://iana.org/moved-after-the-report' })).toHaveAttribute(
+                'rel',
+                'noopener noreferrer nofollow',
+            );
+        });
+
+        it('resolves a report', async () => {
+            await openReports();
+            fireEvent.click(screen.getByRole('button', { name: 'Resolve abc123' }));
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    'http://localhost:3000/admin/reports/9/resolve',
+                    expect.objectContaining({
+                        method: 'POST',
+                        body: JSON.stringify({ status: 'resolved' }),
+                    }),
+                );
+            });
+            expect(await screen.findByText('Report resolved')).toBeInTheDocument();
+        });
+
+        it('dismisses a report', async () => {
+            await openReports();
+            fireEvent.click(screen.getByRole('button', { name: 'Dismiss abc123' }));
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    'http://localhost:3000/admin/reports/9/resolve',
+                    expect.objectContaining({
+                        method: 'POST',
+                        body: JSON.stringify({ status: 'dismissed' }),
+                    }),
+                );
+            });
+            expect(await screen.findByText('Report dismissed')).toBeInTheDocument();
+        });
+
+        it('blocks the destination and resolves after confirmation', async () => {
+            const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+            await openReports();
+            fireEvent.click(screen.getByRole('button', { name: 'Block link and resolve abc123' }));
+
+            expect(confirmSpy).toHaveBeenCalledWith(
+                "Block this link's destinations and resolve the report? The reported URL, the current fallback, and each routing rule are blocked, so the short link stops redirecting.",
+            );
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    'http://localhost:3000/admin/reports/9/resolve',
+                    expect.objectContaining({
+                        method: 'POST',
+                        body: JSON.stringify({ status: 'resolved', block_link: true }),
+                    }),
+                );
+            });
+            expect(await screen.findByText('Report resolved')).toBeInTheDocument();
+        });
+
+        it('does not block when the confirmation is cancelled', async () => {
+            vi.spyOn(window, 'confirm').mockReturnValue(false);
+            await openReports();
+            fireEvent.click(screen.getByRole('button', { name: 'Block link and resolve abc123' }));
+
+            expect(global.fetch).not.toHaveBeenCalledWith(
+                expect.stringContaining('/admin/reports/9/resolve'),
+                expect.anything(),
+            );
+        });
+
+        it('loads the queue for the status filter', async () => {
+            await openReports();
+            fireEvent.change(screen.getByRole('combobox', { name: 'Report status' }), {
+                target: { value: 'resolved' },
+            });
+
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/reports?status=resolved'),
+                    expect.anything(),
+                );
+            });
+            expect(await screen.findByText('No resolved reports')).toBeInTheDocument();
+        });
+
+        it('keeps the newer queue when an earlier load finishes last', async () => {
+            let releaseOpen: (value: unknown) => void = () => {};
+            const openHung = new Promise((resolve) => { releaseOpen = resolve; });
+            const routed = global.fetch as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/reports') && init?.method !== 'POST') {
+                    const status = new URL(url, 'http://localhost').searchParams.get('status');
+                    if (status === 'open') return openHung;
+                    return respond({ reports: [], total: 0, page: 1, per_page: 25 });
+                }
+                return routed(url, init);
+            }) as any;
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: 'Reports, 2 open' }));
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/reports?status=open'),
+                    expect.anything(),
+                );
+            });
+
+            fireEvent.change(screen.getByRole('combobox', { name: 'Report status' }), {
+                target: { value: 'resolved' },
+            });
+            expect(await screen.findByText('No resolved reports')).toBeInTheDocument();
+
+            releaseOpen({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    reports: [sampleReport],
+                    total: 1,
+                    page: 1,
+                    per_page: 25,
+                }),
+            });
+            await wait(50);
+
+            expect(screen.queryByText('abc123')).not.toBeInTheDocument();
+            expect(screen.getByText('No resolved reports')).toBeInTheDocument();
+            expect(screen.getByRole('combobox', { name: 'Report status' })).toHaveValue('resolved');
+        });
+
+        it('ignores a failure from a reports load that is no longer current', async () => {
+            let rejectOpen: (error: unknown) => void = () => {};
+            const openHung = new Promise((_resolve, reject) => { rejectOpen = reject; });
+            const routed = global.fetch as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                const respond = (payload: unknown) => Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve(payload),
+                });
+                if (url.includes('/admin/reports') && init?.method !== 'POST') {
+                    const status = new URL(url, 'http://localhost').searchParams.get('status');
+                    if (status === 'open') return openHung;
+                    return respond({
+                        reports: [{ ...sampleReport, id: 10, code: 'closed1', status: 'resolved' }],
+                        total: 1,
+                        page: 1,
+                        per_page: 25,
+                    });
+                }
+                return routed(url, init);
+            }) as any;
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: 'Reports, 2 open' }));
+            await waitFor(() => {
+                expect(global.fetch).toHaveBeenCalledWith(
+                    expect.stringContaining('/admin/reports?status=open'),
+                    expect.anything(),
+                );
+            });
+
+            fireEvent.change(screen.getByRole('combobox', { name: 'Report status' }), {
+                target: { value: 'resolved' },
+            });
+            expect(await screen.findByText('closed1')).toBeInTheDocument();
+
+            rejectOpen(new Error('stale'));
+            await wait(50);
+
+            expect(screen.queryByText('Failed to load reports')).not.toBeInTheDocument();
+            expect(screen.getByText('closed1')).toBeInTheDocument();
+            expect(screen.getByRole('combobox', { name: 'Report status' })).toHaveValue('resolved');
+        });
+
+        it('shows an error when the current reports load fails', async () => {
+            const routed = global.fetch as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.includes('/admin/reports') && init?.method !== 'POST') {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 500,
+                        json: () => Promise.resolve({ error: 'nope' }),
+                    });
+                }
+                return routed(url, init);
+            }) as any;
+
+            render(<Admin />);
+            fireEvent.click(await screen.findByRole('button', { name: 'Reports, 2 open' }));
+
+            expect(await screen.findByText('Failed to load reports')).toBeInTheDocument();
+        });
+
+        it('sends one action when resolve, dismiss and block are clicked together', async () => {
+            let release: () => void = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const posts: string[] = [];
+            const routed = global.fetch as (url: string, init?: RequestInit) => Promise<unknown>;
+            global.fetch = vi.fn((url: string, init?: RequestInit) => {
+                if (url.includes('/admin/reports/') && init?.method === 'POST') {
+                    posts.push(String(init.body));
+                    return gate.then(() => ({
+                        ok: true,
+                        status: 200,
+                        json: () => Promise.resolve({ success: true, message: 'Report resolved' }),
+                    }));
+                }
+                return routed(url, init);
+            }) as any;
+            vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+            await openReports();
+            fireEvent.click(screen.getByRole('button', { name: 'Resolve abc123' }));
+            fireEvent.click(screen.getByRole('button', { name: 'Resolve abc123' }));
+            fireEvent.click(screen.getByRole('button', { name: 'Dismiss abc123' }));
+            fireEvent.click(screen.getByRole('button', { name: 'Block link and resolve abc123' }));
+            expect(posts).toEqual([JSON.stringify({ status: 'resolved' })]);
+
+            release();
+            expect(await screen.findByText('Report resolved')).toBeInTheDocument();
+            await act(async () => { await wait(20); });
+
+            fireEvent.click(screen.getByRole('button', { name: 'Dismiss abc123' }));
+            await waitFor(() => {
+                expect(posts).toEqual([
+                    JSON.stringify({ status: 'resolved' }),
+                    JSON.stringify({ status: 'dismissed' }),
+                ]);
+            });
         });
     });
 });

@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{ConnectInfo, State},
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -147,6 +147,9 @@ pub struct RateLimiters {
     /// Contact form limiter (a few per hour per IP). The contact endpoint sends
     /// email, so it must be strict regardless of the general API tier.
     pub contact: Arc<RateLimiter>,
+    /// Abuse reports (`POST /report`). Public and unauthenticated, so a small
+    /// hourly budget per client, separate from the general API tier.
+    pub report: Arc<RateLimiter>,
 }
 
 impl Default for RateLimiters {
@@ -169,6 +172,8 @@ impl Default for RateLimiters {
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(20, 60))),
             // Contact form sends email: cap at 10 per hour per IP.
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 3600))),
+            // Public abuse reports: 5 per hour per client.
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(5, 3600))),
         }
     }
 }
@@ -192,6 +197,7 @@ impl RateLimiters {
                 limiters.password_verify.cleanup();
                 limiters.password_verify_ip.cleanup();
                 limiters.contact.cleanup();
+                limiters.report.cleanup();
                 tracing::debug!("Rate limiter cleanup completed");
             }
         });
@@ -407,6 +413,7 @@ const API_PREFIXES: &[&str] = &[
     "analytics",
     "admin",
     "contact",
+    "report",
     "ws",
     "sse",
     "health",
@@ -427,6 +434,16 @@ fn is_redirect_path(path: &str) -> bool {
         Some(first) => !first.is_empty() && !API_PREFIXES.contains(&first),
         None => false,
     }
+}
+
+/// `POST /report` is the abuse-report API (and stays on the API buckets,
+/// including the per-second gate). `GET` and `HEAD /report` are the short
+/// code `report`, which may already exist, so they use the redirect budget.
+fn is_redirect_request(method: &Method, path: &str) -> bool {
+    if path == "/report" {
+        return matches!(*method, Method::GET | Method::HEAD);
+    }
+    is_redirect_path(path)
 }
 
 /// The short code a redirect-style path addresses, as the router's `Path`
@@ -476,7 +493,7 @@ pub async fn rate_limit_middleware(
 
     // Redirects are high-volume and skip the strict per-second gate; everything
     // else (including /contact) is classified by its route, not a path heuristic.
-    let is_redirect = is_redirect_path(path);
+    let is_redirect = is_redirect_request(req.method(), path);
 
     if !is_redirect
         && let RateLimitResult::Limited {
@@ -518,6 +535,8 @@ pub async fn rate_limit_middleware(
         limiters.link_creation.check(&format!("create:{}", ip))
     } else if path.starts_with("/contact") && req.method() == axum::http::Method::POST {
         limiters.contact.check(&format!("contact:{}", ip))
+    } else if path == "/report" && req.method() == axum::http::Method::POST {
+        limiters.report.check(&format!("report:{}", ip))
     } else if is_redirect {
         // Short code redirect - more relaxed
         limiters.redirect.check(&format!("redirect:{}", ip))
@@ -575,6 +594,16 @@ mod tests {
         // API routes must never be treated as redirects — /contact especially,
         // since the relaxed redirect bucket was an email-flood vector.
         assert!(!is_redirect_path("/contact"));
+        // POST /report is an API route. GET and HEAD follow an existing code.
+        assert!(!is_redirect_path("/report"));
+        assert!(is_redirect_request(&Method::GET, "/report"));
+        assert!(is_redirect_request(&Method::HEAD, "/report"));
+        assert!(!is_redirect_request(&Method::POST, "/report"));
+        assert!(!is_redirect_request(&Method::PUT, "/report"));
+        assert!(is_redirect_request(&Method::GET, "/abc123"));
+        assert!(!is_redirect_request(&Method::GET, "/contact"));
+        // A code that merely starts with the word is still a redirect.
+        assert!(is_redirect_path("/report-me"));
         assert!(!is_redirect_path("/auth/login"));
         assert!(is_redirect_path("/auth-sale"));
         assert!(is_auth_path("/auth"));
@@ -658,6 +687,7 @@ mod tests {
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 60))),
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
         });
         let app = Router::new()
             .route("/:code/verify", post(|| async { "ok" }))
@@ -699,6 +729,7 @@ mod tests {
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
         });
         let app = Router::new()
             .route("/:code/verify", post(|| async { "ok" }))
@@ -757,6 +788,7 @@ mod tests {
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
         })
     }
 
@@ -1032,6 +1064,7 @@ mod tests {
                 password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
                 password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
                 contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+                report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
             });
 
             let app = Router::new()

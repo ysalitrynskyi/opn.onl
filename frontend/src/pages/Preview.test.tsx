@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '../test/test-utils';
+import { fireEvent, render, screen, waitFor, within } from '../test/test-utils';
 import Preview from './Preview';
 
 vi.mock('react-router-dom', async () => {
@@ -151,5 +151,154 @@ describe('Preview page', () => {
         expect(screen.queryByRole('link', { name: /in a new tab/i })).not.toBeInTheDocument();
         // The link is still live, so it can be visited.
         expect(screen.getByRole('link', { name: /visit link/i })).toBeInTheDocument();
+    });
+
+    it('offers a report on a link that is not active', async () => {
+        mockPreview({ is_active: false, inactive_reason: 'blocked', original_url: '', domain: '' });
+        render(<Preview />);
+
+        expect(await screen.findByText('This link has been disabled')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Report this link' })).toBeInTheDocument();
+    });
+
+    it('does not offer a report when the preview does not exist', async () => {
+        global.fetch = vi.fn().mockResolvedValue({
+            ok: false,
+            status: 404,
+            json: () => Promise.resolve({ error: 'not found' }),
+        });
+        render(<Preview />);
+
+        expect(await screen.findByRole('heading', { name: 'Link Not Found' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Report this link' })).not.toBeInTheDocument();
+    });
+});
+
+describe('Report this link', () => {
+    function mockReport(
+        report: { status: number; body?: unknown } | 'network',
+        overrides: Record<string, unknown> = {},
+    ) {
+        global.fetch = vi.fn((url: string) => {
+            if (String(url).endsWith('/report')) {
+                if (report === 'network') return Promise.reject(new Error('offline'));
+                const status = report.status;
+                return Promise.resolve({
+                    ok: status >= 200 && status < 300,
+                    status,
+                    json: () => Promise.resolve(report.body ?? {}),
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ ...livePreview, ...overrides }),
+            });
+        }) as any;
+    }
+
+    async function submitReport(fields: { details?: string; email?: string } = {}) {
+        render(<Preview />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Report this link' }));
+        fireEvent.click(screen.getByRole('radio', { name: 'Phishing' }));
+        if (fields.details !== undefined) {
+            fireEvent.change(screen.getByLabelText('Details'), { target: { value: fields.details } });
+        }
+        if (fields.email !== undefined) {
+            fireEvent.change(screen.getByLabelText('Email (optional)'), { target: { value: fields.email } });
+        }
+        fireEvent.click(screen.getByRole('button', { name: 'Submit report' }));
+    }
+
+    function reportCall() {
+        const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+        const call = fetchMock.mock.calls.find((entry) => String(entry[0]).endsWith('/report'));
+        expect(call, 'POST /report').toBeTruthy();
+        return call as [string, RequestInit];
+    }
+
+    it('posts the code, reason and details, and leaves a blank email out', async () => {
+        mockReport({ status: 201, body: { status: 'received' } });
+        await submitReport({ details: '  Looks wrong  ', email: '   ' });
+
+        expect(await screen.findByText('Thanks, an administrator will review this link')).toBeInTheDocument();
+        const [url, init] = reportCall();
+        expect(url).toBe('http://localhost:3000/report');
+        expect(init.method).toBe('POST');
+        expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+        expect(JSON.parse(String(init.body))).toEqual({
+            code: 'abc123',
+            reason: 'phishing',
+            details: 'Looks wrong',
+        });
+    });
+
+    it('moves focus to the success status', async () => {
+        mockReport({ status: 201, body: { status: 'received' } });
+        await submitReport();
+
+        const status = within(await screen.findByRole('dialog')).getByRole('status');
+        expect(status).toHaveTextContent('Thanks, an administrator will review this link');
+        await waitFor(() => {
+            expect(status).toHaveFocus();
+        });
+    });
+
+    it('includes an email when the visitor typed one', async () => {
+        mockReport({ status: 201, body: { status: 'received' } });
+        await submitReport({ email: 'Bob@Example.com' });
+
+        await screen.findByText('Thanks, an administrator will review this link');
+        const [, init] = reportCall();
+        expect(JSON.parse(String(init.body))).toEqual({
+            code: 'abc123',
+            reason: 'phishing',
+            email: 'Bob@Example.com',
+        });
+    });
+
+    it('says the link could not be found', async () => {
+        mockReport({ status: 404, body: { error: 'Link not found' } });
+        await submitReport();
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('This link could not be found.');
+    });
+
+    it('says how long to wait when the report is rate limited', async () => {
+        mockReport({ status: 429, body: { error: 'Too many requests', retry_after: 30 } });
+        await submitReport();
+
+        expect(await screen.findByRole('alert')).toHaveTextContent(
+            'Too many reports. Please try again in 30 seconds.',
+        );
+    });
+
+    it('shows the validation error', async () => {
+        mockReport({ status: 400, body: { error: 'reason must be phishing, malware, spam, illegal, or other' } });
+        await submitReport();
+
+        expect(await screen.findByRole('alert')).toHaveTextContent(
+            'reason must be phishing, malware, spam, illegal, or other',
+        );
+    });
+
+    it('says the report could not be sent when the network fails', async () => {
+        mockReport('network');
+        await submitReport();
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not send the report. Please try again.');
+    });
+
+    it('keeps submit disabled until a reason is chosen', async () => {
+        mockReport({ status: 201, body: { status: 'received' } });
+        render(<Preview />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Report this link' }));
+
+        const submit = screen.getByRole('button', { name: 'Submit report' });
+        expect(submit).toBeDisabled();
+        fireEvent.click(submit);
+
+        const calls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
+        expect(calls.some((entry) => String(entry[0]).endsWith('/report'))).toBe(false);
     });
 });

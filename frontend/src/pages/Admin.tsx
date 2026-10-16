@@ -6,7 +6,7 @@ import {
     RefreshCw, AlertTriangle, Check, X, Database, BarChart2,
     Search, ChevronLeft, ChevronRight, KeyRound, Building2,
     ExternalLink, Copy, RotateCcw, Flame, Lock, Pin, MailCheck,
-    ShieldAlert,
+    ShieldAlert, Flag,
 } from 'lucide-react';
 import {
     ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
@@ -35,6 +35,7 @@ interface AdminStats {
     disabled_users_count: number;
     suspicious_links_count: number;
     email_case_collisions: number;
+    open_reports: number;
 }
 
 interface BackupSchedule {
@@ -142,7 +143,28 @@ interface AdminOrg {
     created_at: string;
 }
 
-type Tab = 'overview' | 'users' | 'links' | 'orgs' | 'blocked';
+type Tab = 'overview' | 'users' | 'links' | 'orgs' | 'blocked' | 'reports';
+
+interface AdminReport {
+    id: number;
+    code: string;
+    reason: string;
+    details: string | null;
+    reporter_email: string | null;
+    status: string;
+    created_at: string;
+    resolved_at: string | null;
+    resolved_by: number | null;
+    link_id: number | null;
+    link_status: string;
+    /** The URL stored when the report was filed. */
+    destination_url: string;
+    /** The link's fallback now; null once the link row is gone. */
+    current_destination_url: string | null;
+    owner_email: string | null;
+}
+
+type ReportFilter = 'open' | 'resolved' | 'dismissed';
 
 const PER_PAGE = 25;
 
@@ -207,6 +229,12 @@ export default function Admin() {
     const [newBlockedDomainReason, setNewBlockedDomainReason] = useState('');
     const [newBlockedEmailDomain, setNewBlockedEmailDomain] = useState('');
     const [newBlockedEmailDomainReason, setNewBlockedEmailDomainReason] = useState('');
+
+    // Abuse reports
+    const [reports, setReports] = useState<AdminReport[]>([]);
+    const [reportsTotal, setReportsTotal] = useState(0);
+    const [reportsPage, setReportsPage] = useState(1);
+    const [reportStatus, setReportStatus] = useState<ReportFilter>('open');
 
     const flash = (setter: (v: string) => void, message: string) => {
         setter(message);
@@ -325,6 +353,34 @@ export default function Admin() {
         }
     }, [orgsPage, orgSearch]);
 
+    // A newer filter or page must win, including when the older request fails.
+    const reportsLoadId = useRef(0);
+    const loadReports = useCallback(async () => {
+        const loadId = ++reportsLoadId.current;
+        const params = new URLSearchParams({
+            status: reportStatus,
+            page: String(reportsPage),
+            per_page: String(PER_PAGE),
+        });
+        let res: Response;
+        try {
+            res = await authFetch(`${API_ENDPOINTS.adminReports}?${params}`);
+        } catch (err) {
+            if (loadId !== reportsLoadId.current) return;
+            throw err;
+        }
+        if (loadId !== reportsLoadId.current) return;
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            if (loadId !== reportsLoadId.current) return;
+            throw new Error(data.message || data.error || 'Failed to load reports');
+        }
+        const data = await res.json();
+        if (loadId !== reportsLoadId.current) return;
+        setReports(Array.isArray(data.reports) ? data.reports : []);
+        setReportsTotal(typeof data.total === 'number' ? data.total : 0);
+    }, [reportStatus, reportsPage]);
+
     const loadBlocked = useCallback(async () => {
         const [linksRes, domainsRes, emailDomainsRes] = await Promise.all([
             authFetch(API_ENDPOINTS.adminBlockedLinks),
@@ -384,6 +440,16 @@ export default function Admin() {
         if (activeTab !== 'blocked') return;
         loadBlocked().catch((err) => setError(failureMessage(err, 'Failed to load blocked content')));
     }, [activeTab, loadBlocked]);
+
+    useEffect(() => {
+        if (activeTab !== 'reports') return;
+        loadReports().catch((err) => setError(failureMessage(err, 'Failed to load reports')));
+    }, [activeTab, loadReports]);
+
+    useEffect(() => {
+        const pages = Math.max(1, Math.ceil(reportsTotal / PER_PAGE));
+        if (reportsPage > pages) setReportsPage(pages);
+    }, [reportsTotal, reportsPage]);
 
     // Clamp to the last valid page when a delete or filter shrinks `total`.
     // Pagination hides itself at one page, so an unclamped page leaves an
@@ -642,6 +708,41 @@ export default function Admin() {
         loadBlocked,
     );
 
+    // setState cannot disable a button before a second click in the same
+    // turn. Resolve, Dismiss and Block share this. Other admin actions still
+    // overlap: the overview reload is checked with two deletes in flight.
+    const reportActionInFlight = useRef(false);
+    const runReportAction = (
+        action: () => Promise<Response>,
+        successMessage: string,
+    ) => {
+        if (reportActionInFlight.current) return;
+        reportActionInFlight.current = true;
+        void doAction(action, successMessage, loadReports).finally(() => {
+            reportActionInFlight.current = false;
+        });
+    };
+
+    const resolveReport = (report: AdminReport, status: 'resolved' | 'dismissed') => runReportAction(
+        () => authFetch(API_ENDPOINTS.adminReportResolve(report.id), {
+            method: 'POST',
+            body: JSON.stringify({ status }),
+        }),
+        status === 'dismissed' ? 'Report dismissed' : 'Report resolved',
+    );
+
+    const blockAndResolve = (report: AdminReport) => {
+        if (reportActionInFlight.current) return;
+        if (!confirm("Block this link's destinations and resolve the report? The reported URL, the current fallback, and each routing rule are blocked, so the short link stops redirecting.")) return;
+        runReportAction(
+            () => authFetch(API_ENDPOINTS.adminReportResolve(report.id), {
+                method: 'POST',
+                body: JSON.stringify({ status: 'resolved', block_link: true }),
+            }),
+            'Report resolved',
+        );
+    };
+
     const createBackup = () => doAction(
         () => authFetch(API_ENDPOINTS.adminBackup, { method: 'POST' }),
         'Backup created',
@@ -662,8 +763,10 @@ export default function Admin() {
         { id: 'users', label: 'Users', icon: Users },
         { id: 'links', label: 'Links', icon: Link2 },
         { id: 'orgs', label: 'Organizations', icon: Building2 },
+        { id: 'reports', label: 'Reports', icon: Flag },
         { id: 'blocked', label: 'Blocked Content', icon: Ban },
     ];
+    const openReports = stats?.open_reports ?? 0;
 
     return (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -708,6 +811,7 @@ export default function Admin() {
                     <button
                         key={id}
                         onClick={() => setActiveTab(id)}
+                        aria-label={id === 'reports' && openReports > 0 ? `Reports, ${openReports} open` : undefined}
                         className={`px-4 py-3 font-medium border-b-2 transition-colors whitespace-nowrap ${
                             activeTab === id
                                 ? 'text-primary-600 border-primary-600'
@@ -716,6 +820,11 @@ export default function Admin() {
                     >
                         <Icon className="h-4 w-4 inline mr-2" />
                         {label}
+                        {id === 'reports' && openReports > 0 && (
+                            <span className="ml-2 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-100 px-1.5 py-0.5 text-xs font-semibold text-red-700">
+                                {openReports}
+                            </span>
+                        )}
                     </button>
                 ))}
             </div>
@@ -1449,6 +1558,142 @@ export default function Admin() {
                         )}
                     </div>
                 </motion.div>
+            )}
+
+            {activeTab === 'reports' && (
+                <div className="space-y-4">
+                    <div className="flex flex-wrap items-center gap-3">
+                        <label htmlFor="report-status" className="text-sm font-medium text-slate-700">
+                            Status
+                        </label>
+                        <select
+                            id="report-status"
+                            aria-label="Report status"
+                            value={reportStatus}
+                            onChange={(event) => {
+                                setReportStatus(event.target.value as ReportFilter);
+                                setReportsPage(1);
+                            }}
+                            className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        >
+                            <option value="open">Open</option>
+                            <option value="resolved">Resolved</option>
+                            <option value="dismissed">Dismissed</option>
+                        </select>
+                        <span className="ml-auto text-sm text-slate-500">
+                            {reportsTotal.toLocaleString()} {pluralize(reportsTotal, 'report')}
+                        </span>
+                    </div>
+
+                    {reports.length === 0 ? (
+                        <p className="rounded-xl border border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                            {reportStatus === 'open'
+                                ? 'No open reports'
+                                : reportStatus === 'resolved'
+                                    ? 'No resolved reports'
+                                    : 'No dismissed reports'}
+                        </p>
+                    ) : (
+                        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                            <table className="min-w-full">
+                                <thead className="bg-slate-50">
+                                    <tr>
+                                        <Th>Code</Th>
+                                        <Th>Reason</Th>
+                                        <Th>Details</Th>
+                                        <Th>Created</Th>
+                                        <Th>Link</Th>
+                                        <Th>Destination</Th>
+                                        <Th>Actions</Th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {reports.map((report) => {
+                                        const linkColor = report.link_status === 'active'
+                                            ? 'green'
+                                            : report.link_status === 'blocked'
+                                                ? 'red'
+                                                : 'yellow';
+                                        return (
+                                            <tr key={report.id} className="border-t border-slate-100">
+                                                <td className="px-4 py-3 font-mono text-sm text-slate-900">{report.code}</td>
+                                                <td className="px-4 py-3 text-sm capitalize text-slate-700">{report.reason}</td>
+                                                <td className="px-4 py-3 text-sm text-slate-600 max-w-xs">
+                                                    <p className="whitespace-pre-wrap break-words">{report.details || '—'}</p>
+                                                    {report.reporter_email && (
+                                                        <p className="mt-1 text-xs text-slate-500">{report.reporter_email}</p>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3 text-sm text-slate-500">{formatDate(report.created_at)}</td>
+                                                <td className="px-4 py-3">
+                                                    <Badge color={linkColor}>{report.link_status}</Badge>
+                                                </td>
+                                                <td className="px-4 py-3 text-sm max-w-xs">
+                                                    <a
+                                                        href={report.destination_url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer nofollow"
+                                                        className="block truncate text-primary-600 hover:underline"
+                                                    >
+                                                        {report.destination_url}
+                                                    </a>
+                                                    {report.current_destination_url
+                                                        && report.current_destination_url !== report.destination_url && (
+                                                        <p className="mt-1 text-xs text-slate-500">
+                                                            Now
+                                                            <a
+                                                                href={report.current_destination_url}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer nofollow"
+                                                                className="block truncate text-primary-600 hover:underline"
+                                                            >
+                                                                {report.current_destination_url}
+                                                            </a>
+                                                        </p>
+                                                    )}
+                                                    {report.owner_email && (
+                                                        <p className="mt-1 truncate text-xs text-slate-500">{report.owner_email}</p>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    {report.status === 'open' && (
+                                                        <div className="flex flex-wrap gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => resolveReport(report, 'resolved')}
+                                                                aria-label={`Resolve ${report.code}`}
+                                                                className="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                                            >
+                                                                Resolve
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => resolveReport(report, 'dismissed')}
+                                                                aria-label={`Dismiss ${report.code}`}
+                                                                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                                            >
+                                                                Dismiss
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => blockAndResolve(report)}
+                                                                aria-label={`Block link and resolve ${report.code}`}
+                                                                className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500"
+                                                            >
+                                                                Block link and resolve
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                    <Pagination page={reportsPage} total={reportsTotal} onChange={setReportsPage} />
+                </div>
             )}
         </div>
     );

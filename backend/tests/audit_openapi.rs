@@ -591,6 +591,8 @@ const PUBLIC_OPERATIONS: &[(&str, &str)] = &[
     ("POST", "/links/build-utm"),
     ("POST", "/contact"),
     ("GET", "/{code}"),
+    // The short code `report`, which may already exist: GET follows it.
+    ("GET", "/report"),
     ("GET", "/{code}/preview"),
     ("POST", "/{code}/verify"),
 ];
@@ -598,8 +600,13 @@ const PUBLIC_OPERATIONS: &[(&str, &str)] = &[
 /// Operations that work with or without credentials: `security` must hold the
 /// empty requirement `{}` next to the bearer ones. Resending the verification
 /// email answers the owner of the account specifically when they sign in.
-const OPTIONAL_AUTH_OPERATIONS: &[(&str, &str)] =
-    &[("POST", "/links"), ("POST", "/auth/resend-verification")];
+const OPTIONAL_AUTH_OPERATIONS: &[(&str, &str)] = &[
+    ("POST", "/links"),
+    ("POST", "/auth/resend-verification"),
+    // A report needs no account. A present Authorization header still has to
+    // authenticate, the same rule as creating a link.
+    ("POST", "/report"),
+];
 
 #[tokio::test]
 async fn protected_operations_declare_bearer_security() {
@@ -714,6 +721,7 @@ async fn spawn_app_without_rate_limits() -> (TestServer, DatabaseConnection) {
         password_verify: roomy(),
         password_verify_ip: roomy(),
         contact: roomy(),
+        report: roomy(),
     });
     let server =
         TestServer::new(opn_onl_backend::build_router(state)).expect("failed to start test server");
@@ -1009,6 +1017,7 @@ async fn every_operation_documents_the_rate_limit_response() {
         ("post", "/links"),
         ("post", "/links/{id}/clone"),
         ("post", "/contact"),
+        ("post", "/report"),
     ] {
         assert_eq!(
             spec["paths"][path][method]["responses"]["429"]["$ref"],
@@ -1061,6 +1070,7 @@ async fn rate_limit_table_matches_the_limiters() {
         ("Sign-in", &limiters.auth, ""),
         ("Link creation", &limiters.link_creation, ""),
         ("Contact", &limiters.contact, ""),
+        ("Reports", &limiters.report, ""),
         ("Link password", &limiters.password_verify, " per link"),
         ("Link password", &limiters.password_verify_ip, " in total"),
         ("Redirects", &limiters.redirect, ""),
