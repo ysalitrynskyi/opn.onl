@@ -121,6 +121,7 @@ export const API_ENDPOINTS = {
     
     // Contact
     contact: `${API_BASE_URL}/contact`,
+    report: `${API_BASE_URL}/report`,
     
     // Health
     health: `${API_BASE_URL}/health`,
@@ -156,6 +157,8 @@ export const API_ENDPOINTS = {
     adminBlockedDomain: (id: number) => `${API_BASE_URL}/admin/blocked/domains/${id}`,
     adminBlockedEmailDomains: `${API_BASE_URL}/admin/blocked/email-domains`,
     adminBlockedEmailDomain: (id: number) => `${API_BASE_URL}/admin/blocked/email-domains/${id}`,
+    adminReports: `${API_BASE_URL}/admin/reports`,
+    adminReportResolve: (id: number) => `${API_BASE_URL}/admin/reports/${id}/resolve`,
     adminBackup: `${API_BASE_URL}/admin/backup`,
     adminBackupCleanup: (keep: number) => `${API_BASE_URL}/admin/backup/cleanup/${keep}`,
 };

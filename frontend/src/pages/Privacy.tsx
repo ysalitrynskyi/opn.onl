@@ -156,6 +156,11 @@ export default function Privacy() {
                                 <li>Custom aliases you create</li>
                                 <li>Creation timestamps</li>
                                 <li>Expiration dates (if set)</li>
+                                <li>
+                                    Abuse reports of a short link: the code, the reason, an optional note of up to
+                                    2,000 characters, and an optional email address. The reporter's IP address and
+                                    user agent are not stored.
+                                </li>
                             </ul>
 
                             <h4 className="font-semibold text-slate-900 mb-2">Analytics Data (collected when someone opens a short link)</h4>

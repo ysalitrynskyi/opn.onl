@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '../test/test-utils';
+import { fireEvent, render, screen, waitFor } from '../test/test-utils';
 import Redirect from './Redirect';
 
 vi.mock('react-router-dom', async () => {
@@ -94,5 +94,34 @@ describe('Redirect interstitial', () => {
         await waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
         expect(String(assign.mock.calls[0][0])).toMatch(/\/abc123$/);
         expect(screen.queryByText(/you're leaving/i)).not.toBeInTheDocument();
+    });
+
+    it('reports the short code from the interstitial', async () => {
+        global.fetch = vi.fn((url: string) => {
+            if (String(url).endsWith('/report')) {
+                return Promise.resolve({
+                    ok: true,
+                    status: 201,
+                    json: () => Promise.resolve({ status: 'received' }),
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve(preview),
+            });
+        }) as any;
+        render(<Redirect />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Report this link' }));
+        fireEvent.click(screen.getByRole('radio', { name: 'Phishing' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Submit report' }));
+
+        expect(await screen.findByText('Thanks, an administrator will review this link')).toBeInTheDocument();
+        const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((entry) =>
+            String(entry[0]).endsWith('/report'),
+        );
+        expect(call?.[1]).toEqual(expect.objectContaining({ method: 'POST' }));
+        expect(JSON.parse(String(call?.[1].body))).toEqual({ code: 'abc123', reason: 'phishing' });
     });
 });
