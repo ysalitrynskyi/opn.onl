@@ -3,8 +3,9 @@ name: CI
 on:
   pull_request:
   push:
-    # Protect `release` and require all CI jobs before merging into it. Docker
-    # publication then runs only for commits admitted by that branch gate.
+    # A push to `main` or `release` runs CI on the commit itself.
+    # docker-build.yml waits for that run to pass before it publishes images
+    # for the commit (.github/scripts/wait-for-ci.sh).
     branches:
       - main
       - release
@@ -84,6 +85,11 @@ jobs:
       - name: GeoIP download script
         working-directory: backend
         run: sh scripts/test-download-geoip.sh
+
+      # docker-build.yml publishes nothing until CI passed on the commit; this
+      # is the script that decides it.
+      - name: Image publication gate script
+        run: bash .github/scripts/test-wait-for-ci.sh
 
   frontend-test:
     name: Frontend (vitest + lint + build)

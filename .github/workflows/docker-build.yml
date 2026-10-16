@@ -28,8 +28,32 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Nothing is built or published for a commit whose CI has not passed. A push
+  # to `release` starts this workflow at the same moment as CI, and a tag or a
+  # published release starts it for a commit CI ran on through `main` or
+  # `release`, so this job waits for a push-started CI run on the same commit
+  # to succeed (.github/scripts/wait-for-ci.sh). A failed or cancelled CI, or
+  # none at all, fails it, and no image job runs. After re-running CI, re-run
+  # this workflow.
+  ci-gate:
+    name: CI passed on this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Wait for CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/wait-for-ci.sh "${{ github.repository }}" "${{ github.sha }}"
+
   build-backend:
     name: Build Backend (${{ matrix.platform }})
+    needs: ci-gate
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -98,6 +122,7 @@ jobs:
 
   build-frontend:
     name: Build Frontend (${{ matrix.platform }})
+    needs: ci-gate
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
