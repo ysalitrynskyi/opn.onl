@@ -24,6 +24,9 @@ use crate::utils::validation::{check_max_chars, validation_error_message};
 use axum::http::HeaderMap;
 use std::sync::Arc;
 
+/// Serializes the first-account admin decision. See the signup transaction.
+const FIRST_ACCOUNT_ADMIN_LOCK: i64 = 1_557_021_001;
+
 #[derive(Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
     #[validate(email)]
@@ -186,6 +189,32 @@ pub async fn register(
     // be treated as zero — that would promote a later registrant. Soft-deleted
     // rows do not occupy the seat: after the last live user is gone, the next
     // signup is once again first.
+    //
+    // The count below is not alone under READ COMMITTED: two signups can both
+    // see zero and both insert an admin. The advisory lock is transaction
+    // scoped, so the second signup blocks until the first commits and then
+    // counts that row. `ensure_admin_exists` does not take it. That runs once
+    // at boot, before this process accepts connections, and only promotes an
+    // existing row. Key `1_557_021_001` is not the session lock tests use
+    // (`872_364_198` in auth_security_regression).
+    if txn
+        .execute(Statement::from_sql_and_values(
+            DatabaseBackend::Postgres,
+            "SELECT pg_advisory_xact_lock($1)",
+            [FIRST_ACCOUNT_ADMIN_LOCK.into()],
+        ))
+        .await
+        .is_err()
+    {
+        let _ = txn.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Database error".to_string(),
+            }),
+        )
+            .into_response();
+    }
     let user_count = match users::Entity::find()
         .filter(users::Column::DeletedAt.is_null())
         .count(&txn)
@@ -1841,21 +1870,8 @@ pub async fn get_current_user(
         .unwrap_or(None);
 
     if let Some(user) = user {
-        use crate::entity::{click_events, links};
-
-        let link_count = links::Entity::find()
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::DeletedAt.is_null())
-            .count(&state.db)
-            .await
-            .unwrap_or(0) as i64;
-
-        let total_clicks = click_events::Entity::find()
-            .inner_join(links::Entity)
-            .filter(links::Column::UserId.eq(user_id))
-            .count(&state.db)
-            .await
-            .unwrap_or(0) as i64;
+        let (link_count, total_clicks) =
+            crate::handlers::link_access::own_link_totals(&state.db, user_id).await;
 
         return (
             StatusCode::OK,
@@ -1977,21 +1993,8 @@ pub async fn update_profile(
 
         match active_user.update(&state.db).await {
             Ok(updated) => {
-                use crate::entity::{click_events, links};
-
-                let link_count = links::Entity::find()
-                    .filter(links::Column::UserId.eq(user_id))
-                    .filter(links::Column::DeletedAt.is_null())
-                    .count(&state.db)
-                    .await
-                    .unwrap_or(0) as i64;
-
-                let total_clicks = click_events::Entity::find()
-                    .inner_join(links::Entity)
-                    .filter(links::Column::UserId.eq(user_id))
-                    .count(&state.db)
-                    .await
-                    .unwrap_or(0) as i64;
+                let (link_count, total_clicks) =
+                    crate::handlers::link_access::own_link_totals(&state.db, user_id).await;
 
                 (
                     StatusCode::OK,

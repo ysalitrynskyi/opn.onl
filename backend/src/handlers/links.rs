@@ -22,7 +22,7 @@ use validator::Validate;
 use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
 use crate::handlers::link_access::{
-    CallerAccess, LinkAction, listed_links, live_link_for, readable_links,
+    CallerAccess, LinkAction, count_own_live_links, listed_links, live_link_for, readable_links,
 };
 use crate::handlers::websocket::ClickEvent;
 use crate::handlers::{json_error, verification_satisfied};
@@ -2141,12 +2141,7 @@ pub async fn create_link(
     if let Some(uid) = user_id
         && let Some(cap) = get_max_links_per_user()
     {
-        let existing = links::Entity::find()
-            .filter(links::Column::UserId.eq(uid))
-            .filter(links::Column::DeletedAt.is_null())
-            .count(&state.db)
-            .await
-            .unwrap_or(0);
+        let existing = count_own_live_links(&state.db, uid).await;
         if existing >= cap {
             return (
                 StatusCode::FORBIDDEN,
@@ -2161,8 +2156,13 @@ pub async fn create_link(
         }
     }
 
-    // Same URL, 10 times in 10 minutes, counted per account. A database error
-    // fail-opens, as the old count did: the insert below still has to succeed.
+    // Same URL, 10 times in 10 minutes, counted per account. An abuse
+    // throttle, not the ownership cap above: every row this user created in
+    // the window counts, including soft-deleted links and links in an
+    // organization they have since left, so deleting or leaving does not reset
+    // it. It expires, so unlike MAX_LINKS_PER_USER it cannot lock the account
+    // out. Bulk create does not apply this check. A database error fail-opens,
+    // as the old count did: the insert below still has to succeed.
     if let Some(uid) = user_id {
         let now = chrono::Utc::now().naive_utc();
         let window = chrono::Duration::minutes(SAME_URL_WINDOW_MINUTES);
@@ -5481,12 +5481,7 @@ pub async fn bulk_create_links(
     // anonymous. Tracks the remaining budget as links are created.
     let mut remaining_budget: Option<u64> = None;
     if let (Some(uid), Some(cap)) = (user_id, get_max_links_per_user()) {
-        let existing = links::Entity::find()
-            .filter(links::Column::UserId.eq(uid))
-            .filter(links::Column::DeletedAt.is_null())
-            .count(&state.db)
-            .await
-            .unwrap_or(0);
+        let existing = count_own_live_links(&state.db, uid).await;
         remaining_budget = Some(cap.saturating_sub(existing));
     }
 
@@ -6156,12 +6151,7 @@ pub async fn clone_link(
     // create_link / bulk_create_links. Skipping it lets a user at the
     // advertised MAX_LINKS_PER_USER mint extra active links.
     if let Some(cap) = get_max_links_per_user() {
-        let existing = links::Entity::find()
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::DeletedAt.is_null())
-            .count(&state.db)
-            .await
-            .unwrap_or(0);
+        let existing = count_own_live_links(&state.db, user_id).await;
         if existing >= cap {
             return (
                 StatusCode::FORBIDDEN,

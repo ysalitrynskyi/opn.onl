@@ -171,6 +171,62 @@ async fn check_org_permission(
     Ok(member)
 }
 
+/// Lock the organization row and refuse unless `user_id` is still the owner.
+///
+/// The membership check above runs before this transaction. Two transfers (or a
+/// transfer and a delete) can both pass it, then both write. `FOR UPDATE`
+/// queues the second statement behind the first, and the role is read again
+/// while that lock is held, so the loser sees the committed owner and stops.
+async fn lock_org_if_owner<C: ConnectionTrait>(
+    txn: &C,
+    org_id: i32,
+    user_id: i32,
+) -> Result<organizations::Model, (StatusCode, Json<serde_json::Value>)> {
+    let org = organizations::Entity::find_by_id(org_id)
+        .lock_exclusive()
+        .one(txn)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Organization not found"})),
+            )
+        })?;
+
+    if org.owner_id != user_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Insufficient permissions"})),
+        ));
+    }
+
+    let still_owner = org_members::Entity::find()
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .filter(org_members::Column::UserId.eq(user_id))
+        .one(txn)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            )
+        })?;
+    if !still_owner.is_some_and(|member| member.is_owner()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Insufficient permissions"})),
+        ));
+    }
+
+    Ok(org)
+}
+
 /// True if the user is a member of the org who may modify its resources.
 /// Use the entity's explicit role allowlist so unknown/future roles remain
 /// read-only until their permissions are deliberately defined.
@@ -863,6 +919,13 @@ pub async fn delete_organization(
         )
     })?;
 
+    // The check above can be stale by the time this transaction starts: a
+    // transfer may already have committed. Re-read under the row lock.
+    if let Err(error) = lock_org_if_owner(&txn, org_id, user_id).await {
+        let _ = txn.rollback().await;
+        return Err(error);
+    }
+
     purge_organization(&txn, org_id).await.map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1391,7 +1454,9 @@ pub async fn transfer_ownership(
         ));
     }
 
-    let org = organizations::Entity::find_by_id(org_id)
+    // Fast-fail when the org is already gone. The authoritative read is the
+    // locked one inside the transaction.
+    if organizations::Entity::find_by_id(org_id)
         .one(&state.db)
         .await
         .map_err(|_| {
@@ -1400,12 +1465,13 @@ pub async fn transfer_ownership(
                 Json(serde_json::json!({"error": "Database error"})),
             )
         })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Organization not found"})),
-            )
-        })?;
+        .is_none()
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Organization not found"})),
+        ));
+    }
 
     // Target must be an existing, non-deleted, non-disabled user...
     let new_owner = users::Entity::find_by_id(payload.new_owner_user_id)
@@ -1426,8 +1492,9 @@ pub async fn transfer_ownership(
             )
         })?;
 
-    // ...who is already a member of this organization.
-    let new_owner_member = org_members::Entity::find()
+    // ...who is already a member of this organization. Checked again under the
+    // row lock: they can be removed between this read and the write.
+    if org_members::Entity::find()
         .filter(org_members::Column::OrgId.eq(org_id))
         .filter(org_members::Column::UserId.eq(new_owner.id))
         .one(&state.db)
@@ -1438,26 +1505,13 @@ pub async fn transfer_ownership(
                 Json(serde_json::json!({"error": "Database error"})),
             )
         })?
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(
-                    serde_json::json!({"error": "New owner must be a member of the organization"}),
-                ),
-            )
-        })?;
-
-    let old_owner_member = org_members::Entity::find()
-        .filter(org_members::Column::OrgId.eq(org_id))
-        .filter(org_members::Column::UserId.eq(user_id))
-        .one(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database error"})),
-            )
-        })?;
+        .is_none()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "New owner must be a member of the organization"})),
+        ));
+    }
 
     let txn = state.db.begin().await.map_err(|_| {
         (
@@ -1466,7 +1520,65 @@ pub async fn transfer_ownership(
         )
     })?;
 
+    let org = match lock_org_if_owner(&txn, org_id, user_id).await {
+        Ok(org) => org,
+        Err(error) => {
+            let _ = txn.rollback().await;
+            return Err(error);
+        }
+    };
+
+    let new_owner_member = match org_members::Entity::find()
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .filter(org_members::Column::UserId.eq(new_owner.id))
+        .one(&txn)
+        .await
+    {
+        Ok(Some(member)) => member,
+        Ok(None) => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"error": "New owner must be a member of the organization"}),
+                ),
+            ));
+        }
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            ));
+        }
+    };
+
+    let old_owner_member = match org_members::Entity::find()
+        .filter(org_members::Column::OrgId.eq(org_id))
+        .filter(org_members::Column::UserId.eq(user_id))
+        .one(&txn)
+        .await
+    {
+        Ok(member) => member,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            ));
+        }
+    };
+
     let transfer = async {
+        // Demote before promoting. `idx_org_members_one_owner` is checked at
+        // the end of each statement, so the new owner row cannot be written
+        // while the previous one still says owner.
+        if let Some(old_member) = old_owner_member {
+            let mut demoted: org_members::ActiveModel = old_member.into();
+            demoted.role = Set("admin".to_string());
+            demoted.update(&txn).await?;
+        }
+
         let mut org_active: organizations::ActiveModel = org.into();
         org_active.owner_id = Set(new_owner.id);
         let org = org_active.update(&txn).await?;
@@ -1474,13 +1586,6 @@ pub async fn transfer_ownership(
         let mut promoted: org_members::ActiveModel = new_owner_member.into();
         promoted.role = Set("owner".to_string());
         promoted.update(&txn).await?;
-
-        // Previous owner stays in the org as an admin.
-        if let Some(old_member) = old_owner_member {
-            let mut demoted: org_members::ActiveModel = old_member.into();
-            demoted.role = Set("admin".to_string());
-            demoted.update(&txn).await?;
-        }
 
         Ok::<organizations::Model, sea_orm::DbErr>(org)
     }

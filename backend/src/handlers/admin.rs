@@ -747,12 +747,15 @@ pub(crate) async fn hard_delete_user_in(
             crate::handlers::organizations::purge_organization(txn, org.id).await?;
         }
 
-        // Organization links belong to the team, not their original creator.
+        // Organization links belong to the team. What a caller may do is their
+        // current membership (`link_access`), not `user_id == caller`.
         // `fk-link-user_id` is ON DELETE CASCADE, so the creator FK must
         // leave this user before the row is removed or those org links (and
         // their click history) die with the account. Reassign to the org
-        // owner rather than NULL: list/update/delete/clone/pin all key off
-        // `user_id == caller`, and an org always has an owner. Remaining
+        // owner rather than NULL: an org always has an owner. The creator's
+        // bio opt-in must not move with the row. A public bio lists the
+        // owner's own links where `bio_visible` is set, so leaving the label
+        // and position would publish this link on the owner's page. Remaining
         // rows here cannot be in orgs this user owns (solo orgs were purged
         // above; orgs with other members blocked the delete).
         links::Entity::update_many()
@@ -762,6 +765,9 @@ pub(crate) async fn hard_delete_user_in(
                     "(SELECT owner_id FROM organizations WHERE organizations.id = links.org_id)",
                 ),
             )
+            .col_expr(links::Column::BioVisible, Expr::value(false))
+            .col_expr(links::Column::BioLabel, Expr::value(Option::<String>::None))
+            .col_expr(links::Column::BioPosition, Expr::value(Option::<i32>::None))
             .filter(links::Column::UserId.eq(user_id))
             .filter(links::Column::OrgId.is_not_null())
             .exec(txn)

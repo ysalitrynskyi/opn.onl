@@ -18,7 +18,8 @@
 use axum::{Json, http::StatusCode};
 use sea_orm::sea_query::{Expr, Query, SelectStatement};
 use sea_orm::{
-    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter,
+    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    PaginatorTrait, QueryFilter,
 };
 use std::collections::HashMap;
 
@@ -198,6 +199,35 @@ pub fn listed_links(user_id: i32, org_id: Option<i32>) -> Condition {
             .add(links::Column::OrgId.eq(org_id)),
         None => own_links(user_id),
     }
+}
+
+/// Live links that still belong to this account: [`own_links`], excluding
+/// soft-deleted rows. Create, bulk create, clone and the profile's
+/// `link_count` all use this, so a link in an organization the user has left
+/// cannot keep counting after they lose the ability to delete it.
+pub async fn count_own_live_links<C: ConnectionTrait>(db: &C, user_id: i32) -> u64 {
+    links::Entity::find()
+        .filter(own_links(user_id))
+        .filter(links::Column::DeletedAt.is_null())
+        .count(db)
+        .await
+        .unwrap_or(0)
+}
+
+/// `(link_count, total_clicks)` for `/auth/me` and `PUT /auth/profile`.
+///
+/// `link_count` matches [`count_own_live_links`]. Clicks follow [`own_links`]
+/// with no `deleted_at` filter: a click on a soft-deleted personal link still
+/// counts, and a click on a link in an organization the user has left does not.
+pub async fn own_link_totals<C: ConnectionTrait>(db: &C, user_id: i32) -> (i64, i64) {
+    let link_count = count_own_live_links(db, user_id).await as i64;
+    let total_clicks = crate::entity::click_events::Entity::find()
+        .inner_join(links::Entity)
+        .filter(own_links(user_id))
+        .count(db)
+        .await
+        .unwrap_or(0) as i64;
+    (link_count, total_clicks)
 }
 
 #[cfg(test)]
