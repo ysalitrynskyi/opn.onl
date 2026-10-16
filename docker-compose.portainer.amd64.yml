@@ -57,6 +57,9 @@ services:
     platform: linux/amd64
     container_name: opn_onl_backend
     restart: unless-stopped
+    # On stop the backend drains connections, writes buffered clicks, then waits
+    # for mail it already promised; Docker's default 10 s can cut that short.
+    stop_grace_period: 30s
     depends_on:
       db:
         condition: service_healthy

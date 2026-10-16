@@ -166,17 +166,22 @@ async fn main() {
     .await
     .unwrap();
 
+    // Clicks first: they are the data a deploy would otherwise lose, and the
+    // orchestrator's kill timer (compose `stop_grace_period`, 10 s by default)
+    // is already running. Waiting for mail first let one slow SMTP exchange
+    // use up that time and end the process before the flush.
+    tracing::info!("Server stopped — draining click buffer");
+    shutdown_buffer.request_stop();
+    let _ = flush_task.await;
+    shutdown_buffer.flush(&shutdown_db).await;
+    tracing::info!("Click buffer flushed");
+
     // Mail a request promised before it was answered is sent from a task of its
     // own; let it finish before the runtime goes away.
     if !utils::email::wait_for_background_mail(std::time::Duration::from_secs(10)).await {
         tracing::warn!("Shutting down while mail was still being sent");
     }
-
-    tracing::info!("Server stopped — draining click buffer");
-    shutdown_buffer.request_stop();
-    let _ = flush_task.await;
-    shutdown_buffer.flush(&shutdown_db).await;
-    tracing::info!("Click buffer flushed; shutting down");
+    tracing::info!("Shutting down");
 }
 
 /// Wait for SIGTERM / Ctrl-C. The click buffer is drained after `serve` returns
