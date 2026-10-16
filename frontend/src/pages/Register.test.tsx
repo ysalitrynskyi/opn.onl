@@ -140,7 +140,11 @@ describe('Register Page', () => {
     await user.type(screen.getByLabelText(/email address/i), 'new@example.com');
     await user.type(screen.getByLabelText(/password/i), 'password123');
     await user.click(screen.getByRole('button', { name: /create account/i }));
-    await user.click(await screen.findByRole('button', { name: /resend email/i }));
+    const resend = await screen.findByRole('button', { name: /resend email/i });
+    // Sign-in stored the token; this mock's storage returns it for the resend only,
+    // because a token present at mount sends the page to the dashboard.
+    vi.mocked(localStorage.getItem).mockImplementationOnce((key: string) => (key === 'token' ? mockToken : null));
+    await user.click(resend);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Email is not configured on this instance');
     expect(screen.queryByText('Email sent')).not.toBeInTheDocument();
@@ -149,6 +153,8 @@ describe('Register Page', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ email: 'new@example.com' }),
+        // Signed in, so the server answers for this account, not anonymously.
+        headers: expect.objectContaining({ Authorization: `Bearer ${mockToken}` }),
       }),
     );
   });

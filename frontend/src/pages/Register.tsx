@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Mail, Lock, Check, CheckCircle, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { API_ENDPOINTS, emailVerificationRequired, responseDetail } from '../config/api';
+import { API_ENDPOINTS, authFetch, emailVerificationRequired, responseDetail } from '../config/api';
 import SEO from '../components/SEO';
 import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
@@ -69,9 +69,11 @@ export default function Register() {
         setResendError('');
 
         try {
-            const res = await fetch(API_ENDPOINTS.resendVerification, {
+            // Signed in by now: with the token the server says what really
+            // happened (sent, cooling down, no mail on this instance) instead
+            // of the anonymous "if the account exists" answer.
+            const res = await authFetch(API_ENDPOINTS.resendVerification, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email }),
             });
 
