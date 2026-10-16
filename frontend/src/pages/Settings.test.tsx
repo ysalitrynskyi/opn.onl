@@ -245,11 +245,11 @@ describe('Settings Page', () => {
         it('says so when the server cannot send email, instead of claiming it did', async () => {
             unverifiedAccount({
                 status: 503,
-                body: { error: 'This server is not set up to send email, so no verification email can be sent.' },
+                body: { error: 'Email is not configured on this instance' },
             });
             await clickResend();
 
-            expect(await screen.findByText(/not set up to send email/i)).toBeInTheDocument();
+            expect(await screen.findByText('Email is not configured on this instance')).toBeInTheDocument();
             expect(screen.queryByText(/verification email sent/i)).not.toBeInTheDocument();
         });
 

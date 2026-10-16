@@ -50,11 +50,13 @@ spends one per URL and lists the URLs past the budget in `errors` instead of ans
 Email the API sends has limits of its own, in addition to the table. An address is sent at most \
 one verification email and one password-reset email every 5 minutes, and five of each a day. One \
 client IP can trigger at most 20 account emails an hour (`POST /auth/register`, \
-`/auth/forgot-password`, `/auth/resend-verification`). A request past those limits is answered \
-exactly like one that sent mail and sends nothing, so the answer never reveals whether an \
-address has an account. The one exception is a signed-in `POST /auth/resend-verification` for \
-the caller's own account, which is answered `429` with `Retry-After`, or `503` when the server \
-cannot send email.
+`/auth/forgot-password`, `/auth/resend-verification`). When SMTP is not configured, \
+`POST /auth/resend-verification` answers `503` with `Email is not configured on this instance` \
+for every caller except a signed-in user whose own address is already verified. Otherwise a \
+request past those limits is answered exactly like one that sent mail and sends nothing, so the \
+answer never reveals whether an address has an account. The one exception is a signed-in \
+`POST /auth/resend-verification` for the caller's own account, which is answered `429` with \
+`Retry-After`, or `503` when the server cannot send email.
 ";
 
 // Only the document uses this type: `rate_limit_middleware` builds the body

@@ -44,6 +44,11 @@ pub struct AppState {
     /// handler that classifies differently than the middleware can still enforce
     /// the right limiter.
     pub rate_limiters: Arc<RateLimiters>,
+    /// `REQUIRE_EMAIL_VERIFICATION`, read once at startup. Default true, which
+    /// is the hosted behaviour. A self-hosted instance with no SMTP sets it
+    /// false; guards go through [`handlers::verification_satisfied`] so they
+    /// cannot forget the switch. The stored `email_verified` column is not it.
+    pub require_email_verification: bool,
 }
 
 impl AppState {
@@ -59,7 +64,28 @@ impl AppState {
             click_buffer: Arc::new(ClickBuffer::new()),
             backup: Arc::new(BackupService::new().await),
             rate_limiters: Arc::new(RateLimiters::new()),
+            // Not the process environment: tests run in parallel, and a
+            // developer's `.env` must not flip the suite. Production reads the
+            // variable once in `main`.
+            require_email_verification: true,
         }
+    }
+}
+
+/// True when no account can ever become verified: the requirement is on and
+/// SMTP is not configured. `main` logs that once at startup.
+pub fn accounts_cannot_be_verified(
+    require_email_verification: bool,
+    email_configured: bool,
+) -> bool {
+    require_email_verification && !email_configured
+}
+
+pub fn warn_accounts_cannot_be_verified(require_email_verification: bool, email_configured: bool) {
+    if accounts_cannot_be_verified(require_email_verification, email_configured) {
+        tracing::warn!(
+            "accounts cannot be verified; set REQUIRE_EMAIL_VERIFICATION=false or configure SMTP"
+        );
     }
 }
 
@@ -770,5 +796,18 @@ pub fn redact_request_uri(uri: &str) -> String {
             format!("{scheme}://{auth}{}?{redacted}", parsed.path())
         }
         _ => format!("{}?{redacted}", parsed.path()),
+    }
+}
+
+#[cfg(test)]
+mod verification_switch_tests {
+    use super::accounts_cannot_be_verified;
+
+    #[test]
+    fn only_a_required_check_without_smtp_leaves_accounts_unverifiable() {
+        assert!(accounts_cannot_be_verified(true, false));
+        assert!(!accounts_cannot_be_verified(true, true));
+        assert!(!accounts_cannot_be_verified(false, false));
+        assert!(!accounts_cannot_be_verified(false, true));
     }
 }

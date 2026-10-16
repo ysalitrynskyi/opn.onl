@@ -265,6 +265,41 @@ describe('Settings account correctness', () => {
             expect(calls.some((c) => c.url.includes('/passkey/register/start'))).toBe(false);
         });
 
+        it('lets an unverified account add a passkey when verification is not required', async () => {
+            installApi(
+                (call) => call.url.includes('/auth/settings')
+                    ? reply({ ...appSettings, require_email_verification: false, email_configured: false })
+                    : undefined,
+                { email_verified: false },
+            );
+
+            render(<Settings />);
+
+            expect(await screen.findByText('Unverified')).toBeInTheDocument();
+            const add = await screen.findByRole('button', { name: /add passkey/i });
+            expect(add).toBeEnabled();
+            expect(screen.queryByText('Verify your email to add a passkey.')).not.toBeInTheDocument();
+            expect(screen.queryByText(/access all features/i)).not.toBeInTheDocument();
+            expect(screen.queryByRole('button', { name: 'Resend' })).not.toBeInTheDocument();
+        });
+
+        it('offers a resend without the nag when verification is optional and mail works', async () => {
+            installApi(
+                (call) => call.url.includes('/auth/settings')
+                    ? reply({ ...appSettings, require_email_verification: false, email_configured: true })
+                    : undefined,
+                { email_verified: false },
+            );
+
+            render(<Settings />);
+
+            expect(await screen.findByRole('button', { name: 'Resend' })).toBeInTheDocument();
+            expect(screen.getByText('Email not verified')).toBeInTheDocument();
+            expect(screen.queryByText(/access all features/i)).not.toBeInTheDocument();
+            expect(screen.queryByText('Verify your email to add a passkey.')).not.toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /add passkey/i })).toBeEnabled();
+        });
+
         it('offers it, without the hint, once the email is verified', async () => {
             installApi();
 

@@ -11,7 +11,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use opn_onl_backend::handlers::websocket::WsState;
 use opn_onl_backend::utils::backup::spawn_backup_task;
 use opn_onl_backend::utils::cache::RedisCache;
-use opn_onl_backend::utils::env::env_parse;
+use opn_onl_backend::utils::env::{env_flag, env_parse};
 use opn_onl_backend::utils::logging::{DEFAULT_LOG_MAX_FILES, daily_log_appender};
 use opn_onl_backend::utils::{self, BackupService, ClickBuffer, EmailService};
 use opn_onl_backend::{AppState, build_router, ensure_admin_exists, warn_on_email_case_collisions};
@@ -103,6 +103,14 @@ async fn main() {
     // retention window (ANALYTICS_PII_RETENTION_DAYS, default ~13 months).
     utils::privacy::spawn_retention_task(db.clone());
 
+    // Read once. Blank or unrecognised stays on, the same default `env_flag`
+    // gives every other switch; missing SMTP must not imply this is off.
+    let require_email_verification = env_flag("REQUIRE_EMAIL_VERIFICATION", true);
+    opn_onl_backend::warn_accounts_cannot_be_verified(
+        require_email_verification,
+        email_service.is_some(),
+    );
+
     // Initialize backup service
     let backup = Arc::new(BackupService::new().await);
     if backup.is_configured() {
@@ -122,6 +130,7 @@ async fn main() {
         rate_limiters: std::sync::Arc::new(
             opn_onl_backend::utils::rate_limiter::RateLimiters::new(),
         ),
+        require_email_verification,
     };
 
     // Handles for the graceful-shutdown flush (so buffered clicks aren't lost on

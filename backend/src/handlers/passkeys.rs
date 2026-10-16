@@ -14,7 +14,7 @@ use webauthn_rs::prelude::*;
 
 use crate::AppState;
 use crate::entity::{passkeys, users};
-use crate::handlers::json_error;
+use crate::handlers::{json_error, verification_satisfied};
 use crate::utils::email::generate_token;
 use crate::utils::email_domain_policy::{
     ensure_sign_in_domain_allowed, live_users_by_email, normalize_email,
@@ -306,7 +306,7 @@ pub async fn register_start(
         Ok(Some(u)) => u,
         _ => return json_error(StatusCode::NOT_FOUND, "User not found"),
     };
-    if !user.email_verified {
+    if !verification_satisfied(&state, &user) {
         return json_error(
             StatusCode::FORBIDDEN,
             "Verify your email before registering a passkey",
@@ -409,7 +409,12 @@ pub async fn register_finish(
         .one(&txn)
         .await
     {
-        Ok(Some(user)) if user.token_version == auth.token_version && user.email_verified => user,
+        Ok(Some(user))
+            if user.token_version == auth.token_version
+                && verification_satisfied(&state, &user) =>
+        {
+            user
+        }
         Ok(Some(_)) => {
             let _ = txn.rollback().await;
             return json_error(
