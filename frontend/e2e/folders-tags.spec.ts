@@ -197,7 +197,8 @@ test.describe('Folders and the dashboard', () => {
         await folderFilter.selectOption({ label: 'Campaigns' });
         await expect(rows(page)).toHaveCount(1);
         await expect(linkRow(page, other.code)).toHaveCount(0);
-        await expect(page.getByText('Campaigns', { exact: true }).first()).toBeVisible();
+        // The folder chip on the remaining row (the filter's <option> has the same text).
+        await expect(page.locator('div.group').filter({ has: rows(page) }).getByText('Campaigns', { exact: true })).toBeVisible();
 
         await folderFilter.selectOption({ label: 'All folders' });
         await expect(rows(page)).toHaveCount(2);
