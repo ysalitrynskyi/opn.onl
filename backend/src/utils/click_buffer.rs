@@ -40,6 +40,15 @@ pub struct ClickData {
     pub created_at: Option<chrono::NaiveDateTime>,
 }
 
+/// How a flush treats a link row that another transaction holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParentLock {
+    /// Wait for it (shutdown: nothing may stay in memory).
+    Wait,
+    /// Skip the link and requeue its clicks (the background flush).
+    SkipLocked,
+}
+
 /// Buffered click counter for aggregating click count updates
 struct ClickCounter {
     count: i64,
@@ -230,7 +239,23 @@ impl ClickBuffer {
 
     /// Flush the buffer to the database. Returns true when any events or
     /// counters were requeued because persistence failed.
+    ///
+    /// Waits for a link row another transaction holds, so nothing is left in
+    /// memory afterwards: this is the flush that runs at shutdown.
     pub async fn flush(&self, db: &DatabaseConnection) -> bool {
+        self.flush_with(db, ParentLock::Wait).await
+    }
+
+    /// The background flush. A link whose row another transaction holds (a
+    /// domain block, an account deletion) is skipped and its clicks requeued
+    /// for the next round, instead of holding `flush_lock` while that writer
+    /// finishes: every other link's clicks would wait too, and once the queue
+    /// reached `max_queued` new clicks were dropped.
+    async fn flush_skipping_locked(&self, db: &DatabaseConnection) -> bool {
+        self.flush_with(db, ParentLock::SkipLocked).await
+    }
+
+    async fn flush_with(&self, db: &DatabaseConnection, parent_lock: ParentLock) -> bool {
         let _guard = self.flush_lock.lock().await;
         self.flush_attempts.fetch_add(1, Ordering::Relaxed);
 
@@ -298,11 +323,42 @@ impl ClickBuffer {
             // Lock the active parent while its events and counter are written.
             // Missing/deleted parents are isolated and discarded; they cannot
             // poison valid links in the same flush.
-            let parent = links::Entity::find_by_id(link_id)
-                .filter(links::Column::DeletedAt.is_null())
-                .lock_shared()
-                .one(&txn)
-                .await;
+            let parent_query =
+                links::Entity::find_by_id(link_id).filter(links::Column::DeletedAt.is_null());
+            let parent = match parent_lock {
+                ParentLock::Wait => parent_query.lock_shared().one(&txn).await,
+                ParentLock::SkipLocked => {
+                    parent_query
+                        .lock_with_behavior(
+                            sea_orm::sea_query::LockType::Share,
+                            sea_orm::sea_query::LockBehavior::SkipLocked,
+                        )
+                        .one(&txn)
+                        .await
+                }
+            };
+            // SKIP LOCKED answers a held row as if it did not exist. Tell the
+            // two apart without a lock: a live row is busy, not an orphan.
+            let parent = match (parent, parent_lock) {
+                (Ok(None), ParentLock::SkipLocked) => {
+                    match links::Entity::find_by_id(link_id)
+                        .filter(links::Column::DeletedAt.is_null())
+                        .one(&txn)
+                        .await
+                    {
+                        Ok(Some(_)) => {
+                            let _ = txn.rollback().await;
+                            retry_events.extend(link_events);
+                            if count > 0 {
+                                retry_counts.insert(link_id, count);
+                            }
+                            continue;
+                        }
+                        other => other,
+                    }
+                }
+                (parent, _) => parent,
+            };
             match parent {
                 Ok(Some(_)) => {}
                 Ok(None) => {
@@ -478,8 +534,9 @@ impl ClickBuffer {
                     let _ = self.flush(&db).await;
                     break;
                 }
-                let had_retry = self.flush(&db).await;
+                let had_retry = self.flush_skipping_locked(&db).await;
                 if self.stopped.load(Ordering::SeqCst) {
+                    let _ = self.flush(&db).await;
                     break;
                 }
                 if had_retry {
