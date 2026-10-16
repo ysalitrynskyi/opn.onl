@@ -1,44 +1,30 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
-    Copy, Plus, Trash2, BarChart2,
-    QrCode, Download, Lock, Clock, Edit2, X, Check,
-    Search, ChevronDown, Calendar, ChevronLeft, ChevronRight,
-    MousePointer, SortAsc, SortDesc,
-    Zap, Link2, Share2, Upload, Pin, CopyPlus,
-    Eye, ArrowRight, Flame, ShieldCheck
+    Plus, Download, X, ChevronLeft, ChevronRight,
+    MousePointer,
+    Zap, Link2, Upload, ArrowRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, SessionExpiredError, authFetch, shortLinkBase, totalCount } from '../config/api';
+import { API_ENDPOINTS, authFetch, shortLinkBase, totalCount } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
 import ShareModal from '../components/ShareModal';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import Sparkline from '../components/Sparkline';
 import EditModal from '../components/dashboard/EditModal';
 import QRModal from '../components/dashboard/QRModal';
 import PreviewModal from '../components/dashboard/PreviewModal';
 import BulkImportModal, { type BulkReport } from '../components/dashboard/BulkImportModal';
 import { parseBulkUrls, readBulkErrors } from '../components/dashboard/bulkImport';
 import Skeleton from '../components/dashboard/Skeleton';
-import MiniStats from '../components/dashboard/MiniStats';
-import type { LinkData, LinkUpdatePayload } from '../components/dashboard/types';
-import { savePendingUrl, takePendingUrl } from '../utils/pendingUrl';
+import CreateLinkForm from '../components/dashboard/CreateLinkForm';
+import LinkFilters from '../components/dashboard/LinkFilters';
+import LinkRow from '../components/dashboard/LinkRow';
+import type { AppSettings, LinkData, LinkSortBy, LinkSortOrder, LinkUpdatePayload, SparklineSeries } from '../components/dashboard/types';
+import { takePendingUrl } from '../utils/pendingUrl';
 import { safeLocalStorage } from '../utils/storage';
-import { localIsoDate } from '../utils/localIsoDate';
 import { pluralize } from '../utils/plural';
-
-interface AppSettings {
-    custom_aliases_enabled: boolean;
-    min_alias_length: number;
-    max_alias_length: number;
-    qr_branding_enabled: boolean;
-    burn_after_reading_enabled: boolean;
-    safe_link_interstitial_enabled: boolean;
-    conditional_routing_enabled: boolean;
-    link_in_bio_enabled: boolean;
-}
 
 const LINKS_PER_PAGE = 20;
 const SPARKLINE_BATCH_SIZE = 80;
@@ -80,14 +66,8 @@ export default function Dashboard() {
     const [accountClicks, setAccountClicks] = useState<number | null>(null);
     const [loadingMore, setLoadingMore] = useState(false);
     const [loading, setLoading] = useState(true);
-    const [newUrl, setNewUrl] = useState('');
-    const [alias, setAlias] = useState('');
-    const [title, setTitle] = useState('');
-    const [password, setPassword] = useState('');
-    const [expiresAt, setExpiresAt] = useState('');
-    const [expiresTime, setExpiresTime] = useState('23:59');
-    const [creating, setCreating] = useState(false);
-    const [showAdvanced, setShowAdvanced] = useState(false);
+    // Homepage shorten hands the URL over before the create form mounts.
+    const [createInitialUrl, setCreateInitialUrl] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [editingLink, setEditingLink] = useState<LinkData | null>(null);
     const [qrLink, setQrLink] = useState<LinkData | null>(null);
@@ -96,8 +76,8 @@ export default function Dashboard() {
     const [copiedSourceId, setCopiedSourceId] = useState<number | null>(null);
     const [error, setError] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
-    const [sortBy, setSortBy] = useState<'date' | 'clicks'>('date');
-    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+    const [sortBy, setSortBy] = useState<LinkSortBy>('date');
+    const [sortOrder, setSortOrder] = useState<LinkSortOrder>('desc');
     const [appSettings, setAppSettings] = useState<AppSettings>({
         custom_aliases_enabled: true,
         min_alias_length: 5,
@@ -108,9 +88,7 @@ export default function Dashboard() {
         conditional_routing_enabled: false,
         link_in_bio_enabled: false
     });
-    const [burnAfterReading, setBurnAfterReading] = useState(false);
-    const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(false);
-    const [sparklineData, setSparklineData] = useState<Record<number, { data: number[]; labels: string[] }>>({});
+    const [sparklineData, setSparklineData] = useState<Record<number, SparklineSeries>>({});
     const [previewLink, setPreviewLink] = useState<LinkData | null>(null);
     const [showBulkImport, setShowBulkImport] = useState(false);
     const [bulkUrls, setBulkUrls] = useState('');
@@ -137,7 +115,7 @@ export default function Dashboard() {
             return;
         }
         const pending = takePendingUrl();
-        if (pending) setNewUrl(pending);
+        if (pending) setCreateInitialUrl(pending);
         fetchLinks();
         fetchSettings();
     }, [navigate]);
@@ -251,22 +229,6 @@ export default function Dashboard() {
             setBulkReport({ message: 'Network error during import', failures: [] });
         } finally {
             setBulkImporting(false);
-        }
-    };
-
-    // Clipboard is read only from this click. A mount or focus listener prompts
-    // (or, in some browsers, reads) without the user asking.
-    const pasteClipboardUrl = async () => {
-        try {
-            const text = (await navigator.clipboard.readText()).trim();
-            if (/^https?:\/\/.+/.test(text)) {
-                setNewUrl(text);
-                setError('');
-            } else {
-                setError('Clipboard does not contain an http(s) URL');
-            }
-        } catch {
-            setError('Clipboard access was denied. Paste the URL into the field instead.');
         }
     };
 
@@ -430,7 +392,7 @@ export default function Dashboard() {
     const fetchSparklines = useCallback(async (linkIds: number[]) => {
         if (linkIds.length === 0) return;
         const requestId = ++sparklineFetchId.current;
-        const merged: Record<number, { data: number[]; labels: string[] }> = {};
+        const merged: Record<number, SparklineSeries> = {};
         try {
             for (let i = 0; i < linkIds.length; i += SPARKLINE_BATCH_SIZE) {
                 if (requestId !== sparklineFetchId.current) return;
@@ -508,88 +470,6 @@ export default function Dashboard() {
             }
         })();
     }, [needsAccountClicks]);
-
-    const handleCreate = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setCreating(true);
-        setError('');
-
-        // Validate alias length if provided
-        if (alias) {
-            if (alias.length < appSettings.min_alias_length) {
-                setError(`Alias must be at least ${appSettings.min_alias_length} characters`);
-                setCreating(false);
-                return;
-            }
-            if (alias.length > appSettings.max_alias_length) {
-                setError(`Alias must be at most ${appSettings.max_alias_length} characters`);
-                setCreating(false);
-                return;
-            }
-            // Check for valid characters
-            if (!/^[a-zA-Z0-9_-]+$/.test(alias)) {
-                setError('Alias can only contain letters, numbers, hyphens, and underscores');
-                setCreating(false);
-                return;
-            }
-            // Check for leading/trailing special chars
-            if (/^[-_]|[-_]$/.test(alias)) {
-                setError('Alias cannot start or end with hyphen or underscore');
-                setCreating(false);
-                return;
-            }
-        }
-
-        try {
-            // Build expiration datetime with timezone
-            let expirationDate: string | undefined;
-            if (expiresAt) {
-                const dateTime = `${expiresAt}T${expiresTime || '23:59'}:00`;
-                expirationDate = new Date(dateTime).toISOString();
-            }
-
-            const res = await authFetch(API_ENDPOINTS.links, {
-                method: 'POST',
-                body: JSON.stringify({
-                    original_url: newUrl,
-                    custom_alias: alias || undefined,
-                    title: title || undefined,
-                    password: password || undefined,
-                    expires_at: expirationDate,
-                    burn_after_reading: burnAfterReading || undefined,
-                    safe_link_interstitial: safeLinkInterstitial || undefined,
-                }),
-            });
-
-            if (res.ok) {
-                setNewUrl('');
-                setAlias('');
-                setTitle('');
-                setPassword('');
-                setExpiresAt('');
-                setExpiresTime('23:59');
-                setBurnAfterReading(false);
-                setSafeLinkInterstitial(false);
-                setShowAdvanced(false);
-                fetchLinks();
-            } else {
-                const data = await res.json();
-                setError(data.error || 'Failed to create link');
-            }
-        } catch (error) {
-            logger.error('Failed to create link', error);
-            if (error instanceof SessionExpiredError) {
-                // The session ended while the page was open. authFetch is
-                // sending the user to /login; the URL comes back with them.
-                savePendingUrl(newUrl);
-                setError(error.message);
-            } else {
-                setError('Network error. Please try again.');
-            }
-        } finally {
-            setCreating(false);
-        }
-    };
 
     const handleDelete = async (id: number) => {
         if (!confirm('Are you sure you want to delete this link?')) return;
@@ -862,202 +742,23 @@ export default function Dashboard() {
             )}
 
             {/* Create Link Form */}
-            <div className="rounded-2xl border border-line2 bg-surface p-6 shadow-subtle mb-8">
-                <h2 className="font-display text-lg font-bold text-ink tracking-tight mb-4">Create new link</h2>
-                <form onSubmit={handleCreate}>
-                    <div className="flex flex-col sm:flex-row gap-3">
-                        <input
-                            type="url"
-                            required
-                            placeholder="https://example.com/long-url"
-                            className="flex-1 rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
-                            value={newUrl}
-                            onChange={(e) => setNewUrl(e.target.value)}
-                        />
-                        <button
-                            type="button"
-                            onClick={pasteClipboardUrl}
-                            className="inline-flex items-center justify-center rounded-lg border border-line2 bg-surface px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-ink/30"
-                        >
-                            Paste
-                        </button>
-                        {appSettings.custom_aliases_enabled && (
-                            <input
-                                type="text"
-                                placeholder={`alias (${appSettings.min_alias_length}-${appSettings.max_alias_length} chars)`}
-                                className="sm:w-48 rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
-                                value={alias}
-                                onChange={(e) => setAlias(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
-                                minLength={appSettings.min_alias_length}
-                                maxLength={appSettings.max_alias_length}
-                            />
-                        )}
-                        <button
-                            type="submit"
-                            disabled={creating}
-                            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 px-6 py-2.5 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-70"
-                        >
-                            {creating ? (
-                                <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                            ) : (
-                                <Plus className="h-4 w-4" />
-                            )}
-                            Create
-                        </button>
-                    </div>
-
-                    <button
-                        type="button"
-                        onClick={() => setShowAdvanced(!showAdvanced)}
-                        className="mt-3 inline-flex items-center gap-1 text-sm text-muted transition-colors hover:text-ink"
-                    >
-                        <ChevronDown className={`h-4 w-4 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
-                        Advanced options
-                    </button>
-
-                    <AnimatePresence>
-                        {showAdvanced && (
-                            <motion.div
-                                initial={{ height: 0, opacity: 0 }}
-                                animate={{ height: 'auto', opacity: 1 }}
-                                exit={{ height: 0, opacity: 0 }}
-                                className="overflow-hidden"
-                            >
-                                <div className="space-y-4 mt-4 pt-4 border-t border-line">
-                                    {/* Title - full width */}
-                                    <div>
-                                        <label htmlFor="create-title" className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
-                                            Title (private unless the link is on your bio page)
-                                        </label>
-                                        <input
-                                            id="create-title"
-                                            type="text"
-                                            placeholder="e.g. Marketing campaign Q1"
-                                            className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
-                                            value={title}
-                                            onChange={(e) => setTitle(e.target.value)}
-                                            maxLength={100}
-                                        />
-                                    </div>
-
-                                    <div className="grid sm:grid-cols-2 gap-4">
-                                        <div>
-                                            <label htmlFor="create-password" className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
-                                                <Lock className="h-3.5 w-3.5" />
-                                                Password Protection
-                                            </label>
-                                            <input
-                                                id="create-password"
-                                                type="password"
-                                                placeholder="Leave empty for no password"
-                                                className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
-                                                value={password}
-                                                onChange={(e) => setPassword(e.target.value)}
-                                            />
-                                        </div>
-                                        <div>
-                                            <label htmlFor="create-expires" className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
-                                                <Calendar className="h-3.5 w-3.5" />
-                                                Expiration
-                                            </label>
-                                            <div className="flex gap-2">
-                                                <input
-                                                    id="create-expires"
-                                                    type="date"
-                                                    className="flex-1 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
-                                                    value={expiresAt}
-                                                    onChange={(e) => setExpiresAt(e.target.value)}
-                                                    min={localIsoDate()}
-                                                />
-                                                <input
-                                                    type="time"
-                                                    aria-label="Expiration time"
-                                                    className="w-28 rounded-lg border border-line2 bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
-                                                    value={expiresTime}
-                                                    onChange={(e) => setExpiresTime(e.target.value)}
-                                                />
-                                            </div>
-                                            <p className="text-xs text-faint mt-1.5">
-                                                Your timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}
-                                                {expiresAt && expiresTime && (
-                                                    <span className="ml-2">
-                                                        → Expires: {new Date(`${expiresAt}T${expiresTime}`).toLocaleString()}
-                                                    </span>
-                                                )}
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    {appSettings.burn_after_reading_enabled && (
-                                        <label className="flex items-center gap-2.5 text-sm text-muted cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                checked={burnAfterReading}
-                                                onChange={(e) => setBurnAfterReading(e.target.checked)}
-                                                className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
-                                            />
-                                            <span className="inline-flex items-center gap-1.5">
-                                                <Flame className="h-3.5 w-3.5 text-primary-600" />
-                                                Burn after reading — opens once, then self-destructs
-                                            </span>
-                                        </label>
-                                    )}
-
-                                    {appSettings.safe_link_interstitial_enabled && (
-                                        <label className="flex items-center gap-2.5 text-sm text-muted cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                checked={safeLinkInterstitial}
-                                                onChange={(e) => setSafeLinkInterstitial(e.target.checked)}
-                                                className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
-                                            />
-                                            <span className="inline-flex items-center gap-1.5">
-                                                <ShieldCheck className="h-3.5 w-3.5 text-primary-600" />
-                                                Show a safety interstitial before redirecting
-                                            </span>
-                                        </label>
-                                    )}
-                                </div>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </form>
-            </div>
+            <CreateLinkForm
+                appSettings={appSettings}
+                initialUrl={createInitialUrl}
+                onCreated={() => { fetchLinks(); }}
+                onError={setError}
+            />
 
             {/* Search and Filter */}
             {(links.length > 0 || accountTotal > 0) && (
-                <div className="mb-6 flex flex-col sm:flex-row gap-3">
-                    <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-faint" />
-                        <input
-                            type="search"
-                            aria-label="Search links"
-                            placeholder="Search links, titles, notes, tags..."
-                            className="w-full rounded-lg border border-line2 bg-surface pl-10 pr-4 py-2.5 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
-                            value={searchQuery}
-                            onChange={e => setSearchQuery(e.target.value)}
-                        />
-                    </div>
-                    <div className="flex gap-2">
-                        <select
-                            value={sortBy}
-                            onChange={(e) => setSortBy(e.target.value as 'date' | 'clicks')}
-                            aria-label="Sort links by"
-                            className="rounded-lg border border-line2 bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500"
-                        >
-                            <option value="date">Sort by Date</option>
-                            <option value="clicks">Sort by Clicks</option>
-                        </select>
-                        <button
-                            onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                            className="rounded-lg border border-line2 bg-surface p-2.5 text-muted transition-colors hover:text-ink hover:border-ink/30"
-                            title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
-                            aria-label={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
-                        >
-                            {sortOrder === 'asc' ? <SortAsc className="h-4 w-4" /> : <SortDesc className="h-4 w-4" />}
-                        </button>
-                    </div>
-                </div>
+                <LinkFilters
+                    searchQuery={searchQuery}
+                    onSearchQueryChange={setSearchQuery}
+                    sortBy={sortBy}
+                    onSortByChange={setSortBy}
+                    sortOrder={sortOrder}
+                    onSortOrderChange={setSortOrder}
+                />
             )}
 
             {/* Links List */}
@@ -1067,189 +768,27 @@ export default function Dashboard() {
                         {paginatedLinks.map((link, index) => {
                             // Calculate link number (bottom to top, 1 = oldest)
                             const linkNumber = filteredLinks.length + unloaded - ((currentPage - 1) * LINKS_PER_PAGE + index);
-                            const mainUrl = `${shortLinkBase()}/${link.code}`;
-                            const apiUrl = link.api_url || link.short_url; // Use api_url from backend
-
                             return (
-                            <motion.div
-                                key={link.id}
-                                layout
-                                initial={{ opacity: 0, y: 16 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, scale: 0.98 }}
-                                className="group py-5 transition-colors hover:bg-primary-50/40"
-                            >
-                                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                                    <div className="space-y-1 min-w-0 flex-1">
-                                        {/* Link number and title */}
-                                        <div className="flex items-center gap-2 mb-1">
-                                            <span className="font-mono text-xs font-semibold text-faint">
-                                                #{linkNumber}
-                                            </span>
-                                            {link.is_pinned && (
-                                                <Pin className="h-3 w-3 text-primary-600 fill-current" aria-label="Pinned" />
-                                            )}
-                                            {link.title && (
-                                                <span className="text-sm font-medium text-ink truncate">
-                                                    {link.title}
-                                                </span>
-                                            )}
-                                        </div>
-
-                                        {/* Primary short URL → Destination */}
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <a
-                                                href={mainUrl}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className="font-mono text-lg font-bold text-primary-600 hover:underline"
-                                            >
-                                                {mainUrl.replace(/^https?:\/\//, '')}
-                                            </a>
-                                            <button
-                                                onClick={() => handleCopy(link)}
-                                                className="rounded p-1 text-faint transition-colors hover:bg-primary-50 hover:text-primary-600"
-                                                title="Copy short URL"
-                                                aria-label={`Copy short URL for ${link.code}`}
-                                            >
-                                                {copiedId === link.id ? (
-                                                    <Check className="h-4 w-4 text-success" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </button>
-                                            <span className="text-faint" aria-hidden="true">→</span>
-                                            <a
-                                                href={link.original_url}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className="truncate max-w-[300px] font-mono text-sm text-muted transition-colors hover:text-ink hover:underline"
-                                                title={link.original_url}
-                                            >
-                                                {link.original_url.replace(/^https?:\/\//, '').substring(0, 50)}{link.original_url.length > 60 ? '...' : ''}
-                                            </a>
-                                            <button
-                                                onClick={() => handleCopySource(link)}
-                                                className="rounded p-1 text-faint transition-colors hover:bg-line hover:text-ink"
-                                                title="Copy source URL"
-                                                aria-label={`Copy source URL for ${link.code}`}
-                                            >
-                                                {copiedSourceId === link.id ? (
-                                                    <Check className="h-4 w-4 text-success" />
-                                                ) : (
-                                                    <Link2 className="h-4 w-4" />
-                                                )}
-                                            </button>
-                                            {link.has_password && (
-                                                <span className="inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted">
-                                                    <Lock className="h-3 w-3" />
-                                                    Protected
-                                                </span>
-                                            )}
-                                            {link.expires_at && (
-                                                <span className="inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted">
-                                                    <Clock className="h-3 w-3" />
-                                                    {new Date(link.expires_at).toLocaleDateString()}
-                                                </span>
-                                            )}
-                                            {!link.is_active && (
-                                                <span className="inline-flex items-center gap-1 rounded border border-danger/30 bg-danger/5 px-2 py-0.5 text-xs font-medium text-danger">
-                                                    Inactive
-                                                </span>
-                                            )}
-                                        </div>
-                                        {/* API URL */}
-                                        <p className="font-mono text-xs text-faint">
-                                            API: <a href={apiUrl} target="_blank" rel="noreferrer" className="underline decoration-line2 underline-offset-2 hover:text-muted hover:decoration-current">{apiUrl}</a>
-                                        </p>
-                                        {/* Mini stats */}
-                                        <MiniStats link={link} />
-                                    </div>
-
-                                    <div className="flex items-center gap-2 sm:gap-3">
-                                        {/* Sparkline Chart */}
-                                        {sparklineData[link.id] && (
-                                            <div className="hidden sm:block">
-                                                <Sparkline
-                                                    data={sparklineData[link.id].data}
-                                                    labels={sparklineData[link.id].labels}
-                                                    width={70}
-                                                    height={24}
-                                                />
-                                            </div>
-                                        )}
-                                        <Link
-                                            to={`/analytics/${link.id}`}
-                                            aria-label={`${link.click_count.toLocaleString()} ${pluralize(link.click_count, 'click')}, analytics for ${link.code}`}
-                                            className="inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary-600"
-                                        >
-                                            <BarChart2 className="h-4 w-4" />
-                                            <span className="font-mono font-bold tabular-nums">{link.click_count.toLocaleString()}</span>
-                                        </Link>
-                                        <div className="flex items-center gap-0.5">
-                                            <button
-                                                onClick={() => setPreviewLink(link)}
-                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                                                title="Preview destination"
-                                                aria-label={`Preview destination for ${link.code}`}
-                                            >
-                                                <Eye className="h-4 w-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => handlePin(link)}
-                                                className={`rounded-md p-2 transition-colors hover:bg-line ${link.is_pinned ? 'text-primary-600' : 'text-faint hover:text-ink'}`}
-                                                title={link.is_pinned ? 'Unpin' : 'Pin'}
-                                                aria-label={`${link.is_pinned ? 'Unpin' : 'Pin'} link ${link.code}`}
-                                            >
-                                                <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
-                                            </button>
-                                            <button
-                                                onClick={() => handleClone(link)}
-                                                disabled={cloningIds.has(link.id)}
-                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink disabled:cursor-wait disabled:opacity-50"
-                                                title="Clone"
-                                                aria-label={`Clone link ${link.code}`}
-                                            >
-                                                <CopyPlus className="h-4 w-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => handleShare(link)}
-                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                                                title="Share"
-                                                aria-label={`Share link ${link.code}`}
-                                            >
-                                                <Share2 className="h-4 w-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => setQrLink(link)}
-                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                                                title="QR Code"
-                                                aria-label={`Show QR code for ${link.code}`}
-                                            >
-                                                <QrCode className="h-4 w-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => setEditingLink(link)}
-                                                data-edit-link={link.id}
-                                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                                                title="Edit"
-                                                aria-label={`Edit link ${link.code}`}
-                                            >
-                                                <Edit2 className="h-4 w-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => handleDelete(link.id)}
-                                                className="rounded-md p-2 text-faint transition-colors hover:bg-danger/5 hover:text-danger"
-                                                title="Delete"
-                                                aria-label={`Delete link ${link.code}`}
-                                            >
-                                                <Trash2 className="h-4 w-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </motion.div>
-                        );})}
+                                <LinkRow
+                                    key={link.id}
+                                    link={link}
+                                    linkNumber={linkNumber}
+                                    sparkline={sparklineData[link.id]}
+                                    copied={copiedId === link.id}
+                                    sourceCopied={copiedSourceId === link.id}
+                                    cloning={cloningIds.has(link.id)}
+                                    onCopy={handleCopy}
+                                    onCopySource={handleCopySource}
+                                    onPreview={setPreviewLink}
+                                    onPin={handlePin}
+                                    onClone={handleClone}
+                                    onShare={handleShare}
+                                    onQr={setQrLink}
+                                    onEdit={setEditingLink}
+                                    onDelete={handleDelete}
+                                />
+                            );
+                        })}
                     </AnimatePresence>
                 </div>
 
