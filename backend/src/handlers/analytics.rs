@@ -257,12 +257,21 @@ pub async fn get_link_stats(
         .await
         .unwrap_or_default();
 
-    let total_clicks = click_events::Entity::find()
-        .filter(click_events::Column::LinkId.eq(id))
-        .filter(click_events::Column::CreatedAt.gte(start_date))
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    // Below the row cap the sample is the whole window, so its length is the
+    // total. Counting with a second query let a click flush that committed
+    // between the two reads into the total but not into the sample, and the
+    // answer claimed clicks that its series, breakdowns and recent clicks did
+    // not show. Only a capped sample needs the count of the rest.
+    let total_clicks = if (events.len() as u64) < MAX_STATS_EVENTS {
+        events.len() as u64
+    } else {
+        click_events::Entity::find()
+            .filter(click_events::Column::LinkId.eq(id))
+            .filter(click_events::Column::CreatedAt.gte(start_date))
+            .count(&state.db)
+            .await
+            .unwrap_or(0)
+    };
     let truncated = total_clicks > events.len() as u64;
     let total_clicks = total_clicks.min(i32::MAX as u64) as i32;
     // Percentages describe the loaded sample, not the full window, so a
