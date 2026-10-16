@@ -419,8 +419,13 @@ test.describe('Security Tests', () => {
                 localStorage.setItem('token', token);
                 localStorage.setItem('is_admin', 'true');
             }, forged);
+            // The panel asks for /admin/stats and /admin/activity at once (twice
+            // under the dev server's StrictMode), and the first 401 sends the
+            // page to /login, which drops the requests still in flight. Wait for
+            // whichever admin call answers first: waiting for /admin/stats alone
+            // never resolved when /admin/activity won that race.
             const adminCall = page.waitForResponse(
-                (r) => r.url() === `${API_URL}/admin/stats` && r.request().method() === 'GET',
+                (r) => r.url().startsWith(`${API_URL}/admin/`) && r.request().method() === 'GET',
             );
 
             await page.goto('/admin');
