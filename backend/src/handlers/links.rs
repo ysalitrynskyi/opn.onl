@@ -2308,11 +2308,11 @@ fn unfurler_page() -> axum::response::Response {
         RedirectQuery
     ),
     responses(
-        (status = 200, description = "A HEAD on a one-time or click-capped link, or a GET from a known link-preview bot: no destination, nothing consumed"),
-        (status = 307, description = "Redirect to original URL"),
-        (status = 401, description = "Password required"),
+        (status = 410, description = "Checked first. The link is not live, its owner is disabled, its destination is blocked, or a one-time or click-capped link is already used up"),
+        (status = 307, description = "Temporary redirect. No X-Link-Password and no valid unlock on a password-protected link goes to the password page at {FRONTEND_URL}/password/{code}. A link behind the safe-link interstitial goes to {FRONTEND_URL}/r/{code} until confirm=1, including a HEAD. Otherwise this is the destination"),
+        (status = 401, description = "Only a wrong X-Link-Password. The body is plain text: Invalid password. A missing header is a 307 to the password page, not a 401"),
+        (status = 200, description = "A HEAD, or a GET from a known link-preview bot, on a one-time or click-capped link that is neither password-protected nor behind the interstitial: no destination, and nothing is used up"),
         (status = 404, description = "Link not found"),
-        (status = 410, description = "Link expired or inactive"),
     ),
     tag = "Links"
 )]
