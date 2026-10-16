@@ -5979,20 +5979,17 @@ pub async fn export_links_csv(
     headers: HeaderMap,
     Query(query): Query<ExportLinksQuery>,
 ) -> impl IntoResponse {
+    use futures::StreamExt;
+
     let user_id = match get_user_id_from_header(&state.db, &headers).await {
         Some(id) => id,
         None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     };
 
     // An export is what a user keeps as a backup, so a failed read must not
-    // come back as a file that holds only the header row.
-    let user_links = match links::Entity::find()
-        .filter(listed_links(user_id, query.org_id))
-        .filter(links::Column::DeletedAt.is_null())
-        .order_by_desc(links::Column::CreatedAt)
-        .all(&state.db)
-        .await
-    {
+    // come back as a file that holds only the header row: the first page is
+    // read before the response starts, and a failure there is a plain 500.
+    let first = match export_page(&state.db, user_id, query.org_id, None).await {
         Ok(rows) => rows,
         Err(error) => {
             tracing::error!("Failed to export links: {}", error);
@@ -6001,14 +5998,116 @@ pub async fn export_links_csv(
     };
 
     let base_url = get_base_url();
-
-    let mut csv_content = String::from(CSV_BOM);
-    csv_content.push_str(
+    let mut head = String::from(CSV_BOM);
+    head.push_str(
         "ID,Code,Original URL,Short URL,Click Count,Created At,Expires At,Has Password,Notes,Folder ID,Max Clicks,Starts At\n",
     );
+    head.push_str(&export_rows(&first, &base_url));
 
-    for link in user_links {
-        csv_content.push_str(&format!(
+    // The rest is streamed a page at a time, so an account with a hundred
+    // thousand links is never held in memory as rows and as one string. A
+    // later page that fails ends the body with an error: the download is
+    // reported as failed instead of finishing as a silently shorter file.
+    let cursor = export_cursor(&first);
+    let rest = futures::stream::unfold(
+        ExportStream {
+            db: state.db.clone(),
+            user_id,
+            org_id: query.org_id,
+            base_url,
+            cursor,
+        },
+        |mut stream| async move {
+            let after = stream.cursor?;
+            match export_page(&stream.db, stream.user_id, stream.org_id, Some(after)).await {
+                Ok(rows) if rows.is_empty() => None,
+                Ok(rows) => {
+                    stream.cursor = export_cursor(&rows);
+                    let chunk = export_rows(&rows, &stream.base_url);
+                    Some((Ok(axum::body::Bytes::from(chunk)), stream))
+                }
+                Err(error) => {
+                    tracing::error!("Failed to export links: {}", error);
+                    stream.cursor = None;
+                    Some((Err(std::io::Error::other(error.to_string())), stream))
+                }
+            }
+        },
+    );
+    let body =
+        futures::stream::once(
+            async move { Ok::<_, std::io::Error>(axum::body::Bytes::from(head)) },
+        )
+        .chain(rest);
+
+    (
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"links.csv\"",
+            ),
+        ],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response()
+}
+
+/// Rows read per query while an export streams.
+const EXPORT_PAGE: u64 = 1_000;
+
+struct ExportStream {
+    db: DatabaseConnection,
+    user_id: i32,
+    org_id: Option<i32>,
+    base_url: String,
+    /// Where the next page starts; `None` once the last page was short.
+    cursor: Option<(chrono::NaiveDateTime, i32)>,
+}
+
+/// The listed links, newest first, after `after` in that order. Keyset on
+/// `(created_at, id)`, so pages cannot repeat or skip a row when links are
+/// created or deleted while the export runs.
+async fn export_page(
+    db: &DatabaseConnection,
+    user_id: i32,
+    org_id: Option<i32>,
+    after: Option<(chrono::NaiveDateTime, i32)>,
+) -> Result<Vec<links::Model>, DbErr> {
+    let mut page = links::Entity::find()
+        .filter(listed_links(user_id, org_id))
+        .filter(links::Column::DeletedAt.is_null());
+    if let Some((created_at, id)) = after {
+        page = page.filter(
+            Condition::any()
+                .add(links::Column::CreatedAt.lt(created_at))
+                .add(
+                    Condition::all()
+                        .add(links::Column::CreatedAt.eq(created_at))
+                        .add(links::Column::Id.lt(id)),
+                ),
+        );
+    }
+    page.order_by_desc(links::Column::CreatedAt)
+        .order_by_desc(links::Column::Id)
+        .limit(EXPORT_PAGE)
+        .all(db)
+        .await
+}
+
+/// The next page's start, or `None` when `rows` was the last page.
+fn export_cursor(rows: &[links::Model]) -> Option<(chrono::NaiveDateTime, i32)> {
+    if (rows.len() as u64) < EXPORT_PAGE {
+        return None;
+    }
+    rows.last().map(|link| (link.created_at, link.id))
+}
+
+fn export_rows(rows: &[links::Model], base_url: &str) -> String {
+    let mut out = String::new();
+    for link in rows {
+        out.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             link.id,
             csv_field(&link.code),
@@ -6024,19 +6123,7 @@ pub async fn export_links_csv(
             csv_field(&link.starts_at.map(utc_rfc3339).unwrap_or_default()),
         ));
     }
-
-    (
-        StatusCode::OK,
-        [
-            (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                "attachment; filename=\"links.csv\"",
-            ),
-        ],
-        csv_content,
-    )
-        .into_response()
+    out
 }
 
 #[cfg(test)]
