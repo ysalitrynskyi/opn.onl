@@ -457,6 +457,14 @@ async fn redirect_documents_the_password_page_before_a_401() {
         redirect.contains("/r/"),
         "307 should name the interstitial route: {redirect}"
     );
+    // The destination only past the password and interstitial gates, and not
+    // for the HEAD / preview-bot 200 on a one-time or click-capped link.
+    let gates = redirect.find("password page").unwrap();
+    let destination = redirect.find("destination").unwrap_or(0);
+    assert!(
+        destination > gates && redirect.contains("except for the 200"),
+        "307 should not promise the destination to the 200 case: {redirect}"
+    );
     let unauthorized = text("401");
     assert!(
         unauthorized.contains("x-link-password"),
