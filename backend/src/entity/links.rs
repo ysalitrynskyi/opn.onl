@@ -114,46 +114,26 @@ impl Model {
     /// The click cap that applies. A stored cap wins, including zero. A one-time
     /// link saved before the writers always stored a cap of 1 is still one visit.
     pub fn effective_max_clicks(&self) -> Option<i32> {
-        self.max_clicks.or(self.burn_after_reading.then_some(1))
+        self.activity().effective_max_clicks()
+    }
+
+    /// The columns that decide whether the link is live, apart from the rest of
+    /// the row. Lists that only need that answer select these and nothing else.
+    pub fn activity(&self) -> LinkActivity {
+        LinkActivity {
+            deleted_at: self.deleted_at,
+            burned_at: self.burned_at,
+            starts_at: self.starts_at,
+            expires_at: self.expires_at,
+            max_clicks: self.max_clicks,
+            burn_after_reading: self.burn_after_reading,
+            click_count: self.click_count,
+        }
     }
 
     /// Check if link is currently active (considering starts_at, expires_at, max_clicks, and soft delete)
     pub fn is_active(&self) -> bool {
-        // Check soft delete first
-        if self.is_deleted() {
-            return false;
-        }
-
-        // A consumed one-time link is permanently inactive.
-        if self.burned_at.is_some() {
-            return false;
-        }
-
-        let now = chrono::Utc::now().naive_utc();
-
-        // Check if link hasn't started yet
-        if let Some(starts_at) = self.starts_at
-            && now < starts_at
-        {
-            return false;
-        }
-
-        // Check if link has expired
-        if let Some(expires_at) = self.expires_at
-            && now > expires_at
-        {
-            return false;
-        }
-
-        // Check if max clicks reached. An uncapped one-time link counts as 1.
-        if self
-            .effective_max_clicks()
-            .is_some_and(|max_clicks| self.click_count >= i64::from(max_clicks))
-        {
-            return false;
-        }
-
-        true
+        self.activity().is_active()
     }
 
     /// Get the reason why link is inactive
@@ -403,5 +383,63 @@ mod burn_tests {
             burned.inactive_kind().map(InactiveKind::code),
             Some("used_up")
         );
+    }
+}
+
+/// The fields [`Model::is_active`] reads, so a query can load just these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkActivity {
+    pub deleted_at: Option<DateTime>,
+    pub burned_at: Option<DateTime>,
+    pub starts_at: Option<DateTime>,
+    pub expires_at: Option<DateTime>,
+    pub max_clicks: Option<i32>,
+    pub burn_after_reading: bool,
+    pub click_count: i64,
+}
+
+impl LinkActivity {
+    /// See [`Model::effective_max_clicks`].
+    pub fn effective_max_clicks(&self) -> Option<i32> {
+        self.max_clicks.or(self.burn_after_reading.then_some(1))
+    }
+
+    /// See [`Model::is_active`].
+    pub fn is_active(&self) -> bool {
+        // Check soft delete first
+        if self.deleted_at.is_some() {
+            return false;
+        }
+
+        // A consumed one-time link is permanently inactive.
+        if self.burned_at.is_some() {
+            return false;
+        }
+
+        let now = chrono::Utc::now().naive_utc();
+
+        // Check if link hasn't started yet
+        if let Some(starts_at) = self.starts_at
+            && now < starts_at
+        {
+            return false;
+        }
+
+        // Check if link has expired
+        if let Some(expires_at) = self.expires_at
+            && now > expires_at
+        {
+            return false;
+        }
+
+        // Check if max clicks reached. An uncapped one-time link counts as 1.
+        if self
+            .effective_max_clicks()
+            .is_some_and(|max_clicks| self.click_count >= i64::from(max_clicks))
+        {
+            return false;
+        }
+
+        true
     }
 }
