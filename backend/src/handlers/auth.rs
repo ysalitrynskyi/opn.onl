@@ -1841,21 +1841,8 @@ pub async fn get_current_user(
         .unwrap_or(None);
 
     if let Some(user) = user {
-        use crate::entity::{click_events, links};
-
-        let link_count = links::Entity::find()
-            .filter(links::Column::UserId.eq(user_id))
-            .filter(links::Column::DeletedAt.is_null())
-            .count(&state.db)
-            .await
-            .unwrap_or(0) as i64;
-
-        let total_clicks = click_events::Entity::find()
-            .inner_join(links::Entity)
-            .filter(links::Column::UserId.eq(user_id))
-            .count(&state.db)
-            .await
-            .unwrap_or(0) as i64;
+        let (link_count, total_clicks) =
+            crate::handlers::link_access::own_link_totals(&state.db, user_id).await;
 
         return (
             StatusCode::OK,
@@ -1977,21 +1964,8 @@ pub async fn update_profile(
 
         match active_user.update(&state.db).await {
             Ok(updated) => {
-                use crate::entity::{click_events, links};
-
-                let link_count = links::Entity::find()
-                    .filter(links::Column::UserId.eq(user_id))
-                    .filter(links::Column::DeletedAt.is_null())
-                    .count(&state.db)
-                    .await
-                    .unwrap_or(0) as i64;
-
-                let total_clicks = click_events::Entity::find()
-                    .inner_join(links::Entity)
-                    .filter(links::Column::UserId.eq(user_id))
-                    .count(&state.db)
-                    .await
-                    .unwrap_or(0) as i64;
+                let (link_count, total_clicks) =
+                    crate::handlers::link_access::own_link_totals(&state.db, user_id).await;
 
                 (
                     StatusCode::OK,
