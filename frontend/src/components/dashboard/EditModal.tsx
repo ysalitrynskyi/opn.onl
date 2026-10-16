@@ -1,12 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, Flame, ShieldCheck, Route, ChevronDown, LayoutList } from 'lucide-react';
+import { X, Flame, ShieldCheck, Route, ChevronDown, LayoutList, MousePointer, Calendar } from 'lucide-react';
 import { API_ENDPOINTS, authFetch, failureMessage, responseError } from '../../config/api';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { localIsoDate } from '../../utils/localIsoDate';
 import type { LinkData, LinkUpdatePayload, RoutingRule } from './types';
 import RoutingRulesEditor from './RoutingRulesEditor';
 import { rulesPayload, rulesSignature, sortByPriority } from './routingRules';
+import CharCount from './CharCount';
+import { DestinationCheckButton, DestinationStatus } from './DestinationCheck';
+import { useDestinationCheck } from './useDestinationCheck';
+import {
+    CLICK_LIMIT_HINT,
+    MAX_NOTES_CHARS,
+    MAX_TITLE_CHARS,
+    START_BEFORE_EXPIRY,
+    burnCap,
+    burnCapHint,
+    clickLimitUpdate,
+    datetimeLocalToUtc,
+    datetimeLocalValue,
+    initialClickLimit,
+} from './linkFields';
 
 interface EditModalProps {
     link: LinkData;
@@ -31,12 +46,21 @@ function expiryDateInputValue(value: string | null): string {
 
 export default function EditModal({ link, onClose, onSave, burnEnabled = false, interstitialEnabled = false, routingEnabled = false, bioEnabled = false }: EditModalProps) {
     const [url, setUrl] = useState(link.original_url);
+    const [title, setTitle] = useState(link.title ?? '');
+    const [notes, setNotes] = useState(link.notes ?? '');
     const [password, setPassword] = useState('');
     const originalExpiryDate = expiryDateInputValue(link.expires_at);
     const [expiresAt, setExpiresAt] = useState(originalExpiryDate);
+    const originalStart = datetimeLocalValue(link.starts_at);
+    const [startsAt, setStartsAt] = useState(originalStart);
+    const [maxClicks, setMaxClicks] = useState(initialClickLimit(link.max_clicks));
+    const [limitTouched, setLimitTouched] = useState(false);
     const [removePassword, setRemovePassword] = useState(false);
     const [removeExpiration, setRemoveExpiration] = useState(false);
+    const [removeStarts, setRemoveStarts] = useState(false);
+    const [removeMaxClicks, setRemoveMaxClicks] = useState(false);
     const [burnAfterReading, setBurnAfterReading] = useState(link.burn_after_reading ?? false);
+    const destination = useDestinationCheck(url);
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(link.safe_link_interstitial ?? false);
     const [bioVisible, setBioVisible] = useState(link.bio_visible ?? false);
     const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
@@ -84,12 +108,60 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
     };
 
     const handleSave = async () => {
-        setSaving(true);
         setSaveError('');
 
         const expirationChanged = expiresAt !== originalExpiryDate;
         const shouldRemoveExpiration = removeExpiration
             || (Boolean(link.expires_at) && expirationChanged && !expiresAt);
+        const startChanged = startsAt !== originalStart;
+        const shouldRemoveStart = removeStarts
+            || (Boolean(link.starts_at) && startChanged && !startsAt);
+
+        let nextExpiresIso: string | undefined;
+        if (expirationChanged && expiresAt && !shouldRemoveExpiration) {
+            const parsed = new Date(`${expiresAt}T23:59:00`);
+            if (Number.isNaN(parsed.getTime())) {
+                setSaveError('Enter a valid expiration');
+                return;
+            }
+            // Date-only value: end of that local day, matching the create form.
+            nextExpiresIso = parsed.toISOString();
+        }
+
+        let nextStartsIso: string | undefined;
+        if (startChanged && startsAt && !shouldRemoveStart) {
+            const parsed = datetimeLocalToUtc(startsAt);
+            if (!parsed) {
+                setSaveError('Enter a valid start date');
+                return;
+            }
+            nextStartsIso = parsed;
+        }
+
+        const datesTouched = startChanged || expirationChanged || removeStarts || removeExpiration;
+        if (datesTouched) {
+            const startInstant = shouldRemoveStart ? null : (nextStartsIso ?? (startChanged ? null : link.starts_at));
+            const expiryInstant = shouldRemoveExpiration ? null : (nextExpiresIso ?? (expirationChanged ? null : link.expires_at));
+            const startMs = startInstant ? new Date(startInstant).getTime() : NaN;
+            const expiryMs = expiryInstant ? new Date(expiryInstant).getTime() : NaN;
+            if (!Number.isNaN(startMs) && !Number.isNaN(expiryMs) && startMs >= expiryMs) {
+                setSaveError(START_BEFORE_EXPIRY);
+                return;
+            }
+        }
+
+        const limit = clickLimitUpdate({
+            raw: maxClicks,
+            stored: link.max_clicks ?? null,
+            remove: removeMaxClicks,
+            burnOn: burnAfterReading,
+        });
+        if ('error' in limit) {
+            setSaveError(limit.error);
+            return;
+        }
+
+        setSaving(true);
         const payload: LinkUpdatePayload = {
             original_url: url !== link.original_url ? url : undefined,
             password: password || undefined,
@@ -99,10 +171,13 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
             safe_link_interstitial: interstitialEnabled ? safeLinkInterstitial : undefined,
             bio_visible: bioEnabled ? bioVisible : undefined,
         };
-        if (expirationChanged && expiresAt && !shouldRemoveExpiration) {
-            // Date-only value: end of that local day, matching the create form.
-            payload.expires_at = new Date(`${expiresAt}T23:59:00`).toISOString();
-        }
+        if (title !== (link.title ?? '')) payload.title = title;
+        if (notes !== (link.notes ?? '')) payload.notes = notes;
+        if (nextExpiresIso) payload.expires_at = nextExpiresIso;
+        if (shouldRemoveStart) payload.remove_starts_at = true;
+        else if (nextStartsIso) payload.starts_at = nextStartsIso;
+        if (limit.max_clicks != null) payload.max_clicks = limit.max_clicks;
+        if (limit.remove_max_clicks) payload.remove_max_clicks = true;
 
         try {
             await onSave(link.id, payload);
@@ -166,13 +241,53 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
 
                     <div>
                         <label htmlFor="edit-url" className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">Destination URL</label>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+                            <input
+                                id="edit-url"
+                                type="url"
+                                value={url}
+                                onChange={(e) => setUrl(e.target.value)}
+                                className="min-w-0 w-full flex-1 rounded-lg border border-line2 bg-surface px-4 py-2 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500"
+                            />
+                            <DestinationCheckButton
+                                pending={destination.pending}
+                                disabled={!url.trim()}
+                                onClick={() => void destination.check()}
+                                className="py-2 w-full sm:w-auto"
+                            />
+                        </div>
+                        <div className="mt-1.5">
+                            <DestinationStatus status={destination.status} />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label htmlFor="edit-title" className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
+                            Title
+                        </label>
                         <input
-                            id="edit-url"
-                            type="url"
-                            value={url}
-                            onChange={(e) => setUrl(e.target.value)}
-                            className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500"
+                            id="edit-title"
+                            type="text"
+                            value={title}
+                            maxLength={MAX_TITLE_CHARS}
+                            onChange={(e) => setTitle(e.target.value.slice(0, MAX_TITLE_CHARS))}
+                            placeholder="Private unless the link is on your bio page"
+                            className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                         />
+                    </div>
+
+                    <div>
+                        <label htmlFor="edit-notes" className="block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">Notes</label>
+                        <textarea
+                            id="edit-notes"
+                            rows={3}
+                            maxLength={MAX_NOTES_CHARS}
+                            value={notes}
+                            onChange={(e) => setNotes(e.target.value.slice(0, MAX_NOTES_CHARS))}
+                            placeholder="Private notes about this link"
+                            className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint resize-y"
+                        />
+                        <CharCount length={notes.length} max={MAX_NOTES_CHARS} />
                     </div>
 
                     <div>
@@ -223,13 +338,87 @@ export default function EditModal({ link, onClose, onSave, burnEnabled = false, 
                         )}
                     </div>
 
+                    <div>
+                        <label htmlFor="edit-starts" className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
+                            <Calendar className="h-3.5 w-3.5" />
+                            Start date
+                        </label>
+                        <input
+                            id="edit-starts"
+                            type="datetime-local"
+                            step={60}
+                            value={startsAt}
+                            onChange={(e) => setStartsAt(e.target.value)}
+                            disabled={removeStarts}
+                            className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 disabled:opacity-70"
+                        />
+                        {link.starts_at && (
+                            <label className="flex items-center gap-2 mt-2 text-sm text-muted">
+                                <input
+                                    type="checkbox"
+                                    checked={removeStarts}
+                                    onChange={(e) => setRemoveStarts(e.target.checked)}
+                                    className="rounded border-line2 text-primary-600 focus:ring-primary-500"
+                                />
+                                Remove start date
+                            </label>
+                        )}
+                    </div>
+
+                    <div>
+                        <label htmlFor="edit-max-clicks" className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5">
+                            <MousePointer className="h-3.5 w-3.5" />
+                            Click limit
+                        </label>
+                        <input
+                            id="edit-max-clicks"
+                            type="number"
+                            min={1}
+                            step={1}
+                            inputMode="numeric"
+                            disabled={burnAfterReading || removeMaxClicks}
+                            aria-describedby="edit-max-clicks-hint"
+                            placeholder={link.max_clicks != null ? 'Leave empty to keep the current limit' : 'No limit'}
+                            value={burnAfterReading ? String(burnCap(link.max_clicks)) : maxClicks}
+                            onChange={(e) => {
+                                setLimitTouched(true);
+                                setMaxClicks(e.target.value);
+                            }}
+                            className="w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint disabled:opacity-70"
+                        />
+                        <p id="edit-max-clicks-hint" className="text-xs text-faint mt-1.5">
+                            {burnAfterReading ? burnCapHint(burnCap(link.max_clicks)) : CLICK_LIMIT_HINT}
+                        </p>
+                        {link.max_clicks != null && (
+                            <label className="flex items-center gap-2 mt-2 text-sm text-muted">
+                                <input
+                                    type="checkbox"
+                                    checked={burnAfterReading ? false : removeMaxClicks}
+                                    disabled={burnAfterReading}
+                                    onChange={(e) => setRemoveMaxClicks(e.target.checked)}
+                                    className="rounded border-line2 text-primary-600 focus:ring-primary-500 disabled:opacity-70"
+                                />
+                                Remove limit
+                            </label>
+                        )}
+                    </div>
+
                     {burnEnabled && (
                         <div>
                             <label className="flex items-center gap-2.5 text-sm text-muted cursor-pointer">
                                 <input
                                     type="checkbox"
                                     checked={burnAfterReading}
-                                    onChange={(e) => setBurnAfterReading(e.target.checked)}
+                                    onChange={(e) => {
+                                        const next = e.target.checked;
+                                        setBurnAfterReading(next);
+                                        // A remove sent beside burn-on is ignored by the server
+                                        // and would look like the cap was cleared.
+                                        if (next) setRemoveMaxClicks(false);
+                                        if (!next && (link.burn_after_reading ?? false) && !limitTouched) {
+                                            setMaxClicks('');
+                                        }
+                                    }}
                                     className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
                                 />
                                 <span className="inline-flex items-center gap-1.5">

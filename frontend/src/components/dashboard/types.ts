@@ -10,6 +10,8 @@ export interface LinkData {
     expires_at: string | null;
     has_password: boolean;
     notes: string | null;
+    starts_at?: string | null;
+    max_clicks?: number | null;
     is_active: boolean;
     is_pinned: boolean;
     burn_after_reading?: boolean;
@@ -31,10 +33,16 @@ export interface RoutingRule {
 
 export interface LinkUpdatePayload {
     original_url?: string;
+    title?: string;
     password?: string;
     expires_at?: string;
     remove_password?: boolean;
     remove_expiration?: boolean;
+    notes?: string;
+    starts_at?: string;
+    max_clicks?: number;
+    remove_starts_at?: boolean;
+    remove_max_clicks?: boolean;
     burn_after_reading?: boolean;
     safe_link_interstitial?: boolean;
     bio_visible?: boolean;
