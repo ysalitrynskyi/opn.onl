@@ -40,6 +40,7 @@ mod m20220101_000037_fold_user_email_case;
 mod m20220101_000038_retired_codes;
 mod m20220101_000039_canonicalise_blocklists;
 mod m20220101_000040_api_key_scope_expiry;
+mod m20220101_000041_abuse_reports;
 mod m20220101_000045_cap_uncapped_burn_links;
 
 // Public so the backend's tests can pin its blocklist canonicalisation to the
@@ -96,6 +97,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000038_retired_codes::Migration),
             Box::new(m20220101_000039_canonicalise_blocklists::Migration),
             Box::new(m20220101_000040_api_key_scope_expiry::Migration),
+            Box::new(m20220101_000041_abuse_reports::Migration),
             Box::new(m20220101_000045_cap_uncapped_burn_links::Migration),
         ]
     }

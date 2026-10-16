@@ -587,6 +587,8 @@ pub fn build_router(app_state: AppState) -> Router {
         .route("/tags/:tag_id/links", get(handlers::tags::get_links_by_tag))
         // Contact form
         .route("/contact", post(handlers::contact::send_contact_message))
+        // Abuse reports. Registered before /:code so "report" is not a short code.
+        .route("/report", post(handlers::reports::submit_report))
         // Admin routes (protected)
         .route("/admin/stats", get(handlers::admin::get_admin_stats))
         .route("/admin/activity", get(handlers::admin::get_admin_activity))
@@ -620,6 +622,11 @@ pub fn build_router(app_state: AppState) -> Router {
             post(handlers::admin::admin_verify_email),
         )
         .route("/admin/links", get(handlers::admin::get_all_links))
+        .route("/admin/reports", get(handlers::admin::list_reports))
+        .route(
+            "/admin/reports/:id/resolve",
+            post(handlers::admin::resolve_report),
+        )
         .route(
             "/admin/links/bulk/delete",
             post(handlers::admin::admin_bulk_delete_links),

@@ -39,6 +39,7 @@ async fn spawn_real_app() -> (TestServer, DatabaseConnection) {
         password_verify: roomy(),
         password_verify_ip: roomy(),
         contact: roomy(),
+        report: roomy(),
     });
     let server =
         TestServer::new(opn_onl_backend::build_router(state)).expect("failed to start test server");

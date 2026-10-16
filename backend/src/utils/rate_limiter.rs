@@ -147,6 +147,9 @@ pub struct RateLimiters {
     /// Contact form limiter (a few per hour per IP). The contact endpoint sends
     /// email, so it must be strict regardless of the general API tier.
     pub contact: Arc<RateLimiter>,
+    /// Abuse reports (`POST /report`). Public and unauthenticated, so a small
+    /// hourly budget per client, separate from the general API tier.
+    pub report: Arc<RateLimiter>,
 }
 
 impl Default for RateLimiters {
@@ -169,6 +172,8 @@ impl Default for RateLimiters {
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(20, 60))),
             // Contact form sends email: cap at 10 per hour per IP.
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 3600))),
+            // Public abuse reports: 5 per hour per client.
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(5, 3600))),
         }
     }
 }
@@ -192,6 +197,7 @@ impl RateLimiters {
                 limiters.password_verify.cleanup();
                 limiters.password_verify_ip.cleanup();
                 limiters.contact.cleanup();
+                limiters.report.cleanup();
                 tracing::debug!("Rate limiter cleanup completed");
             }
         });
@@ -407,6 +413,7 @@ const API_PREFIXES: &[&str] = &[
     "analytics",
     "admin",
     "contact",
+    "report",
     "ws",
     "sse",
     "health",
@@ -518,6 +525,8 @@ pub async fn rate_limit_middleware(
         limiters.link_creation.check(&format!("create:{}", ip))
     } else if path.starts_with("/contact") && req.method() == axum::http::Method::POST {
         limiters.contact.check(&format!("contact:{}", ip))
+    } else if path == "/report" && req.method() == axum::http::Method::POST {
+        limiters.report.check(&format!("report:{}", ip))
     } else if is_redirect {
         // Short code redirect - more relaxed
         limiters.redirect.check(&format!("redirect:{}", ip))
@@ -575,6 +584,9 @@ mod tests {
         // API routes must never be treated as redirects — /contact especially,
         // since the relaxed redirect bucket was an email-flood vector.
         assert!(!is_redirect_path("/contact"));
+        assert!(!is_redirect_path("/report"));
+        // A code that merely starts with the word is still a redirect.
+        assert!(is_redirect_path("/report-me"));
         assert!(!is_redirect_path("/auth/login"));
         assert!(is_redirect_path("/auth-sale"));
         assert!(is_auth_path("/auth"));
@@ -658,6 +670,7 @@ mod tests {
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 60))),
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
         });
         let app = Router::new()
             .route("/:code/verify", post(|| async { "ok" }))
@@ -699,6 +712,7 @@ mod tests {
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(2, 60))),
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
         });
         let app = Router::new()
             .route("/:code/verify", post(|| async { "ok" }))
@@ -757,6 +771,7 @@ mod tests {
             password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
             password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
             contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+            report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
         })
     }
 
@@ -1032,6 +1047,7 @@ mod tests {
                 password_verify: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
                 password_verify_ip: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 60))),
                 contact: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
+                report: Arc::new(RateLimiter::new(RateLimitConfig::new(10_000, 3600))),
             });
 
             let app = Router::new()

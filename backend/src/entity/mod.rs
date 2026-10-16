@@ -1,3 +1,4 @@
+pub mod abuse_reports;
 pub mod api_keys;
 pub mod audit_log;
 pub mod blocked_domains;

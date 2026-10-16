@@ -35,9 +35,18 @@ use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
 use crate::utils::validation::ilike_pattern;
 
-/// Check if URL or its domain is blocked. Database failures fail closed: a cache
-/// hit must never become an unchecked redirect because the blocklist query died.
-async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), String> {
+enum BlocklistHit {
+    None,
+    Blocked(String),
+}
+
+/// Whether `url` is on the exact-URL or domain blocklist.
+///
+/// `Err` is only the two failures `check_blocked` already returned before this
+/// was split: `"Invalid URL"` and `"Unable to verify link safety"`. A block is
+/// `Ok(Blocked(reason))` so a caller that only needs a yes/no can tell a block
+/// apart from a database failure.
+async fn blocklist_hit<C: ConnectionTrait>(db: &C, url: &str) -> Result<BlocklistHit, String> {
     validate_url(url)?;
 
     let parsed_url = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
@@ -63,12 +72,12 @@ async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), Stri
         .await
         .map_err(|_| "Unable to verify link safety".to_string())?;
     if let Some(blocked) = blocked_url {
-        return Err(format!(
+        return Ok(BlocklistHit::Blocked(format!(
             "This URL is blocked: {}",
             blocked
                 .reason
                 .unwrap_or_else(|| "Policy violation".to_string())
-        ));
+        )));
     }
 
     // Domain block (host + subdomains). A block on "evil.com" must also block
@@ -94,14 +103,38 @@ async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), Stri
             .await
             .map_err(|_| "Unable to verify link safety".to_string())?;
         if let Some(bd) = hit {
-            return Err(format!(
+            return Ok(BlocklistHit::Blocked(format!(
                 "This domain is blocked: {}",
                 bd.reason.unwrap_or_else(|| "Policy violation".to_string())
-            ));
+            )));
         }
     }
 
-    Ok(())
+    Ok(BlocklistHit::None)
+}
+
+/// Check if URL or its domain is blocked. Database failures fail closed: a cache
+/// hit must never become an unchecked redirect because the blocklist query died.
+async fn check_blocked<C: ConnectionTrait>(db: &C, url: &str) -> Result<(), String> {
+    match blocklist_hit(db, url).await? {
+        BlocklistHit::None => Ok(()),
+        BlocklistHit::Blocked(reason) => Err(reason),
+    }
+}
+
+/// `Ok(true)` when the destination is blocklisted. An invalid URL is not
+/// blocklisted (`Ok(false)`). A database failure is `Err`, so a caller can
+/// fail closed instead of labelling the link active.
+pub(crate) async fn destination_is_blocklisted<C: ConnectionTrait>(
+    db: &C,
+    url: &str,
+) -> Result<bool, DbErr> {
+    match blocklist_hit(db, url).await {
+        Ok(BlocklistHit::None) => Ok(false),
+        Ok(BlocklistHit::Blocked(_)) => Ok(true),
+        Err(message) if message == "Unable to verify link safety" => Err(DbErr::Custom(message)),
+        Err(_) => Ok(false),
+    }
 }
 
 /// Confirm that a cached redirect still represents the active database row.

@@ -2,7 +2,8 @@ use utoipa::{OpenApi, ToResponse, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
-    admin, analytics, api_keys, auth, bio, contact, folders, links, organizations, passkeys, tags,
+    admin, analytics, api_keys, auth, bio, contact, folders, links, organizations, passkeys,
+    reports, tags,
 };
 
 /// `info.description` of the served document (Markdown), set in [`api_doc`].
@@ -41,6 +42,7 @@ two headers, and a `RateLimitResponse` body.
 | Link creation | 100 per hour | `POST /links` and `POST /links/{id}/clone`. `POST /links/bulk` \
 spends one per URL and lists the URLs past the budget in `errors` instead of answering 429 |
 | Contact | 10 per hour | `POST /contact` |
+| Reports | 5 per hour | `POST /report` |
 | Link password | 5 per minute per link, 20 per minute in total | `POST /{code}/verify`, and \
 `GET /{code}` with an `X-Link-Password` header |
 | Redirects | 100 per second | `GET /{code}` and `GET /{code}/preview` |
@@ -113,6 +115,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
         (name = "Tags", description = "Tag and categorize links"),
         (name = "Admin", description = "Instance administration: users, links, organizations, blocking, backups"),
         (name = "Contact", description = "Contact form"),
+        (name = "Reports", description = "Report a short link for abuse"),
         (name = "Bio", description = "Public link-in-bio pages"),
     ),
     paths(
@@ -244,6 +247,11 @@ pub struct TooManyRequests(pub RateLimitResponse);
         // Contact
         contact::send_contact_message,
 
+        // Abuse reports
+        reports::submit_report,
+        admin::list_reports,
+        admin::resolve_report,
+
         // Deliberately unpublished (not listed above):
         // - GET /health — ops probe, not an API consumer contract
         // - GET /swagger-ui, GET /api-docs/openapi.json — the docs UI itself
@@ -373,6 +381,13 @@ pub struct TooManyRequests(pub RateLimitResponse);
             // Contact schemas
             contact::ContactRequest,
             contact::ContactResponse,
+
+            // Abuse reports
+            reports::ReportRequest,
+            reports::ReportReceived,
+            admin::AdminReportResponse,
+            admin::AdminReportsListResponse,
+            admin::ResolveReportRequest,
 
             // Admin schemas
             admin::AdminResponse,
