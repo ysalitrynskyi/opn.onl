@@ -8,10 +8,10 @@ export interface LinkData {
     click_count: number;
     created_at: string;
     expires_at: string | null;
-    has_password: boolean;
-    notes: string | null;
     starts_at?: string | null;
     max_clicks?: number | null;
+    has_password: boolean;
+    notes: string | null;
     is_active: boolean;
     is_pinned: boolean;
     burn_after_reading?: boolean;

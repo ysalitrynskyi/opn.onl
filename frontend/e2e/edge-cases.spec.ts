@@ -364,7 +364,9 @@ test.describe('Expiry and schedule', () => {
         await openDashboard(page, user);
 
         const row = linkRow(page, link.code);
-        await expect(row.getByText('Inactive', { exact: true })).toBeVisible();
+        await expect(row.getByText('Expired', { exact: true })).toBeVisible();
+        await expect(row.getByTitle('Link has expired')).toBeVisible();
+        await expect(row.getByText('Inactive', { exact: true })).toHaveCount(0);
         await expect(expiryBadge(row)).toHaveText('1/1/2020');
         await expect(page.getByText('0 active', { exact: true })).toBeVisible();
     });
@@ -381,19 +383,28 @@ test.describe('Expiry and schedule', () => {
         const row = linkRow(page, link.code);
         await expect(expiryBadge(row)).toHaveText(expiresAt.toLocaleDateString('en-US', { timeZone: 'UTC' }));
         await expect(row.getByText('Inactive', { exact: true })).toHaveCount(0);
+        await expect(row.getByText('Expired', { exact: true })).toHaveCount(0);
         await expect(page.getByText('1 active', { exact: true })).toBeVisible();
     });
 
     test('a link scheduled to start in the future is shown as inactive', async ({ page, request }) => {
         const user = await createUser(request);
+        const startsAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
         const link = await createLink(request, user.token, {
             original_url: 'https://www.iana.org/about',
-            starts_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            starts_at: startsAt,
         });
         await openDashboard(page, user);
 
         const row = linkRow(page, link.code);
-        await expect(row.getByText('Inactive', { exact: true })).toBeVisible();
+        await expect(row.getByText('Not started', { exact: true })).toBeVisible();
+        await expect(row.getByTitle('Link is scheduled to activate later')).toBeVisible();
+        const startsLabel = await page.evaluate(
+            (iso) => `Starts ${new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+            startsAt,
+        );
+        await expect(row.getByText(startsLabel, { exact: true })).toBeVisible();
+        await expect(row.getByText('Inactive', { exact: true })).toHaveCount(0);
         await expect(page.getByText('0 active', { exact: true })).toBeVisible();
     });
 
