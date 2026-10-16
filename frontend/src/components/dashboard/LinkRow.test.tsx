@@ -20,7 +20,7 @@ const base: LinkData = {
     tags: [],
 };
 
-function renderRow(overrides: Partial<LinkData> = {}) {
+function renderRow(overrides: Partial<LinkData> = {}, clickFlash = 0) {
     return render(
         <LinkRow
             link={{ ...base, ...overrides }}
@@ -29,6 +29,7 @@ function renderRow(overrides: Partial<LinkData> = {}) {
             sourceCopied={false}
             cloning={false}
             selected={false}
+            clickFlash={clickFlash}
             onToggleSelect={vi.fn()}
             onCopy={vi.fn()}
             onCopySource={vi.fn()}
@@ -107,6 +108,36 @@ describe('LinkRow status badges', () => {
         renderRow({ starts_at: starts });
         expect(screen.queryByText('Not started')).not.toBeInTheDocument();
         expect(screen.queryByText(/Starts /)).not.toBeInTheDocument();
+    });
+
+    it('flashes the count after a live click and leaves it alone otherwise', () => {
+        const { rerender } = renderRow({}, 1);
+        const flashed = screen.getByRole('link', { name: '3 clicks, analytics for abc123' });
+        expect(flashed.querySelector('.animate-live-click')).not.toBeNull();
+        rerender(
+            <LinkRow
+                link={base}
+                linkNumber={1}
+                copied={false}
+                sourceCopied={false}
+                cloning={false}
+                selected={false}
+                clickFlash={0}
+                onToggleSelect={vi.fn()}
+                onCopy={vi.fn()}
+                onCopySource={vi.fn()}
+                onPreview={vi.fn()}
+                onPin={vi.fn()}
+                onClone={vi.fn()}
+                onShare={vi.fn()}
+                onQr={vi.fn()}
+                onEdit={vi.fn()}
+                onDelete={vi.fn()}
+            />,
+        );
+        expect(
+            screen.getByRole('link', { name: '3 clicks, analytics for abc123' }).querySelector('.animate-live-click'),
+        ).toBeNull();
     });
 
     it('flags an expiry that has passed and still shows the expiry date', () => {

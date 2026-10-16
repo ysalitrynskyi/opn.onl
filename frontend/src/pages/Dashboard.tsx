@@ -12,6 +12,8 @@ import logger from '../utils/logger';
 import { toast } from '../components/Toast';
 import ShareModal from '../components/ShareModal';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import LiveClickIndicator from '../components/dashboard/LiveClickIndicator';
+import { useLiveClicks } from '../hooks/useLiveClicks';
 import EditModal from '../components/dashboard/EditModal';
 import QRModal from '../components/dashboard/QRModal';
 import PreviewModal from '../components/dashboard/PreviewModal';
@@ -483,6 +485,16 @@ export default function Dashboard() {
     }, [needsAccountClicks]);
 
     const pageIds = paginatedLinks.map(link => link.id);
+    // A click on this page moves the row. The header total is the sum of the
+    // loaded rows when they are the whole account, and the profile total
+    // otherwise, so that one is moved too. Clicks on other pages are ignored.
+    const onLiveClick = useCallback((linkId: number) => {
+        setLinks(prev => prev.map(link => (
+            link.id === linkId ? { ...link, click_count: link.click_count + 1 } : link
+        )));
+        setAccountClicks(prev => (prev == null ? prev : prev + 1));
+    }, []);
+    const live = useLiveClicks(pageIds, onLiveClick);
     const selectedOnPage = pageIds.filter(id => selectedIds.has(id)).length;
     const allOnPage = pageIds.length > 0 && selectedOnPage === pageIds.length;
 
@@ -800,6 +812,7 @@ export default function Dashboard() {
                                 {totalClicks.toLocaleString()} {pluralize(totalClicks, 'click')}
                             </span>
                         )}
+                        <LiveClickIndicator status={live.status} />
                     </div>
                 </div>
                 <div className="flex gap-2">
@@ -907,6 +920,7 @@ export default function Dashboard() {
                                     sourceCopied={copiedSourceId === link.id}
                                     cloning={cloningIds.has(link.id)}
                                     selected={selectedIds.has(link.id)}
+                                    clickFlash={live.flashNonce(link.id)}
                                     onToggleSelect={toggleSelected}
                                     onCopy={handleCopy}
                                     onCopySource={handleCopySource}
