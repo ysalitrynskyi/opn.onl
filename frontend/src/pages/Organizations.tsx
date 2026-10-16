@@ -171,37 +171,50 @@ function ActivityLog({ orgId }: { orgId: number }) {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
     const [hasMore, setHasMore] = useState(false);
+    // `pending` is the page being fetched. `offset` stays on the last page
+    // that loaded, so a failed turn keeps those entries instead of the empty copy.
+    const [pending, setPending] = useState(0);
+    const [attempt, setAttempt] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
+        setLoading(true);
+        setError('');
         (async () => {
             try {
-                const res = await authFetch(API_ENDPOINTS.orgAudit(orgId, { limit: AUDIT_PAGE, offset }));
+                const res = await authFetch(API_ENDPOINTS.orgAudit(orgId, { limit: AUDIT_PAGE, offset: pending }));
                 if (cancelled) return;
                 if (!res.ok) {
                     setError(await responseError(res, 'Could not load activity'));
-                    setEntries([]);
-                    setHasMore(false);
                     return;
                 }
                 const rows = await res.json() as AuditEntry[];
                 if (cancelled) return;
                 setEntries(rows);
+                setOffset(pending);
                 setHasMore(rows.length === AUDIT_PAGE);
-                setError('');
             } catch (err) {
                 if (!cancelled) {
                     logger.error('Failed to load organization audit log', err);
                     setError(failureMessage(err, 'Could not load activity'));
-                    setEntries([]);
-                    setHasMore(false);
                 }
             } finally {
                 if (!cancelled) setLoading(false);
             }
         })();
         return () => { cancelled = true; };
-    }, [orgId, offset]);
+    }, [orgId, pending, attempt]);
+
+    // A repeat of the page already in flight (Try again, or Older after a
+    // refusal) has to bump the attempt: setting the same offset would not.
+    function showPage(next: number) {
+        setLoading(true);
+        if (next === pending) {
+            setAttempt((current) => current + 1);
+            return;
+        }
+        setPending(next);
+    }
 
     return (
         <section className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden">
@@ -211,7 +224,12 @@ function ActivityLog({ orgId }: { orgId: number }) {
             </div>
             <div className="p-6">
                 {error && (
-                    <p role="alert" className="mb-4 text-sm text-danger">{error}</p>
+                    <div role="alert" className="mb-4 flex flex-col gap-3 text-sm text-danger sm:flex-row sm:items-center">
+                        <span className="break-words">{error}</span>
+                        <button type="button" className={quietBtn} onClick={() => showPage(pending)}>
+                            Try again
+                        </button>
+                    </div>
                 )}
                 {loading && entries === null ? (
                     <Loader2 className="h-5 w-5 animate-spin text-primary-600" aria-label="Loading activity" />
@@ -230,7 +248,7 @@ function ActivityLog({ orgId }: { orgId: number }) {
                             );
                         })}
                     </ul>
-                ) : (
+                ) : error ? null : (
                     <p className="text-sm text-muted">
                         {offset > 0 ? 'No older activity.' : 'No activity yet.'}
                     </p>
@@ -242,10 +260,7 @@ function ActivityLog({ orgId }: { orgId: number }) {
                                 type="button"
                                 className={quietBtn}
                                 disabled={loading}
-                                onClick={() => {
-                                    setLoading(true);
-                                    setOffset((current) => Math.max(0, current - AUDIT_PAGE));
-                                }}
+                                onClick={() => showPage(Math.max(0, offset - AUDIT_PAGE))}
                             >
                                 Newer
                             </button>
@@ -255,10 +270,7 @@ function ActivityLog({ orgId }: { orgId: number }) {
                                 type="button"
                                 className={quietBtn}
                                 disabled={loading}
-                                onClick={() => {
-                                    setLoading(true);
-                                    setOffset((current) => current + AUDIT_PAGE);
-                                }}
+                                onClick={() => showPage(offset + AUDIT_PAGE)}
                             >
                                 Older
                             </button>
@@ -315,6 +327,7 @@ export default function Organizations() {
     const [confirmName, setConfirmName] = useState('');
     const [transferUserId, setTransferUserId] = useState('');
     const [dialogBusy, setDialogBusy] = useState(false);
+    const [dialogError, setDialogError] = useState('');
     const [auditGeneration, setAuditGeneration] = useState(0);
 
     const orgsRef = useRef<OrgRow[]>([]);
@@ -323,6 +336,9 @@ export default function Organizations() {
     const meRef = useRef<Profile | null>(null);
     // Latest members request per team, so a slow answer cannot overwrite a newer one.
     const membersSeq = useRef(new Map<number, number>());
+    // `disabled` lands on the next paint. A second click in this turn would
+    // send the request again, and its refusal would replace the success notice.
+    const inFlight = useRef(false);
 
     const selected = orgs.find((org) => org.id === selectedId) ?? null;
 
@@ -475,7 +491,30 @@ export default function Organizations() {
     function selectOrg(id: number) {
         setSelectedId(id);
         setDialog(null);
+        setDialogError('');
         setNotice(null);
+    }
+
+    function startAction(): boolean {
+        if (inFlight.current) return false;
+        inFlight.current = true;
+        return true;
+    }
+
+    function endAction() {
+        inFlight.current = false;
+    }
+
+    function finishDialog() {
+        setDialog(null);
+        setDialogError('');
+        setConfirmName('');
+        setTransferUserId('');
+    }
+
+    function openDialog(next: Dialog) {
+        setDialogError('');
+        setDialog(next);
     }
 
     function bumpAudit() {
@@ -484,6 +523,7 @@ export default function Organizations() {
 
     async function handleCreate(event: FormEvent) {
         event.preventDefault();
+        if (!startAction()) return;
         setNotice(null);
         setCreating(true);
         try {
@@ -508,6 +548,7 @@ export default function Organizations() {
         } catch (err) {
             setNotice({ tone: 'error', text: failureMessage(err, 'Could not create the team') });
         } finally {
+            endAction();
             setCreating(false);
         }
     }
@@ -541,6 +582,7 @@ export default function Organizations() {
     async function handleInvite(event: FormEvent) {
         event.preventDefault();
         if (!selected) return;
+        if (!startAction()) return;
         const orgId = selected.id;
         setNotice(null);
         setInviting(true);
@@ -563,12 +605,14 @@ export default function Organizations() {
         } catch (err) {
             setNotice({ tone: 'error', text: failureMessage(err, 'Could not add member') });
         } finally {
+            endAction();
             setInviting(false);
         }
     }
 
     async function handleRoleChange(member: Member, role: string) {
         if (!selected || role === member.role) return;
+        if (!startAction()) return;
         const orgId = selected.id;
         setNotice(null);
         setPendingMemberId(member.id);
@@ -590,22 +634,25 @@ export default function Organizations() {
         } catch (err) {
             setNotice({ tone: 'error', text: failureMessage(err, 'Could not change the role') });
         } finally {
+            endAction();
             setPendingMemberId(null);
         }
     }
 
     async function handleRemove(member: Member) {
         if (!selected) return;
+        if (!startAction()) return;
         const orgId = selected.id;
         setDialogBusy(true);
+        setDialogError('');
         setNotice(null);
         try {
             const res = await authFetch(API_ENDPOINTS.orgMember(orgId, member.id), { method: 'DELETE' });
             if (!res.ok) {
-                setNotice({ tone: 'error', text: await responseError(res, 'Could not remove member') });
+                setDialogError(await responseError(res, 'Could not remove member'));
                 return;
             }
-            setDialog(null);
+            finishDialog();
             const ok = await loadTeams();
             if (ok) {
                 await refreshMembers(orgId);
@@ -613,29 +660,33 @@ export default function Organizations() {
                 bumpAudit();
             }
         } catch (err) {
-            setNotice({ tone: 'error', text: failureMessage(err, 'Could not remove member') });
+            setDialogError(failureMessage(err, 'Could not remove member'));
         } finally {
+            endAction();
             setDialogBusy(false);
         }
     }
 
     async function handleLeave() {
         if (!selected) return;
+        if (!startAction()) return;
         setDialogBusy(true);
+        setDialogError('');
         setNotice(null);
         try {
             const res = await authFetch(API_ENDPOINTS.orgLeave(selected.id), { method: 'POST' });
             if (!res.ok) {
-                setNotice({ tone: 'error', text: await responseError(res, 'Could not leave the team') });
+                setDialogError(await responseError(res, 'Could not leave the team'));
                 return;
             }
-            setDialog(null);
+            finishDialog();
             pendingSelect.current = null;
             const ok = await loadTeams();
             if (ok) setNotice({ tone: 'ok', text: 'You left the team' });
         } catch (err) {
-            setNotice({ tone: 'error', text: failureMessage(err, 'Could not leave the team') });
+            setDialogError(failureMessage(err, 'Could not leave the team'));
         } finally {
+            endAction();
             setDialogBusy(false);
         }
     }
@@ -645,7 +696,9 @@ export default function Organizations() {
         const orgId = selected.id;
         const newOwnerUserId = Number(transferUserId);
         if (!Number.isInteger(newOwnerUserId)) return;
+        if (!startAction()) return;
         setDialogBusy(true);
+        setDialogError('');
         setNotice(null);
         try {
             const res = await authFetch(API_ENDPOINTS.orgTransfer(orgId), {
@@ -653,11 +706,10 @@ export default function Organizations() {
                 body: JSON.stringify({ new_owner_user_id: newOwnerUserId }),
             });
             if (!res.ok) {
-                setNotice({ tone: 'error', text: await responseError(res, 'Could not transfer ownership') });
+                setDialogError(await responseError(res, 'Could not transfer ownership'));
                 return;
             }
-            setDialog(null);
-            setTransferUserId('');
+            finishDialog();
             const ok = await loadTeams();
             if (ok) {
                 await refreshMembers(orgId);
@@ -665,39 +717,42 @@ export default function Organizations() {
                 bumpAudit();
             }
         } catch (err) {
-            setNotice({ tone: 'error', text: failureMessage(err, 'Could not transfer ownership') });
+            setDialogError(failureMessage(err, 'Could not transfer ownership'));
         } finally {
+            endAction();
             setDialogBusy(false);
         }
     }
 
     async function handleDelete() {
         if (!selected || confirmName !== selected.name) return;
+        if (!startAction()) return;
         setDialogBusy(true);
+        setDialogError('');
         setNotice(null);
         try {
             const res = await authFetch(API_ENDPOINTS.org(selected.id), { method: 'DELETE' });
             if (!res.ok) {
-                setNotice({ tone: 'error', text: await responseError(res, 'Could not delete the team') });
+                setDialogError(await responseError(res, 'Could not delete the team'));
                 return;
             }
-            setDialog(null);
-            setConfirmName('');
+            finishDialog();
             pendingSelect.current = null;
             const ok = await loadTeams();
             if (ok) setNotice({ tone: 'ok', text: 'Team deleted' });
         } catch (err) {
-            setNotice({ tone: 'error', text: failureMessage(err, 'Could not delete the team') });
+            setDialogError(failureMessage(err, 'Could not delete the team'));
         } finally {
+            endAction();
             setDialogBusy(false);
         }
     }
 
     function closeDialog() {
-        if (dialogBusy) return;
-        setDialog(null);
-        setConfirmName('');
-        setTransferUserId('');
+        // The lock is set before the button paints as disabled, so Escape in
+        // that gap must not drop the dialog out from under the attempt.
+        if (dialogBusy || inFlight.current) return;
+        finishDialog();
     }
 
     const canManage = manages(selected?.myRole ?? null);
@@ -863,7 +918,7 @@ export default function Organizations() {
                                                 <div className="flex flex-wrap gap-2">
                                                     <Link to={`/dashboard?org=${selected.id}`} className={quietBtn}>View links</Link>
                                                     {canLeave && (
-                                                        <button type="button" className={quietBtn} onClick={() => setDialog({ kind: 'leave' })}>
+                                                        <button type="button" className={quietBtn} onClick={() => openDialog({ kind: 'leave' })}>
                                                             Leave team
                                                         </button>
                                                     )}
@@ -969,7 +1024,7 @@ export default function Organizations() {
                                                                                 type="button"
                                                                                 className="text-sm text-danger hover:underline"
                                                                                 aria-label={`Remove ${member.email}`}
-                                                                                onClick={() => setDialog({ kind: 'remove', member })}
+                                                                                onClick={() => openDialog({ kind: 'remove', member })}
                                                                             >
                                                                                 Remove
                                                                             </button>
@@ -1033,7 +1088,7 @@ export default function Organizations() {
                                                         className={quietBtn}
                                                         onClick={() => {
                                                             setTransferUserId(otherMembers[0] ? String(otherMembers[0].user_id) : '');
-                                                            setDialog({ kind: 'transfer' });
+                                                            openDialog({ kind: 'transfer' });
                                                         }}
                                                     >
                                                         Transfer ownership
@@ -1043,7 +1098,7 @@ export default function Organizations() {
                                                         className={dangerBtn}
                                                         onClick={() => {
                                                             setConfirmName('');
-                                                            setDialog({ kind: 'delete' });
+                                                            openDialog({ kind: 'delete' });
                                                         }}
                                                     >
                                                         Delete team
@@ -1066,6 +1121,11 @@ export default function Organizations() {
                             : dialog.kind === 'transfer' ? 'Transfer ownership'
                                 : 'Delete team'
                 } onClose={closeDialog}>
+                    {dialogError && (
+                        <div role="alert" className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger break-words">
+                            {dialogError}
+                        </div>
+                    )}
                     {dialog.kind === 'leave' && (
                         <form onSubmit={(event) => { event.preventDefault(); void handleLeave(); }} className="space-y-4">
                             <p className="text-sm text-muted">
