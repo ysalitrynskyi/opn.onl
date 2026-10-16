@@ -470,6 +470,9 @@ test.describe('Security Tests', () => {
                 // Aliases must not shadow app routes (opn.onl/<alias> would open the page).
                 ['dashboard', reserved],
                 ['Settings', reserved],
+                ['overview', reserved],
+                ['organizations', reserved],
+                ['report', reserved],
             ]) {
                 const response = await api(request, 'post', '/links', user.token, {
                     original_url: DESTINATION,

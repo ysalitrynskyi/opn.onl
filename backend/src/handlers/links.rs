@@ -594,6 +594,67 @@ async fn ssrf_guarded_fetch(
     Err("Too many redirects".to_string())
 }
 
+/// Aliases that would collide with a route.
+///
+/// Short links are handed out as `FRONTEND_URL/<code>`, and nginx serves the
+/// marketing and app routes from its allowlist, so an alias matching a
+/// frontend route (for example "about") renders that page instead of
+/// redirecting. A top-level backend segment has the same problem: `GET /{code}`
+/// is registered last, so the alias answers the API (often 405) instead of
+/// redirecting. `reserved_alias_tests` reads the nginx allowlist, `App.tsx`
+/// and the router and fails when a new name is missing here.
+const RESERVED_ALIASES: &[&str] = &[
+    // backend API routes
+    "health",
+    "links",
+    "link",
+    "auth",
+    "admin",
+    "orgs",
+    "org",
+    // The Teams page is `/organizations`. The API stays `/orgs`.
+    "organizations",
+    "folders",
+    "tags",
+    "analytics",
+    "contact",
+    // `POST /report` lands in the same release. An alias would then answer
+    // 405 instead of redirecting.
+    "report",
+    "ws",
+    "sse",
+    "api",
+    "api-docs",
+    "swagger-ui",
+    "password",
+    "verify",
+    "preview",
+    "me",
+    "profile",
+    "robots.txt",
+    "favicon.ico",
+    "sitemap.xml",
+    "404",
+    // frontend SPA routes (opn.onl/<route>)
+    "features",
+    "pricing",
+    "about",
+    "privacy",
+    "terms",
+    "faq",
+    "docs",
+    "developers",
+    "login",
+    "register",
+    "dashboard",
+    "overview",
+    "settings",
+    "forgot-password",
+    "reset-password",
+    "verify-email",
+    "r",
+];
+
 /// Validate alias format and length
 fn validate_alias(alias: &str) -> Result<(), String> {
     let min_len = get_min_alias_length();
@@ -626,63 +687,230 @@ fn validate_alias(alias: &str) -> Result<(), String> {
         return Err("Alias cannot start or end with hyphen or underscore".to_string());
     }
 
-    // Reserved words that would collide with a backend API route OR a frontend
-    // SPA route. Short links are handed out as FRONTEND_URL/<code> (opn.onl),
-    // and nginx serves the marketing/app routes from its allowlist, so an alias
-    // matching a frontend route (e.g. "about", "pricing") would render that page
-    // instead of redirecting — a dead link. Keep in sync with the nginx
-    // allowlist and frontend/src/App.tsx.
-    const RESERVED: &[&str] = &[
-        // backend API routes
-        "health",
-        "links",
-        "link",
-        "auth",
-        "admin",
-        "orgs",
-        "org",
-        "organizations",
-        "folders",
-        "tags",
-        "analytics",
-        "contact",
-        "ws",
-        "sse",
-        "api",
-        "api-docs",
-        "swagger-ui",
-        "password",
-        "verify",
-        "preview",
-        "me",
-        "profile",
-        "robots.txt",
-        "favicon.ico",
-        "sitemap.xml",
-        "404",
-        // frontend SPA routes (opn.onl/<route>)
-        "features",
-        "pricing",
-        "about",
-        "privacy",
-        "terms",
-        "faq",
-        "docs",
-        "developers",
-        "login",
-        "register",
-        "dashboard",
-        "settings",
-        "forgot-password",
-        "reset-password",
-        "verify-email",
-        "r",
-    ];
-    if RESERVED.contains(&alias.to_lowercase().as_str()) {
+    if RESERVED_ALIASES.contains(&alias.to_lowercase().as_str()) {
         return Err("This alias is reserved and cannot be used".to_string());
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod reserved_alias_tests {
+    use super::{RESERVED_ALIASES, validate_alias};
+
+    /// Routes that are not in this tree yet. `/organizations` is the Teams
+    /// page. `POST /report` is the abuse report; an alias `report` would
+    /// answer 405 once that route exists.
+    const RESERVED_BEFORE_THE_ROUTE: &[&str] = &["organizations", "report"];
+
+    fn names_between(source: &str, marker: &str, end: char) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut offset = 0;
+        while let Some(index) = source[offset..].find(marker) {
+            let start = offset + index + marker.len();
+            let Some(end_rel) = source[start..].find(end) else {
+                break;
+            };
+            for part in source[start..start + end_rel].split('|') {
+                let name = part.trim();
+                if !name.is_empty() {
+                    names.push(name.to_string());
+                }
+            }
+            offset = start + end_rel + 1;
+        }
+        names
+    }
+
+    fn static_names(source: &str, marker: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut offset = 0;
+        while let Some(index) = source[offset..].find(marker) {
+            let start = offset + index + marker.len();
+            let tail = &source[start..];
+            offset = start;
+            if tail.starts_with('(') || tail.starts_with('@') {
+                continue;
+            }
+            let name: String = tail
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// First static segment of each `<Route path="...">`. Param and splat
+    /// routes (`:code`, `*`) are the short link itself.
+    fn app_route_names(source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut offset = 0;
+        let marker = "path=\"";
+        while let Some(index) = source[offset..].find(marker) {
+            let start = offset + index + marker.len();
+            let Some(end) = source[start..].find('"') else {
+                break;
+            };
+            let path = &source[start..start + end];
+            offset = start + end + 1;
+            let Some(first) = path.split('/').find(|part| !part.is_empty()) else {
+                continue;
+            };
+            if first.starts_with(':') || first.starts_with('*') {
+                continue;
+            }
+            names.push(first.to_string());
+        }
+        names
+    }
+
+    /// First static segment of each `.route("/...")` in `build_router`.
+    /// `/:code` is the redirect, so a segment that starts with `:` is skipped.
+    fn router_segments(source: &str) -> Vec<String> {
+        let marker = ".route(";
+        let mut names = Vec::new();
+        let mut offset = 0;
+        while let Some(index) = source[offset..].find(marker) {
+            let after_marker = offset + index + marker.len();
+            let tail = source[after_marker..].trim_start();
+            let tail_at = source.len() - tail.len();
+            if !tail.starts_with('"') {
+                offset = after_marker;
+                continue;
+            }
+            let path_body = &tail[1..];
+            let Some(end) = path_body.find('"') else {
+                break;
+            };
+            let path = &path_body[..end];
+            offset = tail_at + 1 + end + 1;
+            let Some(first) = path.split('/').find(|part| !part.is_empty()) else {
+                continue;
+            };
+            if !first.starts_with(':') {
+                names.push(first.to_string());
+            }
+        }
+        names
+    }
+
+    fn quoted_path_segment(source: &str, marker: &str) -> String {
+        let index = source
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        let tail = source[index + marker.len()..].trim_start();
+        assert!(
+            tail.starts_with('"'),
+            "{marker} is not followed by a quoted path"
+        );
+        let body = &tail[1..];
+        let end = body
+            .find('"')
+            .unwrap_or_else(|| panic!("unterminated path after {marker}"));
+        let path = &body[..end];
+        path.split('/')
+            .find(|part| !part.is_empty())
+            .unwrap_or_else(|| panic!("empty path after {marker}"))
+            .to_string()
+    }
+
+    fn is_reserved(name: &str) -> bool {
+        RESERVED_ALIASES
+            .iter()
+            .any(|reserved| reserved.eq_ignore_ascii_case(name))
+    }
+
+    #[test]
+    fn spa_and_api_routes_are_reserved_aliases() {
+        // Paths are relative to this file (`backend/src/handlers/links.rs`).
+        // Parsing the route sources, rather than a second copy of the list,
+        // is what fails the build when a new page or API segment is added
+        // and this list is not.
+        let nginx = include_str!("../../../frontend/nginx.conf");
+        let mut required = names_between(nginx, "location ~ ^/(", ')');
+        required.extend(static_names(nginx, "location = /"));
+        required.extend(static_names(nginx, "location ~ \"^/"));
+        let app = app_route_names(include_str!("../../../frontend/src/App.tsx"));
+        let routes = router_segments(include_str!("../lib.rs"));
+        let swagger = quoted_path_segment(include_str!("../openapi.rs"), "SwaggerUi::new(");
+        let api_docs = quoted_path_segment(include_str!("../openapi.rs"), ".url(");
+
+        assert!(
+            required.iter().any(|name| name == "overview"),
+            "nginx allowlist parser missed overview: {required:?}"
+        );
+        assert!(
+            required.iter().any(|name| name == "password"),
+            "nginx parser missed the /password page: {required:?}"
+        );
+        assert!(
+            required.iter().any(|name| name == "health"),
+            "nginx parser missed location = /health: {required:?}"
+        );
+        assert!(
+            app.iter().any(|name| name == "overview") && app.iter().any(|name| name == "r"),
+            "App.tsx parser missed a route: {app:?}"
+        );
+        assert!(
+            !app.iter().any(|name| name.starts_with(':') || name == "*"),
+            "param routes are not aliases: {app:?}"
+        );
+        assert!(
+            routes.iter().any(|name| name == "links")
+                && routes.iter().any(|name| name == "contact")
+                && routes.iter().any(|name| name == "health"),
+            "router parser missed a segment: {routes:?}"
+        );
+        assert!(
+            !routes.iter().any(|name| name.starts_with(':')),
+            "the redirect route is not an alias: {routes:?}"
+        );
+        assert_eq!(swagger, "swagger-ui");
+        assert_eq!(api_docs, "api-docs");
+
+        required.extend(app);
+        required.extend(routes);
+        required.push(swagger);
+        required.push(api_docs);
+        required.extend(
+            RESERVED_BEFORE_THE_ROUTE
+                .iter()
+                .map(|name| name.to_string()),
+        );
+
+        let mut missing: Vec<&str> = required
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !is_reserved(name))
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "route names missing from reserved aliases: {missing:?}"
+        );
+
+        // Long enough for the default minimum, so a length error would mean
+        // the list is not what `validate_alias` consults. A normal alias of
+        // the same size still passes.
+        let overview = validate_alias("overview").unwrap_err();
+        assert!(
+            overview.to_lowercase().contains("reserved"),
+            "overview should be reserved, got {overview}"
+        );
+        let mixed = validate_alias("Overview").unwrap_err();
+        assert!(
+            mixed.to_lowercase().contains("reserved"),
+            "reservation is case-insensitive, got {mixed}"
+        );
+        assert!(
+            validate_alias("myalias1").is_ok(),
+            "a non-route alias must still be accepted"
+        );
+    }
 }
 
 // ============= DTOs =============

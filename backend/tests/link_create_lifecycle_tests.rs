@@ -131,6 +131,10 @@ async fn custom_alias_validation_on_create() {
         ("my@link", "letters, numbers, hyphens"),
         ("my link", "letters, numbers, hyphens"),
         ("about", "reserved"),
+        ("overview", "reserved"),
+        ("Overview", "reserved"),
+        ("organizations", "reserved"),
+        ("report", "reserved"),
     ];
     for (alias, needle) in rejected {
         let res = server
