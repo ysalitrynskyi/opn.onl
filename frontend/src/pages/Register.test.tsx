@@ -175,6 +175,28 @@ describe('Register Page', () => {
     });
   });
 
+  it('says how long to wait when sign-up is rate limited', async () => {
+    vi.mocked(global.fetch).mockImplementation(((url: string) =>
+      String(url).includes('/auth/register')
+        ? mockFetchResponse(
+            {
+              error: 'Too many requests',
+              retry_after: 37,
+              message: 'Rate limit exceeded. Please try again in 37 seconds.',
+            },
+            429,
+          )
+        : mockFetchResponse({})) as any);
+
+    const { user } = render(<Register />);
+    await user.type(screen.getByLabelText(/email address/i), 'new@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'password123');
+    await user.click(screen.getByRole('button', { name: /create account/i }));
+
+    expect(await screen.findByText('Rate limit exceeded. Please try again in 37 seconds.')).toBeInTheDocument();
+    expect(screen.queryByText('Too many requests')).not.toBeInTheDocument();
+  });
+
   it('says why the new account is not signed in when the browser blocks site storage', async () => {
     vi.mocked(global.fetch).mockResolvedValue(
       mockFetchResponse({ token: mockToken, email_verified: true }) as any

@@ -60,9 +60,8 @@ export default function Login() {
                 body: JSON.stringify({ email, password }),
             });
 
+            if (!res.ok) throw new Error(await responseError(res, 'Login failed'));
             const data = await res.json();
-
-            if (!res.ok) throw new Error(data.error || 'Login failed');
 
             if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
             safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
@@ -131,8 +130,7 @@ export default function Login() {
             });
 
             if (!startRes.ok) {
-                const data = await startRes.json();
-                throw new Error(data.error || 'No passkey found for this account');
+                throw new Error(await responseError(startRes, 'No passkey found for this account'));
             }
 
             // `login_id` names this attempt; the server answers `finish` only
@@ -177,11 +175,10 @@ export default function Login() {
                 }),
             });
 
-            const data = await finishRes.json();
-
             if (!finishRes.ok) {
-                throw new Error(data.error || 'Authentication failed');
+                throw new Error(await responseError(finishRes, 'Authentication failed'));
             }
+            const data = await finishRes.json();
 
             if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
             safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');

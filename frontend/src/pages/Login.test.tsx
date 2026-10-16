@@ -300,6 +300,64 @@ describe('Login Page', () => {
     });
   });
 
+  // The middleware's 429: `error` names the limit, `message` says how long to wait.
+  const rateLimited = () =>
+    mockFetchResponse(
+      {
+        error: 'Too many requests',
+        retry_after: 37,
+        message: 'Rate limit exceeded. Please try again in 37 seconds.',
+      },
+      429,
+    );
+
+  it('says how long to wait when sign-in is rate limited', async () => {
+    vi.mocked(global.fetch).mockImplementation(((url: string) =>
+      String(url).includes('/auth/login') ? rateLimited() : mockFetchResponse({})) as any);
+
+    const { user } = render(<Login />);
+    await user.type(screen.getByLabelText(/email address/i), 'test@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'password123');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    expect(await screen.findByText('Rate limit exceeded. Please try again in 37 seconds.')).toBeInTheDocument();
+    expect(screen.queryByText('Too many requests')).not.toBeInTheDocument();
+  });
+
+  it('shows a plain failure, not a parser error, when the answer is not JSON', async () => {
+    vi.mocked(global.fetch).mockImplementation(((url: string) =>
+      String(url).includes('/auth/login')
+        ? Promise.resolve({
+            ok: false,
+            status: 502,
+            json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON at position 0')),
+          })
+        : mockFetchResponse({})) as any);
+
+    const { user } = render(<Login />);
+    await user.type(screen.getByLabelText(/email address/i), 'test@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'password123');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    expect(await screen.findByText('Login failed')).toBeInTheDocument();
+    expect(screen.queryByText(/unexpected token/i)).not.toBeInTheDocument();
+  });
+
+  it('says how long to wait when a passkey sign-in is rate limited', async () => {
+    Object.defineProperty(window, 'PublicKeyCredential', {
+      configurable: true,
+      value: class PublicKeyCredentialMock {},
+    });
+    vi.mocked(global.fetch).mockImplementation(((url: string) =>
+      String(url).includes('/passkey/login/start') ? rateLimited() : mockFetchResponse({})) as any);
+
+    const { user } = render(<Login />);
+    await user.type(screen.getByLabelText(/email address/i), 'test@example.com');
+    await user.click(await screen.findByRole('button', { name: /sign in with passkey/i }));
+
+    expect(await screen.findByText('Rate limit exceeded. Please try again in 37 seconds.')).toBeInTheDocument();
+  });
+
   it('disables button during submission', async () => {
     vi.mocked(global.fetch).mockImplementation(() => 
       new Promise(resolve => setTimeout(() => resolve(mockFetchResponse({ token: mockToken }) as any), 100))
