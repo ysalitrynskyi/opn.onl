@@ -1,8 +1,10 @@
 use parking_lot::RwLock;
+use sea_orm::sea_query::{LockBehavior, LockType};
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr,
+    EntityTrait, QueryFilter, QueryOrder, QuerySelect, Select, Set, Statement, TransactionTrait,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -16,6 +18,15 @@ use crate::entity::{click_events, links};
 /// shape grows. A single `insert_many` past that limit fails forever, even
 /// after the database recovers.
 const INSERT_CHUNK_SIZE: usize = 500;
+
+/// Links whose clicks one flush transaction writes. A transaction per link
+/// (a parent lock, an insert and a counter update each) made a round with
+/// thousands of distinct links outlast the flush interval while the queue
+/// filled towards its cap. A chunk costs one parent lock, one counter update
+/// and an insert per `INSERT_CHUNK_SIZE` events, however many links it holds.
+/// 500 keeps the parent lock's `IN` list (one bind per link) and the counter
+/// update (two per link) far below the bind parameter limit.
+const LINK_CHUNK_SIZE: usize = 500;
 
 /// Click event data to be batched
 #[derive(Clone, Debug)]
@@ -52,6 +63,34 @@ enum ParentLock {
 /// Buffered click counter for aggregating click count updates
 struct ClickCounter {
     count: i64,
+}
+
+/// One link's share of a flush round.
+struct LinkClicks {
+    link_id: i32,
+    events: Vec<ClickData>,
+    /// What to add to `links.click_count`. A capped link's clicks add
+    /// nothing: the redirect already counted them (`add_event_only`).
+    count: i64,
+}
+
+/// The links of a committed chunk that it did not write.
+#[derive(Default)]
+struct Unwritten {
+    /// Live rows another transaction holds (only under `SkipLocked`).
+    held: HashSet<i32>,
+    /// Deleted or purged parents. Their clicks are discarded: requeueing them
+    /// would retry a write that can never succeed, forever.
+    gone: HashSet<i32>,
+}
+
+/// Why a chunk wrote nothing.
+enum ChunkError {
+    /// No transaction could be opened. The database is unreachable, and the
+    /// rest of the round would fail the same way.
+    Begin(DbErr),
+    /// A statement or the commit failed, and the transaction rolled back.
+    Write(DbErr),
 }
 
 /// Click buffer for batching database writes
@@ -281,170 +320,125 @@ impl ClickBuffer {
             counters.len()
         );
 
-        // Isolate each link in its own transaction. A hard-deleted parent can
-        // leave an orphan event in memory; one FK failure must not roll back and
-        // lose every unrelated click in the batch.
-        let mut events_by_link: HashMap<i32, Vec<ClickData>> = HashMap::new();
+        // Group the round per link, in id order so the chunks are stable.
+        let mut by_link: BTreeMap<i32, LinkClicks> = BTreeMap::new();
         for event in events {
-            events_by_link.entry(event.link_id).or_default().push(event);
+            by_link
+                .entry(event.link_id)
+                .or_insert_with(|| LinkClicks::new(event.link_id))
+                .events
+                .push(event);
         }
-        let mut counts: HashMap<i32, i64> = counters
-            .into_iter()
-            .map(|(link_id, counter)| (link_id, counter.count))
-            .collect();
-        let link_ids: HashSet<i32> = events_by_link
-            .keys()
-            .chain(counts.keys())
-            .copied()
-            .collect();
+        for (link_id, counter) in counters {
+            by_link
+                .entry(link_id)
+                .or_insert_with(|| LinkClicks::new(link_id))
+                .count = counter.count;
+        }
+        // Chunks still to write, the next one last.
+        let mut pending: Vec<Vec<LinkClicks>> = Vec::new();
+        for link in by_link.into_values() {
+            match pending.last_mut() {
+                Some(chunk) if chunk.len() < LINK_CHUNK_SIZE => chunk.push(link),
+                _ => pending.push(vec![link]),
+            }
+        }
+        pending.reverse();
+
+        let mut retry: Vec<LinkClicks> = Vec::new();
+        let mut held: Vec<LinkClicks> = Vec::new();
+        let mut unreachable_db = false;
+
+        // Every chunk is written with SKIP LOCKED, whichever flush this is:
+        // waiting for one held row while holding the share locks of a whole
+        // chunk could deadlock with the transaction that holds it (an account
+        // deletion updates many of one owner's links), and would hold up every
+        // other link of the chunk.
+        while let Some(mut chunk) = pending.pop() {
+            match write_chunk(db, &chunk, ParentLock::SkipLocked).await {
+                Ok(unwritten) => {
+                    for link in chunk {
+                        if unwritten.held.contains(&link.link_id) {
+                            held.push(link);
+                        } else if unwritten.gone.contains(&link.link_id) {
+                            discard_orphan(&link);
+                        }
+                    }
+                }
+                Err(ChunkError::Begin(e)) => {
+                    let links = chunk.len() + pending.iter().map(Vec::len).sum::<usize>();
+                    error!(
+                        "Click flush: failed to open a transaction (will retry {} links): {}",
+                        links, e
+                    );
+                    retry.extend(chunk);
+                    retry.extend(pending.drain(..).flatten());
+                    unreachable_db = true;
+                }
+                // One bad link must not cost the others their clicks. Halving
+                // the chunk until the failure is down to single links isolates
+                // it in a few transactions, not one per link, which matters
+                // because a link whose rows Postgres rejects is retried (and
+                // fails again) every round.
+                Err(ChunkError::Write(e)) if chunk.len() > 1 => {
+                    warn!(
+                        "Click flush: writing {} links in one transaction failed, splitting them: {}",
+                        chunk.len(),
+                        e
+                    );
+                    let second_half = chunk.split_off(chunk.len() / 2);
+                    pending.push(second_half);
+                    pending.push(chunk);
+                }
+                Err(ChunkError::Write(e)) => {
+                    for link in &chunk {
+                        log_write_failure(link, &e);
+                    }
+                    retry.extend(chunk);
+                }
+            }
+        }
+
+        match parent_lock {
+            // Retried next round, once whoever holds the row is done with it.
+            ParentLock::SkipLocked => retry.extend(held),
+            // Nothing may stay in memory, so wait for each held row, in a
+            // transaction of its own as before.
+            ParentLock::Wait => {
+                for link in held {
+                    if unreachable_db {
+                        retry.push(link);
+                        continue;
+                    }
+                    match write_chunk(db, std::slice::from_ref(&link), ParentLock::Wait).await {
+                        Ok(unwritten) => {
+                            if unwritten.gone.contains(&link.link_id) {
+                                discard_orphan(&link);
+                            }
+                        }
+                        Err(ChunkError::Begin(e)) => {
+                            error!(
+                                "Click flush: failed to open a transaction for link {}: {}",
+                                link.link_id, e
+                            );
+                            unreachable_db = true;
+                            retry.push(link);
+                        }
+                        Err(ChunkError::Write(e)) => {
+                            log_write_failure(&link, &e);
+                            retry.push(link);
+                        }
+                    }
+                }
+            }
+        }
 
         let mut retry_events = Vec::new();
         let mut retry_counts: HashMap<i32, i64> = HashMap::new();
-
-        for link_id in link_ids {
-            let link_events = events_by_link.remove(&link_id).unwrap_or_default();
-            let count = counts.remove(&link_id).unwrap_or(0);
-
-            let txn = match db.begin().await {
-                Ok(txn) => txn,
-                Err(e) => {
-                    error!(
-                        "Click flush: failed to open transaction for link {}: {}",
-                        link_id, e
-                    );
-                    retry_events.extend(link_events);
-                    if count > 0 {
-                        retry_counts.insert(link_id, count);
-                    }
-                    continue;
-                }
-            };
-
-            // Lock the active parent while its events and counter are written.
-            // Missing/deleted parents are isolated and discarded; they cannot
-            // poison valid links in the same flush.
-            let parent_query =
-                links::Entity::find_by_id(link_id).filter(links::Column::DeletedAt.is_null());
-            let parent = match parent_lock {
-                ParentLock::Wait => parent_query.lock_shared().one(&txn).await,
-                ParentLock::SkipLocked => {
-                    parent_query
-                        .lock_with_behavior(
-                            sea_orm::sea_query::LockType::Share,
-                            sea_orm::sea_query::LockBehavior::SkipLocked,
-                        )
-                        .one(&txn)
-                        .await
-                }
-            };
-            // SKIP LOCKED answers a held row as if it did not exist. Tell the
-            // two apart without a lock: a live row is busy, not an orphan.
-            let parent = match (parent, parent_lock) {
-                (Ok(None), ParentLock::SkipLocked) => {
-                    match links::Entity::find_by_id(link_id)
-                        .filter(links::Column::DeletedAt.is_null())
-                        .one(&txn)
-                        .await
-                    {
-                        Ok(Some(_)) => {
-                            let _ = txn.rollback().await;
-                            retry_events.extend(link_events);
-                            if count > 0 {
-                                retry_counts.insert(link_id, count);
-                            }
-                            continue;
-                        }
-                        other => other,
-                    }
-                }
-                (parent, _) => parent,
-            };
-            match parent {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    warn!(
-                        "Click flush: discarded {} orphan events and {} counter increments for link {}",
-                        link_events.len(),
-                        count,
-                        link_id
-                    );
-                    let _ = txn.rollback().await;
-                    continue;
-                }
-                Err(e) => {
-                    error!(
-                        "Click flush: failed to validate parent link {}: {}",
-                        link_id, e
-                    );
-                    let _ = txn.rollback().await;
-                    retry_events.extend(link_events);
-                    if count > 0 {
-                        retry_counts.insert(link_id, count);
-                    }
-                    continue;
-                }
-            }
-
-            let persist_result = async {
-                if !link_events.is_empty() {
-                    let models: Vec<click_events::ActiveModel> = link_events
-                        .iter()
-                        .cloned()
-                        .map(|e| click_events::ActiveModel {
-                            link_id: Set(e.link_id),
-                            ip_address: Set(e.ip_address),
-                            user_agent: Set(e.user_agent),
-                            referer: Set(e.referer),
-                            country: Set(e.country),
-                            city: Set(e.city),
-                            region: Set(e.region),
-                            latitude: Set(e.latitude),
-                            longitude: Set(e.longitude),
-                            device: Set(e.device),
-                            browser: Set(e.browser),
-                            os: Set(e.os),
-                            destination: Set(e.destination),
-                            created_at: Set(e
-                                .created_at
-                                .unwrap_or_else(|| chrono::Utc::now().naive_utc())),
-                            ..Default::default()
-                        })
-                        .collect();
-                    for chunk in models.chunks(INSERT_CHUNK_SIZE) {
-                        click_events::Entity::insert_many(chunk.to_vec())
-                            .exec(&txn)
-                            .await?;
-                    }
-                }
-
-                if count > 0 {
-                    use sea_orm::sea_query::Expr;
-                    links::Entity::update_many()
-                        .col_expr(
-                            links::Column::ClickCount,
-                            Expr::col(links::Column::ClickCount).add(count),
-                        )
-                        .filter(links::Column::Id.eq(link_id))
-                        .exec(&txn)
-                        .await?;
-                }
-
-                txn.commit().await
-            }
-            .await;
-
-            if let Err(e) = persist_result {
-                error!(
-                    "Click flush: failed to persist link {} (will retry {} events / {} increments): {}",
-                    link_id,
-                    link_events.len(),
-                    count,
-                    e
-                );
-                retry_events.extend(link_events);
-                if count > 0 {
-                    retry_counts.insert(link_id, count);
-                }
+        for link in retry {
+            retry_events.extend(link.events);
+            if link.count > 0 {
+                retry_counts.insert(link.link_id, link.count);
             }
         }
 
@@ -557,6 +551,197 @@ impl ClickBuffer {
             }
         })
     }
+}
+
+impl LinkClicks {
+    fn new(link_id: i32) -> Self {
+        Self {
+            link_id,
+            events: Vec::new(),
+            count: 0,
+        }
+    }
+}
+
+fn discard_orphan(link: &LinkClicks) {
+    warn!(
+        "Click flush: discarded {} orphan events and {} counter increments for link {}",
+        link.events.len(),
+        link.count,
+        link.link_id
+    );
+}
+
+fn log_write_failure(link: &LinkClicks, e: &DbErr) {
+    error!(
+        "Click flush: failed to persist link {} (will retry {} events / {} increments): {}",
+        link.link_id,
+        link.events.len(),
+        link.count,
+        e
+    );
+}
+
+/// The live (not soft-deleted) rows among `ids`, selecting only their id.
+fn live_links(ids: Vec<i32>) -> Select<links::Entity> {
+    links::Entity::find()
+        .select_only()
+        .column(links::Column::Id)
+        .filter(links::Column::Id.is_in(ids))
+        .filter(links::Column::DeletedAt.is_null())
+}
+
+/// Write a chunk of links in one transaction: lock their live parent rows with
+/// one statement, insert the locked links' events, then add the locked links'
+/// increments to `click_count` with one statement. A chunk either commits
+/// whole or writes nothing.
+async fn write_chunk(
+    db: &DatabaseConnection,
+    chunk: &[LinkClicks],
+    parent_lock: ParentLock,
+) -> Result<Unwritten, ChunkError> {
+    let txn = db.begin().await.map_err(ChunkError::Begin)?;
+    match write_chunk_in(&txn, chunk, parent_lock).await {
+        Ok(unwritten) => {
+            txn.commit().await.map_err(ChunkError::Write)?;
+            Ok(unwritten)
+        }
+        Err(e) => {
+            let _ = txn.rollback().await;
+            Err(ChunkError::Write(e))
+        }
+    }
+}
+
+async fn write_chunk_in(
+    txn: &DatabaseTransaction,
+    chunk: &[LinkClicks],
+    parent_lock: ParentLock,
+) -> Result<Unwritten, DbErr> {
+    let ids: Vec<i32> = chunk.iter().map(|link| link.link_id).collect();
+
+    // Share-lock the live parents while their events and counters are
+    // written, so a soft delete or a purge cannot land in between; the events
+    // of a locked parent cannot fail their foreign key. A missing or deleted
+    // parent is simply not returned.
+    let parents = live_links(ids.clone()).order_by_asc(links::Column::Id);
+    let parents = match parent_lock {
+        ParentLock::Wait => parents.lock_shared(),
+        ParentLock::SkipLocked => {
+            parents.lock_with_behavior(LockType::Share, LockBehavior::SkipLocked)
+        }
+    };
+    let locked: HashSet<i32> = parents
+        .into_tuple::<i32>()
+        .all(txn)
+        .await?
+        .into_iter()
+        .collect();
+
+    let mut unwritten = Unwritten::default();
+    let missing: Vec<i32> = ids.into_iter().filter(|id| !locked.contains(id)).collect();
+    if !missing.is_empty() {
+        // SKIP LOCKED answers a held row as if it did not exist. Tell the two
+        // apart without a lock: a live row is busy, not an orphan.
+        let live: HashSet<i32> = match parent_lock {
+            ParentLock::SkipLocked => live_links(missing.clone())
+                .into_tuple::<i32>()
+                .all(txn)
+                .await?
+                .into_iter()
+                .collect(),
+            ParentLock::Wait => HashSet::new(),
+        };
+        for id in missing {
+            if live.contains(&id) {
+                unwritten.held.insert(id);
+            } else {
+                unwritten.gone.insert(id);
+            }
+        }
+    }
+
+    let mut rows: Vec<click_events::ActiveModel> = Vec::new();
+    for event in chunk
+        .iter()
+        .filter(|link| locked.contains(&link.link_id))
+        .flat_map(|link| &link.events)
+    {
+        rows.push(event_row(event));
+        if rows.len() == INSERT_CHUNK_SIZE {
+            click_events::Entity::insert_many(std::mem::take(&mut rows))
+                .exec_without_returning(txn)
+                .await?;
+        }
+    }
+    if !rows.is_empty() {
+        click_events::Entity::insert_many(rows)
+            .exec_without_returning(txn)
+            .await?;
+    }
+
+    let increments: Vec<(i32, i64)> = chunk
+        .iter()
+        .filter(|link| link.count > 0 && locked.contains(&link.link_id))
+        .map(|link| (link.link_id, link.count))
+        .collect();
+    add_click_counts(txn, &increments).await?;
+
+    Ok(unwritten)
+}
+
+fn event_row(event: &ClickData) -> click_events::ActiveModel {
+    let event = event.clone();
+    click_events::ActiveModel {
+        link_id: Set(event.link_id),
+        ip_address: Set(event.ip_address),
+        user_agent: Set(event.user_agent),
+        referer: Set(event.referer),
+        country: Set(event.country),
+        city: Set(event.city),
+        region: Set(event.region),
+        latitude: Set(event.latitude),
+        longitude: Set(event.longitude),
+        device: Set(event.device),
+        browser: Set(event.browser),
+        os: Set(event.os),
+        destination: Set(event.destination),
+        created_at: Set(event
+            .created_at
+            .unwrap_or_else(|| chrono::Utc::now().naive_utc())),
+        ..Default::default()
+    }
+}
+
+/// Add each link's buffered clicks to its `click_count`, all in one
+/// statement. Each link appears once (the round is grouped per link), which
+/// matters: `UPDATE ... FROM` applies only one of several matching rows.
+async fn add_click_counts(
+    txn: &DatabaseTransaction,
+    increments: &[(i32, i64)],
+) -> Result<(), DbErr> {
+    if increments.is_empty() {
+        return Ok(());
+    }
+    let mut rows = Vec::with_capacity(increments.len());
+    let mut values = Vec::with_capacity(increments.len() * 2);
+    for (i, &(link_id, count)) in increments.iter().enumerate() {
+        rows.push(format!("(${}::integer, ${}::bigint)", 2 * i + 1, 2 * i + 2));
+        values.push(link_id.into());
+        values.push(count.into());
+    }
+    let sql = format!(
+        "UPDATE links SET click_count = links.click_count + v.n \
+         FROM (VALUES {}) AS v(id, n) WHERE links.id = v.id",
+        rows.join(", ")
+    );
+    txn.execute(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        sql,
+        values,
+    ))
+    .await?;
+    Ok(())
 }
 
 impl Clone for ClickBuffer {
