@@ -1,12 +1,12 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
     Plus, Download, X, ChevronLeft, ChevronRight,
     MousePointer,
     Zap, Link2, Upload, ArrowRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, authFetch, failureMessage, responseError, shortLinkBase, totalCount } from '../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch, failureMessage, responseError, shortLinkBase, totalCount } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -29,6 +29,18 @@ import type { AppSettings, LinkData, LinkSortBy, LinkSortOrder, LinkUpdatePayloa
 import { takePendingUrl } from '../utils/pendingUrl';
 import { safeLocalStorage } from '../utils/storage';
 import { pluralize } from '../utils/plural';
+import {
+    EMPTY_SCOPE,
+    catalogItems,
+    isUnfilteredAccount,
+    linksQuery,
+    orgOptions,
+    parsePositiveId,
+    sameScope,
+    type CatalogItem,
+    type LinkListScope,
+    type OrgOption,
+} from '../components/dashboard/linkScope';
 
 const LINKS_PER_PAGE = 20;
 const SPARKLINE_BATCH_SIZE = 80;
@@ -37,13 +49,6 @@ const SPARKLINE_BATCH_SIZE = 80;
 const PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 1000;
 const SEARCH_DEBOUNCE_MS = 300;
-
-function linksUrl(limit: number, offset: number, search: string) {
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (offset > 0) params.set('offset', String(offset));
-    if (search) params.set('search', search);
-    return `${API_ENDPOINTS.links}?${params}`;
-}
 
 // A link that was deleted elsewhere is refused with the same 403 as one the
 // user may not edit, so link ids cannot be probed. Either way the link is no
@@ -103,12 +108,28 @@ export default function Dashboard() {
     // Shown inside the modal: the page's own error banner sits behind its backdrop.
     const [bulkReport, setBulkReport] = useState<BulkReport | null>(null);
     const navigate = useNavigate();
+    const [searchParams, setSearchParams] = useSearchParams();
+    const orgId = parsePositiveId(searchParams.get('org'));
+    const folderId = parsePositiveId(searchParams.get('folder'));
+    const tagId = parsePositiveId(searchParams.get('tag'));
+    const [orgs, setOrgs] = useState<OrgOption[]>([]);
+    const [folders, setFolders] = useState<CatalogItem[]>([]);
+    const [tags, setTags] = useState<CatalogItem[]>([]);
+    // The folder/tag/org the rows on screen were fetched with. The URL can
+    // move ahead of that while a request is in flight.
+    const [listedFilters, setListedFilters] = useState({ orgId: null as number | null, folderId: null as number | null, tagId: null as number | null });
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
     const bulkInFlight = useRef(false);
     const accountClicksRequested = useRef(false);
     // The list as it is now, for requests that finish after a later render.
-    const listRef = useRef({ loaded: 0, search: '' });
+    // `scope` is the last fetch that landed, not the URL, so a new filter
+    // starts from the first page instead of asking for every row already shown.
+    const listRef = useRef({ loaded: 0, scope: EMPTY_SCOPE });
+    const urlScopeRef = useRef({ orgId, folderId, tagId });
+    urlScopeRef.current = { orgId, folderId, tagId };
+    const folderReq = useRef(0);
+    const tagReq = useRef(0);
     // IDs removed locally while a fetchLinks was in flight. Stale responses
     // must not fold these back in when they merge newly created rows.
     const droppedLinkIds = useRef(new Set<number>());
@@ -196,9 +217,11 @@ export default function Dashboard() {
         setBulkReport(null);
 
         try {
+            const importBody: { urls: string[]; org_id?: number } = { urls };
+            if (orgId != null) importBody.org_id = orgId;
             const res = await authFetch(API_ENDPOINTS.bulkLinks, {
                 method: 'POST',
-                body: JSON.stringify({ urls }),
+                body: JSON.stringify(importBody),
             });
 
             if (res.ok) {
@@ -284,16 +307,16 @@ export default function Dashboard() {
         return filteredLinks.slice(start, start + LINKS_PER_PAGE);
     }, [filteredLinks, currentPage]);
 
-    // Reset to page 1 when search changes
+    // Reset to page 1 when the list being asked for changes.
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchQuery]);
+    }, [searchQuery, orgId, folderId, tagId]);
 
     // A selection is the rows on the page the user is looking at. A new page
     // or a new search shows different rows, so the old ticks would lie.
     useEffect(() => {
         setSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
-    }, [currentPage, searchQuery]);
+    }, [currentPage, searchQuery, orgId, folderId, tagId]);
 
     // Clamp the current page when the list shrinks (e.g. deleting the last link
     // on the final page) so the user is never stranded on an empty page.
@@ -304,15 +327,16 @@ export default function Dashboard() {
     }, [totalPages, currentPage]);
 
     // Reload the list, keeping the search it was fetched with unless `search`
-    // names another one. A reload asks for as many links as are showing, so
-    // saving an edit does not fold away pages the user loaded; a new search
-    // starts again from the first page.
-    const fetchLinks = async (search = listRef.current.search) => {
+    // names another one. A reload of the same folder, tag and team asks for
+    // as many links as are showing, so saving an edit does not fold away
+    // pages the user loaded. A new search or filter starts from the first page.
+    const fetchLinks = async (search = listRef.current.scope.search) => {
         const requestId = ++linksFetchId.current;
-        const showing = search === listRef.current.search ? listRef.current.loaded : 0;
+        const scope: LinkListScope = { search, ...urlScopeRef.current };
+        const showing = sameScope(scope, listRef.current.scope) ? listRef.current.loaded : 0;
         const limit = Math.min(MAX_PAGE_SIZE, Math.max(PAGE_SIZE, showing));
         try {
-            const res = await authFetch(linksUrl(limit, 0, search));
+            const res = await authFetch(`${API_ENDPOINTS.links}?${linksQuery(scope, limit, 0)}`);
             if (res.ok) {
                 const data: LinkData[] = await res.json();
                 if (requestId !== linksFetchId.current) {
@@ -333,7 +357,9 @@ export default function Dashboard() {
                 setLinks(data);
                 setTotal(count);
                 setActiveSearch(search);
-                if (!search) setAccountTotal(count);
+                setListedFilters({ orgId: scope.orgId, folderId: scope.folderId, tagId: scope.tagId });
+                listRef.current = { loaded: data.length, scope };
+                if (isUnfilteredAccount(scope)) setAccountTotal(count);
             } else {
                 const data = await res.json().catch(() => null) as { error?: string } | null;
                 if (requestId !== linksFetchId.current) return;
@@ -355,9 +381,10 @@ export default function Dashboard() {
         if (loadingMore) return;
         setLoadingMore(true);
         const requestId = linksFetchId.current;
+        const scope = listRef.current.scope;
         const wasOnLastPage = currentPage === totalPages;
         try {
-            const res = await authFetch(linksUrl(PAGE_SIZE, links.length, activeSearch));
+            const res = await authFetch(`${API_ENDPOINTS.links}?${linksQuery(scope, PAGE_SIZE, links.length)}`);
             if (!res.ok) {
                 setError('Failed to load more links. Please try again.');
                 return;
@@ -375,7 +402,7 @@ export default function Dashboard() {
             });
             const count = totalCount(res) ?? links.length + data.length;
             setTotal(count);
-            if (!activeSearch) setAccountTotal(count);
+            if (isUnfilteredAccount(scope)) setAccountTotal(count);
             // Land on the first of the new links instead of looking unchanged.
             if (wasOnLastPage) setCurrentPage(p => p + 1);
         } catch (error) {
@@ -387,8 +414,8 @@ export default function Dashboard() {
     };
 
     useEffect(() => {
-        listRef.current = { loaded: links.length, search: activeSearch };
-    }, [links.length, activeSearch]);
+        listRef.current.loaded = links.length;
+    }, [links.length]);
 
     // With every link loaded the search box filters them as the user types.
     // With more on the server it asks the server (after a pause, not on each
@@ -399,6 +426,18 @@ export default function Dashboard() {
         const timer = setTimeout(() => fetchLinks(searchTerm), SEARCH_DEBOUNCE_MS);
         return () => clearTimeout(timer);
     }, [loading, searchTerm, activeSearch, links.length, total]);
+
+    // Folder, tag and team live in the URL. A change asks for that list from
+    // the first page. Typing in the search box does not: the ids still match
+    // the list on screen, and the effect above owns the search request.
+    // Failure leaves `loading` as it is, so a 500 cannot re-run this forever.
+    useEffect(() => {
+        if (loading) return;
+        const current = listRef.current.scope;
+        if (current.orgId === orgId && current.folderId === folderId && current.tagId === tagId) return;
+        const timer = window.setTimeout(() => { void fetchLinks(searchTerm); }, 0);
+        return () => window.clearTimeout(timer);
+    }, [loading, orgId, folderId, tagId, searchTerm]);
 
     // Fetch sparkline data for the given links. Batch ids so a large account
     // cannot blow typical request-line limits (~8KB) with one query string.
@@ -463,12 +502,20 @@ export default function Dashboard() {
     const shownTotal = Math.max(total, links.length);
     const hasMore = links.length < shownTotal;
     const unloaded = shownTotal - links.length;
-    const accountLoaded = !activeSearch && !hasMore;
-    const linkCount = accountLoaded ? links.length : accountTotal;
-    const totalClicks = accountLoaded ? links.reduce((sum, link) => sum + link.click_count, 0) : accountClicks;
-    const activeLinks = accountLoaded ? links.filter(l => l.is_active).length : null;
+    // A folder, tag or team is not the whole account. Its count is the
+    // filtered total, and the account's click total must not stand in for it.
+    const scopeFiltered = listedFilters.orgId != null || listedFilters.folderId != null || listedFilters.tagId != null;
+    const accountLoaded = !activeSearch && !scopeFiltered && !hasMore;
+    const filteredComplete = scopeFiltered && !hasMore;
+    const linkCount = scopeFiltered
+        ? (hasMore ? total : links.length)
+        : (accountLoaded ? links.length : accountTotal);
+    const totalClicks = accountLoaded || filteredComplete
+        ? links.reduce((sum, link) => sum + link.click_count, 0)
+        : (scopeFiltered ? null : accountClicks);
+    const activeLinks = accountLoaded || filteredComplete ? links.filter(l => l.is_active).length : null;
 
-    const needsAccountClicks = !loading && !accountLoaded;
+    const needsAccountClicks = !loading && !accountLoaded && !scopeFiltered;
     useEffect(() => {
         if (!needsAccountClicks || accountClicksRequested.current) return;
         accountClicksRequested.current = true;
@@ -709,7 +756,10 @@ export default function Dashboard() {
 
     const handleExport = async () => {
         try {
-            const response = await authFetch(API_ENDPOINTS.exportLinks);
+            const exportUrl = orgId != null
+                ? `${API_ENDPOINTS.exportLinks}?${new URLSearchParams({ org_id: String(orgId) })}`
+                : API_ENDPOINTS.exportLinks;
+            const response = await authFetch(exportUrl);
 
             if (!response.ok) throw new Error('Failed to export links');
 
@@ -744,6 +794,65 @@ export default function Dashboard() {
         }
     };
 
+    // Teams, folders and tags load separately, and a change in the Manage panel
+    // reloads only the list it changed. One page load already sends most of the
+    // per-second request budget; reloading all three after every edit pushed a
+    // quick sequence of edits over it (429).
+    const loadOrgs = useCallback(async () => {
+        try {
+            const res = await authFetch(API_ENDPOINTS.orgs);
+            setOrgs(res.ok ? orgOptions(await res.json()) : []);
+        } catch (error) {
+            if (error instanceof SessionExpiredError) return;
+            logger.error('Failed to load teams', error);
+            setOrgs([]);
+        }
+    }, []);
+
+    const loadScopedList = useCallback(async (kind: 'folder' | 'tag', org: number | null) => {
+        const req = kind === 'folder' ? folderReq : tagReq;
+        const requestId = ++req.current;
+        const query = org != null ? `?${new URLSearchParams({ org_id: String(org) })}` : '';
+        const setItems = kind === 'folder' ? setFolders : setTags;
+        const failed = kind === 'folder' ? 'Failed to load folders' : 'Failed to load tags';
+        try {
+            const res = await authFetch(`${kind === 'folder' ? API_ENDPOINTS.folders : API_ENDPOINTS.tags}${query}`);
+            if (requestId !== req.current) return;
+            if (res.ok) {
+                setItems(catalogItems(await res.json()));
+            } else {
+                setItems([]);
+                setError(await responseError(res, failed));
+            }
+        } catch (error) {
+            if (requestId !== req.current) return;
+            if (error instanceof SessionExpiredError) return;
+            logger.error(failed, error);
+            setItems([]);
+            setError(failed);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!safeLocalStorage.getItem('token')) return;
+        void loadOrgs();
+    }, [loadOrgs]);
+
+    useEffect(() => {
+        if (!safeLocalStorage.getItem('token')) return;
+        void loadScopedList('folder', orgId);
+        void loadScopedList('tag', orgId);
+    }, [orgId, loadScopedList]);
+
+    const replaceParams = (mutate: (next: URLSearchParams) => void) => {
+        const next = new URLSearchParams(searchParams);
+        mutate(next);
+        setSearchParams(next, { replace: true });
+    };
+
+    const folderById = new Map(folders.map(folder => [folder.id, folder]));
+    const activeOrgName = orgId != null ? orgs.find(org => org.id === orgId)?.name ?? null : null;
+
     if (loading) {
         return (
             <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -770,6 +879,8 @@ export default function Dashboard() {
                         interstitialEnabled={appSettings.safe_link_interstitial_enabled}
                         routingEnabled={appSettings.conditional_routing_enabled}
                         bioEnabled={appSettings.link_in_bio_enabled}
+                        folders={folders}
+                        tags={tags}
                     />
                 )}
                 {qrLink && (
@@ -870,19 +981,60 @@ export default function Dashboard() {
                 initialUrl={createInitialUrl}
                 onCreated={() => { fetchLinks(); }}
                 onError={setError}
+                folders={folders}
+                tags={tags}
+                orgId={orgId}
+                orgName={activeOrgName}
             />
 
-            {/* Search and Filter */}
-            {(links.length > 0 || accountTotal > 0) && (
-                <LinkFilters
-                    searchQuery={searchQuery}
-                    onSearchQueryChange={setSearchQuery}
-                    sortBy={sortBy}
-                    onSortByChange={setSortBy}
-                    sortOrder={sortOrder}
-                    onSortOrderChange={setSortOrder}
-                />
-            )}
+            {/* Search and filter stay up with no links, so the first folder can be created here. */}
+            <LinkFilters
+                searchQuery={searchQuery}
+                onSearchQueryChange={setSearchQuery}
+                sortBy={sortBy}
+                onSortByChange={setSortBy}
+                sortOrder={sortOrder}
+                onSortOrderChange={setSortOrder}
+                orgs={orgs}
+                orgId={orgId}
+                onOrgChange={(id) => {
+                    replaceParams((next) => {
+                        if (id == null) next.delete('org');
+                        else next.set('org', String(id));
+                        next.delete('folder');
+                        next.delete('tag');
+                    });
+                }}
+                folders={folders}
+                folderId={folderId}
+                onFolderChange={(id) => {
+                    replaceParams((next) => {
+                        if (id == null) next.delete('folder');
+                        else next.set('folder', String(id));
+                    });
+                }}
+                tags={tags}
+                tagId={tagId}
+                onTagChange={(id) => {
+                    replaceParams((next) => {
+                        if (id == null) next.delete('tag');
+                        else next.set('tag', String(id));
+                    });
+                }}
+                onOrganizeChanged={(kind) => { void loadScopedList(kind, orgId); }}
+                onFolderDeleted={(id) => {
+                    if (folderId === id) {
+                        replaceParams((next) => { next.delete('folder'); });
+                    }
+                    void loadScopedList('folder', orgId);
+                }}
+                onTagDeleted={(id) => {
+                    if (tagId === id) {
+                        replaceParams((next) => { next.delete('tag'); });
+                    }
+                    void loadScopedList('tag', orgId);
+                }}
+            />
 
             {/* Links List */}
             <div className={selectedIds.size > 0 ? 'pb-24 sm:pb-0' : undefined}>
@@ -903,6 +1055,8 @@ export default function Dashboard() {
                         onDelete={() => applyBulk('delete', {})}
                         onSetExpiry={(expiresAt) => applyBulk('update', { expires_at: expiresAt })}
                         onRemoveExpiry={() => applyBulk('update', { remove_expiration: true })}
+                        onMoveToFolder={(id) => applyBulk('update', id == null ? { remove_folder: true } : { folder_id: id })}
+                        folders={folders}
                     />
                 )}
                 <div className="divide-y divide-line border-y border-line">
@@ -931,6 +1085,7 @@ export default function Dashboard() {
                                     onQr={setQrLink}
                                     onEdit={setEditingLink}
                                     onDelete={handleDelete}
+                                    folder={link.folder_id != null ? folderById.get(link.folder_id) ?? null : null}
                                 />
                             );
                         })}
@@ -995,7 +1150,13 @@ export default function Dashboard() {
                     </div>
                 )}
 
-                {links.length === 0 && accountTotal === 0 && !error && (
+                {filteredLinks.length === 0 && !searchQuery && scopeFiltered && !error && (
+                    <div className="py-12 text-center text-muted">
+                        No links in this view
+                    </div>
+                )}
+
+                {links.length === 0 && accountTotal === 0 && !scopeFiltered && !searchQuery && !error && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}

@@ -196,7 +196,7 @@ describe('EditModal routing rules: saving', () => {
         fireEvent.change(first, { target: { value: 'https://app.example/x' } });
         fireEvent.change(second, { target: { value: 'https://web.example/' } });
         // Rule 1: Device = Mobile. Rule 2: the catch-all.
-        fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'Mobile' } });
+        fireEvent.change(screen.getAllByRole('combobox', { name: 'Device' })[0], { target: { value: 'Mobile' } });
 
         await user.click(screen.getByRole('button', { name: /save changes/i }));
         await waitFor(() => expect(rulePuts()).toHaveLength(1));
@@ -291,7 +291,7 @@ describe('EditModal routing rules: saving', () => {
         fireEvent.change(inputs[0], { target: { value: 'https://one.example' } });
         // The second rule is left blank.
         fireEvent.change(inputs[2], { target: { value: 'https://three.example' } });
-        fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'Desktop' } });
+        fireEvent.change(screen.getAllByRole('combobox', { name: 'Device' })[0], { target: { value: 'Desktop' } });
 
         await user.click(screen.getByRole('button', { name: /save changes/i }));
         await waitFor(() => expect(rulePuts()).toHaveLength(1));

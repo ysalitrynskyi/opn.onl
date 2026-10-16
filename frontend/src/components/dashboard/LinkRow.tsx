@@ -9,6 +9,7 @@ import { shortLinkBase } from '../../config/api';
 import Sparkline from '../Sparkline';
 import MiniStats from './MiniStats';
 import { pluralize } from '../../utils/plural';
+import { swatchColor } from './linkScope';
 import { clickCapReached, clickLimitLabel, formatBadgeDay, inactiveBadge } from './linkStatus';
 import type { LinkData, SparklineSeries } from './types';
 
@@ -32,6 +33,8 @@ interface LinkRowProps {
     onQr: (link: LinkData) => void;
     onEdit: (link: LinkData) => void;
     onDelete: (id: number) => void;
+    /** Folder name for `link.folder_id`, when the current list includes that folder. */
+    folder?: { name: string; color?: string | null } | null;
     // AnimatePresence mode="popLayout" measures the row by cloning it with a ref.
     ref?: Ref<HTMLDivElement>;
 }
@@ -55,6 +58,7 @@ export default function LinkRow({
     onQr,
     onEdit,
     onDelete,
+    folder = null,
     ref,
 }: LinkRowProps) {
     const mainUrl = `${shortLinkBase()}/${link.code}`;
@@ -183,6 +187,22 @@ export default function LinkRow({
                         <p className="font-mono text-xs text-faint">
                             API: <a href={apiUrl} target="_blank" rel="noreferrer" className="underline decoration-line2 underline-offset-2 hover:text-muted hover:decoration-current">{apiUrl}</a>
                         </p>
+                        {(folder || (link.tags?.length ?? 0) > 0) && (
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                {folder && <LabelChip name={folder.name} color={folder.color} />}
+                                {(link.tags ?? []).slice(0, VISIBLE_TAGS).map(tag => (
+                                    <LabelChip key={tag.id} name={tag.name} color={tag.color} />
+                                ))}
+                                {(link.tags?.length ?? 0) > VISIBLE_TAGS && (
+                                    <span
+                                        className="text-xs text-faint"
+                                        title={(link.tags ?? []).slice(VISIBLE_TAGS).map(tag => tag.name).join(', ')}
+                                    >
+                                        +{(link.tags?.length ?? 0) - VISIBLE_TAGS}
+                                    </span>
+                                )}
+                            </div>
+                        )}
                         {/* Mini stats */}
                         <MiniStats link={link} />
                     </div>
@@ -276,5 +296,19 @@ export default function LinkRow({
                 </div>
             </div>
         </motion.div>
+    );
+}
+
+// A row shows two tags and a count of the rest, so a heavily tagged link
+// keeps the same height as any other.
+const VISIBLE_TAGS = 2;
+
+function LabelChip({ name, color }: { name: string; color?: string | null }) {
+    const swatch = swatchColor(color);
+    return (
+        <span className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-xs text-muted">
+            {swatch && <span className="h-2 w-2 rounded-full" style={{ backgroundColor: swatch }} aria-hidden="true" />}
+            {name}
+        </span>
     );
 }

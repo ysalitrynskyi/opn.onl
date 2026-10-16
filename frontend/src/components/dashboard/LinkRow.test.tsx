@@ -20,10 +20,15 @@ const base: LinkData = {
     tags: [],
 };
 
-function renderRow(overrides: Partial<LinkData> = {}, clickFlash = 0) {
+function renderRow(
+    overrides: Partial<LinkData> = {},
+    folder: { name: string; color?: string | null } | null = null,
+    clickFlash = 0,
+) {
     return render(
         <LinkRow
             link={{ ...base, ...overrides }}
+            folder={folder}
             linkNumber={1}
             copied={false}
             sourceCopied={false}
@@ -111,7 +116,7 @@ describe('LinkRow status badges', () => {
     });
 
     it('flashes the count after a live click and leaves it alone otherwise', () => {
-        const { rerender } = renderRow({}, 1);
+        const { rerender } = renderRow({}, null, 1);
         const flashed = screen.getByRole('link', { name: '3 clicks, analytics for abc123' });
         expect(flashed.querySelector('.animate-live-click')).not.toBeNull();
         rerender(
@@ -194,5 +199,33 @@ describe('LinkRow status badges', () => {
         expect(screen.getByText('Inactive')).toBeInTheDocument();
         expect(screen.queryByText('Blocked')).not.toBeInTheDocument();
         expect(screen.queryByText('Disabled')).not.toBeInTheDocument();
+    });
+});
+
+describe('LinkRow folder and tags', () => {
+    it('shows the folder and its tags, and a colour dot only for a hex colour', () => {
+        renderRow(
+            {
+                tags: [
+                    { id: 1, name: 'launch', color: '#e11d48' },
+                    { id: 2, name: 'later', color: 'red' },
+                ],
+            },
+            { name: 'Campaigns', color: '#2563eb' },
+        );
+        const launch = screen.getByText('launch');
+        expect(launch.querySelector('[aria-hidden="true"]')).toHaveStyle({ backgroundColor: '#e11d48' });
+        expect(screen.getByText('later').querySelector('[aria-hidden="true"]')).toBeNull();
+        expect(screen.getByText('Campaigns').querySelector('[aria-hidden="true"]')).toHaveStyle({
+            backgroundColor: '#2563eb',
+        });
+    });
+
+    it('shows two tags and a count of the rest', () => {
+        renderRow({
+            tags: Array.from({ length: 20 }, (_, i) => ({ id: i + 1, name: `tag-${String(i).padStart(2, '0')}`, color: null })),
+        });
+        expect(screen.getAllByText(/^tag-\d{2}$/)).toHaveLength(2);
+        expect(screen.getByText('+18')).toHaveAttribute('title', expect.stringContaining('tag-19'));
     });
 });

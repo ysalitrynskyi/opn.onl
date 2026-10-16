@@ -4,11 +4,9 @@ import { WEB_URL, api, clientIpHeader, createLink, createUser, signIn, type Test
 /**
  * Tags, notes and folders as the dashboard sees them.
  *
- * The dashboard has no folder or tag management of its own (no folder list,
- * no tag picker, no bulk selection): folders and tags are created through the
- * API, as the MCP server and API clients do. What the dashboard does with them
- * is show a link's tags on its row, match tags and notes in the search box,
- * and keep listing a link whatever folder it is filed in.
+ * The dashboard lists a link's folder and tags, matches tags and notes in the
+ * search box, and can create, assign and filter folders and tags itself.
+ * A link stays on the personal list when its folder is deleted.
  */
 
 // The backend trusts CF-Connecting-IP in e2e (TRUST_PROXY_HEADERS=true). Give
@@ -172,5 +170,40 @@ test.describe('Folders and the dashboard', () => {
             await api(request, 'get', '/links', user.token)
         ).json();
         expect(links.find((l) => l.id === filed.id)?.folder_id).toBeNull();
+    });
+
+    test('creates a folder and a tag, assigns them, and filters to that link', async ({ page, request }) => {
+        const user = await createUser(request);
+        const other = await createLink(request, user.token, { original_url: 'https://www.iana.org/numbers' });
+        await openDashboard(page, user);
+
+        await page.getByRole('button', { name: 'Manage' }).click();
+        await page.getByRole('textbox', { name: 'New folder name' }).fill('Campaigns');
+        await page.getByRole('button', { name: 'Add folder' }).click();
+        const folderFilter = page.getByLabel('Filter by folder');
+        await expect(folderFilter.locator('option', { hasText: 'Campaigns' })).toHaveCount(1);
+        await page.getByRole('textbox', { name: 'New tag name' }).fill('launch');
+        await page.getByRole('button', { name: 'Add tag' }).click();
+        await expect(page.getByRole('button', { name: 'launch', exact: true })).toBeVisible();
+        await page.keyboard.press('Escape');
+
+        await page.getByRole('button', { name: 'Advanced options' }).click();
+        await page.getByLabel('Folder', { exact: true }).selectOption({ label: 'Campaigns' });
+        await page.getByRole('checkbox', { name: 'launch', exact: true }).check();
+        await page.getByPlaceholder('https://example.com/long-url').fill('https://www.iana.org/domains');
+        await page.getByRole('button', { name: 'Create', exact: true }).click();
+        await expect(rows(page)).toHaveCount(2, { timeout: 15_000 });
+
+        await folderFilter.selectOption({ label: 'Campaigns' });
+        await expect(rows(page)).toHaveCount(1);
+        await expect(linkRow(page, other.code)).toHaveCount(0);
+        // The folder chip on the remaining row (the filter's <option> has the same text).
+        await expect(page.locator('div.group').filter({ has: rows(page) }).getByText('Campaigns', { exact: true })).toBeVisible();
+
+        await folderFilter.selectOption({ label: 'All folders' });
+        await expect(rows(page)).toHaveCount(2);
+        await page.getByRole('button', { name: 'launch', exact: true }).click();
+        await expect(rows(page)).toHaveCount(1);
+        await expect(linkRow(page, other.code)).toHaveCount(0);
     });
 });

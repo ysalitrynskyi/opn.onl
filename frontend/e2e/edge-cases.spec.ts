@@ -443,8 +443,9 @@ test.describe('Unusual data', () => {
         await expect(page.getByText('Create your first shortened link above.')).toBeVisible();
         await expect(page.getByText('0 links', { exact: true })).toBeVisible();
         await expect(page.getByText('0 clicks', { exact: true })).toBeVisible();
-        // Search and sort only appear once there is something to search.
-        await expect(page.getByRole('searchbox', { name: 'Search links' })).toHaveCount(0);
+        // Folders are created from this bar, including before the first link.
+        await expect(page.getByRole('searchbox', { name: 'Search links' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Manage' })).toBeVisible();
 
         await page.getByRole('button', { name: 'Start shortening' }).click();
         await expect(urlInput(page)).toBeFocused();

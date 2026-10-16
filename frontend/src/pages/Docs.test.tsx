@@ -14,12 +14,12 @@ const hasBackendSource = existsSync(linksRs);
 const backend = hasBackendSource ? readFileSync(linksRs, 'utf8') : '';
 
 describe('API reference', () => {
-    it('says folders and tags are used through the API, and teams are in the app', () => {
-        // Folders and tags still have no screens. Teams are managed at /organizations.
+    it('says folders and tags are on the dashboard, and teams are in the app', () => {
         render(<Docs />);
         for (const title of ['Folders', 'Tags']) {
             const card = screen.getByRole('heading', { level: 4, name: title }).parentElement;
-            expect(card, `${title} card`).toHaveTextContent(/via the API/i);
+            expect(card, `${title} card`).toHaveTextContent(/dashboard/i);
+            expect(card, `${title} card`).not.toHaveTextContent(/via the API/i);
         }
         const teams = screen.getByRole('heading', { level: 4, name: 'Teams' }).parentElement;
         expect(teams).toHaveTextContent(/in the app/i);

@@ -6,6 +6,7 @@ import logger from '../../utils/logger';
 import { savePendingUrl } from '../../utils/pendingUrl';
 import { localIsoDate } from '../../utils/localIsoDate';
 import type { AppSettings } from './types';
+import { swatchColor, type CatalogItem } from './linkScope';
 import CharCount from './CharCount';
 import UtmBuilder from './UtmBuilder';
 import { DestinationCheckButton, DestinationStatus } from './DestinationCheck';
@@ -28,6 +29,12 @@ interface CreateLinkFormProps {
     initialUrl: string;
     onCreated: () => void;
     onError: (message: string) => void;
+    /** Folders in the current context. Omitted fields stay off the create body. */
+    folders?: CatalogItem[];
+    tags?: CatalogItem[];
+    /** Set while a team's links are open. The new link is created in that team. */
+    orgId?: number | null;
+    orgName?: string | null;
 }
 
 function isAbort(error: unknown): boolean {
@@ -39,7 +46,16 @@ const labelText = 'font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1
 const labelClass = `block ${labelText}`;
 const iconLabelClass = `flex items-center gap-1.5 ${labelText}`;
 
-export default function CreateLinkForm({ appSettings, initialUrl, onCreated, onError }: CreateLinkFormProps) {
+export default function CreateLinkForm({
+    appSettings,
+    initialUrl,
+    onCreated,
+    onError,
+    folders = [],
+    tags = [],
+    orgId = null,
+    orgName = null,
+}: CreateLinkFormProps) {
     const [newUrl, setNewUrl] = useState(initialUrl);
     const [alias, setAlias] = useState('');
     const [aliasHint, setAliasHint] = useState<AliasHint | null>(null);
@@ -54,7 +70,15 @@ export default function CreateLinkForm({ appSettings, initialUrl, onCreated, onE
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [burnAfterReading, setBurnAfterReading] = useState(false);
     const [safeLinkInterstitial, setSafeLinkInterstitial] = useState(false);
+    const [folderId, setFolderId] = useState('');
+    const [tagIds, setTagIds] = useState<number[]>([]);
     const destination = useDestinationCheck(newUrl);
+
+    // A folder or tag from the previous context cannot be filed on a link in this one.
+    useEffect(() => {
+        setFolderId('');
+        setTagIds([]);
+    }, [orgId]);
 
     // Below the configured minimum the server only repeats the length rule,
     // so the form waits until the alias could actually be free or taken.
@@ -192,6 +216,9 @@ export default function CreateLinkForm({ appSettings, initialUrl, onCreated, onE
         if (clickLimit != null) body.max_clicks = clickLimit;
         if (burnAfterReading) body.burn_after_reading = true;
         if (safeLinkInterstitial) body.safe_link_interstitial = true;
+        if (orgId != null) body.org_id = orgId;
+        if (folderId) body.folder_id = Number(folderId);
+        if (tagIds.length > 0) body.tag_ids = [...tagIds].sort((a, b) => a - b);
 
         try {
             const res = await authFetch(API_ENDPOINTS.links, {
@@ -211,6 +238,8 @@ export default function CreateLinkForm({ appSettings, initialUrl, onCreated, onE
                 setMaxClicks('');
                 setBurnAfterReading(false);
                 setSafeLinkInterstitial(false);
+                setFolderId('');
+                setTagIds([]);
                 setShowAdvanced(false);
                 onCreated();
             } else {
@@ -241,6 +270,9 @@ export default function CreateLinkForm({ appSettings, initialUrl, onCreated, onE
     return (
         <div className="rounded-2xl border border-line2 bg-surface p-6 shadow-subtle mb-8">
             <h2 className="font-display text-lg font-bold text-ink tracking-tight mb-4">Create new link</h2>
+            {orgId != null && orgName && (
+                <p className="mb-4 text-sm text-muted">Creating in {orgName}</p>
+            )}
             <form onSubmit={handleCreate}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
                     <label htmlFor="create-url" className="sr-only">Destination URL</label>
@@ -354,6 +386,55 @@ export default function CreateLinkForm({ appSettings, initialUrl, onCreated, onE
                                         onChange={(e) => setNotes(e.target.value.slice(0, MAX_NOTES_CHARS))}
                                     />
                                     <CharCount length={notes.length} max={MAX_NOTES_CHARS} />
+                                </div>
+
+                                <div className="grid sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label htmlFor="create-folder" className={labelClass}>Folder</label>
+                                        <select
+                                            id="create-folder"
+                                            value={folderId}
+                                            onChange={(event) => setFolderId(event.target.value)}
+                                            className={fieldClass}
+                                        >
+                                            <option value="">No folder</option>
+                                            {folders.map(folder => (
+                                                <option key={folder.id} value={folder.id}>{folder.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <fieldset>
+                                        <legend className={labelClass}>Tags</legend>
+                                        {tags.length === 0 ? (
+                                            <p className="text-sm text-muted">No tags yet</p>
+                                        ) : (
+                                            <div className="flex flex-wrap gap-2">
+                                                {tags.map(tag => {
+                                                    const color = swatchColor(tag.color);
+                                                    return (
+                                                        <label key={tag.id} className="inline-flex items-center gap-1.5 text-sm text-muted">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={tagIds.includes(tag.id)}
+                                                                onChange={() => {
+                                                                    setTagIds(current => (
+                                                                        current.includes(tag.id)
+                                                                            ? current.filter(id => id !== tag.id)
+                                                                            : [...current, tag.id]
+                                                                    ));
+                                                                }}
+                                                                className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
+                                                            />
+                                                            {color && (
+                                                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
+                                                            )}
+                                                            {tag.name}
+                                                        </label>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </fieldset>
                                 </div>
 
                                 <div className="grid sm:grid-cols-2 gap-4">

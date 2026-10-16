@@ -18,7 +18,9 @@ export interface LinkData {
     burned_at?: string | null;
     safe_link_interstitial?: boolean;
     bio_visible?: boolean;
-    tags: { id: number; name: string; color: string }[];
+    folder_id?: number | null;
+    org_id?: number | null;
+    tags: { id: number; name: string; color?: string | null }[];
 }
 
 export interface RoutingRule {
@@ -46,6 +48,8 @@ export interface LinkUpdatePayload {
     burn_after_reading?: boolean;
     safe_link_interstitial?: boolean;
     bio_visible?: boolean;
+    folder_id?: number;
+    remove_folder?: boolean;
 }
 
 export interface AppSettings {
