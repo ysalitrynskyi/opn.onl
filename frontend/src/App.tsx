@@ -34,6 +34,7 @@ function ScrollToTop() {
 
 // Lazy-load heavier auth / app / dynamic pages (not prerendered)
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Overview = lazy(() => import('./pages/Overview'));
 const Analytics = lazy(() => import('./pages/Analytics'));
 const Settings = lazy(() => import('./pages/Settings'));
 const PasswordPrompt = lazy(() => import('./pages/PasswordPrompt'));
@@ -80,6 +81,7 @@ function App() {
               <Route path="login" element={<Login />} />
               <Route path="register" element={<Register />} />
               <Route path="dashboard" element={<Dashboard />} />
+              <Route path="overview" element={<Overview />} />
               <Route path="analytics/:id" element={<Analytics />} />
               <Route path="settings" element={<Settings />} />
               <Route path="password/:code" element={<PasswordPrompt />} />

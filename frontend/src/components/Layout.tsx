@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Github, LogOut, Menu, X, User, Settings, LayoutDashboard, Shield } from 'lucide-react';
+import { Github, LogOut, Menu, X, User, Settings, LayoutDashboard, BarChart2, Shield } from 'lucide-react';
 import Logo from './Logo';
 import { safeLocalStorage } from '../utils/storage';
 
@@ -106,6 +106,9 @@ export default function Layout() {
                                                 >
                                                     <LayoutDashboard className="h-4 w-4 text-muted" /> Dashboard
                                                 </Link>
+                                                <Link to="/overview" className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60">
+                                                    <BarChart2 className="h-4 w-4 text-muted" /> Overview
+                                                </Link>
                                                 <Link to="/settings" className="flex items-center gap-2.5 px-4 py-2 text-sm text-ink hover:bg-primary-50/60">
                                                     <Settings className="h-4 w-4 text-muted" /> Settings
                                                 </Link>
@@ -163,6 +166,9 @@ export default function Layout() {
                                 <>
                                     <Link to="/dashboard" onClick={(e) => { if (location.pathname === '/dashboard') { e.preventDefault(); window.location.reload(); } }} className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
                                         <LayoutDashboard className="h-5 w-5 text-muted" /> Dashboard
+                                    </Link>
+                                    <Link to="/overview" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
+                                        <BarChart2 className="h-5 w-5 text-muted" /> Overview
                                     </Link>
                                     <Link to="/settings" className="flex items-center gap-2.5 px-2 py-2.5 text-base font-medium text-ink">
                                         <Settings className="h-5 w-5 text-muted" /> Settings

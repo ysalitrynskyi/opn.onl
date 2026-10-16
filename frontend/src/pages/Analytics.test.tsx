@@ -647,6 +647,179 @@ describe('Analytics Page', () => {
             expect(heading).not.toHaveTextContent('opn.onl');
         });
     });
+
+    describe('CSV export', () => {
+        const blobs: Blob[] = [];
+        const downloads: string[] = [];
+        let createObjectURL: ReturnType<typeof vi.spyOn> | undefined;
+        let revokeObjectURL: ReturnType<typeof vi.spyOn> | undefined;
+        let anchorClick: ReturnType<typeof vi.spyOn> | undefined;
+
+        beforeEach(() => {
+            blobs.length = 0;
+            downloads.length = 0;
+            createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+                blobs.push(blob as Blob);
+                return 'blob:analytics-csv';
+            });
+            revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+            anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+                downloads.push(this.download);
+            });
+        });
+
+        afterEach(() => {
+            createObjectURL?.mockRestore();
+            revokeObjectURL?.mockRestore();
+            anchorClick?.mockRestore();
+            vi.useRealTimers();
+        });
+
+        async function readBlob(blob: Blob): Promise<{ text: string; bytes: Uint8Array }> {
+            const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as ArrayBuffer);
+                reader.onerror = () => reject(reader.error);
+                reader.readAsArrayBuffer(blob);
+            });
+            const bytes = new Uint8Array(buffer);
+            // The default decoder drops a leading BOM. The file keeps it, so
+            // the spreadsheet opens the rest as UTF-8.
+            return { text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes), bytes };
+        }
+
+        async function download(): Promise<{ text: string; bytes: Uint8Array; name: string }> {
+            const { user } = render(<Analytics />);
+            await user.click(await screen.findByRole('button', { name: 'Download CSV' }));
+            expect(blobs).toHaveLength(1);
+            expect(downloads).toHaveLength(1);
+            expect(revokeObjectURL).toHaveBeenCalledWith('blob:analytics-csv');
+            const read = await readBlob(blobs[0]);
+            return { ...read, name: downloads[0] };
+        }
+
+        it('writes the breakdowns the page shows, with a UTF-8 BOM', async () => {
+            const countries = Array.from({ length: 11 }, (_, i) => ({
+                country: `C${String(i + 1).padStart(2, '0')}`,
+                count: i + 1,
+                percentage: 1,
+            }));
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    truncated: false,
+                    clicks_by_day: [
+                        { date: '2024-01-03', count: 1 },
+                        { date: '2024-01-01', count: 50 },
+                    ],
+                    clicks_by_country: countries,
+                    clicks_by_city: [
+                        { city: 'Paris', country: 'France', count: 40, percentage: 40 },
+                        { city: 'Paris', country: null, count: 5, percentage: 5 },
+                    ],
+                }),
+            });
+
+            const { text, bytes } = await download();
+
+            expect(bytes[0]).toBe(0xef);
+            expect(bytes[1]).toBe(0xbb);
+            expect(bytes[2]).toBe(0xbf);
+            expect(text.startsWith('\uFEFFsection,key,clicks\n')).toBe(true);
+            expect(text).not.toContain('#');
+
+            // Days stay in chart order, including a quiet day. Breakdowns are
+            // the top 10 the page lists, highest first.
+            const dayRows = text.split('\n').filter(line => line.startsWith('"day",'));
+            expect(dayRows).toEqual([
+                '"day","2024-01-03",1',
+                '"day","2024-01-01",50',
+            ]);
+            const countryRows = text.split('\n').filter(line => line.startsWith('"country",'));
+            expect(countryRows).toHaveLength(10);
+            expect(countryRows[0]).toBe('"country","C11",11');
+            expect(countryRows[9]).toBe('"country","C02",2');
+            expect(text).not.toContain('C01');
+            expect(text).toContain('"city","Paris, France",40');
+            expect(text).toContain('"city","Paris",5');
+            expect(text).toContain('"device","Desktop",600');
+            expect(text).toContain('"browser","Chrome",700');
+            expect(text).toContain('"os","Windows",500');
+            expect(text).toContain('"referrer","Google",400');
+            expect(text).not.toContain('recent');
+
+            const countriesCard = (await screen.findByRole('heading', { name: 'Top Countries' })).parentElement as HTMLElement;
+            expect(within(countriesCard).getByText('C11')).toBeInTheDocument();
+            expect(within(countriesCard).queryByText('C01')).not.toBeInTheDocument();
+        });
+
+        it('neutralises cells a spreadsheet would run as formulas', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    truncated: false,
+                    clicks_by_referer: [
+                        { referer: 'a=1', count: 7, percentage: 1 },
+                        { referer: 'say "hi"', count: 6, percentage: 1 },
+                        { referer: '=1+1', count: 5, percentage: 1 },
+                        { referer: '+1', count: 4, percentage: 1 },
+                        { referer: '-1', count: 3, percentage: 1 },
+                        { referer: '@SUM(A1)', count: 2, percentage: 1 },
+                        { referer: '\tcmd', count: 1, percentage: 1 },
+                        { referer: '\rcmd', count: 1, percentage: 1 },
+                    ],
+                }),
+            });
+
+            const { text } = await download();
+            const referrers = text.split('\n').filter(line => line.includes('"referrer"'));
+            // Highest count first. Only the first character is prefixed.
+            expect(referrers).toEqual([
+                '"referrer","a=1",7',
+                '"referrer","say ""hi""",6',
+                '"referrer","\'=1+1",5',
+                '"referrer","\'+1",4',
+                '"referrer","\'-1",3',
+                '"referrer","\'@SUM(A1)",2',
+                '"referrer","\'\tcmd",1',
+                '"referrer","\'\rcmd",1',
+            ]);
+        });
+
+        it('names the file with the code and the UTC day', async () => {
+            // 02:00 UTC is still the previous evening in the Americas.
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-10-16T02:00:00.000Z'));
+
+            const { name } = await download();
+            expect(name).toBe('abc123-analytics-2026-10-16.csv');
+        });
+
+        it('notes a sampled period before the header and leaves a full period unmarked', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    truncated: true,
+                    total_clicks: 412345,
+                    clicks_by_day: [
+                        { date: '2024-01-02', count: 20000 },
+                        { date: '2024-01-03', count: 30000 },
+                    ],
+                }),
+            });
+
+            const sampled = await download();
+            expect(sampled.text.startsWith(
+                '\uFEFF# Based on the most recent 50000 clicks of 412345 in this period\nsection,key,clicks\n',
+            )).toBe(true);
+        });
+    });
 });
 
 

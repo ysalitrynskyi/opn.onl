@@ -6,6 +6,7 @@ Allow: /
 
 # Disallow private/auth pages
 Disallow: /dashboard
+Disallow: /overview
 Disallow: /settings
 Disallow: /analytics
 Disallow: /password

@@ -222,6 +222,21 @@ describe('Layout auth and menus', () => {
         expect(screen.queryByText('View on GitHub')).not.toBeInTheDocument();
     });
 
+    it('links Overview from the account menu and the mobile menu', () => {
+        localStorage.setItem('token', 'test-token');
+        render(<Layout />);
+
+        expect(screen.queryByRole('link', { name: 'Overview' })).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: /account menu/i }));
+        expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('href', '/overview');
+
+        fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }));
+        const links = screen.getAllByRole('link', { name: 'Overview' });
+        expect(links).toHaveLength(2);
+        links.forEach(link => expect(link).toHaveAttribute('href', '/overview'));
+    });
+
     it('closes the account menu when a menu link is clicked', () => {
         localStorage.setItem('token', 'test-token');
         render(<Layout />);
