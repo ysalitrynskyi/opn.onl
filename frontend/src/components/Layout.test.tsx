@@ -51,6 +51,13 @@ describe('Layout Component', () => {
             // May or may not be visible depending on implementation
         });
 
+        it('links Teams to the organizations page when signed in', () => {
+            localStorage.setItem('token', 'test-token');
+            render(<Layout />);
+            fireEvent.click(screen.getByRole('button', { name: 'Account menu' }));
+            expect(screen.getByRole('link', { name: 'Teams' })).toHaveAttribute('href', '/organizations');
+        });
+
         it('has responsive mobile menu button', () => {
             render(<Layout />);
             

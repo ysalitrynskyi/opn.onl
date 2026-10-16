@@ -18,14 +18,14 @@ export interface SitemapPage {
 // the page's content changes.
 export const SITEMAP_HINTS: Record<string, Omit<SitemapPage, 'path'>> = {
     '/': { lastmod: '2026-06-16', changefreq: 'weekly', priority: 1.0 },
-    '/features': { lastmod: '2026-06-16', changefreq: 'monthly', priority: 0.8 },
-    '/pricing': { lastmod: '2026-06-16', changefreq: 'monthly', priority: 0.8 },
+    '/features': { lastmod: '2026-10-16', changefreq: 'monthly', priority: 0.8 },
+    '/pricing': { lastmod: '2026-10-16', changefreq: 'monthly', priority: 0.8 },
     '/about': { lastmod: '2025-12-07', changefreq: 'monthly', priority: 0.6 },
     '/privacy': { lastmod: '2025-12-07', changefreq: 'yearly', priority: 0.3 },
     '/terms': { lastmod: '2025-12-07', changefreq: 'yearly', priority: 0.3 },
     '/contact': { lastmod: '2025-12-07', changefreq: 'monthly', priority: 0.5 },
-    '/faq': { lastmod: '2026-06-16', changefreq: 'monthly', priority: 0.6 },
-    '/docs': { lastmod: '2026-06-16', changefreq: 'monthly', priority: 0.7 },
+    '/faq': { lastmod: '2026-10-16', changefreq: 'monthly', priority: 0.6 },
+    '/docs': { lastmod: '2026-10-16', changefreq: 'monthly', priority: 0.7 },
     '/developers': { lastmod: '2026-06-16', changefreq: 'monthly', priority: 0.8 },
     '/login': { lastmod: '2025-12-07', changefreq: 'yearly', priority: 0.5 },
     '/register': { lastmod: '2025-12-07', changefreq: 'yearly', priority: 0.5 },

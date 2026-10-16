@@ -543,3 +543,101 @@ async fn admin_org_list_member_count_ignores_deleted_accounts() {
 
     assert_eq!(admin_count().await, 2);
 }
+
+#[tokio::test]
+async fn org_list_includes_the_callers_role() {
+    let (server, db) = app().await;
+    let owner = person(&db).await;
+    let editor = person(&db).await;
+    let stranger = person(&db).await;
+
+    let created = server
+        .post("/orgs")
+        .authorization_bearer(&owner.token)
+        .json(&json!({
+            "name": "Role Org",
+            "slug": format!("role-{}", uuid::Uuid::new_v4().simple()),
+        }))
+        .await;
+    assert_eq!(created.status_code(), 201, "create: {}", created.text());
+    let created_body = created.json::<Value>();
+    assert_eq!(
+        created_body["role"], "owner",
+        "the creator is the owner: {created_body}"
+    );
+    let org_id = created_body["id"].as_i64().unwrap() as i32;
+
+    invite(&server, &owner, org_id, &editor, "editor").await;
+
+    let owner_list = server
+        .get("/orgs")
+        .authorization_bearer(&owner.token)
+        .await
+        .json::<Vec<Value>>();
+    let owner_org = owner_list
+        .iter()
+        .find(|org| org["id"] == org_id)
+        .expect("owner lists the org");
+    assert_eq!(owner_org["role"], "owner", "{owner_org}");
+
+    let editor_list = server
+        .get("/orgs")
+        .authorization_bearer(&editor.token)
+        .await
+        .json::<Vec<Value>>();
+    let editor_org = editor_list
+        .iter()
+        .find(|org| org["id"] == org_id)
+        .expect("editor lists the org");
+    assert_eq!(editor_org["role"], "editor", "{editor_org}");
+
+    // The single-org read already loaded this caller's membership to authorize
+    // it, so the role is the editor's and not a second query's guess.
+    let one = server
+        .get(&format!("/orgs/{org_id}"))
+        .authorization_bearer(&editor.token)
+        .await
+        .json::<Value>();
+    assert_eq!(one["role"], "editor", "{one}");
+
+    let stranger_list = server
+        .get("/orgs")
+        .authorization_bearer(&stranger.token)
+        .await
+        .json::<Vec<Value>>();
+    assert!(
+        stranger_list.iter().all(|org| org["id"] != org_id),
+        "someone who was not invited does not see the org"
+    );
+
+    let renamed = server
+        .put(&format!("/orgs/{org_id}"))
+        .authorization_bearer(&owner.token)
+        .json(&json!({ "name": "Role Org renamed" }))
+        .await;
+    assert_eq!(renamed.status_code(), 200, "rename: {}", renamed.text());
+    assert_eq!(renamed.json::<Value>()["role"], "owner");
+
+    let moved = server
+        .post(&format!("/orgs/{org_id}/transfer-ownership"))
+        .authorization_bearer(&owner.token)
+        .json(&json!({ "new_owner_user_id": editor.id }))
+        .await;
+    assert_eq!(moved.status_code(), 200, "transfer: {}", moved.text());
+    let moved_body = moved.json::<Value>();
+    assert!(
+        moved_body["role"].is_null(),
+        "transfer does not report the role from before the swap: {moved_body}"
+    );
+
+    let after = server
+        .get("/orgs")
+        .authorization_bearer(&owner.token)
+        .await
+        .json::<Vec<Value>>();
+    let owner_after = after
+        .iter()
+        .find(|org| org["id"] == org_id)
+        .expect("previous owner is still a member");
+    assert_eq!(owner_after["role"], "admin", "{owner_after}");
+}

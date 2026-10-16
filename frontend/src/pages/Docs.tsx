@@ -416,7 +416,7 @@ export default function Docs() {
                         { icon: Clock, title: 'Expiration Dates', desc: 'Auto-expire links' },
                         { icon: Folder, title: 'Folders', desc: 'Organize your links, via the API' },
                         { icon: Tag, title: 'Tags', desc: 'Label and filter links, via the API' },
-                        { icon: Users, title: 'Teams', desc: 'Collaborate with others, via the API' },
+                        { icon: Users, title: 'Teams', desc: 'Collaborate with others, in the app' },
                         { icon: Globe, title: 'GeoIP Analytics', desc: 'See where clicks come from' },
                     ].map((feature, i) => (
                         <div key={i} className="flex items-start gap-3 p-4 bg-slate-50 rounded-xl">

@@ -84,6 +84,10 @@ const faqs = [
             {
                 q: "Is my link-in-bio page public?",
                 a: "Only if you opt in. No page exists until you claim a username, enable it, and choose which links appear — so your profile stays private until you turn it on. Pages aren't indexed by search engines by default."
+            },
+            {
+                q: "Can I work with a team?",
+                a: "Yes. Open Teams in the account menu to create a team, invite people by email and choose a role: admin, editor or viewer. The owner can transfer the team or delete it. The same actions are available through the API."
             }
         ]
     },

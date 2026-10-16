@@ -19,7 +19,8 @@ const plans = [
             "Basic analytics",
             "Bulk link creation",
             "CSV export",
-            "API access"
+            "API access",
+            "Teams with roles"
         ],
         cta: "Get Started",
         ctaLink: "/register",

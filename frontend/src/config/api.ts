@@ -85,7 +85,17 @@ export const API_ENDPOINTS = {
     org: (id: number) => `${API_BASE_URL}/orgs/${id}`,
     orgMembers: (orgId: number) => `${API_BASE_URL}/orgs/${orgId}/members`,
     orgMember: (orgId: number, memberId: number) => `${API_BASE_URL}/orgs/${orgId}/members/${memberId}`,
-    orgAudit: (orgId: number) => `${API_BASE_URL}/orgs/${orgId}/audit`,
+    orgLeave: (orgId: number) => `${API_BASE_URL}/orgs/${orgId}/leave`,
+    orgTransfer: (orgId: number) => `${API_BASE_URL}/orgs/${orgId}/transfer-ownership`,
+    orgAudit: (orgId: number, page?: { limit?: number; offset?: number }) => {
+        const base = `${API_BASE_URL}/orgs/${orgId}/audit`;
+        if (!page) return base;
+        const params = new URLSearchParams();
+        if (page.limit !== undefined) params.set('limit', String(page.limit));
+        if (page.offset !== undefined) params.set('offset', String(page.offset));
+        const qs = params.toString();
+        return qs ? `${base}?${qs}` : base;
+    },
     
     // Folders
     folders: `${API_BASE_URL}/folders`,

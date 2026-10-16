@@ -62,6 +62,15 @@ pub struct OrgResponse {
     pub created_at: String,
     pub member_count: i64,
     pub link_count: i64,
+    /// The caller's role in this organization (`owner`, `admin`, `editor` or
+    /// `viewer`). `GET /orgs` fills it from the memberships that request
+    /// already loaded. `POST /orgs` returns `owner`, because the creator is
+    /// inserted as the owner. `GET /orgs/{org_id}` and `PUT /orgs/{org_id}`
+    /// fill it from the membership the permission check already loaded.
+    /// `POST /orgs/{org_id}/transfer-ownership` returns null: that handler
+    /// loads the caller's membership and then changes the role, so the row
+    /// in hand is not the role this response would report.
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -499,6 +508,7 @@ pub async fn create_organization(
             created_at: utc_rfc3339(org.created_at),
             member_count: 1,
             link_count: 0,
+            role: Some("owner".to_string()),
         }),
     ))
 }
@@ -539,6 +549,13 @@ pub async fn get_user_organizations(
             )
         })?;
 
+    // The caller's role is on the membership row this handler already loaded.
+    // Reading it here is what lets a client list teams without also fetching
+    // every team's members.
+    let mut roles: HashMap<i32, String> = HashMap::with_capacity(memberships.len());
+    for membership in &memberships {
+        roles.insert(membership.org_id, membership.role.clone());
+    }
     let org_ids: Vec<i32> = memberships.iter().map(|m| m.org_id).collect();
 
     let orgs = organizations::Entity::find()
@@ -599,6 +616,7 @@ pub async fn get_user_organizations(
             created_at: utc_rfc3339(org.created_at),
             member_count: member_counts.get(&org.id).copied().unwrap_or(0),
             link_count: link_counts.get(&org.id).copied().unwrap_or(0),
+            role: roles.remove(&org.id),
         })
         .collect();
 
@@ -635,7 +653,7 @@ pub async fn get_organization(
             )
         })?;
 
-    check_org_permission(&state.db, org_id, user_id, "viewer").await?;
+    let caller = check_org_permission(&state.db, org_id, user_id, "viewer").await?;
 
     let org = organizations::Entity::find_by_id(org_id)
         .one(&state.db)
@@ -670,6 +688,7 @@ pub async fn get_organization(
         created_at: utc_rfc3339(org.created_at),
         member_count,
         link_count,
+        role: Some(caller.role),
     }))
 }
 
@@ -707,7 +726,7 @@ pub async fn update_organization(
             )
         })?;
 
-    check_org_permission(&state.db, org_id, user_id, "admin").await?;
+    let caller = check_org_permission(&state.db, org_id, user_id, "admin").await?;
 
     let org = organizations::Entity::find_by_id(org_id)
         .one(&state.db)
@@ -808,6 +827,7 @@ pub async fn update_organization(
         created_at: utc_rfc3339(org.created_at),
         member_count,
         link_count,
+        role: Some(caller.role),
     }))
 }
 
@@ -1516,6 +1536,9 @@ pub async fn transfer_ownership(
         created_at: utc_rfc3339(org.created_at),
         member_count,
         link_count,
+        // The membership loaded above was the caller's row before the swap.
+        // Reporting it would still say "owner".
+        role: None,
     }))
 }
 

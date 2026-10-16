@@ -38,7 +38,7 @@ describe('App with site storage blocked by the browser', () => {
         expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument();
     });
 
-    it.each(['/dashboard', '/overview', '/settings', '/admin', '/analytics/1'])(
+    it.each(['/dashboard', '/overview', '/settings', '/organizations', '/admin', '/analytics/1'])(
         'sends %s to the login page as a signed-out visitor',
         async (path) => {
             renderAt(path);

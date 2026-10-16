@@ -8,6 +8,7 @@ Allow: /
 Disallow: /dashboard
 Disallow: /overview
 Disallow: /settings
+Disallow: /organizations
 Disallow: /analytics
 Disallow: /password
 Disallow: /verify-email

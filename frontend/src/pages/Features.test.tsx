@@ -54,7 +54,8 @@ describe('Features Page', () => {
     describe('Advanced Features', () => {
         it('displays organizations feature', () => {
             render(<Features />);
-            expect(screen.queryByText(/organization|team/i)).toBeDefined();
+            const card = screen.getByRole('heading', { name: 'Teams' }).parentElement;
+            expect(card).toHaveTextContent(/in the app/i);
         });
 
         it('displays folders feature', () => {

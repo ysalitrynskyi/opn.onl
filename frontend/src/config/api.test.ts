@@ -125,7 +125,10 @@ describe('API_ENDPOINTS', () => {
             expect(API_ENDPOINTS.org(1)).toContain('/orgs/1');
             expect(API_ENDPOINTS.orgMembers(2)).toContain('/orgs/2/members');
             expect(API_ENDPOINTS.orgMember(3, 4)).toContain('/orgs/3/members/4');
+            expect(API_ENDPOINTS.orgLeave(6)).toContain('/orgs/6/leave');
+            expect(API_ENDPOINTS.orgTransfer(7)).toContain('/orgs/7/transfer-ownership');
             expect(API_ENDPOINTS.orgAudit(5)).toContain('/orgs/5/audit');
+            expect(API_ENDPOINTS.orgAudit(5, { limit: 50, offset: 0 })).toContain('/orgs/5/audit?limit=50&offset=0');
         });
     });
 

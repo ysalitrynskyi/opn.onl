@@ -5,13 +5,11 @@ import { adminToken, api, clientIpHeader, createLink, createUser, signIn, type T
 /**
  * Organizations as the product shows them.
  *
- * The SPA has no organization management screens: organizations, members
- * (owner / admin / editor / viewer) and ownership transfers are driven through
- * the API (/orgs/*). Where organizations do surface in the browser is the admin
- * panel: the Organizations tab, the "org" marker on links, the Orgs column on
- * users, and the refusal to delete a user who still owns an organization with
- * other members. These tests build the organizations through the real API with
- * real roles and check what the admin panel makes of them.
+ * The Teams page (/organizations) creates a team and manages its members.
+ * The admin panel lists every organization on the instance, marks organization
+ * links, and refuses to delete a user who still owns an organization with
+ * other members. Both use real accounts. Admin-panel cases build the
+ * organizations through the API; the Teams cases drive the page itself.
  */
 
 // The backend trusts CF-Connecting-IP in e2e (TRUST_PROXY_HEADERS=true). Give
@@ -167,5 +165,80 @@ test.describe('Organizations in the admin panel', () => {
         await ownerRow.getByRole('button', { name: 'Delete', exact: true }).click();
         await expect(page.getByText(`User ${owner.userId} soft deleted`)).toBeVisible();
         await expect(ownerRow.getByText('Deleted', { exact: true })).toBeVisible();
+    });
+});
+
+const LAZY_PAGE = { timeout: 20_000 };
+
+test.describe('Teams page', () => {
+    test('creates a team, invites a member, changes their role and removes them', async ({ page, request }) => {
+        const [owner, member] = await Promise.all([createUser(request), createUser(request)]);
+        await signIn(page, owner);
+        await page.goto('/dashboard');
+        await expect(page.getByRole('heading', { name: 'Create new link' })).toBeVisible(LAZY_PAGE);
+        await page.getByRole('button', { name: 'Account menu' }).click();
+        await page.getByRole('link', { name: 'Teams' }).click();
+        await expect(page).toHaveURL('/organizations');
+        await expect(page.getByRole('heading', { level: 1, name: 'Teams' })).toBeVisible();
+
+        const suffix = randomUUID().slice(0, 8);
+        const name = `Acme ${suffix}`;
+        const slug = `acme-${suffix}`;
+        await page.getByLabel('Team name').fill(name);
+        await page.getByLabel('Team slug').fill(slug);
+        const created = page.waitForResponse(
+            (res) => res.url().endsWith('/orgs') && res.request().method() === 'POST',
+        );
+        await page.getByRole('button', { name: 'Create team' }).click();
+        const createdResponse = await created;
+        expect(createdResponse.status()).toBe(201);
+        const org = await createdResponse.json() as Org;
+        await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+
+        await page.getByLabel('Member email').fill(member.email);
+        await page.getByLabel('Member role').selectOption('editor');
+        const invited = page.waitForResponse(
+            (res) => res.url().includes(`/orgs/${org.id}/members`) && res.request().method() === 'POST',
+        );
+        await page.getByRole('button', { name: 'Add member' }).click();
+        expect((await invited).status()).toBe(201);
+        const members = page.getByRole('list', { name: 'Members' });
+        await expect(members.getByRole('listitem').filter({ hasText: member.email })).toBeVisible();
+        await expect(page.getByLabel(`Role for ${member.email}`)).toHaveValue('editor');
+
+        const updated = page.waitForResponse(
+            (res) => res.url().includes(`/orgs/${org.id}/members/`) && res.request().method() === 'PUT',
+        );
+        await page.getByLabel(`Role for ${member.email}`).selectOption('viewer');
+        expect((await updated).status()).toBe(200);
+        await expect(page.getByLabel(`Role for ${member.email}`)).toHaveValue('viewer');
+
+        await page.getByRole('button', { name: `Remove ${member.email}` }).click();
+        const removed = page.waitForResponse(
+            (res) => res.url().includes(`/orgs/${org.id}/members/`) && res.request().method() === 'DELETE',
+        );
+        await page.getByRole('dialog', { name: 'Remove member' }).getByRole('button', { name: 'Remove member' }).click();
+        expect((await removed).status()).toBe(204);
+        await expect(members.getByRole('listitem').filter({ hasText: member.email })).toHaveCount(0);
+        await expect(page.getByRole('link', { name: 'View links' })).toHaveAttribute('href', `/dashboard?org=${org.id}`);
+    });
+
+    test('a viewer can open the team but cannot manage it', async ({ page, request }) => {
+        const [owner, viewer] = await Promise.all([createUser(request), createUser(request)]);
+        const org = await createOrg(request, owner);
+        await addMember(request, org, owner, viewer, 'viewer');
+
+        await signIn(page, viewer);
+        await page.goto('/organizations');
+        await expect(page.getByRole('heading', { level: 1, name: 'Teams' })).toBeVisible(LAZY_PAGE);
+        await page.getByRole('button', { name: org.name }).click();
+        await expect(page.getByRole('heading', { name: org.name, exact: true })).toBeVisible();
+        await expect(page.getByText(owner.email)).toBeVisible();
+        await expect(page.getByRole('link', { name: 'View links' })).toHaveAttribute('href', `/dashboard?org=${org.id}`);
+        await expect(page.getByRole('button', { name: 'Leave team' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Add member' })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Delete team' })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Transfer ownership' })).toHaveCount(0);
+        await expect(page.getByRole('heading', { name: 'Activity' })).toHaveCount(0);
     });
 });
