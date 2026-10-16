@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import {
     Key, Shield, Download, Trash2,
     ChevronRight, Loader2, Check, AlertTriangle,
-    Fingerprint, Plus, User, Edit2, X, Globe, MapPin
+    Fingerprint, Plus, User, Edit2, X, Globe, MapPin, Bell
 } from 'lucide-react';
 import { API_ENDPOINTS, authFetch, failureMessage, responseError } from '../config/api';
 import SEO from '../components/SEO';
@@ -50,6 +50,7 @@ interface UserProfile {
     bio_username: string | null;
     bio_enabled: boolean;
     bio_theme: string | null;
+    notify_link_expiry: boolean;
 }
 
 interface AppSettings {
@@ -67,6 +68,9 @@ interface AppSettings {
     require_email_verification?: boolean;
     // True only when this process can send mail. Unknown hides the quiet resend.
     email_configured?: boolean;
+    // Whether owners are mailed before their links expire (the instance switch
+    // is on and mail is configured). Absent on an older server, which sends none.
+    link_expiry_reminders_enabled?: boolean;
 }
 
 function errorMessage(err: unknown, fallback = 'Something went wrong'): string {
@@ -105,6 +109,9 @@ export default function Settings() {
 
     // Resend verification state
     const [resendingVerification, setResendingVerification] = useState(false);
+
+    // Expiry reminder switch state
+    const [savingReminders, setSavingReminders] = useState(false);
 
     // Rename passkey state
     const [renamingPasskeyId, setRenamingPasskeyId] = useState<number | null>(null);
@@ -401,6 +408,28 @@ export default function Settings() {
         }
     };
 
+    const handleToggleExpiryReminders = async (on: boolean) => {
+        setSavingReminders(true);
+        setError('');
+        setSuccess('');
+
+        try {
+            const res = await authFetch(API_ENDPOINTS.updateProfile, {
+                method: 'PUT',
+                body: JSON.stringify({ notify_link_expiry: on }),
+            });
+            if (!res.ok) {
+                throw new Error(await responseError(res, 'Failed to save the reminder setting'));
+            }
+            setProfile(await res.json());
+            setSuccess(on ? 'Expiry reminders turned on' : 'Expiry reminders turned off');
+        } catch (err) {
+            setError(errorMessage(err));
+        } finally {
+            setSavingReminders(false);
+        }
+    };
+
     const handleExportData = async () => {
         try {
             const response = await authFetch(API_ENDPOINTS.exportLinks);
@@ -589,6 +618,8 @@ export default function Settings() {
     // Default stays "required", including while settings are missing.
     const verificationRequired = appSettings?.require_email_verification !== false;
     const passkeyNeedsVerification = !profile.email_verified && verificationRequired;
+    // The server skips unverified owners while verification is required.
+    const remindersNeedVerification = !profile.email_verified && verificationRequired;
     // The nag and its button stay while verification is required, so a server
     // that cannot send mail can say so. Once it is optional, offer a resend
     // only when mail is actually configured.
@@ -997,6 +1028,54 @@ export default function Settings() {
                         )}
                     </div>
                 </motion.section>
+
+                {/* Notifications — only while this instance sends expiry reminders */}
+                {appSettings?.link_expiry_reminders_enabled && (
+                    <motion.section
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.12 }}
+                        className="rounded-2xl border border-line2 bg-surface shadow-subtle overflow-hidden"
+                    >
+                        <div className="p-6 border-b border-line">
+                            <div className="flex items-center gap-3">
+                                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-line bg-paper">
+                                    <Bell className="h-5 w-5 text-muted" />
+                                </div>
+                                <div>
+                                    <h2 className="font-display text-lg font-bold text-ink tracking-tight">Notifications</h2>
+                                    <p className="text-sm text-muted">Email about your links</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-6">
+                            <div className="flex items-start gap-2.5">
+                                <input
+                                    id="expiry-reminders"
+                                    type="checkbox"
+                                    checked={profile.notify_link_expiry}
+                                    onChange={(e) => handleToggleExpiryReminders(e.target.checked)}
+                                    disabled={savingReminders}
+                                    aria-describedby="expiry-reminders-hint"
+                                    className="mt-0.5 h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500 disabled:opacity-50"
+                                />
+                                <div>
+                                    <label htmlFor="expiry-reminders" className="text-sm font-medium text-ink cursor-pointer">
+                                        Email me 3 days before a link expires
+                                    </label>
+                                    <p id="expiry-reminders-hint" className="mt-0.5 text-xs text-faint">
+                                        At most one email a day, listing your links that expire within 3 days. Links that belong to an organization are not included.
+                                    </p>
+                                    {remindersNeedVerification && (
+                                        <p className="mt-2 text-xs text-warning">
+                                            Verify your email to get reminders.
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </motion.section>
+                )}
 
                 {/* Data Section */}
                 <motion.section

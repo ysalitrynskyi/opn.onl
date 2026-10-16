@@ -313,7 +313,7 @@ export default function Privacy() {
                             <ul className="list-disc pl-5 space-y-2">
                                 <li><strong>Cloudflare</strong> — network proxy, TLS and DDoS protection in front of our servers (sees connection metadata like your IP, as any network carrier does)</li>
                                 <li><strong>MaxMind GeoLite2</strong> — the IP-to-city database used for geographic analytics; lookups run entirely on our own servers, so your IP is never transmitted to MaxMind</li>
-                                <li><strong>Email delivery provider</strong> — sends transactional email only (verification, password reset, security notices) to the address you registered</li>
+                                <li><strong>Email delivery provider</strong> — sends transactional email only (verification, password reset, security notices, and reminders before a link expires, which you can turn off in Settings) to the address you registered</li>
                                 <li><strong>Object storage (S3-compatible)</strong> — stores database backups. They are sent over an encrypted (TLS) connection and are encrypted at rest by the storage provider (Cloudflare R2 encrypts everything it stores)</li>
                                 {analytics.enabled && (
                                     <li><strong>Google</strong> — Google Analytics measures page traffic on this deployment. IP anonymization is on and advertising features are off. See Cookies above for when the tag loads.</li>

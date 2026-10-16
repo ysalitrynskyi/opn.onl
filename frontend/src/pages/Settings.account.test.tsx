@@ -25,6 +25,7 @@ const profile = {
     bio_username: null,
     bio_enabled: false,
     bio_theme: null,
+    notify_link_expiry: true,
 };
 
 const appSettings = {
@@ -314,6 +315,115 @@ describe('Settings account correctness', () => {
 
             expect(add).toBeEnabled();
             expect(screen.queryByText('Verify your email to add a passkey.')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('Link expiry reminders', () => {
+        const SWITCH = 'Email me 3 days before a link expires';
+
+        const remindersOn = (call: Call) =>
+            call.url.includes('/auth/settings')
+                ? reply({ ...appSettings, link_expiry_reminders_enabled: true })
+                : undefined;
+
+        const profilePuts = (calls: Call[]) =>
+            calls.filter((c) => c.url.includes('/auth/profile') && c.method === 'PUT');
+
+        it('is not offered while the instance sends no reminders', async () => {
+            installApi((call) =>
+                call.url.includes('/auth/settings')
+                    ? reply({ ...appSettings, link_expiry_reminders_enabled: false })
+                    : undefined,
+            );
+            render(<Settings />);
+
+            await screen.findByRole('heading', { name: 'Security' });
+            expect(screen.queryByLabelText(SWITCH)).not.toBeInTheDocument();
+            expect(screen.queryByRole('heading', { name: 'Notifications' })).not.toBeInTheDocument();
+        });
+
+        it('is not offered by a server that does not report the setting', async () => {
+            installApi();
+            render(<Settings />);
+
+            await screen.findByRole('heading', { name: 'Security' });
+            expect(screen.queryByLabelText(SWITCH)).not.toBeInTheDocument();
+        });
+
+        it('shows the account setting and saves only that when it is switched off', async () => {
+            const calls = installApi((call) => {
+                if (call.url.includes('/auth/profile')) return reply({ ...profile, notify_link_expiry: false });
+                return remindersOn(call);
+            });
+            const { user } = render(<Settings />);
+
+            const toggle = await screen.findByLabelText(SWITCH);
+            expect(toggle).toBeChecked();
+            expect(toggle).toHaveAccessibleDescription(
+                'At most one email a day, listing your links that expire within 3 days. Links that belong to an organization are not included.',
+            );
+            await user.click(toggle);
+
+            expect(await screen.findByText('Expiry reminders turned off')).toBeInTheDocument();
+            expect(profilePuts(calls)).toHaveLength(1);
+            expect(profilePuts(calls)[0].body).toEqual({ notify_link_expiry: false });
+            expect(profilePuts(calls)[0].authorization).toBe(`Bearer ${mockToken}`);
+            expect(screen.getByLabelText(SWITCH)).not.toBeChecked();
+        });
+
+        it('switches reminders back on', async () => {
+            const calls = installApi(
+                (call) => {
+                    if (call.url.includes('/auth/profile')) return reply({ ...profile, notify_link_expiry: true });
+                    return remindersOn(call);
+                },
+                { notify_link_expiry: false },
+            );
+            const { user } = render(<Settings />);
+
+            const toggle = await screen.findByLabelText(SWITCH);
+            expect(toggle).not.toBeChecked();
+            await user.click(toggle);
+
+            expect(await screen.findByText('Expiry reminders turned on')).toBeInTheDocument();
+            expect(profilePuts(calls)[0].body).toEqual({ notify_link_expiry: true });
+            expect(screen.getByLabelText(SWITCH)).toBeChecked();
+        });
+
+        it('keeps the setting as it was and says why when the save fails', async () => {
+            installApi((call) => {
+                if (call.url.includes('/auth/profile')) return reply({ error: 'Failed to update profile' }, 500);
+                return remindersOn(call);
+            });
+            const { user } = render(<Settings />);
+
+            await user.click(await screen.findByLabelText(SWITCH));
+
+            expect(await screen.findByRole('alert')).toHaveTextContent('Failed to update profile');
+            expect(screen.getByLabelText(SWITCH)).toBeChecked();
+            expect(screen.queryByText('Expiry reminders turned off')).not.toBeInTheDocument();
+        });
+
+        it('tells an unverified account that reminders wait for verification', async () => {
+            installApi(remindersOn, { email_verified: false });
+            render(<Settings />);
+
+            await screen.findByLabelText(SWITCH);
+            expect(screen.getByText('Verify your email to get reminders.')).toBeInTheDocument();
+        });
+
+        it('does not ask for verification when the instance does not require it', async () => {
+            installApi(
+                (call) =>
+                    call.url.includes('/auth/settings')
+                        ? reply({ ...appSettings, link_expiry_reminders_enabled: true, require_email_verification: false })
+                        : undefined,
+                { email_verified: false },
+            );
+            render(<Settings />);
+
+            await screen.findByLabelText(SWITCH);
+            expect(screen.queryByText('Verify your email to get reminders.')).not.toBeInTheDocument();
         });
     });
 
