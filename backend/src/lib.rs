@@ -784,7 +784,8 @@ impl<B> tower_http::trace::MakeSpan<B> for RedactingMakeSpan {
     }
 }
 
-/// Replace `token=` query values so a trace/log line cannot replay a session.
+/// Replace `token=` and `unlock=` query values so a trace/log line cannot
+/// replay a session or open a password-protected link.
 pub fn redact_request_uri(uri: &str) -> String {
     let parsed = match uri.parse::<axum::http::Uri>() {
         Ok(parsed) => parsed,
@@ -796,7 +797,9 @@ pub fn redact_request_uri(uri: &str) -> String {
     let redacted = query
         .split('&')
         .map(|pair| match pair.split_once('=') {
-            Some((key, _)) if key.eq_ignore_ascii_case("token") => {
+            Some((key, _))
+                if key.eq_ignore_ascii_case("token") || key.eq_ignore_ascii_case("unlock") =>
+            {
                 format!("{key}=REDACTED")
             }
             _ => pair.to_string(),

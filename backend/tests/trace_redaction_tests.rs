@@ -33,6 +33,20 @@ fn redacts_token_case_insensitively_and_leaves_other_uris_alone() {
     );
 }
 
+/// A password-protected link continues at `/<code>?unlock=<token>`; the token
+/// opens the link for two minutes, so it must not reach a log line either.
+#[test]
+fn redacts_link_unlock_tokens() {
+    let unlock = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.unlock.signature";
+    let uri = redact_request_uri(&format!("/abc123?unlock={unlock}"));
+    assert_eq!(uri, "/abc123?unlock=REDACTED");
+    assert!(!uri.contains(unlock));
+    assert_eq!(
+        redact_request_uri(&format!("/abc123?confirm=1&Unlock={unlock}")),
+        "/abc123?confirm=1&Unlock=REDACTED"
+    );
+}
+
 /// Query-string JWT auth must still work; we only redact it from traces.
 #[tokio::test]
 async fn ws_query_token_still_authenticates() {
