@@ -352,6 +352,7 @@ pub struct TooManyRequests(pub RateLimitResponse);
             analytics::BrowserStats,
             analytics::OsStats,
             analytics::RefererStats,
+            analytics::DestinationStats,
             analytics::RecentClick,
             analytics::GeoPoint,
             analytics::TopLink,

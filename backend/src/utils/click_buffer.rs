@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 use crate::entity::{click_events, links};
 
 /// Postgres caps a statement at 65535 bind parameters. Each click row binds a
-/// dozen-plus columns, so 500 rows (~6.5k binds) leaves headroom if the row
+/// dozen-plus columns, so 500 rows (~7k binds) leaves headroom if the row
 /// shape grows. A single `insert_many` past that limit fails forever, even
 /// after the database recovers.
 const INSERT_CHUNK_SIZE: usize = 500;
@@ -32,6 +32,9 @@ pub struct ClickData {
     pub device: Option<String>,
     pub browser: Option<String>,
     pub os: Option<String>,
+    /// Where a routed click was sent (`click_events.destination`); `None`
+    /// for a link without routing rules.
+    pub destination: Option<String>,
     /// When the click happened. Stamped in `push_event` if unset, so a delayed
     /// flush does not collapse analytics onto the recover instant.
     pub created_at: Option<chrono::NaiveDateTime>,
@@ -344,6 +347,7 @@ impl ClickBuffer {
                             device: Set(e.device),
                             browser: Set(e.browser),
                             os: Set(e.os),
+                            destination: Set(e.destination),
                             created_at: Set(e
                                 .created_at
                                 .unwrap_or_else(|| chrono::Utc::now().naive_utc())),
@@ -533,6 +537,7 @@ mod tests {
             device: None,
             browser: None,
             os: None,
+            destination: None,
             created_at: None,
         }
     }

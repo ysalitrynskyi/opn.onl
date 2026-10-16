@@ -86,6 +86,11 @@ pub struct LinkStatsResponse {
     pub clicks_by_browser: Vec<BrowserStats>,
     pub clicks_by_os: Vec<OsStats>,
     pub clicks_by_referer: Vec<RefererStats>,
+    /// Clicks per URL they were redirected to, most clicks first: the result
+    /// of an A/B split or of routing rules. Only links with routing rules
+    /// record a destination; every other click counts toward the link's
+    /// current `original_url`. From the same sample as the other breakdowns.
+    pub clicks_by_destination: Vec<DestinationStats>,
     pub recent_clicks: Vec<RecentClick>,
     pub geo_data: Vec<GeoPoint>,
 }
@@ -140,6 +145,12 @@ pub struct RefererStats {
     pub referer: String,
     pub count: i64,
     pub percentage: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DestinationStats {
+    pub destination: String,
+    pub clicks: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -384,6 +395,8 @@ pub async fn get_link_stats(
         })
         .collect();
 
+    let clicks_by_destination = destination_breakdown(&events, &link.original_url);
+
     // Recent clicks (last 100)
     let recent_clicks: Vec<RecentClick> = events
         .iter()
@@ -441,11 +454,39 @@ pub async fn get_link_stats(
         clicks_by_browser,
         clicks_by_os,
         clicks_by_referer,
+        clicks_by_destination,
         recent_clicks,
         geo_data,
     };
 
     (StatusCode::OK, Json(response)).into_response()
+}
+
+/// Clicks per destination, most first, ties by URL so the order is stable.
+/// A click without a destination went to the link's own URL, so it is counted
+/// under `original_url` together with routed clicks that fell through to it.
+fn destination_breakdown(
+    events: &[click_events::Model],
+    original_url: &str,
+) -> Vec<DestinationStats> {
+    let mut destination_map: HashMap<&str, i64> = HashMap::new();
+    for event in events {
+        let destination = event.destination.as_deref().unwrap_or(original_url);
+        *destination_map.entry(destination).or_insert(0) += 1;
+    }
+    let mut breakdown: Vec<DestinationStats> = destination_map
+        .into_iter()
+        .map(|(destination, clicks)| DestinationStats {
+            destination: destination.to_string(),
+            clicks,
+        })
+        .collect();
+    breakdown.sort_by(|a, b| {
+        b.clicks
+            .cmp(&a.clicks)
+            .then_with(|| a.destination.cmp(&b.destination))
+    });
+    breakdown
 }
 
 /// `ids` are i32 primary keys from our own query, never request text.

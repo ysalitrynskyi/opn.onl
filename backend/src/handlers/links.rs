@@ -3016,6 +3016,7 @@ pub async fn redirect_link(
                                 ClickAccounting::Buffered {
                                     db_click_count: fresh_click_count,
                                 },
+                                None,
                                 &headers,
                             );
 
@@ -3262,6 +3263,11 @@ pub async fn redirect_link(
             }
         };
 
+        // A routed click records the URL it was sent to, so an A/B split has a
+        // result. That includes the link's own URL when no rule matched, so a
+        // later edit of that URL does not move these clicks. Other clicks store
+        // NULL, read as the link's URL. The value is the owner's configured URL
+        // and never carries anything from the visitor's request.
         if let Some(destination) = routed_destination {
             record_click_buffered(
                 &state.click_buffer,
@@ -3271,6 +3277,7 @@ pub async fn redirect_link(
                 link.user_id,
                 link.org_id,
                 accounting,
+                Some(destination.clone()),
                 &headers,
             );
             return destination_redirect(&destination);
@@ -3315,6 +3322,7 @@ pub async fn redirect_link(
             link.user_id,
             link.org_id,
             accounting,
+            None,
             &headers,
         );
 
@@ -3368,7 +3376,9 @@ async fn consume_capped_click(db: &DatabaseConnection, link_id: i32) -> Result<O
     row.map(|r| r.try_get::<i64>("", "click_count")).transpose()
 }
 
-/// Helper function to record a click event using the click buffer
+/// Helper function to record a click event using the click buffer.
+/// `destination` is the URL a routed click was sent to, `None` for the link's
+/// own URL (see `click_events.destination`).
 #[allow(clippy::too_many_arguments)]
 fn record_click_buffered(
     click_buffer: &crate::utils::ClickBuffer,
@@ -3378,6 +3388,7 @@ fn record_click_buffered(
     user_id: Option<i32>,
     org_id: Option<i32>,
     accounting: ClickAccounting,
+    destination: Option<String>,
     headers: &HeaderMap,
 ) {
     use crate::utils::click_buffer::ClickData;
@@ -3423,6 +3434,7 @@ fn record_click_buffered(
         device: ua_info.device.clone(),
         browser: ua_info.browser.clone(),
         os: ua_info.os,
+        destination,
         created_at: None,
     };
     match accounting {

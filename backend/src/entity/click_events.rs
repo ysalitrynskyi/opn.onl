@@ -21,6 +21,10 @@ pub struct Model {
     pub device: Option<String>,
     pub browser: Option<String>,
     pub os: Option<String>,
+    /// The URL the click was redirected to, recorded only for links with
+    /// routing rules. NULL means the link's own `original_url`. Always the
+    /// owner's configured URL, never anything from the visitor's request.
+    pub destination: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
