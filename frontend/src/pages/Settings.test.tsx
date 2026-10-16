@@ -824,7 +824,7 @@ describe('Settings Page', () => {
             expect(forever).not.toBeNull();
             expect(reader).toHaveTextContent('Read-only');
             expect(reader).toHaveTextContent(`Expires ${formatDate(expiresAt)}`);
-            expect(within(old as HTMLElement).getByText('Expired')).toHaveClass('text-danger/70');
+            expect(within(old as HTMLElement).getByText('Expired')).toHaveClass('text-danger');
             expect(forever).toHaveTextContent('Full access');
             expect(forever).toHaveTextContent('Never expires');
         });
