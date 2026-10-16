@@ -194,6 +194,24 @@ test.describe('Dashboard Page', () => {
         await expect(page.locator(`a[href="/analytics/${unclicked.id}"]`)).toHaveText('0');
     });
 
+    test('should raise the open row when the short link is visited, without reloading', async ({ page, request }) => {
+        const user = await createUser(request);
+        const link: CreatedLink = await createLink(request, user.token, { original_url: uniqueDestination() });
+
+        await signIn(page, user);
+        await openDashboard(page);
+        // A click is broadcast only to streams that are already open.
+        await expect(page.getByRole('status', { name: 'Live', exact: true })).toBeVisible();
+        await expect(page.getByRole('link', { name: `0 clicks, analytics for ${link.code}`, exact: true })).toBeVisible();
+
+        const visit = await request.get(`${API_URL}/${link.code}`, { maxRedirects: 0, headers: clientIpHeader() });
+        expect(visit.status()).toBe(307);
+
+        await expect(page.getByRole('link', { name: `1 click, analytics for ${link.code}`, exact: true })).toBeVisible();
+        await expect(page.getByText('1 click', { exact: true })).toBeVisible();
+        await expect(page).toHaveURL(/\/dashboard$/);
+    });
+
     test('should show password protected badge', async ({ page, request, owner }) => {
         const locked: CreatedLink = await createLink(request, owner.token, {
             original_url: uniqueDestination(),

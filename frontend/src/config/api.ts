@@ -124,6 +124,9 @@ export const API_ENDPOINTS = {
     
     // Health
     health: `${API_BASE_URL}/health`,
+
+    // Live click stream. Authenticated with the Bearer header, never `?token=`.
+    sse: `${API_BASE_URL}/sse`,
     
     // API Docs
     swagger: `${API_BASE_URL}/swagger-ui`,

@@ -114,6 +114,11 @@ describe('API_ENDPOINTS', () => {
         it('should have realtime clicks endpoint', () => {
             expect(API_ENDPOINTS.linkRealtimeClicks(1)).toContain('/links/1/clicks/realtime');
         });
+
+        it('should stream live clicks without a token in the url', () => {
+            expect(API_ENDPOINTS.sse).toMatch(/\/sse$/);
+            expect(API_ENDPOINTS.sse).not.toContain('token');
+        });
     });
 
     describe('Organization endpoints', () => {

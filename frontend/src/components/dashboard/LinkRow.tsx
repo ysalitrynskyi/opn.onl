@@ -20,6 +20,8 @@ interface LinkRowProps {
     sourceCopied: boolean;
     cloning: boolean;
     selected: boolean;
+    /** Non-zero while a live click should flash the count. A new value restarts it. */
+    clickFlash?: number;
     onToggleSelect: (id: number) => void;
     onCopy: (link: LinkData) => void;
     onCopySource: (link: LinkData) => void;
@@ -42,6 +44,7 @@ export default function LinkRow({
     sourceCopied,
     cloning,
     selected,
+    clickFlash = 0,
     onToggleSelect,
     onCopy,
     onCopySource,
@@ -202,7 +205,12 @@ export default function LinkRow({
                             className="inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary-600"
                         >
                             <BarChart2 className="h-4 w-4" />
-                            <span className="font-mono font-bold tabular-nums">{link.click_count.toLocaleString()}</span>
+                            <span
+                                key={clickFlash}
+                                className={`font-mono font-bold tabular-nums${clickFlash ? ' text-primary-600 animate-live-click' : ''}`}
+                            >
+                                {link.click_count.toLocaleString()}
+                            </span>
                         </Link>
                         <div className="flex items-center gap-0.5">
                             <button
