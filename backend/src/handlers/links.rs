@@ -733,6 +733,16 @@ pub struct UpdateLinkRequest {
     pub burn_after_reading: Option<bool>,
     pub safe_link_interstitial: Option<bool>,
     pub bio_visible: Option<bool>,
+    /// Text shown on the owner's bio page instead of the title. An empty or
+    /// whitespace-only string clears it. At most 80 characters. Ignored when
+    /// link-in-bio is disabled. Only the creator can change it.
+    pub bio_label: Option<String>,
+    /// Sort key on the owner's bio page (lower first). Absent leaves it
+    /// unchanged. Ignored when link-in-bio is disabled. Only the creator can
+    /// change it.
+    pub bio_position: Option<i32>,
+    /// Clear `bio_position`. Wins over `bio_position`.
+    pub remove_bio_position: Option<bool>,
     pub remove_starts_at: Option<bool>,
     /// Remove the click cap. On a burn-after-reading link this also turns
     /// burn-after-reading off, because a one-time link cannot be uncapped.
@@ -923,6 +933,8 @@ pub struct LinkResponse {
     pub burned_at: Option<String>,
     pub safe_link_interstitial: bool,
     pub bio_visible: bool,
+    pub bio_label: Option<String>,
+    pub bio_position: Option<i32>,
     pub is_active: bool,
     pub is_pinned: bool,
     pub tags: Vec<TagInfo>,
@@ -954,6 +966,8 @@ impl LinkResponse {
             burned_at: l.burned_at.map(utc_rfc3339),
             safe_link_interstitial: l.safe_link_interstitial,
             bio_visible: l.bio_visible,
+            bio_label: l.bio_label.clone(),
+            bio_position: l.bio_position,
             is_active: l.is_active(),
             is_pinned: l.is_pinned,
             tags,
@@ -2028,6 +2042,8 @@ pub async fn create_link(
             burned_at: None,
             safe_link_interstitial,
             bio_visible: false,
+            bio_label: None,
+            bio_position: None,
             is_active,
             is_pinned: false,
             tags,
@@ -4582,6 +4598,71 @@ pub async fn update_link(
         active_link.bio_visible = Set(visible);
     }
 
+    // Label and order travel with visibility: the bio page is the creator's,
+    // so an editor echoing the current value is fine and a different one is not.
+    if link_in_bio_enabled {
+        if let Some(label) = payload.bio_label.as_ref() {
+            if label.chars().count() > crate::handlers::bio::MAX_BIO_LABEL_CHARS {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "Bio label must be at most {} characters",
+                            crate::handlers::bio::MAX_BIO_LABEL_CHARS
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            // A blank label would hide the title fallback on the public page.
+            let trimmed = label.trim();
+            let next = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            if next != link.bio_label && link.user_id != Some(user_id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error:
+                            "Only the link's creator can change how it appears on their bio page"
+                                .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            active_link.bio_label = Set(next);
+        }
+        if payload.remove_bio_position == Some(true) {
+            if link.bio_position.is_some() && link.user_id != Some(user_id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error:
+                            "Only the link's creator can change how it appears on their bio page"
+                                .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            active_link.bio_position = Set(None);
+        } else if let Some(position) = payload.bio_position {
+            if link.bio_position != Some(position) && link.user_id != Some(user_id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error:
+                            "Only the link's creator can change how it appears on their bio page"
+                                .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            active_link.bio_position = Set(Some(position));
+        }
+    }
+
     let txn = match state.db.begin().await {
         Ok(txn) => txn,
         Err(_) => {
@@ -4710,6 +4791,8 @@ pub async fn update_link(
                     burned_at: updated.burned_at.map(utc_rfc3339),
                     safe_link_interstitial: updated.safe_link_interstitial,
                     bio_visible: updated.bio_visible,
+                    bio_label: updated.bio_label.clone(),
+                    bio_position: updated.bio_position,
                     is_active: updated.is_active(),
                     is_pinned: updated.is_pinned,
                     tags,

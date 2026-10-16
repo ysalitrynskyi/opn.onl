@@ -435,6 +435,7 @@ pub fn build_router(app_state: AppState) -> Router {
         .route("/auth/me", get(handlers::auth::get_current_user))
         .route("/auth/profile", put(handlers::auth::update_profile))
         .route("/auth/bio", put(handlers::bio::update_bio_settings))
+        .route("/auth/bio/order", put(handlers::bio::update_bio_order))
         .route(
             "/auth/api-keys",
             get(handlers::api_keys::list_api_keys).post(handlers::api_keys::create_api_key),

@@ -1,9 +1,12 @@
+use std::collections::HashSet;
+
 use axum::{
     Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use sea_orm::sea_query::Expr;
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -11,7 +14,17 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::{links, users};
 use crate::handlers::json_error;
+use crate::handlers::link_access::{LinkAction, live_link_for};
 use crate::utils::env::env_flag;
+use crate::utils::validation::MAX_IDS_PER_REQUEST;
+
+/// Themes the public page renders. Anything else is rejected; an empty string
+/// clears the stored theme and the page uses its default look. Keep this in
+/// step with `BIO_THEMES` in `frontend/src/pages/bioThemes.ts`.
+pub const BIO_THEMES: &[&str] = &["ink", "cobalt"];
+
+/// A bio label is the text of a button, not a description.
+pub const MAX_BIO_LABEL_CHARS: usize = 80;
 
 /// Usernames that would collide with app routes or API paths.
 const RESERVED_USERNAMES: &[&str] = &[
@@ -185,22 +198,13 @@ pub async fn update_bio_settings(
         eff_enabled = enabled;
     }
     if let Some(theme) = &payload.bio_theme {
-        // No theme list exists yet; keep the stored value a short identifier.
-        let valid = theme.len() <= 30
-            && theme
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-        if !valid {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "Theme must be at most 30 lowercase letters, digits, hyphens or underscores",
-            );
-        }
-        active.bio_theme = Set(if theme.is_empty() {
-            None
+        if theme.is_empty() {
+            active.bio_theme = Set(None);
+        } else if !BIO_THEMES.contains(&theme.as_str()) {
+            return json_error(StatusCode::BAD_REQUEST, "Theme must be ink or cobalt");
         } else {
-            Some(theme.clone())
-        });
+            active.bio_theme = Set(Some(theme.clone()));
+        }
     }
 
     // The page can't go live without a username.
@@ -228,6 +232,165 @@ pub async fn update_bio_settings(
         }
         Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save settings"),
     }
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct BioOrderRequest {
+    /// Personal bio-visible link ids, first to last. Must be exactly the
+    /// caller's set: every one of them, each once.
+    pub link_ids: Vec<i32>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BioOrderResponse {
+    pub link_ids: Vec<i32>,
+}
+
+/// Replace the order of the caller's personal links on their bio page.
+///
+/// One request, because writing `bio_position` link by link would leave a
+/// half-applied order when a later write failed. Organization links stay out:
+/// the page is the caller's, and an organization link's place is not theirs
+/// to arrange from here.
+#[utoipa::path(
+    put,
+    path = "/auth/bio/order",
+    request_body = BioOrderRequest,
+    responses(
+        (status = 200, description = "Bio link order saved", body = BioOrderResponse),
+        (status = 400, description = "The list is not exactly the caller's personal bio-visible links"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Link-in-bio is off, or a link id is not one the caller can edit"),
+        (status = 404, description = "User not found"),
+        (status = 409, description = "The set of bio links changed while saving"),
+    ),
+    tag = "Authentication",
+    security(("bearer_auth" = []), ("api_key" = []))
+)]
+pub async fn update_bio_order(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<BioOrderRequest>,
+) -> impl IntoResponse {
+    if !link_in_bio_enabled() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "Link-in-bio is not enabled on this instance",
+        );
+    }
+    let user_id = match crate::handlers::links::get_user_id_from_header(&state.db, &headers).await {
+        Some(id) => id,
+        None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
+    };
+    if users::Entity::find_by_id(user_id)
+        .filter(users::Column::DeletedAt.is_null())
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return json_error(StatusCode::NOT_FOUND, "User not found");
+    }
+    if payload.link_ids.len() > MAX_IDS_PER_REQUEST {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            format!("Too many items in one request (max {MAX_IDS_PER_REQUEST})"),
+        );
+    }
+    let mut seen = HashSet::with_capacity(payload.link_ids.len());
+    if !payload.link_ids.iter().all(|id| seen.insert(*id)) {
+        return json_error(StatusCode::BAD_REQUEST, "Each link can appear only once");
+    }
+
+    let expected: HashSet<i32> = match links::Entity::find()
+        .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::OrgId.is_null())
+        .filter(links::Column::DeletedAt.is_null())
+        .filter(links::Column::BioVisible.eq(true))
+        .all(&state.db)
+        .await
+    {
+        Ok(rows) => rows.into_iter().map(|link| link.id).collect(),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+
+    for id in &payload.link_ids {
+        if expected.contains(id) {
+            continue;
+        }
+        // Missing, deleted and not-editable ids are the same 403 as every
+        // other link-by-id write, so the answer does not reveal which exist.
+        let link = match live_link_for(&state.db, *id, user_id, LinkAction::Write).await {
+            Ok(link) => link,
+            Err(denied) => return denied.into_response(),
+        };
+        if link.org_id.is_some() {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "Only personal links can be ordered on your bio page",
+            );
+        }
+        if !link.bio_visible {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "Only links shown on your bio page can be ordered",
+            );
+        }
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "List every personal link on your bio page",
+        );
+    }
+    if payload.link_ids.len() != expected.len() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "List every personal link on your bio page",
+        );
+    }
+
+    if !payload.link_ids.is_empty() {
+        let txn = match state.db.begin().await {
+            Ok(txn) => txn,
+            Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+        };
+        for (index, id) in payload.link_ids.iter().enumerate() {
+            let updated = links::Entity::update_many()
+                .col_expr(links::Column::BioPosition, Expr::value(index as i32))
+                .filter(links::Column::Id.eq(*id))
+                .filter(links::Column::UserId.eq(user_id))
+                .filter(links::Column::OrgId.is_null())
+                .filter(links::Column::DeletedAt.is_null())
+                .filter(links::Column::BioVisible.eq(true))
+                .exec(&txn)
+                .await;
+            match updated {
+                Ok(result) if result.rows_affected == 1 => {}
+                Ok(_) => {
+                    let _ = txn.rollback().await;
+                    return json_error(
+                        StatusCode::CONFLICT,
+                        "Your bio links changed. Reload and try again.",
+                    );
+                }
+                Err(_) => {
+                    let _ = txn.rollback().await;
+                    return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save order");
+                }
+            }
+        }
+        if txn.commit().await.is_err() {
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save order");
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(BioOrderResponse {
+            link_ids: payload.link_ids,
+        }),
+    )
+        .into_response()
 }
 
 /// Public bio page data. Returns 404 unless the instance flag AND the user's
