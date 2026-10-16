@@ -389,6 +389,11 @@ test.describe('link creation', () => {
         await expect(page.getByText('No links yet')).toBeHidden();
 
         await page.unroute(listUrl);
+        // A new address for the reload. The dev server's StrictMode sends every
+        // Dashboard request twice, so two loads inside one second pass the real
+        // 20-per-second burst limit and a folder or team request answers 429,
+        // which is not the limit this test is about.
+        await page.setExtraHTTPHeaders(asClient(freshClientIp()));
         const listed = linkListLoaded(page);
         await page.reload();
         expect((await listed).status()).toBe(200);
