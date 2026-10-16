@@ -526,7 +526,16 @@ test.describe('Security Tests', () => {
             expect(listed.status()).toBe(200);
             expect(await listed.text()).not.toContain(key.key);
             expect(await listed.json()).toEqual([
-                { id: key.id, name: 'CI key', key_prefix: key.key_prefix, last_used_at: null, created_at: key.created_at },
+                {
+                    id: key.id,
+                    name: 'CI key',
+                    key_prefix: key.key_prefix,
+                    last_used_at: null,
+                    created_at: key.created_at,
+                    scope: 'full',
+                    expires_at: null,
+                    expired: false,
+                },
             ]);
 
             // The key works for the API it was issued for...

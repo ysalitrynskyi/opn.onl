@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, mockToken, render, screen, waitFor } from '../test/test-utils';
+import { fireEvent, mockToken, render, screen, waitFor, within } from '../test/test-utils';
 import Settings from './Settings';
 
 // Stable navigate identity: Settings' load effect depends on it.
@@ -300,8 +300,11 @@ describe('Settings account correctness', () => {
                 screen.getByText(/permanently removed 14 days after you delete the account/),
             ).toBeInTheDocument();
             expect(screen.getByText(/only an administrator can restore it/)).toBeInTheDocument();
-            // Not a number baked into the page, and not the old, false promise.
-            expect(screen.queryByText(/30 days/)).not.toBeInTheDocument();
+            // Not a number baked into the deletion copy, and not the old, false promise.
+            // The API key form has its own "30 days" expiry choice, so look only here.
+            const zone = screen.getByRole('heading', { name: 'Danger Zone' }).closest('section');
+            expect(zone).not.toBeNull();
+            expect(within(zone as HTMLElement).queryByText(/30 days/)).not.toBeInTheDocument();
             expect(screen.queryByText(/All your links and data will be permanently deleted/)).not.toBeInTheDocument();
         });
 

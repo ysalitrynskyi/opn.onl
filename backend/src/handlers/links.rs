@@ -1,8 +1,10 @@
 use axum::{
     Json,
+    body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, Method, StatusCode},
-    response::{IntoResponse, Redirect},
+    http::{HeaderMap, Method, Request, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Redirect, Response},
 };
 use chrono::{DateTime, Utc};
 use rand::distributions::Alphanumeric;
@@ -1030,17 +1032,41 @@ pub struct JwtAuthentication {
     pub token_version: i32,
 }
 
+/// What an `opn_` key is allowed to do. Stored as text on `api_keys.scope`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApiKeyScope {
+    Full,
+    ReadOnly,
+}
+
+impl ApiKeyScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::ReadOnly => "read_only",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "full" => Some(Self::Full),
+            "read_only" => Some(Self::ReadOnly),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Authentication {
     Jwt(JwtAuthentication),
-    ApiKey { user_id: i32 },
+    ApiKey { user_id: i32, scope: ApiKeyScope },
 }
 
 impl Authentication {
     pub fn user_id(self) -> i32 {
         match self {
             Self::Jwt(auth) => auth.user_id,
-            Self::ApiKey { user_id } => user_id,
+            Self::ApiKey { user_id, .. } => user_id,
         }
     }
 }
@@ -1050,19 +1076,26 @@ impl Authentication {
 /// Security-sensitive credential-management endpoints must explicitly require
 /// [`Authentication::Jwt`] rather than flattening both credential types to a
 /// user id.
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("Authorization")?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
 pub async fn authenticate_from_header(
     db: &sea_orm::DatabaseConnection,
     headers: &HeaderMap,
 ) -> Option<Authentication> {
-    let auth_header = headers.get("Authorization")?.to_str().ok()?;
-    let token = auth_header.strip_prefix("Bearer ")?;
+    let token = bearer_token(headers)?;
 
     // API key path: tokens prefixed `opn_` are personal access tokens (used by the
     // MCP server / external API clients), looked up by their sha256 hash.
     if token.starts_with("opn_") {
         return resolve_api_key(db, token)
             .await
-            .map(|user_id| Authentication::ApiKey { user_id });
+            .map(|(user_id, scope)| Authentication::ApiKey { user_id, scope });
     }
 
     let claims = decode_jwt(token).ok()?;
@@ -1198,10 +1231,17 @@ pub fn hash_api_key(key: &str) -> String {
 /// open WebSocket/SSE connection signed in by key).
 const API_KEY_LAST_USED_REFRESH_MINUTES: i64 = 5;
 
-/// Resolve an `opn_` API key to its (non-deleted) owner; best-effort stamps
-/// `last_used_at` (at most once per [`API_KEY_LAST_USED_REFRESH_MINUTES`]).
-/// Returns None for unknown/revoked keys or deleted owners.
-async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<i32> {
+struct LiveApiKey {
+    id: i32,
+    user_id: i32,
+    scope: ApiKeyScope,
+    last_used_at: Option<chrono::NaiveDateTime>,
+}
+
+/// An `opn_` key that would authenticate right now. Does not stamp
+/// `last_used_at`. Expired keys return `None` before that stamp, same as an
+/// unknown or revoked key.
+async fn live_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<LiveApiKey> {
     use crate::entity::api_keys;
     // Instance kill-switch: when ENABLE_API_KEYS=false, keys stop authenticating.
     if !env_flag("ENABLE_API_KEYS", true) {
@@ -1213,26 +1253,85 @@ async fn resolve_api_key(db: &sea_orm::DatabaseConnection, key: &str) -> Option<
         .one(db)
         .await
         .ok()??;
+    let scope = ApiKeyScope::parse(&rec.scope)?;
+    let now = chrono::Utc::now().naive_utc();
+    // Checked before the owner lookup and before `last_used_at` is written:
+    // an expired key must look the same as one that does not exist.
+    if rec.expires_at.is_some_and(|expires| expires <= now) {
+        return None;
+    }
     let user = users::Entity::find_by_id(rec.user_id)
         .filter(users::Column::DeletedAt.is_null())
         .filter(users::Column::DisabledAt.is_null())
         .one(db)
         .await
         .ok()??;
+    Some(LiveApiKey {
+        id: rec.id,
+        user_id: user.id,
+        scope,
+        last_used_at: rec.last_used_at,
+    })
+}
+
+/// Resolve an `opn_` API key to its (non-deleted) owner; best-effort stamps
+/// `last_used_at` (at most once per [`API_KEY_LAST_USED_REFRESH_MINUTES`]).
+/// Returns None for unknown, revoked, expired keys or deleted owners.
+async fn resolve_api_key(
+    db: &sea_orm::DatabaseConnection,
+    key: &str,
+) -> Option<(i32, ApiKeyScope)> {
+    use crate::entity::api_keys;
+    let live = live_api_key(db, key).await?;
     let now = chrono::Utc::now().naive_utc();
     let refresh_after = chrono::Duration::minutes(API_KEY_LAST_USED_REFRESH_MINUTES);
-    if rec
+    if live
         .last_used_at
         .is_none_or(|last| now - last >= refresh_after)
     {
         let am = api_keys::ActiveModel {
-            id: Set(rec.id),
+            id: Set(live.id),
             last_used_at: Set(Some(now)),
             ..Default::default()
         };
         let _ = am.update(db).await;
     }
-    Some(user.id)
+    Some((live.user_id, live.scope))
+}
+
+/// Scope of an `opn_` bearer token that would authenticate. No database
+/// lookup unless the token really is an `opn_` key, and `last_used_at` is
+/// left alone: the handler stamps it when the request is allowed through.
+async fn authentic_api_key_scope(
+    db: &sea_orm::DatabaseConnection,
+    headers: &HeaderMap,
+) -> Option<ApiKeyScope> {
+    let token = bearer_token(headers)?;
+    if !token.starts_with("opn_") {
+        return None;
+    }
+    live_api_key(db, token).await.map(|key| key.scope)
+}
+
+/// Refuse every non-read method that presents a live read-only API key.
+///
+/// Handlers authenticate themselves, so a per-handler check would be missed
+/// by the next route. GET, HEAD and OPTIONS are not looked up here. An
+/// expired or unknown key falls through and the handler answers 401.
+/// POST routes that only compute (`/links/build-utm`, `/links/health-check`,
+/// `/links/preview-metadata`, `/{code}/verify`) are refused as well.
+pub async fn reject_read_only_api_key_writes(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return next.run(req).await;
+    }
+    if authentic_api_key_scope(&state.db, req.headers()).await == Some(ApiKeyScope::ReadOnly) {
+        return json_error(StatusCode::FORBIDDEN, "This API key is read-only");
+    }
+    next.run(req).await
 }
 
 fn get_base_url() -> String {

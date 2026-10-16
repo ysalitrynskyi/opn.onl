@@ -269,7 +269,7 @@ export default function Developers() {
                                 </h2>
                                 <ol className="mt-8 space-y-6">
                                     {[
-                                        ['01', 'Create an API key', <>Open <Link to="/settings" className="text-primary-600 underline decoration-line2 underline-offset-2 hover:text-primary-700">Settings → API Keys</Link> and generate a token. It looks like <span className="font-mono text-[13px] text-ink">opn_…</span> and is shown once.</>],
+                                        ['01', 'Create an API key', <>Open <Link to="/settings" className="text-primary-600 underline decoration-line2 underline-offset-2 hover:text-primary-700">Settings → API Keys</Link> and generate a token. It looks like <span className="font-mono text-[13px] text-ink">opn_…</span> and is shown once. Choose full access or read-only, and keep it until you revoke it or let it expire.</>],
                                         ['02', 'Send it as a Bearer token', <>Pass <span className="font-mono text-[13px] text-ink">Authorization: Bearer opn_…</span> on every request. A key reaches links, folders, tags, organizations and analytics; account security and admin calls need your sign-in session instead.</>],
                                         ['03', 'Shorten, measure, automate', <>Create links, read analytics and render QR codes straight from your code, CI or cron.</>],
                                     ].map(([n, title, body]) => (

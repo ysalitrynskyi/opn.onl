@@ -185,11 +185,19 @@ test.describe('Settings page', () => {
         await page.getByRole('button', { name: 'Create key' }).click();
         const response = await created;
         expect(response.status()).toBe(201);
-        const { key, key_prefix } = await response.json();
+        expect(response.request().postDataJSON()).toEqual({ name: 'e2e laptop', scope: 'full' });
+        const body = await response.json();
+        const { key, key_prefix } = body;
+        expect(body.scope).toBe('full');
+        expect(body.expires_at).toBeNull();
+        expect(body.expired).toBe(false);
 
         await expect(page.getByText("Your new API key — copy it now, it won't be shown again:")).toBeVisible();
         await expect(page.getByText(key, { exact: true })).toBeVisible();
         await expect(page.getByText(`${key_prefix}… · never used`)).toBeVisible();
+        const row = page.getByRole('listitem').filter({ hasText: key_prefix });
+        await expect(row).toContainText('Full access');
+        await expect(row).toContainText('Never expires');
         expect((await api(request, 'get', '/links', key)).status()).toBe(200);
 
         let confirmation = '';

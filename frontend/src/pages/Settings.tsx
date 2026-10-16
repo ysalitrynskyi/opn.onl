@@ -9,7 +9,7 @@ import {
 import { API_ENDPOINTS, authFetch, failureMessage, responseError, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
-import { isSafeHttpUrl } from '../utils';
+import { formatDate, isSafeHttpUrl } from '../utils';
 import { safeLocalStorage } from '../utils/storage';
 
 interface Passkey {
@@ -18,6 +18,20 @@ interface Passkey {
     created_at: string;
     last_used: string | null;
 }
+
+interface ApiKeyRow {
+    id: number;
+    name: string;
+    key_prefix: string;
+    last_used_at: string | null;
+    created_at: string;
+    scope: string;
+    expires_at: string | null;
+    expired: boolean;
+}
+
+type ApiKeyScopeChoice = 'full' | 'read_only';
+type ApiKeyExpiryChoice = 'never' | '30' | '90' | '365';
 
 interface UserProfile {
     id: number;
@@ -105,8 +119,10 @@ export default function Settings() {
     const [savingBio, setSavingBio] = useState(false);
 
     // API keys state
-    const [apiKeys, setApiKeys] = useState<{ id: number; name: string; key_prefix: string; last_used_at: string | null; created_at: string }[]>([]);
+    const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
     const [newKeyName, setNewKeyName] = useState('');
+    const [keyScope, setKeyScope] = useState<ApiKeyScopeChoice>('full');
+    const [keyExpiry, setKeyExpiry] = useState<ApiKeyExpiryChoice>('never');
     const [createdApiKey, setCreatedApiKey] = useState<string | null>(null);
     const [creatingKey, setCreatingKey] = useState(false);
     const [copyFailed, setCopyFailed] = useState(false);
@@ -493,9 +509,14 @@ export default function Settings() {
         setError('');
         setSuccess('');
         try {
+            const body: { name?: string; scope: ApiKeyScopeChoice; expires_in_days?: number } = {
+                scope: keyScope,
+            };
+            if (newKeyName) body.name = newKeyName;
+            if (keyExpiry !== 'never') body.expires_in_days = Number(keyExpiry);
             const res = await authFetch(API_ENDPOINTS.apiKeys, {
                 method: 'POST',
-                body: JSON.stringify({ name: newKeyName || undefined }),
+                body: JSON.stringify(body),
             });
             if (!res.ok) {
                 throw new Error(await responseError(res, 'Failed to create API key'));
@@ -504,6 +525,8 @@ export default function Settings() {
             setCreatedApiKey(data.key);
             setCopyFailed(false);
             setNewKeyName('');
+            setKeyScope('full');
+            setKeyExpiry('never');
             setSuccess("API key created — copy it now, it won't be shown again.");
             // Do not refetch: fetchData sets loading and can null profile,
             // which unmounts this banner. The plaintext secret is shown once.
@@ -514,6 +537,9 @@ export default function Settings() {
                     key_prefix: data.key_prefix || String(data.key).slice(0, 12),
                     last_used_at: null,
                     created_at: data.created_at || new Date().toISOString(),
+                    scope: data.scope === 'read_only' ? 'read_only' : 'full',
+                    expires_at: data.expires_at ?? null,
+                    expired: Boolean(data.expired),
                 }, ...prev]);
             }
         } catch (err) {
@@ -1084,6 +1110,17 @@ export default function Settings() {
                                                 <p className="font-mono text-xs text-faint">
                                                     {k.key_prefix}… · {k.last_used_at ? `last used ${new Date(k.last_used_at).toLocaleDateString()}` : 'never used'}
                                                 </p>
+                                                <p className="text-xs text-faint">
+                                                    {k.scope === 'read_only' ? 'Read-only' : 'Full access'}
+                                                    {' · '}
+                                                    {k.expired ? (
+                                                        <span className="text-danger/70">Expired</span>
+                                                    ) : k.expires_at ? (
+                                                        `Expires ${formatDate(k.expires_at)}`
+                                                    ) : (
+                                                        'Never expires'
+                                                    )}
+                                                </p>
                                             </div>
                                             <button
                                                 type="button"
@@ -1098,22 +1135,51 @@ export default function Settings() {
                                 </ul>
                             )}
 
-                            <form onSubmit={handleCreateApiKey} className="flex items-center gap-2">
+                            <form onSubmit={handleCreateApiKey} className="space-y-3">
                                 <input
                                     type="text"
                                     value={newKeyName}
                                     onChange={e => setNewKeyName(e.target.value)}
                                     placeholder="Key name (e.g. MCP on my laptop)"
                                     maxLength={60}
+                                    aria-label="Key name"
                                     className={inputClass}
                                 />
-                                <button
-                                    type="submit"
-                                    disabled={creatingKey}
-                                    className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
-                                >
-                                    {creatingKey ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Plus className="h-4 w-4" /> Create key</>}
-                                </button>
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                                    <div className="sm:w-48">
+                                        <label htmlFor="api-key-access" className="mb-1.5 block text-sm font-medium text-ink">Access</label>
+                                        <select
+                                            id="api-key-access"
+                                            value={keyScope}
+                                            onChange={e => setKeyScope(e.target.value as ApiKeyScopeChoice)}
+                                            className={inputClass}
+                                        >
+                                            <option value="full">Full access</option>
+                                            <option value="read_only">Read-only</option>
+                                        </select>
+                                    </div>
+                                    <div className="sm:w-48">
+                                        <label htmlFor="api-key-expires" className="mb-1.5 block text-sm font-medium text-ink">Expires</label>
+                                        <select
+                                            id="api-key-expires"
+                                            value={keyExpiry}
+                                            onChange={e => setKeyExpiry(e.target.value as ApiKeyExpiryChoice)}
+                                            className={inputClass}
+                                        >
+                                            <option value="never">Never</option>
+                                            <option value="30">30 days</option>
+                                            <option value="90">90 days</option>
+                                            <option value="365">1 year</option>
+                                        </select>
+                                    </div>
+                                    <button
+                                        type="submit"
+                                        disabled={creatingKey}
+                                        className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-primary-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
+                                    >
+                                        {creatingKey ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Plus className="h-4 w-4" /> Create key</>}
+                                    </button>
+                                </div>
                             </form>
                             <p className="text-xs text-faint">
                                 Use with the{' '}
