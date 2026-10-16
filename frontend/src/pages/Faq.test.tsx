@@ -70,7 +70,7 @@ describe('FAQ', () => {
         const answer = await screen.findByText(/stops redirecting at once/i);
         expect(answer).toHaveTextContent(/permanently removed 30 days later/i);
         expect(answer).not.toHaveTextContent(/processed immediately/i);
-        expect(answer).toHaveTextContent(/account deletion is currently disabled on the hosted version/i);
+        expect(answer).toHaveTextContent(/not offered on this instance/i);
         expect(deleteAnswerSchema()).toContain('permanently removed 30 days later');
         expect(deleteAnswerSchema()).not.toContain('processed immediately');
     });
@@ -109,7 +109,32 @@ describe('FAQ', () => {
             expect(answer).toHaveTextContent(/kept until an administrator permanently removes it/i),
         );
         expect(answer).not.toHaveTextContent(/30 days/);
-        expect(answer).toHaveTextContent(/account deletion is currently disabled on the hosted version/i);
+        expect(answer).toHaveTextContent(/not offered on this instance/i);
+    });
+
+    it('points to Settings when the instance lets people delete their account', async () => {
+        mockSettings({ account_purge_days: 14, account_deletion_enabled: true });
+        const { user } = render(<Faq />);
+
+        await user.click(screen.getByRole('button', { name: /can i delete my data/i }));
+
+        const answer = await screen.findByText(/stops redirecting at once/i);
+        await waitFor(() => expect(answer).toHaveTextContent(/delete your whole account in settings/i));
+        expect(answer).toHaveTextContent(/account .*permanently removed 14 days later/i);
+        expect(answer).not.toHaveTextContent(/not offered/i);
+        expect(answer).not.toHaveTextContent(/info@opn\.onl/);
+    });
+
+    it('does not name a fixed address when account deletion is off', async () => {
+        mockSettings({ account_deletion_enabled: false });
+        const { user } = render(<Faq />);
+
+        await user.click(screen.getByRole('button', { name: /can i delete my data/i }));
+
+        const answer = await screen.findByText(/stops redirecting at once/i);
+        await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+        expect(answer).toHaveTextContent(/ask its operator through the contact page/i);
+        expect(answer).not.toHaveTextContent(/info@opn\.onl/);
     });
 
     it('keeps the default window when an older server omits the field', async () => {

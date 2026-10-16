@@ -24,8 +24,20 @@ function linkDeletionSentence(purgeDays: number | null): string {
     return `A link you delete stops redirecting at once, and ${kept}.`;
 }
 
-function deleteDataAnswer(purgeDays: number | null): string {
-    return `Yes! You can delete individual links at any time from your dashboard. ${linkDeletionSentence(purgeDays)} Account deletion is currently disabled on the hosted version, but if you need your account removed, please contact us at info@opn.onl.`;
+function accountDeletionSentence(deletionEnabled: boolean, purgeDays: number | null): string {
+    if (!deletionEnabled) {
+        // ENABLE_ACCOUNT_DELETION is off by default, and that is what the
+        // prerendered page assumes until /auth/settings answers.
+        return 'Deleting a whole account yourself is not offered on this instance; ask its operator through the contact page to remove it.';
+    }
+    const removed = purgeDays === null
+        ? 'kept until an administrator permanently removes it'
+        : `permanently removed ${purgeDays} ${pluralize(purgeDays, 'day')} later`;
+    return `You can also delete your whole account in Settings: it stops working at once and is ${removed}.`;
+}
+
+function deleteDataAnswer(purgeDays: number | null, deletionEnabled: boolean): string {
+    return `Yes! You can delete individual links at any time from your dashboard. ${linkDeletionSentence(purgeDays)} ${accountDeletionSentence(deletionEnabled, purgeDays)}`;
 }
 
 const faqs = [
@@ -109,7 +121,7 @@ const faqs = [
             {
                 q: DELETE_DATA_QUESTION,
                 // Replaced once /auth/settings answers. This is the prerender default.
-                a: deleteDataAnswer(DEFAULT_PURGE_DAYS),
+                a: deleteDataAnswer(DEFAULT_PURGE_DAYS, false),
             }
         ]
     },
@@ -140,6 +152,7 @@ export default function Faq() {
     const [searchQuery, setSearchQuery] = useState('');
     const [openItems, setOpenItems] = useState<Set<string>>(new Set());
     const [purgeDays, setPurgeDays] = useState<number | null>(DEFAULT_PURGE_DAYS);
+    const [deletionEnabled, setDeletionEnabled] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -151,6 +164,7 @@ export default function Faq() {
                 if (cancelled) return;
                 const next = configuredPurgeDays(data.account_purge_days);
                 if (next !== undefined) setPurgeDays(next);
+                setDeletionEnabled(data.account_deletion_enabled === true);
             } catch {
                 // Offline, or no API behind this page: the default stands.
             }
@@ -163,7 +177,7 @@ export default function Faq() {
     const faqsForInstance = faqs.map((category) => ({
         ...category,
         questions: category.questions.map((item) =>
-            item.q === DELETE_DATA_QUESTION ? { ...item, a: deleteDataAnswer(purgeDays) } : item,
+            item.q === DELETE_DATA_QUESTION ? { ...item, a: deleteDataAnswer(purgeDays, deletionEnabled) } : item,
         ),
     }));
 
