@@ -183,9 +183,22 @@ async fn assert_scrubbed(db: &DatabaseConnection, entries: &Entries, email: &str
 #[tokio::test]
 async fn the_purge_sweep_masks_the_address_of_an_account_it_removes() {
     let (_, db) = spawn_real_app().await;
-    let gone = person(&db, Some(40), false).await;
+    let gone = person(&db, None, false).await;
     let other = person(&db, None, false).await;
     let entries = seed_entries(&db, &gone.email, &other.email).await;
+    // Only now does the account fall outside the window. Other tests in this
+    // file run the sweep concurrently over the same database; had the account
+    // been purgeable while its entries were still being written, one of those
+    // sweeps could remove it between two inserts and leave the later entry
+    // holding the full address with no account left to scrub it.
+    let mut expired: users::ActiveModel = users::Entity::find_by_id(gone.id)
+        .one(&db)
+        .await
+        .unwrap()
+        .expect("account")
+        .into();
+    expired.deleted_at = Set(Some(Utc::now().naive_utc() - Duration::days(40)));
+    expired.update(&db).await.expect("expire the account");
 
     purge_expired_accounts(&db, 30).await.expect("sweep");
 
