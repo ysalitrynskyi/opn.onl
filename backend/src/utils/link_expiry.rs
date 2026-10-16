@@ -20,8 +20,9 @@
 //!
 //! The mail draws on a pool of the hourly budget of its own
 //! ([`MailKind::LinkExpiry`](super::email_limits::MailKind::LinkExpiry)). When
-//! that pool is spent the run stops; the owners it did not reach are reminded
-//! by the next run.
+//! that pool is spent the run stops, and the next run starts an hour later
+//! (when the pool has refilled) instead of a day later, so the owners it did
+//! not reach still hear about their links in time.
 
 use std::sync::Arc;
 
@@ -43,6 +44,13 @@ pub const NOTICE_WINDOW_DAYS: i64 = 3;
 
 /// Most links one reminder lists. The rest wait for the next run.
 pub const MAX_LINKS_PER_NOTICE: usize = 20;
+
+/// Time between two runs.
+const RUN_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Time before the next run when a run stopped on a spent pool: the pool is
+/// hourly, so by then it has room again.
+const RETRY_AFTER_POOL_SPENT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// Owners fetched per query, and due links read per query for one owner.
 const BATCH_SIZE: u64 = 100;
@@ -263,9 +271,8 @@ pub fn spawn_link_expiry_task(
     );
 
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
         loop {
-            interval.tick().await;
+            let mut wait = RUN_EVERY;
             match send_link_expiry_reminders(&db, &email, require_email_verification).await {
                 Ok(report) => {
                     if report.sent > 0 {
@@ -279,13 +286,15 @@ pub fn spawn_link_expiry_task(
                         tracing::warn!("Link expiry reminders failed for {} owners", report.failed);
                     }
                     if report.pool_spent {
+                        wait = RETRY_AFTER_POOL_SPENT;
                         tracing::warn!(
-                            "Link expiry reminders stopped: their share of EMAIL_RATE_LIMIT_PER_HOUR is spent; the rest go out with the next run"
+                            "Link expiry reminders stopped: their share of EMAIL_RATE_LIMIT_PER_HOUR is spent; the rest go out in an hour"
                         );
                     }
                 }
                 Err(e) => tracing::error!("Link expiry reminders failed: {}", e),
             }
+            tokio::time::sleep(wait).await;
         }
     });
 }
