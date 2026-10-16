@@ -438,6 +438,7 @@ export interface LinkStats {
     clicks_by_browser: BrowserStats[];
     clicks_by_os: OsStats[];
     clicks_by_referer: RefererStats[];
+    clicks_by_destination: DestinationStats[];
     recent_clicks: RecentClick[];
     geo_data: GeoPoint[];
 }
@@ -465,6 +466,11 @@ export interface RefererStats {
     referer: string;
     count: number;
     percentage: number;
+}
+
+export interface DestinationStats {
+    destination: string;
+    clicks: number;
 }
 
 export interface RecentClick {

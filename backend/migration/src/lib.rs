@@ -44,6 +44,7 @@ mod m20220101_000041_abuse_reports;
 mod m20220101_000044_one_org_owner;
 mod m20220101_000045_cap_uncapped_burn_links;
 mod m20220101_000046_link_list_order_indexes;
+mod m20220101_000048_click_destination;
 
 // Public so the backend's tests can pin its blocklist canonicalisation to the
 // frozen copy this migration applies to existing rows.
@@ -103,6 +104,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000044_one_org_owner::Migration),
             Box::new(m20220101_000045_cap_uncapped_burn_links::Migration),
             Box::new(m20220101_000046_link_list_order_indexes::Migration),
+            Box::new(m20220101_000048_click_destination::Migration),
         ]
     }
 }

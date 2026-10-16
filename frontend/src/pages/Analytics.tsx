@@ -6,7 +6,13 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { API_ENDPOINTS, authFetch, failureMessage, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
-import { analyticsCsvFilename, BREAKDOWN_ROW_LIMIT, buildLinkAnalyticsCsv, cityBreakdownLabel } from '../utils/analyticsCsv';
+import {
+    analyticsCsvFilename,
+    BREAKDOWN_ROW_LIMIT,
+    buildLinkAnalyticsCsv,
+    cityBreakdownLabel,
+    destinationRows,
+} from '../utils/analyticsCsv';
 import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
 import { safeLocalStorage } from '../utils/storage';
 
@@ -52,6 +58,11 @@ interface RefererStats {
     percentage: number;
 }
 
+interface DestinationStats {
+    destination: string;
+    clicks: number;
+}
+
 interface RecentClick {
     id: number;
     timestamp: string;
@@ -78,6 +89,8 @@ interface LinkStats {
     clicks_by_browser: BrowserStats[];
     clicks_by_os: OsStats[];
     clicks_by_referer: RefererStats[];
+    /** Clicks per URL they were redirected to. Missing from a backend that predates it. */
+    clicks_by_destination?: DestinationStats[];
     recent_clicks: RecentClick[];
 }
 
@@ -118,7 +131,9 @@ function StatCard({ title, value, icon: Icon, hint }: { title: string; value: st
     );
 }
 
-function StatsTable<T extends object>({ title, data, labelKey, valueKey }: { title: string; data: T[]; labelKey: keyof T; valueKey: keyof T }) {
+/** `wrapLabels` for labels that differ only at the end, such as URLs, which
+ *  truncation would cut down to the same text on a phone. */
+function StatsTable<T extends object>({ title, data, labelKey, valueKey, wrapLabels = false }: { title: string; data: T[]; labelKey: keyof T; valueKey: keyof T; wrapLabels?: boolean }) {
     if (data.length === 0) return null;
 
     const sortedData = [...data].sort((a, b) => Number(b[valueKey]) - Number(a[valueKey])).slice(0, BREAKDOWN_ROW_LIMIT);
@@ -134,7 +149,7 @@ function StatsTable<T extends object>({ title, data, labelKey, valueKey }: { tit
                     return (
                         <div key={i} className="flex items-center justify-between gap-3">
                             <div className="flex items-center gap-3 min-w-0 flex-1">
-                                <span className="truncate text-sm text-ink">{String(item[labelKey] ?? 'Unknown')}</span>
+                                <span className={`${wrapLabels ? 'break-all' : 'truncate'} text-sm text-ink`}>{String(item[labelKey] ?? 'Unknown')}</span>
                             </div>
                             <div className="flex items-center gap-3 flex-shrink-0">
                                 <span className="font-mono text-sm text-muted tabular-nums">{value.toLocaleString()}</span>
@@ -253,6 +268,9 @@ export default function Analytics() {
         ...c,
         label: cityBreakdownLabel(c.city, c.country),
     }));
+
+    // Shown only when routing rules sent clicks to more than one URL.
+    const destinations = destinationRows(stats);
 
     const downloadCsv = () => {
         const csv = buildLinkAnalyticsCsv(stats);
@@ -385,6 +403,12 @@ export default function Analytics() {
                             />
                         </AreaChart>
                     </ResponsiveContainer>
+                </motion.div>
+            )}
+
+            {destinations.length > 0 && (
+                <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }} className="mb-8">
+                    <StatsTable title="Destinations" data={destinations} labelKey="destination" valueKey="clicks" wrapLabels />
                 </motion.div>
             )}
 
