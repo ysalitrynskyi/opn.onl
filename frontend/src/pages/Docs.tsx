@@ -107,7 +107,7 @@ export default function Docs() {
                                 </code>
                             </div>
                             <p className="text-slate-600">
-                                For scripts and the <strong>MCP server</strong>, create a long-lived <strong>API key</strong> in Settings → API Keys and send it the same way (it never expires until you revoke it):
+                                For scripts and the <strong>MCP server</strong>, create an <strong>API key</strong> in Settings → API Keys and send it the same way. A key can be read-only, so it can only read, and it can expire on a date you choose. Otherwise it lasts until you revoke it:
                             </p>
                             <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
                                 <code className="text-green-400 text-sm">

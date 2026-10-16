@@ -11,6 +11,10 @@ pub struct Model {
     #[sea_orm(unique)]
     pub key_hash: String,
     pub key_prefix: String,
+    /// `full` or `read_only`. The database default is `full`.
+    pub scope: String,
+    /// Naive UTC. `None` means the key lasts until it is revoked.
+    pub expires_at: Option<DateTime>,
     pub last_used_at: Option<DateTime>,
     pub created_at: DateTime,
 }

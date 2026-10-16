@@ -4,7 +4,8 @@
 //! integration tests in `tests/` can import the real router, state, and
 //! handlers instead of stubbing them. `build_router` must stay byte-for-byte
 //! equivalent to what the binary serves: same routes, same middleware order
-//! (https_redirect → rate limit → CORS → tracing → security headers).
+//! (read-only API keys → https_redirect → rate limit → CORS → tracing →
+//! security headers).
 
 pub mod entity;
 pub mod handlers;
@@ -364,14 +365,24 @@ pub async fn health_check(
 /// Build the complete application router — the single source of truth for
 /// routes and middleware, shared by the binary and the integration tests.
 ///
-/// Middleware order (outermost last): with_state → https_redirect →
-/// rate limit → CORS → tracing → security headers. Do not reorder.
+/// Middleware order (outermost last): with_state → read-only API keys →
+/// https_redirect → rate limit → CORS → tracing → security headers. Do not
+/// reorder the existing layers.
+///
+/// The read-only check is the innermost layer, after rate limiting and the
+/// HTTPS redirect. A refused write still spends its rate-limit budget, and a
+/// request that is about to be redirected does not look the key up. It queries
+/// the database only for a non-GET/HEAD/OPTIONS request whose bearer token is
+/// an `opn_` key; reads, JWTs and anonymous calls do not.
 pub fn build_router(app_state: AppState) -> Router {
     // Rate limiters live for as long as the router; the cleanup task holds its
     // own Arc and just prunes stale entries every 5 minutes. Shared with handlers
     // via AppState so in-handler checks hit the same limiter instances.
     let rate_limiters = app_state.rate_limiters.clone();
     RateLimiters::spawn_cleanup_task(rate_limiters.clone());
+    // The scope check needs the database. Captured here so the layer can sit
+    // inside `with_state` without taking the state the router owns.
+    let api_key_scope_state = app_state.clone();
 
     Router::new()
         // API Documentation (includes /api-docs/openapi.json and /swagger-ui)
@@ -653,6 +664,12 @@ pub fn build_router(app_state: AppState) -> Router {
         .route("/:code", get(handlers::links::redirect_link))
         // State
         .with_state(app_state)
+        // Innermost on purpose: see `build_router`. A new write handler cannot
+        // forget the read-only rule, because the key is refused before the handler.
+        .layer(middleware::from_fn_with_state(
+            api_key_scope_state,
+            handlers::links::reject_read_only_api_key_writes,
+        ))
         // HTTPS redirect middleware
         .layer(middleware::from_fn(https_redirect))
         // Rate limiting middleware

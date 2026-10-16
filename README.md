@@ -347,7 +347,7 @@ Errors come in a few shapes, so a generic client should look at the status code 
 | GET | `/auth/passkeys` | List your registered passkeys |
 | POST | `/auth/passkey/delete` · `/auth/passkey/rename` | Remove or rename a passkey |
 
-Authenticate any request with `Authorization: Bearer <token>` — either a **JWT** (from `/auth/login`) or a personal **API key** (`opn_…`, created in **Settings → API Keys**). API keys are long-lived and recommended for scripts and the [MCP server](#mcp-server).
+Authenticate any request with `Authorization: Bearer <token>` — either a **JWT** (from `/auth/login`) or a personal **API key** (`opn_…`, created in **Settings → API Keys**). API keys are for scripts and the [MCP server](#mcp-server). Create accepts optional `scope` (`full`, the default, or `read_only`) and `expires_in_days` (1–730); a read-only key may only send GET, HEAD and OPTIONS, and a key with no lifetime lasts until you revoke it. Responses add `scope`, `expires_at` (RFC 3339 UTC, or null) and `expired`.
 
 ### Links
 

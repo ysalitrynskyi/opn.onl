@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '../test/test-utils';
+import { render, screen, waitFor, fireEvent, within } from '../test/test-utils';
 import Settings from './Settings';
 import { mockToken } from '../test/test-utils';
+import { formatDate } from '../utils';
 
 // Mock navigate
 const mockNavigate = vi.fn();
@@ -700,6 +701,132 @@ describe('Settings Page', () => {
                 expect.stringContaining('/auth/api-keys/7'),
                 expect.objectContaining({ method: 'DELETE' }),
             );
+        });
+
+        it('sends the chosen access and lifetime, and omits a lifetime when the key never expires', async () => {
+            const posts: unknown[] = [];
+            global.fetch = vi.fn((url: string, options?: RequestInit) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys') && options?.method === 'POST') {
+                    posts.push(JSON.parse(String(options.body)));
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({
+                            id: posts.length,
+                            name: 'Script',
+                            key: `opn_secret_${posts.length}`,
+                            key_prefix: 'opn_secret_s',
+                            created_at: '2026-11-15T12:00:00Z',
+                            scope: posts.length === 1 ? 'read_only' : 'full',
+                            expires_at: posts.length === 1 ? '2026-12-15T12:00:00Z' : null,
+                            expired: false,
+                        }),
+                    });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+
+            render(<Settings />);
+            const nameInput = await screen.findByPlaceholderText(/key name/i);
+            expect(screen.getByRole('option', { name: 'Full access' })).toHaveValue('full');
+            expect(screen.getByRole('option', { name: 'Read-only' })).toHaveValue('read_only');
+            expect(screen.getByRole('option', { name: 'Never' })).toHaveValue('never');
+            expect(screen.getByRole('option', { name: '30 days' })).toHaveValue('30');
+            expect(screen.getByRole('option', { name: '90 days' })).toHaveValue('90');
+            expect(screen.getByRole('option', { name: '1 year' })).toHaveValue('365');
+
+            fireEvent.change(nameInput, { target: { value: 'Script' } });
+            fireEvent.change(screen.getByLabelText('Access'), { target: { value: 'read_only' } });
+            fireEvent.change(screen.getByLabelText('Expires'), { target: { value: '30' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            await waitFor(() => expect(posts).toHaveLength(1));
+            expect(posts[0]).toEqual({ name: 'Script', scope: 'read_only', expires_in_days: 30 });
+            await waitFor(() => expect(screen.getByLabelText('Access')).toHaveValue('full'));
+            expect(screen.getByLabelText('Expires')).toHaveValue('never');
+
+            fireEvent.change(screen.getByPlaceholderText(/key name/i), { target: { value: 'Laptop' } });
+            fireEvent.click(screen.getByRole('button', { name: /create key/i }));
+
+            await waitFor(() => expect(posts).toHaveLength(2));
+            expect(posts[1]).toEqual({ name: 'Laptop', scope: 'full' });
+        });
+
+        it('shows scope and expiry on each key', async () => {
+            const expiresAt = '2026-11-15T12:00:00Z';
+            global.fetch = vi.fn((url: string) => {
+                if (url.includes('/auth/me')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockUserProfile) });
+                }
+                if (url.includes('/auth/settings')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(settingsWithKeys) });
+                }
+                if (url.includes('/auth/passkeys')) {
+                    return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPasskeys) });
+                }
+                if (url.includes('/auth/api-keys')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve([
+                            {
+                                id: 1,
+                                name: 'Reader',
+                                key_prefix: 'opn_reader',
+                                last_used_at: null,
+                                created_at: '2026-01-01T00:00:00Z',
+                                scope: 'read_only',
+                                expires_at: expiresAt,
+                                expired: false,
+                            },
+                            {
+                                id: 2,
+                                name: 'Old',
+                                key_prefix: 'opn_oldkey',
+                                last_used_at: null,
+                                created_at: '2020-01-01T00:00:00Z',
+                                scope: 'full',
+                                expires_at: '2020-02-01T00:00:00Z',
+                                expired: true,
+                            },
+                            {
+                                id: 3,
+                                name: 'Forever',
+                                key_prefix: 'opn_forever',
+                                last_used_at: null,
+                                created_at: '2026-01-01T00:00:00Z',
+                                scope: 'full',
+                                expires_at: null,
+                                expired: false,
+                            },
+                        ]),
+                    });
+                }
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+            }) as any;
+
+            render(<Settings />);
+            const reader = (await screen.findByRole('button', { name: /revoke reader/i })).closest('li');
+            const old = screen.getByRole('button', { name: /revoke old/i }).closest('li');
+            const forever = screen.getByRole('button', { name: /revoke forever/i }).closest('li');
+            expect(reader).not.toBeNull();
+            expect(old).not.toBeNull();
+            expect(forever).not.toBeNull();
+            expect(reader).toHaveTextContent('Read-only');
+            expect(reader).toHaveTextContent(`Expires ${formatDate(expiresAt)}`);
+            expect(within(old as HTMLElement).getByText('Expired')).toHaveClass('text-danger/70');
+            expect(forever).toHaveTextContent('Full access');
+            expect(forever).toHaveTextContent('Never expires');
         });
     });
 

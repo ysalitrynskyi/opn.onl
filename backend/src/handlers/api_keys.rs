@@ -13,11 +13,14 @@ use utoipa::ToSchema;
 use crate::AppState;
 use crate::entity::{api_keys, users};
 use crate::handlers::json_error;
-use crate::handlers::links::{get_jwt_auth_from_header, hash_api_key};
+use crate::handlers::links::{ApiKeyScope, get_jwt_auth_from_header, hash_api_key};
 use crate::utils::env::env_flag;
 use crate::utils::time::utc_rfc3339;
 
 const MAX_API_KEYS: u64 = 20;
+/// Two years. A longer lifetime is rejected so a "temporary" key cannot be
+/// permanent by way of a huge number.
+const MAX_API_KEY_LIFETIME_DAYS: i64 = 730;
 
 fn api_keys_enabled() -> bool {
     env_flag("ENABLE_API_KEYS", true)
@@ -26,6 +29,12 @@ fn api_keys_enabled() -> bool {
 #[derive(Deserialize, ToSchema)]
 pub struct CreateApiKeyRequest {
     pub name: Option<String>,
+    /// `full` (the default) or `read_only`. A read-only key may only send
+    /// GET, HEAD and OPTIONS.
+    pub scope: Option<String>,
+    /// Days until the key stops authenticating, from 1 to 730. Omit it and
+    /// the key lasts until it is revoked.
+    pub expires_in_days: Option<i64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -36,6 +45,11 @@ pub struct CreateApiKeyResponse {
     pub key: String,
     pub key_prefix: String,
     pub created_at: String,
+    /// `full` or `read_only`.
+    pub scope: String,
+    /// When the key stops authenticating, RFC 3339 UTC. Null means never.
+    pub expires_at: Option<String>,
+    pub expired: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -47,6 +61,16 @@ pub struct ApiKeyInfo {
     /// uses closer together than that do not move it.
     pub last_used_at: Option<String>,
     pub created_at: String,
+    /// `full` or `read_only`.
+    pub scope: String,
+    /// When the key stops authenticating, RFC 3339 UTC. Null means never.
+    pub expires_at: Option<String>,
+    pub expired: bool,
+}
+
+fn expiry_fields(expires_at: Option<chrono::NaiveDateTime>) -> (Option<String>, bool) {
+    let expired = expires_at.is_some_and(|at| at <= chrono::Utc::now().naive_utc());
+    (expires_at.map(utc_rfc3339), expired)
 }
 
 /// Create a new personal API key. The full key is returned once.
@@ -56,7 +80,7 @@ pub struct ApiKeyInfo {
     request_body = CreateApiKeyRequest,
     responses(
         (status = 201, description = "API key created; the full secret is returned once", body = CreateApiKeyResponse),
-        (status = 400, description = "API key limit reached"),
+        (status = 400, description = "API key limit reached, or scope or expires_in_days is invalid"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "API keys are disabled on this instance"),
     ),
@@ -77,6 +101,27 @@ pub async fn create_api_key(
     let auth = match get_jwt_auth_from_header(&state.db, &headers).await {
         Some(auth) => auth,
         None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
+    };
+
+    let scope = match payload.scope.as_deref() {
+        None => ApiKeyScope::Full,
+        Some("full") => ApiKeyScope::Full,
+        Some("read_only") => ApiKeyScope::ReadOnly,
+        Some(_) => {
+            return json_error(StatusCode::BAD_REQUEST, "Scope must be full or read_only");
+        }
+    };
+    let expires_at = match payload.expires_in_days {
+        None => None,
+        Some(days) if (1..=MAX_API_KEY_LIFETIME_DAYS).contains(&days) => {
+            Some((chrono::Utc::now() + chrono::Duration::days(days)).naive_utc())
+        }
+        Some(_) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                format!("Expiry must be between 1 and {MAX_API_KEY_LIFETIME_DAYS} days"),
+            );
+        }
     };
 
     let txn = match state.db.begin().await {
@@ -141,6 +186,8 @@ pub async fn create_api_key(
         name: Set(name.clone()),
         key_hash: Set(key_hash),
         key_prefix: Set(key_prefix.clone()),
+        scope: Set(scope.as_str().to_string()),
+        expires_at: Set(expires_at),
         ..Default::default()
     };
     let rec = match am.insert(&txn).await {
@@ -159,6 +206,7 @@ pub async fn create_api_key(
             "Failed to create API key",
         );
     }
+    let (expires_at, expired) = expiry_fields(rec.expires_at);
     (
         StatusCode::CREATED,
         Json(CreateApiKeyResponse {
@@ -167,6 +215,9 @@ pub async fn create_api_key(
             key,
             key_prefix,
             created_at: utc_rfc3339(rec.created_at),
+            scope: rec.scope,
+            expires_at,
+            expired,
         }),
     )
         .into_response()
@@ -196,12 +247,18 @@ pub async fn list_api_keys(State(state): State<AppState>, headers: HeaderMap) ->
         .unwrap_or_default();
     let out: Vec<ApiKeyInfo> = keys
         .into_iter()
-        .map(|k| ApiKeyInfo {
-            id: k.id,
-            name: k.name,
-            key_prefix: k.key_prefix,
-            last_used_at: k.last_used_at.map(utc_rfc3339),
-            created_at: utc_rfc3339(k.created_at),
+        .map(|k| {
+            let (expires_at, expired) = expiry_fields(k.expires_at);
+            ApiKeyInfo {
+                id: k.id,
+                name: k.name,
+                key_prefix: k.key_prefix,
+                last_used_at: k.last_used_at.map(utc_rfc3339),
+                created_at: utc_rfc3339(k.created_at),
+                scope: k.scope,
+                expires_at,
+                expired,
+            }
         })
         .collect();
     (StatusCode::OK, Json(out)).into_response()

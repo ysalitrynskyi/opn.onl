@@ -39,6 +39,7 @@ mod m20220101_000036_idx_created_at_admin_activity;
 mod m20220101_000037_fold_user_email_case;
 mod m20220101_000038_retired_codes;
 mod m20220101_000039_canonicalise_blocklists;
+mod m20220101_000040_api_key_scope_expiry;
 
 // Public so the backend's tests can pin its blocklist canonicalisation to the
 // frozen copy this migration applies to existing rows.
@@ -91,6 +92,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20220101_000037_fold_user_email_case::Migration),
             Box::new(m20220101_000038_retired_codes::Migration),
             Box::new(m20220101_000039_canonicalise_blocklists::Migration),
+            Box::new(m20220101_000040_api_key_scope_expiry::Migration),
         ]
     }
 }
