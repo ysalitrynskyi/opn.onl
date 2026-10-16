@@ -8,6 +8,9 @@
  * leading apostrophe when the value starts with `=`, `+`, `-`, `@`, TAB
  * or CR. The file starts with a UTF-8 BOM.
  *
+ * Like the page's card, the destination section is there only when clicks
+ * went to more than one URL.
+ *
  * A truncated response is a sample. The file then starts with a `#` note
  * (no commas, so it stays one cell) giving the sample size and the period
  * total, the same fact as the notice on the page.
@@ -29,11 +32,26 @@ export interface AnalyticsCsvStats {
     clicks_by_browser: { browser: string; count: number }[];
     clicks_by_os: { os: string; count: number }[];
     clicks_by_referer: { referer: string; count: number }[];
+    /** Missing from a backend that predates it. */
+    clicks_by_destination?: DestinationRow[];
+}
+
+export interface DestinationRow {
+    destination: string;
+    clicks: number;
 }
 
 /** City line on the page and in the file: "Paris, France", or the city alone. */
 export function cityBreakdownLabel(city: string, country?: string | null): string {
     return country ? `${city}, ${country}` : city;
+}
+
+/** Clicks per destination URL, or none when every click went to one URL.
+ *  Only a link whose clicks routing rules split gets the card, and the
+ *  section in the file. */
+export function destinationRows(stats: Pick<AnalyticsCsvStats, 'clicks_by_destination'>): DestinationRow[] {
+    const rows = stats.clicks_by_destination ?? [];
+    return rows.length > 1 ? rows : [];
 }
 
 /** `<code>-analytics-<days>d-YYYY-MM-DD.csv`, so a 7-day file and a
@@ -92,6 +110,7 @@ export function buildLinkAnalyticsCsv(stats: AnalyticsCsvStats): string {
         ['browser', stats.clicks_by_browser.map((item) => ({ label: shown(item.browser), count: item.count }))],
         ['os', stats.clicks_by_os.map((item) => ({ label: shown(item.os), count: item.count }))],
         ['referrer', stats.clicks_by_referer.map((item) => ({ label: shown(item.referer), count: item.count }))],
+        ['destination', destinationRows(stats).map((item) => ({ label: item.destination, count: item.clicks }))],
     ];
     for (const [section, items] of sections) {
         for (const item of topRows(items)) {

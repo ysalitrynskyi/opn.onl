@@ -266,6 +266,12 @@ test.describe('Analytics Page', () => {
         ]);
     });
 
+    test('should leave out destinations for a link without routing rules', async ({ page }) => {
+        await expect(metric(page, 'Total Clicks')).toHaveText('6');
+        await expect(page.getByRole('heading', { name: 'Top Referrers', exact: true })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Destinations', exact: true })).toHaveCount(0);
+    });
+
     test('should display recent clicks table', async ({ page }) => {
         const table = page.getByRole('table');
         await expect(page.getByRole('heading', { name: 'Recent clicks' })).toBeVisible();
@@ -349,10 +355,38 @@ test.describe('Analytics Page - Empty State', () => {
             'Browsers',
             'Operating Systems',
             'Top Referrers',
+            'Destinations',
             'Recent clicks',
         ]) {
             await expect(page.getByRole('heading', { name: title, exact: true }), title).toHaveCount(0);
         }
+    });
+});
+
+test.describe('Analytics Page - Destinations', () => {
+    test('should show where routing rules sent the clicks', async ({ page, request, owner }) => {
+        const link: CreatedLink = await createLink(request, owner.token);
+        const mobile = 'https://www.iana.org/domains/reserved';
+        const rules = await api(request, 'put', `/links/${link.id}/rules`, owner.token, {
+            rules: [{ match_device: 'Mobile', destination_url: mobile }],
+        });
+        expect(rules.status(), `PUT rules: ${await rules.text()}`).toBe(200);
+
+        // Two phones match the rule; the desktop visitor falls through to the link's own URL.
+        const [first, second, third] = visitorAddresses(3);
+        await visit(request, link.code, [
+            { userAgent: SAFARI_ON_IPHONE, ip: first },
+            { userAgent: SAFARI_ON_IPHONE, ip: second },
+            { userAgent: CHROME_ON_WINDOWS, ip: third },
+        ]);
+        await flushedStats(request, owner.token, link.id, 3);
+
+        await signIn(page, owner);
+        await openAnalytics(page, link.id);
+        await expectBreakdown(page, 'Destinations', [
+            [mobile, '2', '66.7%'],
+            [link.original_url, '1', '33.3%'],
+        ]);
     });
 });
 

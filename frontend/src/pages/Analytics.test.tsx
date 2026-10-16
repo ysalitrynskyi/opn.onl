@@ -584,6 +584,61 @@ describe('Analytics Page', () => {
         });
     });
 
+    describe('Destinations', () => {
+        /** `[label, clicks, share]` of each row of a breakdown card, top to bottom. */
+        async function breakdown(title: string): Promise<(string | null)[][]> {
+            const card = (await screen.findByRole('heading', { name: title })).parentElement as HTMLElement;
+            return Array.from(card.querySelectorAll(':scope > div > div')).map((row) =>
+                Array.from(row.querySelectorAll('span')).map((span) => span.textContent),
+            );
+        }
+
+        it('shows where routing rules sent the clicks, with each share', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    clicks_by_destination: [
+                        { destination: 'https://example.com/landing?variant=b', clicks: 10 },
+                        { destination: 'https://example.com/landing?variant=a', clicks: 30 },
+                    ],
+                }),
+            });
+            render(<Analytics />);
+
+            expect(await breakdown('Destinations')).toEqual([
+                ['https://example.com/landing?variant=a', '30', '75.0%'],
+                ['https://example.com/landing?variant=b', '10', '25.0%'],
+            ]);
+            // A URL is wrapped, not cut down to a prefix every destination shares.
+            expect(screen.getByText('https://example.com/landing?variant=a')).toHaveClass('break-all');
+            expect(screen.getByText('https://example.com/landing?variant=a')).not.toHaveClass('truncate');
+        });
+
+        it('is left out when every click went to the same URL', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    clicks_by_destination: [{ destination: 'https://example.com/very-long-url', clicks: 1234 }],
+                }),
+            });
+            render(<Analytics />);
+
+            expect(await screen.findByRole('heading', { name: 'Top Countries' })).toBeInTheDocument();
+            expect(screen.queryByRole('heading', { name: 'Destinations' })).not.toBeInTheDocument();
+        });
+
+        it('is left out, and the page still loads, when the server sends no destinations', async () => {
+            render(<Analytics />);
+
+            expect(await screen.findByRole('heading', { name: 'Top Countries' })).toBeInTheDocument();
+            expect(screen.queryByRole('heading', { name: 'Destinations' })).not.toBeInTheDocument();
+        });
+    });
+
     describe('Clicks over time', () => {
         it('is drawn when the period has clicks, even if most days are zero', async () => {
             global.fetch = vi.fn().mockResolvedValue({
@@ -790,6 +845,45 @@ describe('Analytics Page', () => {
                 '"referrer","\'\tcmd",1',
                 '"referrer","\'\rcmd",1',
             ]);
+        });
+
+        it('lists the destinations as a section when the clicks were split', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    truncated: false,
+                    clicks_by_destination: [
+                        { destination: 'https://example.com/b', clicks: 10 },
+                        { destination: 'https://example.com/a', clicks: 30 },
+                    ],
+                }),
+            });
+
+            const { text } = await download();
+            const lines = text.trimEnd().split('\n');
+            // The last section, highest first, under the same `clicks` column.
+            expect(lines.slice(-2)).toEqual([
+                '"destination","https://example.com/a",30',
+                '"destination","https://example.com/b",10',
+            ]);
+        });
+
+        it('leaves the destination section out when every click went to one URL', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({
+                    ...mockLinkStats,
+                    truncated: false,
+                    clicks_by_destination: [{ destination: 'https://example.com/very-long-url', clicks: 1234 }],
+                }),
+            });
+
+            const { text } = await download();
+            expect(text).toContain('"referrer","Google",400');
+            expect(text).not.toContain('"destination"');
         });
 
         it('names the file with the code and the UTC day', async () => {
