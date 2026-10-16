@@ -291,6 +291,10 @@ async fn bio_label_and_position_can_be_set_and_cleared() {
     assert_eq!(stored.bio_label.as_deref(), Some("你".repeat(80).as_str()));
     assert_eq!(stored.bio_position, Some(4));
 
+    // Registration plus the writes above fill the 10-per-second bucket on a
+    // fast machine, and a 429 here would hide whether the clear worked.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
     let cleared = put_link(
         &server,
         &token,
@@ -398,6 +402,9 @@ async fn bio_order_rejects_foreign_and_hidden_links() {
         assert_eq!(res.status_code(), 200, "show {title}: {}", res.text());
         ids.push(id);
     }
+    // Two registrations plus those writes already fill the 10-per-second
+    // bucket, so the refusals below would otherwise come back as 429.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let hidden = create_link(&server, &token, "Hidden").await;
     let hidden_put = put_link(&server, &token, hidden, json!({ "bio_visible": false })).await;
     assert_eq!(hidden_put.status_code(), 200, "hide: {}", hidden_put.text());
@@ -479,6 +486,8 @@ async fn bio_order_rejects_foreign_and_hidden_links() {
             .await
     }
 
+    // Creating the hidden, foreign and organization links used the bucket again.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let foreign_order = order(&server, &other_token, ids.clone()).await;
     assert_eq!(
         foreign_order.status_code(),
