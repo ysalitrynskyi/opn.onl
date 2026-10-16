@@ -452,7 +452,7 @@ async fn passkey_login_start_treats_case_variants_as_one_address() {
     let (server, _db) = spawn_real_app().await;
     let mixed = mixed_email();
 
-    let mut credential_ids = Vec::new();
+    let mut allow_lists = Vec::new();
     for typed in [mixed.clone(), mixed.to_lowercase(), mixed.to_uppercase()] {
         let res = server
             .post("/auth/passkey/login/start")
@@ -460,11 +460,15 @@ async fn passkey_login_start_treats_case_variants_as_one_address() {
             .await;
         assert_eq!(res.status_code(), 200, "start {typed:?}: {}", res.text());
         let body: Value = res.json();
-        credential_ids.push(body["options"]["publicKey"]["allowCredentials"][0]["id"].clone());
+        allow_lists.push(body["options"]["publicKey"]["allowCredentials"].clone());
     }
-    assert!(!credential_ids[0].is_null(), "decoy credential id missing");
-    assert_eq!(credential_ids[0], credential_ids[1]);
-    assert_eq!(credential_ids[0], credential_ids[2]);
+    assert!(
+        allow_lists[0].as_array().is_some_and(|ids| !ids.is_empty()),
+        "decoy credential ids missing: {}",
+        allow_lists[0]
+    );
+    assert_eq!(allow_lists[0], allow_lists[1]);
+    assert_eq!(allow_lists[0], allow_lists[2]);
 }
 
 // ------------------------------------------------------- database of its own

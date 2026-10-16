@@ -17,8 +17,11 @@ mod soft_passkey;
 use std::sync::Arc;
 
 use axum_test::{TestResponse, TestServer};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use common::{mark_email_verified, unique_email};
-use opn_onl_backend::entity::passkeys;
+use opn_onl_backend::entity::{passkeys, users};
+use opn_onl_backend::handlers::passkeys::MAX_PASSKEYS_PER_ACCOUNT;
 use opn_onl_backend::utils::rate_limiter::{RateLimitConfig, RateLimiter, RateLimiters};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
@@ -177,60 +180,343 @@ async fn stored_passkeys(db: &DatabaseConnection, user_id: i32) -> Vec<passkeys:
         .expect("list passkeys")
 }
 
-/// A start response with everything random or per-account replaced by its
-/// length, so two responses compare equal exactly when they look alike.
-fn shape(start: &Value) -> Value {
-    let mut shape = start.clone();
-    let public_key = &mut shape["options"]["publicKey"];
-    let length = |value: &Value| json!(value.as_str().expect("a string").len());
-    public_key["challenge"] = length(&public_key["challenge"]);
-    for credential in public_key["allowCredentials"]
-        .as_array_mut()
+/// Every credential id a start response lists, in order.
+fn listed_ids(start: &Value) -> Vec<String> {
+    start["options"]["publicKey"]["allowCredentials"]
+        .as_array()
         .expect("allowCredentials")
-    {
-        credential["id"] = length(&credential["id"]);
+        .iter()
+        .map(|credential| credential["id"].as_str().expect("an id").to_string())
+        .collect()
+}
+
+/// An account that has registered `count` passkeys.
+async fn enrolled_with(
+    server: &TestServer,
+    db: &DatabaseConnection,
+    count: usize,
+) -> (Account, Vec<SoftPasskey>) {
+    let account = account(server, db).await;
+    let mut authenticators = Vec::new();
+    for n in 0..count {
+        let authenticator = SoftPasskey::new();
+        let res = enroll(server, &account, &authenticator).await;
+        assert_eq!(res.status_code(), 200, "passkey {n}: {}", res.text());
+        authenticators.push(authenticator);
     }
-    shape["login_id"] = length(&shape["login_id"]);
-    shape
+    (account, authenticators)
+}
+
+/// A JSON document with each value replaced by its kind and the keys of every
+/// object kept in the order they were sent. `serde_json::Value` sorts keys, so
+/// it cannot show two answers that differ only in order.
+#[derive(Debug, PartialEq)]
+enum Shape {
+    Object(Vec<(String, Shape)>),
+    Array(Vec<Shape>),
+    String,
+    Number,
+    Bool,
+    Null,
+}
+
+impl<'de> serde::Deserialize<'de> for Shape {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ShapeVisitor;
+        impl<'de> serde::de::Visitor<'de> for ShapeVisitor {
+            type Value = Shape;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Shape, E> {
+                Ok(Shape::Bool)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Shape, E> {
+                Ok(Shape::Number)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Shape, E> {
+                Ok(Shape::Number)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Shape, E> {
+                Ok(Shape::Number)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Shape, E> {
+                Ok(Shape::String)
+            }
+            fn visit_unit<E>(self) -> Result<Shape, E> {
+                Ok(Shape::Null)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Shape, A::Error> {
+                let mut items = Vec::new();
+                while let Some(item) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(Shape::Array(items))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Shape, A::Error> {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry::<String, Shape>()? {
+                    entries.push(entry);
+                }
+                Ok(Shape::Object(entries))
+            }
+        }
+        deserializer.deserialize_any(ShapeVisitor)
+    }
+}
+
+/// Store `transports` on the user's passkeys, as webauthn-rs does when an
+/// authenticator with packed or TPM attestation reports them at registration
+/// (the software authenticator attests with `none`, whose transports are
+/// discarded).
+async fn give_transports(db: &DatabaseConnection, user_id: i32) {
+    for row in stored_passkeys(db, user_id).await {
+        let mut blob: Value = serde_json::from_str(&row.cred_public_key).expect("passkey blob");
+        blob["cred"]["transports"] = json!(["internal", "hybrid"]);
+        let mut row: passkeys::ActiveModel = row.into();
+        row.cred_public_key = Set(blob.to_string());
+        row.update(db).await.expect("store transports");
+    }
+}
+
+async fn disable(db: &DatabaseConnection, user_id: i32) {
+    users::ActiveModel {
+        id: Set(user_id),
+        disabled_at: Set(Some(chrono::Utc::now().naive_utc())),
+        ..Default::default()
+    }
+    .update(db)
+    .await
+    .expect("disable the account");
 }
 
 // ------------------------------------------------------------ decoy vs real
 
-/// An address with a passkey, one without and one nobody registered must get
-/// the same-looking challenge. The decoy used to say `timeout: 60000` and the
-/// host of `FRONTEND_URL` as `rpId`, where a real challenge says 300000 and the
-/// RP ID, so one request told an enrolled address from any other.
+/// Whatever the address, `login/start` must answer in one shape: the same keys
+/// in the same order at every level, exactly `MAX_PASSKEYS_PER_ACCOUNT`
+/// credentials of `type` and `id` alone, and the same timeout, RP ID and
+/// policy. The decoy used to list one 32-byte id where an account lists one
+/// id per passkey, with `transports` when the authenticator reported them,
+/// so the answer told whether an address had passkeys and how many.
 #[tokio::test]
-async fn passkey_login_start_does_not_enumerate_users() {
+async fn every_login_start_answer_has_one_shape() {
     let (server, db) = app().await;
 
-    let (enrolled_account, authenticator) = enrolled(&server, &db).await;
-    let plain_account = account(&server, &db).await;
-    let unknown_email = unique_email();
+    let unknown = unique_email();
+    let (disabled, disabled_passkeys) = enrolled_with(&server, &db, 1).await;
+    disable(&db, disabled.id).await;
+    let no_passkey = account(&server, &db).await;
+    let (one, mut one_passkey) = enrolled_with(&server, &db, 1).await;
+    give_transports(&db, one.id).await;
+    let (three, three_passkeys) = enrolled_with(&server, &db, 3).await;
 
-    let real = login_start(&server, &enrolled_account.email).await;
-    let no_passkey = login_start(&server, &plain_account.email).await;
-    let unknown = login_start(&server, &unknown_email).await;
+    let ids = |authenticators: &[SoftPasskey]| -> Vec<String> {
+        authenticators.iter().map(SoftPasskey::id_text).collect()
+    };
+    let cases = [
+        ("unknown address", unknown, vec![]),
+        ("disabled account", disabled.email.clone(), vec![]),
+        ("no passkey", no_passkey.email, vec![]),
+        ("one passkey", one.email.clone(), ids(&one_passkey)),
+        ("three passkeys", three.email, ids(&three_passkeys)),
+    ];
 
-    // The real challenge is the baseline: it must really be one.
-    assert_eq!(real["options"]["publicKey"]["timeout"], 300_000, "{real}");
-    assert_eq!(real["options"]["publicKey"]["rpId"], soft_passkey::RP_ID);
-    assert_eq!(
-        real["options"]["publicKey"]["allowCredentials"][0]["id"],
-        json!(authenticator.id_text()),
-        "the enrolled address gets its own credential: {real}"
+    let mut baseline: Option<(&str, Shape)> = None;
+    for (case, email, real) in &cases {
+        let res = server
+            .post("/auth/passkey/login/start")
+            .json(&json!({ "username": email }))
+            .await;
+        assert_eq!(res.status_code(), 200, "{case}: {}", res.text());
+        let text = res.text();
+        let body: Value = serde_json::from_str(&text).expect("JSON");
+        let options = &body["options"]["publicKey"];
+
+        assert_eq!(options["timeout"], 300_000, "{case}: {body}");
+        assert_eq!(options["rpId"], soft_passkey::RP_ID, "{case}: {body}");
+        assert_eq!(options["userVerification"], "required", "{case}: {body}");
+        let credentials = options["allowCredentials"].as_array().expect("allow list");
+        assert_eq!(
+            credentials.len(),
+            MAX_PASSKEYS_PER_ACCOUNT,
+            "{case}: every answer lists the same number of credentials: {body}"
+        );
+        for credential in credentials {
+            let keys: Vec<&String> = credential.as_object().expect("an object").keys().collect();
+            assert_eq!(keys, ["id", "type"], "{case}: no transports: {body}");
+            assert_eq!(credential["type"], "public-key", "{case}");
+            let id = URL_SAFE_NO_PAD
+                .decode(credential["id"].as_str().expect("an id"))
+                .expect("base64url id");
+            assert!(
+                (16..=1023).contains(&id.len()),
+                "{case}: a credential id of {} bytes",
+                id.len()
+            );
+        }
+
+        let listed = listed_ids(&body);
+        for id in real {
+            assert!(listed.contains(id), "{case}: its own passkey is listed");
+        }
+        let again = login_start(&server, email).await;
+        assert_eq!(
+            listed_ids(&again),
+            listed,
+            "{case}: the same list each time"
+        );
+
+        let shape: Shape = serde_json::from_str(&text).expect("shape");
+        match &baseline {
+            None => baseline = Some((case, shape)),
+            Some((first, expected)) => {
+                assert_eq!(&shape, expected, "{case} vs {first}: {text}")
+            }
+        }
+    }
+
+    // A disabled account gets decoys only, not its own passkey.
+    let disabled_answer = login_start(&server, &disabled.email).await;
+    assert!(!listed_ids(&disabled_answer).contains(&disabled_passkeys[0].id_text()));
+
+    // The passkey whose transports were dropped from the list still signs in.
+    let start = login_start(&server, &one.email).await;
+    let answer = one_passkey[0].assertion(&start["options"]);
+    let res = login_finish(&server, login_id(&start), answer).await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+}
+
+/// The account's own ids are mixed in among the decoys at slots fixed per
+/// address, not put first, where they would stand out from the padding.
+#[tokio::test]
+async fn real_passkeys_are_not_always_listed_first() {
+    let (server, db) = app().await;
+    let mut slots = std::collections::BTreeSet::new();
+    for _ in 0..8 {
+        let (account, authenticators) = enrolled_with(&server, &db, 1).await;
+        let start = login_start(&server, &account.email).await;
+        let slot = listed_ids(&start)
+            .iter()
+            .position(|id| *id == authenticators[0].id_text())
+            .expect("the passkey is listed");
+        slots.insert(slot);
+    }
+    assert!(slots.len() > 1, "every real id sat in slot {slots:?}");
+}
+
+/// Each of an account's passkeys signs in through the padded list.
+#[tokio::test]
+async fn every_passkey_signs_in_through_the_padded_list() {
+    let (server, db) = app().await;
+    let (account, mut authenticators) = enrolled_with(&server, &db, 3).await;
+    for authenticator in &mut authenticators {
+        let start = login_start(&server, &account.email).await;
+        assert_eq!(listed_ids(&start).len(), MAX_PASSKEYS_PER_ACCOUNT);
+        let answer = authenticator.assertion(&start["options"]);
+        let res = login_finish(&server, login_id(&start), answer).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert!(res.json::<Value>()["token"].is_string());
+    }
+}
+
+// ------------------------------------------------------------- the cap
+
+/// One passkey past the cap is refused before a ceremony starts, with a JSON
+/// error that says why.
+#[tokio::test]
+async fn an_account_holds_at_most_the_cap() {
+    let (server, db) = app().await;
+    let (account, _) = enrolled_with(&server, &db, MAX_PASSKEYS_PER_ACCOUNT).await;
+
+    let res = server
+        .post("/auth/passkey/register/start")
+        .authorization_bearer(&account.token)
+        .json(&json!({ "username": &account.email }))
+        .await;
+    assert_eq!(res.status_code(), 403, "{}", res.text());
+    let error = res.json::<Value>()["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        error.contains(&format!("maximum of {MAX_PASSKEYS_PER_ACCOUNT} passkeys")),
+        "{error}"
     );
-
-    assert_eq!(shape(&no_passkey), shape(&real), "no passkey vs real");
-    assert_eq!(shape(&unknown), shape(&real), "unknown vs real");
-
-    // A decoy is stable per address, so repeated asks do not give it away.
-    let unknown_again = login_start(&server, &unknown_email).await;
     assert_eq!(
-        unknown_again["options"]["publicKey"]["allowCredentials"],
-        unknown["options"]["publicKey"]["allowCredentials"],
-        "decoy allowCredentials must be deterministic for a username"
+        stored_passkeys(&db, account.id).await.len(),
+        MAX_PASSKEYS_PER_ACCOUNT
     );
+}
+
+/// The cap holds for a ceremony that started below it, when the account
+/// reached it before the ceremony finished.
+#[tokio::test]
+async fn the_cap_is_checked_again_when_registration_finishes() {
+    let (server, db) = app().await;
+    let (account, _) = enrolled_with(&server, &db, MAX_PASSKEYS_PER_ACCOUNT - 1).await;
+
+    let start = server
+        .post("/auth/passkey/register/start")
+        .authorization_bearer(&account.token)
+        .json(&json!({ "username": &account.email }))
+        .await;
+    assert_eq!(start.status_code(), 200, "{}", start.text());
+    let options = start.json::<Value>()["options"].clone();
+
+    // The last free place is taken meanwhile. The id has a length real
+    // passkeys use, so it does not change the lengths decoys draw from.
+    passkey(account.id, &SoftPasskey::new().id_text())
+        .insert(&db)
+        .await
+        .expect("fill the last place");
+
+    let res = server
+        .post("/auth/passkey/register/finish")
+        .authorization_bearer(&account.token)
+        .json(&json!({
+            "username": &account.email,
+            "credential": SoftPasskey::new().registration(&options),
+        }))
+        .await;
+    assert_eq!(res.status_code(), 403, "{}", res.text());
+    assert_eq!(
+        stored_passkeys(&db, account.id).await.len(),
+        MAX_PASSKEYS_PER_ACCOUNT
+    );
+}
+
+/// An account that had more passkeys than the cap before it existed keeps
+/// signing in with every one of them: its list holds them all, padded to the
+/// next multiple of the cap.
+#[tokio::test]
+async fn an_account_over_the_cap_signs_in_with_every_passkey() {
+    let (server, db) = app().await;
+    let (account, mut authenticators) = enrolled_with(&server, &db, MAX_PASSKEYS_PER_ACCOUNT).await;
+    // Registration now refuses an eleventh, so move one in from another account.
+    let (donor, donated) = enrolled_with(&server, &db, 1).await;
+    let row = stored_passkeys(&db, donor.id).await.remove(0);
+    let mut row: passkeys::ActiveModel = row.into();
+    row.user_id = Set(account.id);
+    row.update(&db).await.expect("move the passkey");
+    authenticators.extend(donated);
+
+    let start = login_start(&server, &account.email).await;
+    let listed = listed_ids(&start);
+    assert_eq!(listed.len(), 2 * MAX_PASSKEYS_PER_ACCOUNT);
+    for authenticator in &authenticators {
+        assert!(listed.contains(&authenticator.id_text()));
+    }
+
+    let last = authenticators.last_mut().expect("eleven passkeys");
+    let answer = last.assertion(&start["options"]);
+    let res = login_finish(&server, login_id(&start), answer).await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
 }
 
 /// After `start`, `finish` must not say whether the attempt was real: an

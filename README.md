@@ -344,8 +344,8 @@ Errors come in a few shapes, so a generic client should look at the status code 
 | POST | `/auth/delete-account` | Delete own account (if enabled; refused with 409 while you own orgs with other members). The account closes at once and is removed for good after `ACCOUNT_PURGE_DAYS` |
 | GET / POST | `/auth/api-keys` | List / create personal API keys |
 | DELETE | `/auth/api-keys/{id}` | Revoke an API key |
-| POST | `/auth/passkey/register/start` · `/finish` | Enroll a passkey for the authenticated account (WebAuthn; requires `ENABLE_PASSKEYS`) |
-| POST | `/auth/passkey/login/start` · `/finish` | Passwordless login with a registered passkey |
+| POST | `/auth/passkey/register/start` · `/finish` | Enroll a passkey for the authenticated account (WebAuthn; requires `ENABLE_PASSKEYS`). An account holds at most 10; one more is a `403` |
+| POST | `/auth/passkey/login/start` · `/finish` | Passwordless login with a registered passkey. `start` answers every address the same way: `allowCredentials` always lists 10 ids, the account's own passkeys mixed in among decoys that stay the same for that address, so the answer does not say whether the address has an account or how many passkeys it has |
 | GET | `/auth/passkeys` | List your registered passkeys |
 | POST | `/auth/passkey/delete` · `/auth/passkey/rename` | Remove or rename a passkey |
 
