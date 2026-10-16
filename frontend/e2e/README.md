@@ -1,6 +1,6 @@
 # Playwright E2E
 
-233 tests in 16 files under `frontend/e2e/`, run against the real stack: Postgres, the backend
+237 tests in 17 files under `frontend/e2e/`, run against the real stack: Postgres, the backend
 binary, and the Vite dev server that `playwright.config.ts` starts (`webServer`). Playwright does
 not start the backend or the database.
 

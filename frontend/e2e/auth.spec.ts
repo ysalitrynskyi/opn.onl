@@ -2,7 +2,7 @@ import { test as base, expect, type APIRequestContext, type Page, type Playwrigh
 import { API_URL, TEST_PASSWORD, api, clientIpHeader, createUser, uniqueEmail, type TestUser } from './support/api';
 
 /**
- * The dashboard, settings, analytics and admin pages are lazy routes, compiled
+ * The dashboard, overview, settings, analytics and admin pages are lazy routes, compiled
  * by the dev server on first use; that can take well over the default 5s on a
  * cold or busy machine. Checks that one has loaded wait this long; checks of
  * what the page then does keep the default.
@@ -297,7 +297,7 @@ test.describe('Registering against the real backend', () => {
 });
 
 test.describe('Protected routes', () => {
-    for (const path of ['/dashboard', '/settings', '/analytics/1', '/admin']) {
+    for (const path of ['/dashboard', '/overview', '/settings', '/analytics/1', '/admin']) {
         test(`${path} sends a signed-out visitor to login`, async ({ page }) => {
             await page.goto(path);
             await expect(page).toHaveURL('/login', LAZY_PAGE);
