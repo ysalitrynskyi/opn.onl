@@ -353,6 +353,14 @@ export default function Docs() {
                         <Lock className="h-5 w-5" />
                         Environment Variables
                     </h3>
+                    <p>
+                        You must set <code>BASE_URL</code> and <code>FRONTEND_URL</code> to your own hosts.
+                        Left unset, Compose uses <code>https://opn.onl</code> for both, which is the hosted
+                        site. Compose requires <code>POSTGRES_PASSWORD</code> and <code>JWT_SECRET</code>. It
+                        passes <code>POSTGRES_USER</code>, <code>POSTGRES_PASSWORD</code>, <code>POSTGRES_DB</code>,
+                        <code>POSTGRES_HOST</code> (<code>db</code>) and <code>POSTGRES_PORT</code> (<code>5432</code>)
+                        to the backend, not <code>DATABASE_URL</code>.
+                    </p>
                     <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto not-prose">
                         <table className="w-full text-sm">
                             <thead className="bg-slate-50">
@@ -363,10 +371,12 @@ export default function Docs() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                                <tr><td className="p-3"><code>DATABASE_URL</code></td><td className="p-3">PostgreSQL connection string</td><td className="p-3">Required</td></tr>
-                                <tr><td className="p-3"><code>JWT_SECRET</code></td><td className="p-3">Secret for JWT tokens</td><td className="p-3">Required</td></tr>
-                                <tr><td className="p-3"><code>BASE_URL</code></td><td className="p-3">API base URL</td><td className="p-3">http://localhost:3000</td></tr>
-                                <tr><td className="p-3"><code>FRONTEND_URL</code></td><td className="p-3">Frontend URL</td><td className="p-3">http://localhost:5173</td></tr>
+                                <tr><td className="p-3"><code>POSTGRES_USER</code></td><td className="p-3">Database user</td><td className="p-3">postgres</td></tr>
+                                <tr><td className="p-3"><code>POSTGRES_PASSWORD</code></td><td className="p-3">Database password</td><td className="p-3">Required</td></tr>
+                                <tr><td className="p-3"><code>POSTGRES_DB</code></td><td className="p-3">Database name</td><td className="p-3">opn_onl</td></tr>
+                                <tr><td className="p-3"><code>JWT_SECRET</code></td><td className="p-3">Secret for JWT tokens (at least 32 bytes)</td><td className="p-3">Required</td></tr>
+                                <tr><td className="p-3"><code>BASE_URL</code></td><td className="p-3">Public URL of this instance. Set this to your own host</td><td className="p-3">https://opn.onl</td></tr>
+                                <tr><td className="p-3"><code>FRONTEND_URL</code></td><td className="p-3">Public URL of this instance's site. Set this to your own host</td><td className="p-3">https://opn.onl</td></tr>
                                 <tr><td className="p-3"><code>REDIS_URL</code></td><td className="p-3">Redis connection (optional)</td><td className="p-3">-</td></tr>
                                 <tr><td className="p-3"><code>SMTP_HOST</code></td><td className="p-3">SMTP server hostname</td><td className="p-3">-</td></tr>
                                 <tr><td className="p-3"><code>MIN_ALIAS_LENGTH</code></td><td className="p-3">Minimum custom alias length</td><td className="p-3">5</td></tr>

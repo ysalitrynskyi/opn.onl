@@ -23,6 +23,16 @@ describe('Privacy retention windows', () => {
         vi.restoreAllMocks();
     });
 
+    it('stores the referring site as a domain, not the full URL', () => {
+        global.fetch = vi.fn().mockReturnValue(new Promise(() => {}));
+        render(<Privacy />);
+
+        expect(screen.getByText('Referring website (domain only)')).toBeInTheDocument();
+        expect(screen.queryByText('Referrer URLs')).not.toBeInTheDocument();
+        expect(screen.getByText('Last updated: October 16, 2026')).toBeInTheDocument();
+        expect(screen.getByText(/effective as of October 16, 2026/)).toBeInTheDocument();
+    });
+
     it('states the default windows before (and without) any answer from the API', () => {
         // Nothing resolved yet: this is what the prerendered HTML says.
         global.fetch = vi.fn().mockReturnValue(new Promise(() => {}));

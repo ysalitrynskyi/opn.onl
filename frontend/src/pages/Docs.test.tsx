@@ -4,6 +4,8 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '../test/test-utils';
 import Docs from './Docs';
 
+const composePath = resolve(process.cwd(), '../docker-compose.yml');
+
 // The API reference is typed by hand. These pin the parts that were wrong:
 // they read the backend source where a value lives there, so a change on one
 // side shows up as a failure on the other.
@@ -54,6 +56,36 @@ describe('API reference', () => {
         );
         expect(screen.queryByText(/default: 50\)/)).not.toBeInTheDocument();
         expect(screen.getByText('X-Total-Count')).toBeInTheDocument();
+    });
+
+    it('lists the variables Compose requires and the hosts the operator must set', () => {
+        const compose = readFileSync(composePath, 'utf8');
+        const required = [
+            ...new Set([...compose.matchAll(/\$\{([A-Z0-9_]+):\?/g)].map((match) => match[1])),
+        ].sort();
+        expect(required).toEqual(['JWT_SECRET', 'POSTGRES_PASSWORD']);
+
+        render(<Docs />);
+        const table = screen.getByRole('table');
+        expect(table).not.toHaveTextContent('DATABASE_URL');
+        for (const name of required) {
+            const row = screen
+                .getAllByText(name)
+                .map((element) => element.closest('tr'))
+                .find((element) => element !== null);
+            expect(row, name).toHaveTextContent('Required');
+        }
+        expect(table).toHaveTextContent('POSTGRES_USER');
+        expect(table).toHaveTextContent('postgres');
+        expect(table).toHaveTextContent('opn_onl');
+        expect(table).toHaveTextContent('https://opn.onl');
+
+        const notice = screen.getByText(/you must set/i, { selector: 'p' });
+        expect(notice).toHaveTextContent('BASE_URL');
+        expect(notice).toHaveTextContent('FRONTEND_URL');
+        expect(notice).toHaveTextContent('https://opn.onl');
+        expect(notice).toHaveTextContent('POSTGRES_HOST');
+        expect(notice).toHaveTextContent('5432');
     });
 
     it.skipIf(!hasBackendSource)('names every remove_* flag a link update takes', () => {

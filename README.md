@@ -54,7 +54,7 @@ A privacy-focused, open-source URL shortener built with Rust and React. Self-hos
 
 ### Developer Experience
 - **API Documentation** - OpenAPI/Swagger UI included at `/swagger-ui/`
-- **Structured Logging** - JSON logs with tracing
+- **Logging** - tracing's text format, on the console and in a daily log file
 - **Health Checks** - Built-in health endpoint for monitoring
 - **Docker Support** - Production-ready containers
 

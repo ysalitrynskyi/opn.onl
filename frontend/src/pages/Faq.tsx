@@ -1,8 +1,32 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { HelpCircle, ChevronDown, Search } from 'lucide-react';
 import SEO from '../components/SEO';
+import { API_ENDPOINTS } from '../config/api';
+import { pluralize } from '../utils/plural';
+
+// Same default as Privacy.tsx. The page is prerendered once for every
+// deployment, so the static HTML quotes 30 days and the instance's own
+// window replaces it once /auth/settings answers. null means the sweep is off.
+const DEFAULT_PURGE_DAYS = 30;
+const DELETE_DATA_QUESTION = 'Can I delete my data?';
+
+function configuredPurgeDays(value: unknown): number | null | undefined {
+    if (typeof value === 'number') return value;
+    return value === null ? null : undefined;
+}
+
+function linkDeletionSentence(purgeDays: number | null): string {
+    const kept = purgeDays === null
+        ? 'its record is kept until an administrator permanently removes it'
+        : `its record is permanently removed ${purgeDays} ${pluralize(purgeDays, 'day')} later`;
+    return `A link you delete stops redirecting at once, and ${kept}.`;
+}
+
+function deleteDataAnswer(purgeDays: number | null): string {
+    return `Yes! You can delete individual links at any time from your dashboard. ${linkDeletionSentence(purgeDays)} Account deletion is currently disabled on the hosted version, but if you need your account removed, please contact us at info@opn.onl.`;
+}
 
 const faqs = [
     {
@@ -79,8 +103,9 @@ const faqs = [
                 a: "Passkeys are a modern, passwordless authentication method using your device's biometrics (fingerprint, face) or security key. They're more secure than passwords because they can't be phished or stolen. You can add a passkey in Settings."
             },
             {
-                q: "Can I delete my data?",
-                a: "Yes! You can delete individual links at any time from your dashboard. Link deletions are processed immediately. Account deletion is currently disabled on the hosted version, but if you need your account removed, please contact us at info@opn.onl."
+                q: DELETE_DATA_QUESTION,
+                // Replaced once /auth/settings answers. This is the prerender default.
+                a: deleteDataAnswer(DEFAULT_PURGE_DAYS),
             }
         ]
     },
@@ -110,6 +135,33 @@ const faqs = [
 export default function Faq() {
     const [searchQuery, setSearchQuery] = useState('');
     const [openItems, setOpenItems] = useState<Set<string>>(new Set());
+    const [purgeDays, setPurgeDays] = useState<number | null>(DEFAULT_PURGE_DAYS);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await fetch(API_ENDPOINTS.appSettings);
+                if (!res?.ok) return;
+                const data = await res.json();
+                if (cancelled) return;
+                const next = configuredPurgeDays(data.account_purge_days);
+                if (next !== undefined) setPurgeDays(next);
+            } catch {
+                // Offline, or no API behind this page: the default stands.
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const faqsForInstance = faqs.map((category) => ({
+        ...category,
+        questions: category.questions.map((item) =>
+            item.q === DELETE_DATA_QUESTION ? { ...item, a: deleteDataAnswer(purgeDays) } : item,
+        ),
+    }));
 
     const toggleItem = (id: string) => {
         setOpenItems(prev => {
@@ -124,16 +176,16 @@ export default function Faq() {
     };
 
     const filteredFaqs = searchQuery
-        ? faqs.map(category => ({
+        ? faqsForInstance.map(category => ({
             ...category,
             questions: category.questions.filter(
                 q => q.q.toLowerCase().includes(searchQuery.toLowerCase()) ||
                      q.a.toLowerCase().includes(searchQuery.toLowerCase())
             )
         })).filter(category => category.questions.length > 0)
-        : faqs;
+        : faqsForInstance;
 
-    const faqItems = faqs.flatMap(c => c.questions).map(q => ({ question: q.q, answer: q.a }));
+    const faqItems = faqsForInstance.flatMap(c => c.questions).map(q => ({ question: q.q, answer: q.a }));
 
     return (
         <div className="pb-24">

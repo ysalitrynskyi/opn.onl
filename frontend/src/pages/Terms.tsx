@@ -22,7 +22,7 @@ export default function Terms() {
                             <FileText className="h-8 w-8 text-primary-600" />
                         </div>
                         <h1 className="text-4xl font-extrabold text-slate-900 mb-4">Terms of Service</h1>
-                        <p className="text-slate-500">Last updated: July 7, 2026</p>
+                        <p className="text-slate-500">Last updated: October 16, 2026</p>
                     </motion.div>
                 </div>
             </section>
@@ -135,8 +135,8 @@ export default function Terms() {
                             <li>Is illegal or promotes illegal activity</li>
                         </ul>
                         <p className="mt-4">
-                            You may also terminate your account at any time by using the account deletion feature 
-                            in Settings or by contacting us.
+                            You may also terminate your account at any time by using the account deletion feature
+                            in Settings where the instance offers it, or by contacting the operator.
                         </p>
                     </TermsSection>
 

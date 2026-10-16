@@ -108,7 +108,7 @@ export default function Privacy() {
                             <Shield className="h-8 w-8 text-emerald-600" />
                         </div>
                         <h1 className="text-4xl font-extrabold text-slate-900 mb-4">Privacy Policy</h1>
-                        <p className="text-slate-500">Last updated: October 11, 2026</p>
+                        <p className="text-slate-500">Last updated: October 16, 2026</p>
                     </motion.div>
                 </div>
             </section>
@@ -173,7 +173,7 @@ export default function Privacy() {
                                     IP is never sent to a third party for this
                                 </li>
                                 <li>Browser, device type and operating system (parsed from the user agent, which is also stored temporarily — see retention below)</li>
-                                <li>Referrer URLs</li>
+                                <li>Referring website (domain only)</li>
                             </ul>
                         </PolicySection>
 
@@ -336,7 +336,7 @@ export default function Privacy() {
                     {/* Footer */}
                     <div className="border-t border-slate-200 pt-8">
                         <p className="text-sm text-slate-500 text-center">
-                            This privacy policy is effective as of October 11, 2026. We may update this policy
+                            This privacy policy is effective as of October 16, 2026. We may update this policy
                             from time to time. We will notify you of any significant changes by email or through 
                             a notice on our website.
                         </p>
