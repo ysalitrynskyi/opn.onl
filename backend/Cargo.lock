@@ -3125,7 +3125,7 @@ dependencies = [
 
 [[package]]
 name = "opn_onl_backend"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
