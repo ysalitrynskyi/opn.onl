@@ -433,12 +433,16 @@ pub async fn get_public_bio(
 
     // Organization links stay on the page only while their creator still
     // belongs to the organization.
+    // Position ascending (nulls last), then newest, then highest id. The id
+    // matches Settings: two links from one instant, or a fractional second a
+    // string sort would swap, stay in this order on the public page too.
     let link_models = links::Entity::find()
         .filter(crate::handlers::link_access::own_links(user.id))
         .filter(links::Column::DeletedAt.is_null())
         .filter(links::Column::BioVisible.eq(true))
         .order_by_asc(links::Column::BioPosition)
         .order_by_desc(links::Column::CreatedAt)
+        .order_by_desc(links::Column::Id)
         .all(&state.db)
         .await
         .unwrap_or_default();

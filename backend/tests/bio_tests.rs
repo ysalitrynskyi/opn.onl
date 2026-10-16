@@ -6,7 +6,8 @@ mod common;
 use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::entity::links;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseConnection, EntityTrait,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseBackend,
+    DatabaseConnection, EntityTrait, QueryFilter, Statement,
 };
 use serde_json::{Value, json};
 
@@ -614,5 +615,439 @@ async fn bio_order_rejects_foreign_and_hidden_links() {
         capped.text().contains("Too many items"),
         "{}",
         capped.text()
+    );
+}
+
+async fn exec(db: &DatabaseConnection, sql: &str, values: Vec<sea_orm::Value>) {
+    db.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        sql,
+        values,
+    ))
+    .await
+    .unwrap_or_else(|err| panic!("{sql}: {err}"));
+}
+
+async fn stored_link(db: &DatabaseConnection, id: i32) -> links::Model {
+    links::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .expect("db")
+        .expect("link")
+}
+
+fn total_count(res: &axum_test::TestResponse) -> u64 {
+    res.headers()
+        .get("x-total-count")
+        .expect("X-Total-Count")
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("X-Total-Count is a number")
+}
+
+/// `bio_visible` is the filter the settings page uses so a personal bio link
+/// is not crowded off the first page of every link the account owns.
+#[tokio::test]
+async fn bio_visible_filter_lists_only_matching_links() {
+    let (server, db) = spawn_real_app().await;
+    let (token, _user_id) = register_verified(&server, &db).await;
+    let shown = create_link(&server, &token, "Shown").await;
+    let hidden = create_link(&server, &token, "Hidden").await;
+    let mark = put_link(&server, &token, shown, json!({ "bio_visible": true })).await;
+    assert_eq!(mark.status_code(), 200, "show: {}", mark.text());
+
+    let yes = server
+        .get("/links?bio_visible=true")
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(yes.status_code(), 200, "visible: {}", yes.text());
+    assert_eq!(total_count(&yes), 1);
+    let yes_ids: Vec<i64> = yes
+        .json::<Value>()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(yes_ids, vec![shown as i64]);
+
+    let no = server
+        .get("/links?bio_visible=false")
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(no.status_code(), 200, "hidden: {}", no.text());
+    assert_eq!(total_count(&no), 1);
+    assert_eq!(no.json::<Value>()[0]["id"].as_i64(), Some(hidden as i64));
+
+    // The unfiltered list still returns both. The new query must not become
+    // the default.
+    let all = server.get("/links").authorization_bearer(&token).await;
+    assert_eq!(all.status_code(), 200, "all: {}", all.text());
+    assert_eq!(total_count(&all), 2);
+}
+
+/// Equal `created_at` values follow id descending, and a later fraction sorts
+/// ahead of an earlier one. A string compare of the RFC 3339 form swaps `.1Z`
+/// and `.12Z`.
+#[tokio::test]
+async fn public_bio_breaks_equal_instants_by_newest_id() {
+    let (server, db) = spawn_real_app().await;
+    let (token, _user_id) = register_verified(&server, &db).await;
+    let username = enable_bio(&server, &token, "ink").await;
+
+    let early = create_link(&server, &token, "Early").await;
+    let later = create_link(&server, &token, "Later").await;
+    let low = create_link(&server, &token, "Low").await;
+    let high = create_link(&server, &token, "High").await;
+    assert!(high > low, "the later row has the higher id");
+
+    for (id, label, at) in [
+        (early, "Early", "2026-01-01 00:00:00.100000"),
+        (later, "Later", "2026-01-01 00:00:00.120000"),
+        (low, "Low", "2026-01-02 00:00:00"),
+        (high, "High", "2026-01-02 00:00:00"),
+    ] {
+        exec(
+            &db,
+            "UPDATE links SET bio_visible = true, bio_position = NULL, bio_label = $2, created_at = $3::timestamp WHERE id = $1",
+            vec![id.into(), label.into(), at.into()],
+        )
+        .await;
+    }
+
+    let page = server.get(&format!("/api/bio/{username}")).await;
+    assert_eq!(page.status_code(), 200, "page: {}", page.text());
+    assert_eq!(
+        public_labels(&page.json()),
+        vec![
+            "High".to_string(),
+            "Low".to_string(),
+            "Later".to_string(),
+            "Early".to_string()
+        ]
+    );
+}
+
+/// Hiding drops the saved place. Showing the link again, even with a place
+/// that was written while it was hidden, leaves it after every positioned link.
+#[tokio::test]
+async fn hiding_a_bio_link_clears_its_position() {
+    let (server, db) = spawn_real_app().await;
+    let (token, _user_id) = register_verified(&server, &db).await;
+    let username = enable_bio(&server, &token, "").await;
+
+    let mut ids = Vec::new();
+    for (title, label, position) in [("A", "Alpha", 0), ("B", "Beta", 1), ("C", "Gamma", 2)] {
+        let id = create_link(&server, &token, title).await;
+        let res = put_link(
+            &server,
+            &token,
+            id,
+            json!({ "bio_visible": true, "bio_label": label, "bio_position": position }),
+        )
+        .await;
+        assert_eq!(res.status_code(), 200, "show {title}: {}", res.text());
+        ids.push(id);
+    }
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let hidden = put_link(&server, &token, b, json!({ "bio_visible": false })).await;
+    assert_eq!(hidden.status_code(), 200, "hide: {}", hidden.text());
+    assert_eq!(hidden.json::<Value>()["bio_position"], Value::Null);
+    assert!(stored_link(&db, b).await.bio_position.is_none());
+
+    // Echoing visibility on a link that stays shown does not drop its place.
+    let echo = put_link(
+        &server,
+        &token,
+        a,
+        json!({ "title": "A2", "bio_visible": true }),
+    )
+    .await;
+    assert_eq!(echo.status_code(), 200, "echo: {}", echo.text());
+    assert_eq!(echo.json::<Value>()["bio_position"], 0);
+    assert_eq!(stored_link(&db, a).await.bio_position, Some(0));
+
+    let ordered = server
+        .put("/auth/bio/order")
+        .authorization_bearer(&token)
+        .json(&json!({ "link_ids": [c, a] }))
+        .await;
+    assert_eq!(ordered.status_code(), 200, "order: {}", ordered.text());
+
+    // A place stored while the link is hidden is cleared on the way back.
+    exec(
+        &db,
+        "UPDATE links SET bio_position = 1 WHERE id = $1",
+        vec![b.into()],
+    )
+    .await;
+    let shown = put_link(&server, &token, b, json!({ "bio_visible": true })).await;
+    assert_eq!(shown.status_code(), 200, "show again: {}", shown.text());
+    assert_eq!(shown.json::<Value>()["bio_position"], Value::Null);
+    assert!(stored_link(&db, b).await.bio_position.is_none());
+
+    let page = server.get(&format!("/api/bio/{username}")).await;
+    assert_eq!(page.status_code(), 200, "page: {}", page.text());
+    assert_eq!(
+        public_labels(&page.json()),
+        vec!["Gamma".to_string(), "Alpha".to_string(), "Beta".to_string()]
+    );
+}
+
+/// The 501st personal bio link is refused. Hiding one frees a place, and an
+/// organization link does not spend the personal cap.
+#[tokio::test]
+async fn showing_a_501st_personal_bio_link_is_refused() {
+    let (server, db) = spawn_real_app().await;
+    let (token, user_id) = register_verified(&server, &db).await;
+    exec(
+        &db,
+        "INSERT INTO links (code, original_url, user_id, bio_visible, title) \
+         SELECT $1 || g::text, 'https://example.com/bio-cap/' || g::text, $2, true, 'seed' \
+         FROM generate_series(1, 500) AS g",
+        vec![unique_code().into(), user_id.into()],
+    )
+    .await;
+
+    let extra = create_link(&server, &token, "Extra").await;
+    let refused = put_link(&server, &token, extra, json!({ "bio_visible": true })).await;
+    assert_eq!(refused.status_code(), 400, "501st: {}", refused.text());
+    assert!(refused.text().contains("at most 500"), "{}", refused.text());
+    assert!(!stored_link(&db, extra).await.bio_visible);
+
+    let seeded = links::Entity::find()
+        .filter(links::Column::UserId.eq(user_id))
+        .filter(links::Column::BioVisible.eq(true))
+        .one(&db)
+        .await
+        .expect("db")
+        .expect("seeded")
+        .id;
+    // Already shown, so saving it again is not a 501st link.
+    let again = put_link(
+        &server,
+        &token,
+        seeded,
+        json!({ "bio_visible": true, "bio_label": "Still", "bio_position": 4 }),
+    )
+    .await;
+    assert_eq!(again.status_code(), 200, "echo visible: {}", again.text());
+    assert_eq!(again.json::<Value>()["bio_position"], 4);
+
+    let org = server
+        .post("/orgs")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "name": "Cap Org",
+            "slug": format!("cap-{}", unique_code().to_lowercase()),
+        }))
+        .await;
+    assert_eq!(org.status_code(), 201, "org: {}", org.text());
+    let org_id = org.json::<Value>()["id"].as_i64().unwrap();
+    let org_link = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "original_url": "https://iana.org/bio-cap-org",
+            "title": "Org",
+            "org_id": org_id,
+        }))
+        .await;
+    assert_eq!(org_link.status_code(), 201, "org link: {}", org_link.text());
+    let org_link_id = org_link.json::<Value>()["id"].as_i64().unwrap() as i32;
+    let org_shown = put_link(&server, &token, org_link_id, json!({ "bio_visible": true })).await;
+    assert_eq!(
+        org_shown.status_code(),
+        200,
+        "org link does not spend the personal cap: {}",
+        org_shown.text()
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let hid = put_link(&server, &token, seeded, json!({ "bio_visible": false })).await;
+    assert_eq!(hid.status_code(), 200, "hide seeded: {}", hid.text());
+    assert_eq!(hid.json::<Value>()["bio_position"], Value::Null);
+
+    let allowed = put_link(&server, &token, extra, json!({ "bio_visible": true })).await;
+    assert_eq!(
+        allowed.status_code(),
+        200,
+        "after a hide: {}",
+        allowed.text()
+    );
+    assert_eq!(allowed.json::<Value>()["bio_position"], Value::Null);
+    assert!(stored_link(&db, extra).await.bio_visible);
+}
+
+/// An organization editor may edit the link and may echo its bio fields, and
+/// may not change the label or the place. Those belong to the creator's page.
+#[tokio::test]
+async fn an_org_editor_cannot_change_bio_label_or_position() {
+    let (server, db) = spawn_real_app().await;
+    let (owner_token, _owner_id) = register_verified(&server, &db).await;
+    let editor_email = unique_email();
+    let registered = server
+        .post("/auth/register")
+        .json(&json!({ "email": &editor_email, "password": "password123" }))
+        .await;
+    assert_eq!(
+        registered.status_code(),
+        201,
+        "editor: {}",
+        registered.text()
+    );
+    let editor_body: Value = registered.json();
+    let editor_token = editor_body["token"].as_str().unwrap().to_string();
+    let editor_id = editor_body["user_id"].as_i64().unwrap() as i32;
+    mark_email_verified(&db, editor_id).await;
+
+    let org = server
+        .post("/orgs")
+        .authorization_bearer(&owner_token)
+        .json(&json!({
+            "name": "Editor Org",
+            "slug": format!("ed-{}", unique_code().to_lowercase()),
+        }))
+        .await;
+    assert_eq!(org.status_code(), 201, "org: {}", org.text());
+    let org_id = org.json::<Value>()["id"].as_i64().unwrap();
+
+    let created = server
+        .post("/links")
+        .authorization_bearer(&owner_token)
+        .json(&json!({
+            "original_url": "https://iana.org/bio-editor",
+            "title": "Org link",
+            "org_id": org_id,
+        }))
+        .await;
+    assert_eq!(created.status_code(), 201, "link: {}", created.text());
+    let link_id = created.json::<Value>()["id"].as_i64().unwrap() as i32;
+    let placed = put_link(
+        &server,
+        &owner_token,
+        link_id,
+        json!({ "bio_visible": true, "bio_label": "Org", "bio_position": 1 }),
+    )
+    .await;
+    assert_eq!(placed.status_code(), 200, "place: {}", placed.text());
+
+    let invited = server
+        .post(&format!("/orgs/{org_id}/members"))
+        .authorization_bearer(&owner_token)
+        .json(&json!({ "email": editor_email, "role": "editor" }))
+        .await;
+    assert_eq!(invited.status_code(), 201, "invite: {}", invited.text());
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // The editor can still edit the link. That must not move the bio fields.
+    let renamed = put_link(
+        &server,
+        &editor_token,
+        link_id,
+        json!({ "title": "Renamed by editor" }),
+    )
+    .await;
+    assert_eq!(renamed.status_code(), 200, "title: {}", renamed.text());
+    let renamed_body = renamed.json::<Value>();
+    assert_eq!(renamed_body["title"].as_str(), Some("Renamed by editor"));
+    assert_eq!(renamed_body["bio_label"].as_str(), Some("Org"));
+    assert_eq!(renamed_body["bio_position"], 1);
+
+    let new_label = put_link(
+        &server,
+        &editor_token,
+        link_id,
+        json!({ "bio_label": "Shop" }),
+    )
+    .await;
+    assert_eq!(
+        new_label.status_code(),
+        403,
+        "new label: {}",
+        new_label.text()
+    );
+    assert!(
+        new_label.text().contains("Only the link's creator"),
+        "{}",
+        new_label.text()
+    );
+
+    let same_label = put_link(
+        &server,
+        &editor_token,
+        link_id,
+        json!({ "bio_label": "Org" }),
+    )
+    .await;
+    assert_eq!(
+        same_label.status_code(),
+        200,
+        "same label: {}",
+        same_label.text()
+    );
+    assert_eq!(
+        same_label.json::<Value>()["bio_label"].as_str(),
+        Some("Org")
+    );
+
+    let new_position = put_link(
+        &server,
+        &editor_token,
+        link_id,
+        json!({ "bio_position": 7 }),
+    )
+    .await;
+    assert_eq!(
+        new_position.status_code(),
+        403,
+        "new position: {}",
+        new_position.text()
+    );
+    assert!(
+        new_position.text().contains("Only the link's creator"),
+        "{}",
+        new_position.text()
+    );
+
+    let same_position = put_link(
+        &server,
+        &editor_token,
+        link_id,
+        json!({ "bio_position": 1 }),
+    )
+    .await;
+    assert_eq!(
+        same_position.status_code(),
+        200,
+        "same position: {}",
+        same_position.text()
+    );
+    assert_eq!(same_position.json::<Value>()["bio_position"], 1);
+
+    let row = stored_link(&db, link_id).await;
+    assert_eq!(row.bio_label.as_deref(), Some("Org"));
+    assert_eq!(row.bio_position, Some(1));
+    assert_eq!(row.title.as_deref(), Some("Renamed by editor"));
+
+    let owner_label = put_link(
+        &server,
+        &owner_token,
+        link_id,
+        json!({ "bio_label": "Kept" }),
+    )
+    .await;
+    assert_eq!(
+        owner_label.status_code(),
+        200,
+        "creator still can: {}",
+        owner_label.text()
+    );
+    assert_eq!(
+        owner_label.json::<Value>()["bio_label"].as_str(),
+        Some("Kept")
     );
 }

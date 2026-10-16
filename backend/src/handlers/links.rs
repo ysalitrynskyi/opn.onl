@@ -31,7 +31,7 @@ use crate::utils::link_owner::link_owner_is_active;
 use crate::utils::rate_limiter::too_many_requests;
 use crate::utils::retired_codes;
 use crate::utils::time::utc_rfc3339;
-use crate::utils::validation::ilike_pattern;
+use crate::utils::validation::{MAX_IDS_PER_REQUEST, ilike_pattern};
 
 /// Check if URL or its domain is blocked. Database failures fail closed: a cache
 /// hit must never become an unchecked redirect because the blocklist query died.
@@ -855,6 +855,11 @@ pub struct LinksQuery {
     pub limit: Option<u64>,
     /// Number of links to skip, in the order the list is returned.
     pub offset: Option<u64>,
+    /// When set, keep only links that are (`true`) or are not (`false`) shown
+    /// on a bio page. Omit it to list both. The bio settings page asks for
+    /// `true` so an older personal link is not pushed off the first page by
+    /// newer links that are not on the page.
+    pub bio_visible: Option<bool>,
 }
 
 /// Paging of the folder and tag link lists, the same as `GET /links`.
@@ -4014,7 +4019,7 @@ pub async fn replace_routing_rules(
     responses(
         (
             status = 200,
-            description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member. Pinned links first, then newest first (limit defaults to 1000, maximum 1000). `search` is a case-insensitive substring match on URL, code, title and notes",
+            description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member. Pinned links first, then newest first (limit defaults to 1000, maximum 1000). `search` is a case-insensitive substring match on URL, code, title and notes. `bio_visible` keeps only links that are or are not on a bio page",
             body = Vec<LinkResponse>,
             headers(("X-Total-Count" = u64, description = "How many links match the filters, ignoring `limit` and `offset`"))
         ),
@@ -4072,6 +4077,10 @@ pub async fn get_user_links(
         link_query = link_query.filter(
             links::Column::Id.in_subquery(crate::handlers::tags::link_ids_with_tag(tag_id)),
         );
+    }
+
+    if let Some(bio_visible) = query.bio_visible {
+        link_query = link_query.filter(links::Column::BioVisible.eq(bio_visible));
     }
 
     let total = match link_query.clone().count(&state.db).await {
@@ -4579,6 +4588,12 @@ pub async fn update_link(
 
     // Link-in-bio visibility (gated by ENABLE_LINK_IN_BIO).
     let link_in_bio_enabled = env_flag("ENABLE_LINK_IN_BIO", true);
+    // Only a real change. Echoing the current flag (the edit dialog sends it
+    // on every save) must not clear a saved place or spend the 500 cap.
+    let becoming_shown =
+        link_in_bio_enabled && payload.bio_visible == Some(true) && !link.bio_visible;
+    let becoming_hidden =
+        link_in_bio_enabled && payload.bio_visible == Some(false) && link.bio_visible;
     if link_in_bio_enabled && let Some(visible) = payload.bio_visible {
         // A bio page lists its owner's links, so only the creator decides
         // whether an organization link appears on theirs. Editors may
@@ -4594,6 +4609,41 @@ pub async fn update_link(
                 }),
             )
                 .into_response();
+        }
+        // The order endpoint accepts at most MAX_IDS_PER_REQUEST ids, so a
+        // 501st personal link could be shown and then never rearranged.
+        // Organization links are not part of that order.
+        if becoming_shown && link.org_id.is_none() {
+            let shown = links::Entity::find()
+                .filter(links::Column::UserId.eq(user_id))
+                .filter(links::Column::OrgId.is_null())
+                .filter(links::Column::DeletedAt.is_null())
+                .filter(links::Column::BioVisible.eq(true))
+                .count(&state.db)
+                .await;
+            match shown {
+                Ok(count) if count >= MAX_IDS_PER_REQUEST as u64 => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "You can show at most {MAX_IDS_PER_REQUEST} of your own links on your bio page"
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Database error".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
         }
         active_link.bio_visible = Set(visible);
     }
@@ -4660,6 +4710,16 @@ pub async fn update_link(
                     .into_response();
             }
             active_link.bio_position = Set(Some(position));
+        }
+        // A hidden link keeps no place. Showing it again would otherwise slot
+        // it back beside whatever later took that number. A place sent in the
+        // same request as hiding is dropped; a place sent while showing is kept.
+        // Showing without one leaves the column null, including a place that
+        // was stored before this rule, so the link sorts after positioned ones
+        // until the owner orders the page. Echoing `bio_visible: true` on an
+        // already-visible link does not come through here.
+        if becoming_hidden || (becoming_shown && payload.bio_position.is_none()) {
+            active_link.bio_position = Set(None);
         }
     }
 
