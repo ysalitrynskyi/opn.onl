@@ -143,10 +143,10 @@ test.describe('Dashboard Page', () => {
         const user = await createUser(request);
         const busy: CreatedLink = await createLink(request, user.token);
         const quiet: CreatedLink = await createLink(request, user.token);
-        // Not active until next week.
-        const scheduled: CreatedLink = await createLink(request, user.token, {
-            starts_at: `${dayFromNow(7)}T12:00:00.000Z`,
-        });
+        // Not active until next week. One instant for the link and for the
+        // label below, so a run across midnight UTC cannot ask for another day.
+        const startsAt = `${dayFromNow(7)}T12:00:00.000Z`;
+        const scheduled: CreatedLink = await createLink(request, user.token, { starts_at: startsAt });
         await click(request, busy.code, 3);
         await click(request, quiet.code, 1);
         await waitForClickCounts(request, user.token, { [busy.id]: 3, [quiet.id]: 1, [scheduled.id]: 0 });
@@ -159,7 +159,7 @@ test.describe('Dashboard Page', () => {
         await expect(linkRow(page, scheduled).getByText('Not started', { exact: true })).toBeVisible();
         const startsLabel = await page.evaluate((iso: string) => {
             return `Starts ${new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
-        }, `${dayFromNow(7)}T12:00:00.000Z`);
+        }, startsAt);
         await expect(linkRow(page, scheduled).getByText(startsLabel, { exact: true })).toBeVisible();
     });
 

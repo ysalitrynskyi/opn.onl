@@ -15,13 +15,23 @@ const inputClass = 'w-full rounded-lg border border-line2 bg-surface px-4 py-2 t
 /**
  * Writes `url_with_utm` from POST /links/build-utm into the destination.
  * The server decides encoding and how existing query parameters are kept.
+ * `onApply` gets the destination the answer was built from, so the caller can
+ * drop an answer that arrives after the destination changed.
  */
-export default function UtmBuilder({ url, onApply }: { url: string; onApply: (next: string) => void }) {
+export default function UtmBuilder({
+    url,
+    onApply,
+}: {
+    url: string;
+    onApply: (next: string, builtFrom: string) => void;
+}) {
     const [open, setOpen] = useState(false);
     const [values, setValues] = useState<Record<string, string>>({});
     const [pending, setPending] = useState(false);
     const [error, setError] = useState('');
     const pendingRef = useRef(false);
+    const urlRef = useRef(url);
+    urlRef.current = url;
 
     const setField = (key: string, value: string) => {
         setValues(prev => ({ ...prev, [key]: value }));
@@ -36,7 +46,8 @@ export default function UtmBuilder({ url, onApply }: { url: string; onApply: (ne
         pendingRef.current = true;
         setPending(true);
         setError('');
-        const body: Record<string, string> = { url: url.trim() };
+        const requested = url.trim();
+        const body: Record<string, string> = { url: requested };
         for (const [key] of FIELDS) {
             const value = (values[key] ?? '').trim();
             if (value) body[key] = value;
@@ -46,16 +57,20 @@ export default function UtmBuilder({ url, onApply }: { url: string; onApply: (ne
                 method: 'POST',
                 body: JSON.stringify(body),
             });
-            if (!res.ok) {
-                setError(await responseError(res, 'Could not add UTM parameters'));
+            const failure = res.ok ? '' : await responseError(res, 'Could not add UTM parameters');
+            const data = res.ok ? await res.json() as BuildUtmResponse : null;
+            // The destination was edited while this was in flight. The answer
+            // is about the old one; the parameters stay for the new one.
+            if (urlRef.current.trim() !== requested) return;
+            if (failure) {
+                setError(failure);
                 return;
             }
-            const data = await res.json() as BuildUtmResponse;
-            if (!data.url_with_utm) {
+            if (!data?.url_with_utm) {
                 setError('Could not add UTM parameters');
                 return;
             }
-            onApply(data.url_with_utm);
+            onApply(data.url_with_utm, requested);
             setValues({});
         } catch {
             setError('Could not add UTM parameters. Try again.');
@@ -89,6 +104,14 @@ export default function UtmBuilder({ url, onApply }: { url: string; onApply: (ne
                                     type="text"
                                     value={values[key] ?? ''}
                                     onChange={(e) => setField(key, e.target.value)}
+                                    onKeyDown={(e) => {
+                                        // These fields sit inside the create form, whose
+                                        // only submit button is Create. Enter here means
+                                        // "add these", not "create the link without them".
+                                        if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
+                                        e.preventDefault();
+                                        void apply();
+                                    }}
                                     className={inputClass}
                                     autoComplete="off"
                                 />

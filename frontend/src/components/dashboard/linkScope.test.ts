@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { catalogItems, linksQuery, orgOptions, parsePositiveId, type LinkListScope } from './linkScope';
+import { catalogItems, linksQuery, orgOptions, parsePositiveId, readOnlyIn, type LinkListScope } from './linkScope';
 
 const scope = (overrides: Partial<LinkListScope> = {}): LinkListScope => ({
     search: '',
@@ -45,6 +45,29 @@ describe('catalog parsers', () => {
 
     it('requires a slug before treating a row as a team', () => {
         expect(orgOptions([{ id: 2, name: 'Acme' }])).toEqual([]);
-        expect(orgOptions([{ id: 2, name: 'Acme', slug: 'acme' }])).toEqual([{ id: 2, name: 'Acme' }]);
+        expect(orgOptions([{ id: 2, name: 'Acme', slug: 'acme' }])).toEqual([{ id: 2, name: 'Acme', role: null }]);
+    });
+
+    it('keeps the caller role that GET /orgs reports', () => {
+        expect(orgOptions([{ id: 2, name: 'Acme', slug: 'acme', role: 'viewer' }])).toEqual([
+            { id: 2, name: 'Acme', role: 'viewer' },
+        ]);
+        expect(orgOptions([{ id: 2, name: 'Acme', slug: 'acme', role: 7 }])).toEqual([
+            { id: 2, name: 'Acme', role: null },
+        ]);
+    });
+});
+
+describe('readOnlyIn', () => {
+    it('is read-only for a viewer or a role the client does not know, and not for an unknown answer', () => {
+        expect(readOnlyIn({ id: 1, name: 'A', role: 'viewer' })).toBe(true);
+        expect(readOnlyIn({ id: 1, name: 'A', role: 'auditor' })).toBe(true);
+        for (const role of ['owner', 'admin', 'editor']) {
+            expect(readOnlyIn({ id: 1, name: 'A', role })).toBe(false);
+        }
+        // An older server that sends no role, or a team not in the list yet:
+        // the controls stay and the server decides.
+        expect(readOnlyIn({ id: 1, name: 'A', role: null })).toBe(false);
+        expect(readOnlyIn(null)).toBe(false);
     });
 });

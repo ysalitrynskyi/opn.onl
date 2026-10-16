@@ -1,4 +1,4 @@
-import { useState, type Ref } from 'react';
+import type { Ref } from 'react';
 import { Link } from 'react-router-dom';
 import {
     Copy, Trash2, BarChart2, QrCode, Lock, Clock, Edit2, Check,
@@ -10,7 +10,7 @@ import Sparkline from '../Sparkline';
 import MiniStats from './MiniStats';
 import { pluralize } from '../../utils/plural';
 import { swatchColor } from './linkScope';
-import { clickCapReached, clickLimitLabel, formatBadgeDay, inactiveBadge } from './linkStatus';
+import { clickCapReached, clickLimitLabel, formatBadgeDay, rowStatus } from './linkStatus';
 import type { LinkData, SparklineSeries } from './types';
 
 interface LinkRowProps {
@@ -35,6 +35,8 @@ interface LinkRowProps {
     onDelete: (id: number) => void;
     /** Folder name for `link.folder_id`, when the current list includes that folder. */
     folder?: { name: string; color?: string | null } | null;
+    /** A team viewer's row: no selection, pin, clone, edit or delete, which the API refuses them. */
+    readOnly?: boolean;
     // AnimatePresence mode="popLayout" measures the row by cloning it with a ref.
     ref?: Ref<HTMLDivElement>;
 }
@@ -59,14 +61,14 @@ export default function LinkRow({
     onEdit,
     onDelete,
     folder = null,
+    readOnly = false,
     ref,
 }: LinkRowProps) {
     const mainUrl = `${shortLinkBase()}/${link.code}`;
     const apiUrl = link.api_url || link.short_url; // Use api_url from backend
-    // Same clock snapshot as MiniStats: the badge is fixed for this visit.
-    const [now] = useState(() => Date.now());
-    const reason = inactiveBadge(link, now);
-    const startsInFuture = !!link.starts_at && !Number.isNaN(Date.parse(link.starts_at)) && now < Date.parse(link.starts_at);
+    // Read at every render, so a reload of the list moves the badges on.
+    const status = rowStatus(link);
+    const reason = status.badge;
     const capReached = clickCapReached(link);
 
     const neutralBadge = 'inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted';
@@ -82,13 +84,15 @@ export default function LinkRow({
             className={`group py-5 transition-colors hover:bg-primary-50/40 ${selected ? 'bg-primary-50/50' : ''}`}
         >
             <div className="flex items-start gap-3">
-                <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={() => onToggleSelect(link.id)}
-                    aria-label={`Select link ${link.code}`}
-                    className="mt-1.5 h-4 w-4 shrink-0 rounded border-line2 text-primary-600 focus:ring-primary-500"
-                />
+                {!readOnly && (
+                    <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => onToggleSelect(link.id)}
+                        aria-label={`Select link ${link.code}`}
+                        className="mt-1.5 h-4 w-4 shrink-0 rounded border-line2 text-primary-600 focus:ring-primary-500"
+                    />
+                )}
                 <div className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-start justify-between gap-4">
                     <div className="space-y-1 min-w-0 flex-1">
                         {/* Link number and title */}
@@ -167,7 +171,7 @@ export default function LinkRow({
                                     {clickLimitLabel(link.click_count, link.max_clicks)}
                                 </span>
                             )}
-                            {startsInFuture && link.starts_at && (
+                            {status.startsLater && link.starts_at && (
                                 <span className={neutralBadge}>
                                     <Clock className="h-3 w-3" />
                                     Starts {formatBadgeDay(link.starts_at)}
@@ -177,7 +181,7 @@ export default function LinkRow({
                                 <span className={dangerBadge} title={reason.reason}>
                                     {reason.label}
                                 </span>
-                            ) : !link.is_active && (
+                            ) : status.inactiveUnexplained && (
                                 <span className={dangerBadge}>
                                     Inactive
                                 </span>
@@ -241,23 +245,27 @@ export default function LinkRow({
                             >
                                 <Eye className="h-4 w-4" />
                             </button>
-                            <button
-                                onClick={() => onPin(link)}
-                                className={`rounded-md p-2 transition-colors hover:bg-line ${link.is_pinned ? 'text-primary-600' : 'text-faint hover:text-ink'}`}
-                                title={link.is_pinned ? 'Unpin' : 'Pin'}
-                                aria-label={`${link.is_pinned ? 'Unpin' : 'Pin'} link ${link.code}`}
-                            >
-                                <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
-                            </button>
-                            <button
-                                onClick={() => onClone(link)}
-                                disabled={cloning}
-                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink disabled:cursor-wait disabled:opacity-50"
-                                title="Clone"
-                                aria-label={`Clone link ${link.code}`}
-                            >
-                                <CopyPlus className="h-4 w-4" />
-                            </button>
+                            {!readOnly && (
+                                <>
+                                    <button
+                                        onClick={() => onPin(link)}
+                                        className={`rounded-md p-2 transition-colors hover:bg-line ${link.is_pinned ? 'text-primary-600' : 'text-faint hover:text-ink'}`}
+                                        title={link.is_pinned ? 'Unpin' : 'Pin'}
+                                        aria-label={`${link.is_pinned ? 'Unpin' : 'Pin'} link ${link.code}`}
+                                    >
+                                        <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
+                                    </button>
+                                    <button
+                                        onClick={() => onClone(link)}
+                                        disabled={cloning}
+                                        className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink disabled:cursor-wait disabled:opacity-50"
+                                        title="Clone"
+                                        aria-label={`Clone link ${link.code}`}
+                                    >
+                                        <CopyPlus className="h-4 w-4" />
+                                    </button>
+                                </>
+                            )}
                             <button
                                 onClick={() => onShare(link)}
                                 className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
@@ -274,23 +282,27 @@ export default function LinkRow({
                             >
                                 <QrCode className="h-4 w-4" />
                             </button>
-                            <button
-                                onClick={() => onEdit(link)}
-                                data-edit-link={link.id}
-                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                                title="Edit"
-                                aria-label={`Edit link ${link.code}`}
-                            >
-                                <Edit2 className="h-4 w-4" />
-                            </button>
-                            <button
-                                onClick={() => onDelete(link.id)}
-                                className="rounded-md p-2 text-faint transition-colors hover:bg-danger/5 hover:text-danger"
-                                title="Delete"
-                                aria-label={`Delete link ${link.code}`}
-                            >
-                                <Trash2 className="h-4 w-4" />
-                            </button>
+                            {!readOnly && (
+                                <>
+                                    <button
+                                        onClick={() => onEdit(link)}
+                                        data-edit-link={link.id}
+                                        className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                        title="Edit"
+                                        aria-label={`Edit link ${link.code}`}
+                                    >
+                                        <Edit2 className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                        onClick={() => onDelete(link.id)}
+                                        className="rounded-md p-2 text-faint transition-colors hover:bg-danger/5 hover:text-danger"
+                                        title="Delete"
+                                        aria-label={`Delete link ${link.code}`}
+                                    >
+                                        <Trash2 className="h-4 w-4" />
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>

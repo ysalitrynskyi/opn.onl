@@ -80,3 +80,70 @@ describe('EditModal burn after reading', () => {
         expect(onSave.mock.calls[0][1].burn_after_reading).toBeUndefined();
     });
 });
+
+// With the feature off there is no burn checkbox, so a link saved as burn
+// could never get its cap changed if the cap stayed locked.
+describe('EditModal click limit of a burn link with the feature switched off', () => {
+    function renderOff(link: LinkData) {
+        const onSave = vi.fn().mockResolvedValue(undefined);
+        const view = render(<EditModal link={link} onClose={vi.fn()} onSave={onSave} />);
+        return { ...view, onSave };
+    }
+
+    it('lets the cap be raised', async () => {
+        const { user, onSave } = renderOff({ ...baseLink, burn_after_reading: true, max_clicks: 1 });
+        const limit = screen.getByLabelText('Click limit');
+        expect(limit).toBeEnabled();
+        expect(limit).toHaveValue(1);
+        expect(screen.getByText('Link stops working after this many clicks')).toBeInTheDocument();
+
+        await user.clear(limit);
+        await user.type(limit, '5');
+        await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+        await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+        const payload = onSave.mock.calls[0][1] as Record<string, unknown>;
+        expect(payload.max_clicks).toBe(5);
+        expect(payload).not.toHaveProperty('remove_max_clicks');
+        // The flag stays off the body while the feature is off.
+        expect(payload.burn_after_reading).toBeUndefined();
+    });
+
+    it('lets the cap be removed', async () => {
+        const { user, onSave } = renderOff({ ...baseLink, burn_after_reading: true, max_clicks: 3 });
+        const remove = screen.getByRole('checkbox', { name: 'Remove limit' });
+        expect(remove).toBeEnabled();
+
+        await user.click(remove);
+        await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+        await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+        const payload = onSave.mock.calls[0][1] as Record<string, unknown>;
+        expect(payload.remove_max_clicks).toBe(true);
+        expect(payload).not.toHaveProperty('max_clicks');
+    });
+
+    it('still leaves an untouched cap out of the save', async () => {
+        const { user, onSave } = renderOff({ ...baseLink, burn_after_reading: true, max_clicks: 1 });
+        await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+        await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+        const payload = onSave.mock.calls[0][1] as Record<string, unknown>;
+        expect(payload).not.toHaveProperty('max_clicks');
+        expect(payload).not.toHaveProperty('remove_max_clicks');
+    });
+
+    it('stays locked while the feature is on and burn is ticked', () => {
+        render(
+            <EditModal
+                link={{ ...baseLink, burn_after_reading: true, max_clicks: 3 }}
+                onClose={vi.fn()}
+                onSave={vi.fn()}
+                burnEnabled
+            />,
+        );
+        expect(screen.getByLabelText('Click limit')).toBeDisabled();
+        expect(screen.getByRole('checkbox', { name: 'Remove limit' })).toBeDisabled();
+        expect(screen.getByText('Burn after reading stops the link after 3 clicks.')).toBeInTheDocument();
+    });
+});

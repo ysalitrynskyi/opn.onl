@@ -23,6 +23,12 @@ function jsonResponse(body: unknown, status = 200): Response {
     } as Response;
 }
 
+const RATE_LIMITED = {
+    error: 'Too many requests',
+    retry_after: 12,
+    message: 'Rate limit exceeded. Please try again in 12 seconds.',
+};
+
 function renderForm(
     appSettings: AppSettings = settings,
     extra: {
@@ -267,6 +273,17 @@ describe('CreateLinkForm', () => {
             expect(screen.queryByText('Taken')).not.toBeInTheDocument();
         });
 
+        it('says how long to wait when the alias check is rate limited', async () => {
+            vi.mocked(fetch).mockResolvedValue(jsonResponse(RATE_LIMITED, 429));
+            renderForm();
+            fireEvent.change(aliasInput(), { target: { value: 'helloo' } });
+            await advance(300);
+
+            expect(screen.getByRole('status')).toHaveTextContent('Rate limit exceeded. Please try again in 12 seconds.');
+            expect(screen.getByRole('status')).toHaveClass('text-danger');
+            expect(screen.queryByText('Too many requests')).not.toBeInTheDocument();
+        });
+
         it('still creates the link when the alias check says it is taken', async () => {
             vi.mocked(fetch).mockImplementation((input, init) => {
                 const url = String(input);
@@ -345,6 +362,106 @@ describe('CreateLinkForm', () => {
 
             expect(await screen.findByRole('alert')).toHaveTextContent('Invalid URL format');
             expect(screen.getByLabelText('Destination URL')).toHaveValue('not a url');
+        });
+
+        it('applies the parameters on Enter instead of creating the link without them', async () => {
+            const { user, onCreated } = renderForm();
+            fireEvent.change(screen.getByLabelText('Destination URL'), { target: { value: 'https://example.com/a' } });
+            await openAdvanced();
+            await user.click(screen.getByRole('button', { name: 'Add UTM parameters' }));
+            vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+                original_url: 'https://example.com/a',
+                url_with_utm: 'https://example.com/a?utm_source=newsletter',
+                utm_params: { utm_source: 'newsletter' },
+            }));
+
+            // user-event submits the form on Enter in a text field, as a browser does.
+            await user.type(screen.getByLabelText('Source'), 'newsletter{Enter}');
+
+            await waitFor(() => expect(screen.getByLabelText('Destination URL')).toHaveValue(
+                'https://example.com/a?utm_source=newsletter',
+            ));
+            expect(vi.mocked(fetch).mock.calls).toHaveLength(1);
+            expect(String(vi.mocked(fetch).mock.calls[0][0])).toMatch(/\/links\/build-utm$/);
+            expect(createPosts()).toHaveLength(0);
+            expect(onCreated).not.toHaveBeenCalled();
+        });
+
+        it('drops an answer that arrives after the destination was edited', async () => {
+            let resolveBuild: ((value: Response) => void) | undefined;
+            vi.mocked(fetch).mockImplementation(() => new Promise(resolve => {
+                resolveBuild = resolve;
+            }));
+            renderForm();
+            const destination = screen.getByLabelText('Destination URL');
+            fireEvent.change(destination, { target: { value: 'https://example.com/a' } });
+            await openAdvanced();
+            fireEvent.click(screen.getByRole('button', { name: 'Add UTM parameters' }));
+            fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'newsletter' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Add to URL' }));
+
+            fireEvent.change(destination, { target: { value: 'https://example.com/b' } });
+            await act(async () => {
+                resolveBuild?.(jsonResponse({
+                    original_url: 'https://example.com/a',
+                    url_with_utm: 'https://example.com/a?utm_source=newsletter',
+                    utm_params: {},
+                }));
+            });
+
+            expect(destination).toHaveValue('https://example.com/b');
+            // The parameters stay, to be added to the destination that is there now.
+            expect(screen.getByLabelText('Source')).toHaveValue('newsletter');
+            expect(screen.getByRole('button', { name: 'Add to URL' })).toBeEnabled();
+        });
+
+        it('does not refill the destination when the answer lands after a create', async () => {
+            let resolveBuild: ((value: Response) => void) | undefined;
+            vi.mocked(fetch).mockImplementation((input, init) => {
+                if (String(input).endsWith('/links/build-utm')) {
+                    return new Promise(resolve => {
+                        resolveBuild = resolve;
+                    });
+                }
+                expect(init?.method).toBe('POST');
+                return Promise.resolve(jsonResponse({ id: 1, code: 'abc' }, 201));
+            });
+            const { onCreated } = renderForm();
+            const destination = screen.getByLabelText('Destination URL');
+            fireEvent.change(destination, { target: { value: 'https://example.com/a' } });
+            await openAdvanced();
+            fireEvent.click(screen.getByRole('button', { name: 'Add UTM parameters' }));
+            fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'newsletter' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Add to URL' }));
+
+            await act(async () => {
+                fireEvent.submit(destination.closest('form')!);
+            });
+            await waitFor(() => expect(onCreated).toHaveBeenCalledOnce());
+            expect(destination).toHaveValue('');
+
+            await act(async () => {
+                resolveBuild?.(jsonResponse({
+                    original_url: 'https://example.com/a',
+                    url_with_utm: 'https://example.com/a?utm_source=newsletter',
+                    utm_params: {},
+                }));
+            });
+            expect(destination).toHaveValue('');
+        });
+
+        it('says how long to wait when the builder is rate limited', async () => {
+            const { user } = renderForm();
+            fireEvent.change(screen.getByLabelText('Destination URL'), { target: { value: 'https://example.com/a' } });
+            await openAdvanced();
+            await user.click(screen.getByRole('button', { name: 'Add UTM parameters' }));
+            fireEvent.change(screen.getByLabelText('Campaign'), { target: { value: 'spring' } });
+            vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(RATE_LIMITED, 429));
+
+            await user.click(screen.getByRole('button', { name: 'Add to URL' }));
+
+            expect(await screen.findByRole('alert')).toHaveTextContent('Rate limit exceeded. Please try again in 12 seconds.');
+            expect(screen.getByLabelText('Destination URL')).toHaveValue('https://example.com/a');
         });
 
         it('does not send a second request while one is in flight', async () => {
@@ -426,6 +543,35 @@ describe('CreateLinkForm', () => {
             expect(await screen.findByRole('status')).toHaveTextContent(
                 'URL resolves to a disallowed (internal/private) address',
             );
+        });
+
+        it('puts the answer under the row, not beside the destination', async () => {
+            arm({
+                url: 'http://10.0.0.1/',
+                reachable: false,
+                status_code: null,
+                response_time_ms: null,
+                error: 'URL resolves to a disallowed (internal/private) address',
+            }, 400);
+            renderForm();
+            const destination = screen.getByLabelText('Destination URL');
+            fireEvent.change(destination, { target: { value: 'http://10.0.0.1/' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Check destination' }));
+
+            const status = await screen.findByRole('status');
+            // Inside the row, a long sentence took the width the destination needs.
+            expect(destination.parentElement).not.toContainElement(status);
+            expect(destination.parentElement).toContainElement(screen.getByRole('button', { name: 'Check destination' }));
+        });
+
+        it('says how long to wait when the check is rate limited', async () => {
+            arm(RATE_LIMITED, 429);
+            renderForm();
+            fireEvent.change(screen.getByLabelText('Destination URL'), { target: { value: url } });
+            fireEvent.click(screen.getByRole('button', { name: 'Check destination' }));
+
+            expect(await screen.findByRole('status')).toHaveTextContent('Rate limit exceeded. Please try again in 12 seconds.');
+            expect(screen.queryByText('Too many requests')).not.toBeInTheDocument();
         });
 
         it('sends one request per click and stays disabled while that request is pending', async () => {

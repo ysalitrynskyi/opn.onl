@@ -6,7 +6,7 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, failureMessage, responseDetail, responseError } from '../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, responseError } from '../config/api';
 import SEO from '../components/SEO';
 import BioSettingsSection from './BioSettingsSection';
 import logger from '../utils/logger';
@@ -390,7 +390,7 @@ export default function Settings() {
             });
 
             if (!res.ok) {
-                throw new Error(await responseDetail(res, 'Failed to resend verification email'));
+                throw new Error(await responseError(res, 'Failed to resend verification email'));
             }
             const body = await res.json().catch(() => null) as { message?: string } | null;
             setSuccess(body?.message || 'Verification email sent');

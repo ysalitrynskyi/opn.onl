@@ -1,3 +1,4 @@
+import { act } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '../test/test-utils';
 import Dashboard from './Dashboard';
@@ -13,7 +14,7 @@ const SETTINGS = {
     link_in_bio_enabled: false,
 };
 
-const ORGS = [
+const ORGS: { id: number; name: string; slug: string; role?: string }[] = [
     { id: 2, name: 'Acme', slug: 'acme' },
     { id: 9, name: 'Beta', slug: 'beta' },
 ];
@@ -200,6 +201,176 @@ describe('Dashboard folder, tag and team filters', () => {
         const again = screen.getByRole('dialog', { name: 'Move to folder' });
         await user.click(within(again).getByRole('button', { name: /^Move$/ }));
         await waitFor(() => expect(bulkUpdates()).toContainEqual({ ids: [1], remove_folder: true }));
+    });
+
+    it('keeps a late list for another team out of the one on screen', async () => {
+        let releaseAcme: (() => void) | undefined;
+        const acmeHeld = new Promise<void>(resolve => {
+            releaseAcme = resolve;
+        });
+        serve([makeLink(1)], { orgs: ORGS });
+        const personal = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            const url = new URL(String(input));
+            if (url.pathname === '/links' && (init?.method ?? 'GET') === 'GET') {
+                const org = url.searchParams.get('org_id');
+                if (org === '2') {
+                    await acmeHeld;
+                    return json([makeLink(20)], 200, { 'X-Total-Count': '1' });
+                }
+                if (org === '9') return json([makeLink(90)], 200, { 'X-Total-Count': '1' });
+            }
+            return personal(input, init);
+        });
+        const { user } = render(<Dashboard />, { route: '/dashboard' });
+        await screen.findByRole('checkbox', { name: 'Select link code1' });
+
+        await user.selectOptions(screen.getByRole('combobox', { name: 'Link context' }), '2');
+        await waitFor(() => expect(listRequests().some(params => params.get('org_id') === '2')).toBe(true));
+        await user.selectOptions(screen.getByRole('combobox', { name: 'Link context' }), '9');
+        expect(await screen.findByRole('checkbox', { name: 'Select link code90' })).toBeInTheDocument();
+
+        // Acme answers last. A pin or delete meanwhile would make it look
+        // like a stale copy of this list; it is another team's.
+        await act(async () => {
+            releaseAcme?.();
+        });
+        expect(screen.queryByRole('checkbox', { name: 'Select link code20' })).not.toBeInTheDocument();
+        expect(screen.getByRole('checkbox', { name: 'Select link code90' })).toBeInTheDocument();
+    });
+
+    it('does not offer the last team\'s folders while the next team\'s load', async () => {
+        let releaseBeta: (() => void) | undefined;
+        const betaHeld = new Promise<void>(resolve => {
+            releaseBeta = resolve;
+        });
+        serve([makeLink(1)], { orgs: ORGS, folders: FOLDERS });
+        const base = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            const url = new URL(String(input));
+            if (url.pathname === '/folders' && url.searchParams.get('org_id') === '9') {
+                await betaHeld;
+                return json([]);
+            }
+            return base(input, init);
+        });
+        const { user } = render(<Dashboard />, { route: '/dashboard?org=2' });
+        const folderFilter = await screen.findByRole('combobox', { name: 'Filter by folder' });
+        await waitFor(() => expect(within(folderFilter).getByRole('option', { name: 'Campaigns' })).toBeInTheDocument());
+
+        await user.selectOptions(screen.getByRole('combobox', { name: 'Link context' }), '9');
+
+        await waitFor(() => {
+            expect(within(folderFilter).queryByRole('option', { name: 'Campaigns' })).not.toBeInTheDocument();
+        });
+        await act(async () => {
+            releaseBeta?.();
+        });
+    });
+
+    it('drops a folder list whose body is still being read when the team changes', async () => {
+        let releaseAcme: (() => void) | undefined;
+        const acmeBody = new Promise<void>(resolve => {
+            releaseAcme = resolve;
+        });
+        serve([makeLink(1)], { orgs: ORGS });
+        const base = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            const url = new URL(String(input));
+            if (url.pathname === '/folders' && url.searchParams.get('org_id') === '2') {
+                // The answer arrives now, its body after the switch.
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => {
+                        await acmeBody;
+                        return FOLDERS;
+                    },
+                } as Response;
+            }
+            return base(input, init);
+        });
+        const { user } = render(<Dashboard />, { route: '/dashboard?org=2' });
+        const folderFilter = await screen.findByRole('combobox', { name: 'Filter by folder' });
+
+        await user.selectOptions(screen.getByRole('combobox', { name: 'Link context' }), '9');
+        await waitFor(() => expect(callsTo('/folders').some(url => url.searchParams.get('org_id') === '9')).toBe(true));
+        await act(async () => {
+            releaseAcme?.();
+        });
+
+        expect(within(folderFilter).queryByRole('option', { name: 'Campaigns' })).not.toBeInTheDocument();
+    });
+
+    it('goes back to the personal links when the URL names a team the user is not in', async () => {
+        serve([makeLink(1)], { orgs: ORGS });
+        const base = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            const url = new URL(String(input));
+            if ((url.pathname === '/folders' || url.pathname === '/tags') && url.searchParams.get('org_id') === '5') {
+                return json({ error: 'Not a member of this organization' }, 403);
+            }
+            return base(input, init);
+        });
+        render(<Dashboard />, { route: '/dashboard?org=5&folder=3' });
+
+        // The team's folder list may refuse first; the page then says what it did about it.
+        await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
+            'You are not a member of that team. Showing your personal links.',
+        ));
+        await waitFor(() => expect(window.location.search).toBe(''));
+        await waitFor(() => {
+            const params = listRequests().at(-1);
+            expect(params?.has('org_id')).toBe(false);
+            expect(params?.has('folder_id')).toBe(false);
+        });
+        expect(screen.queryByText(/Creating in/)).not.toBeInTheDocument();
+        expect(screen.getByRole('alert')).not.toHaveTextContent('Not a member of this organization');
+    });
+
+    it('stays on a team when the team list could not be read', async () => {
+        serve([makeLink(1)], { orgs: ORGS });
+        const base = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            if (new URL(String(input)).pathname === '/orgs') return json({ error: 'Database error' }, 500);
+            return base(input, init);
+        });
+        render(<Dashboard />, { route: '/dashboard?org=2' });
+        await screen.findByRole('checkbox', { name: 'Select link code1' });
+        await waitFor(() => expect(callsTo('/orgs')).toHaveLength(1));
+
+        expect(window.location.search).toBe('?org=2');
+        expect(listRequests().at(-1)?.get('org_id')).toBe('2');
+    });
+
+    it('shows a team viewer the links without the actions the API refuses them', async () => {
+        serve([makeLink(1)], { orgs: [{ id: 2, name: 'Acme', slug: 'acme', role: 'viewer' }], folders: FOLDERS });
+        render(<Dashboard />, { route: '/dashboard?org=2' });
+
+        expect(await screen.findByText('You can view the links in Acme. Editors and admins can add and change them.')).toBeInTheDocument();
+        expect(screen.getByText('Link 1')).toBeInTheDocument();
+        expect(screen.queryByLabelText('Destination URL')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Bulk Import' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Manage' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('checkbox', { name: 'Select all on this page' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Edit link code1' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Delete link code1' })).not.toBeInTheDocument();
+        // Reading stays: filters, export, and the row's own read-only actions.
+        expect(screen.getByRole('combobox', { name: 'Filter by folder' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Export CSV' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Show QR code for code1' })).toBeInTheDocument();
+    });
+
+    it('keeps every control for a team editor', async () => {
+        serve([makeLink(1)], { orgs: [{ id: 2, name: 'Acme', slug: 'acme', role: 'editor' }] });
+        render(<Dashboard />, { route: '/dashboard?org=2' });
+
+        expect(await screen.findByText('Creating in Acme')).toBeInTheDocument();
+        expect(screen.getByLabelText('Destination URL')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Bulk Import' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Manage' })).toBeInTheDocument();
+        expect(screen.getByRole('checkbox', { name: 'Select link code1' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Edit link code1' })).toBeInTheDocument();
     });
 
     it('creates imported links in the open team', async () => {

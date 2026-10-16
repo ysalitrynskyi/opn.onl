@@ -20,6 +20,30 @@ const base: LinkData = {
     tags: [],
 };
 
+function row(link: LinkData, extra: { readOnly?: boolean } = {}) {
+    return (
+        <LinkRow
+            link={link}
+            linkNumber={1}
+            copied={false}
+            sourceCopied={false}
+            cloning={false}
+            selected={false}
+            onToggleSelect={vi.fn()}
+            onCopy={vi.fn()}
+            onCopySource={vi.fn()}
+            onPreview={vi.fn()}
+            onPin={vi.fn()}
+            onClone={vi.fn()}
+            onShare={vi.fn()}
+            onQr={vi.fn()}
+            onEdit={vi.fn()}
+            onDelete={vi.fn()}
+            {...extra}
+        />
+    );
+}
+
 function renderRow(
     overrides: Partial<LinkData> = {},
     folder: { name: string; color?: string | null } | null = null,
@@ -199,6 +223,71 @@ describe('LinkRow status badges', () => {
         expect(screen.getByText('Inactive')).toBeInTheDocument();
         expect(screen.queryByText('Blocked')).not.toBeInTheDocument();
         expect(screen.queryByText('Disabled')).not.toBeInTheDocument();
+    });
+
+    // The row is keyed by id, so a reload of the list re-renders the same
+    // instance. The clock must be the one at that render, not at mount.
+    it('drops Not started once a reload arrives after the start time', () => {
+        const starts = new Date(2026, 9, 1, 12, 1, 0).toISOString();
+        const { rerender } = render(row({ ...base, starts_at: starts, is_active: false }));
+        expect(screen.getByText('Not started')).toBeInTheDocument();
+        expect(screen.getByText('Starts Oct 1')).toBeInTheDocument();
+
+        vi.setSystemTime(new Date(2026, 9, 1, 12, 2, 0));
+        rerender(row({ ...base, starts_at: starts, is_active: true }));
+
+        expect(screen.queryByText('Not started')).not.toBeInTheDocument();
+        expect(screen.queryByText(/^Starts /)).not.toBeInTheDocument();
+        expect(screen.queryByText('Inactive')).not.toBeInTheDocument();
+    });
+
+    it('does not fall back to Inactive when only the start has passed since the list was read', () => {
+        const starts = new Date(2026, 9, 1, 12, 1, 0).toISOString();
+        const link = { ...base, starts_at: starts, is_active: false };
+        const { rerender } = render(row(link));
+        expect(screen.getByText('Not started')).toBeInTheDocument();
+
+        // Any re-render, a search keystroke say, with the list still as it was read.
+        vi.setSystemTime(new Date(2026, 9, 1, 12, 2, 0));
+        rerender(row(link));
+
+        expect(screen.queryByText('Not started')).not.toBeInTheDocument();
+        expect(screen.queryByText('Inactive')).not.toBeInTheDocument();
+    });
+
+    it('marks a link expired once its expiry passes, without a remount', () => {
+        const expires = new Date(2026, 9, 1, 12, 1, 0).toISOString();
+        const link = { ...base, expires_at: expires };
+        const { rerender } = render(row(link));
+        expect(screen.queryByText('Expired')).not.toBeInTheDocument();
+
+        vi.setSystemTime(new Date(2026, 9, 1, 12, 2, 0));
+        rerender(row(link));
+
+        expect(screen.getByText('Expired')).toHaveAttribute('title', INACTIVE_REASON.expired);
+    });
+});
+
+describe('LinkRow for a team viewer', () => {
+    it('offers only what a viewer may do', () => {
+        render(row({ ...base, is_pinned: true }, { readOnly: true }));
+        expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+        for (const name of ['Unpin link abc123', 'Clone link abc123', 'Edit link abc123', 'Delete link abc123']) {
+            expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+        }
+        expect(screen.getByLabelText('Pinned')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Copy short URL for abc123' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Preview destination for abc123' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Share link abc123' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Show QR code for abc123' })).toBeInTheDocument();
+    });
+
+    it('keeps every action for anyone else', () => {
+        render(row(base));
+        expect(screen.getByRole('checkbox', { name: 'Select link abc123' })).toBeInTheDocument();
+        for (const name of ['Pin link abc123', 'Clone link abc123', 'Edit link abc123', 'Delete link abc123']) {
+            expect(screen.getByRole('button', { name })).toBeInTheDocument();
+        }
     });
 });
 

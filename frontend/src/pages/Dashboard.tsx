@@ -6,7 +6,7 @@ import {
     Zap, Link2, Upload, ArrowRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, SessionExpiredError, authFetch, failureMessage, responseError, shortLinkBase, totalCount } from '../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch, errorText, failureMessage, responseError, shortLinkBase, totalCount } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -36,6 +36,7 @@ import {
     linksQuery,
     orgOptions,
     parsePositiveId,
+    readOnlyIn,
     sameScope,
     type CatalogItem,
     type LinkListScope,
@@ -58,9 +59,9 @@ const SEARCH_DEBOUNCE_MS = 300;
 const EDIT_DENIED_MESSAGE = "You don't have permission to modify this link";
 const LINK_GONE_MESSAGE = 'This link no longer exists or you no longer have access to it.';
 
-function updateFailureMessage(status: number, message: string | undefined) {
+function updateFailureMessage(status: number, message: string) {
     if (status === 403 && message === EDIT_DENIED_MESSAGE) return LINK_GONE_MESSAGE;
-    return message || 'Failed to update link';
+    return message;
 }
 
 export default function Dashboard() {
@@ -113,6 +114,8 @@ export default function Dashboard() {
     const folderId = parsePositiveId(searchParams.get('folder'));
     const tagId = parsePositiveId(searchParams.get('tag'));
     const [orgs, setOrgs] = useState<OrgOption[]>([]);
+    // True once GET /orgs has answered, so an empty list means "no teams".
+    const [orgsLoaded, setOrgsLoaded] = useState(false);
     const [folders, setFolders] = useState<CatalogItem[]>([]);
     const [tags, setTags] = useState<CatalogItem[]>([]);
     // The folder/tag/org the rows on screen were fetched with. The URL can
@@ -249,11 +252,11 @@ export default function Dashboard() {
                     failures,
                 });
             } else {
-                const data = await res.json();
-                const fromList = Array.isArray(data.errors) && data.errors.length > 0
+                const data = await res.json().catch(() => null);
+                const fromList = Array.isArray(data?.errors) && data.errors.length > 0
                     ? data.errors.join(', ')
                     : null;
-                setBulkReport({ message: fromList || data.error || 'Failed to import links', failures: [] });
+                setBulkReport({ message: fromList || errorText(res.status, data, 'Failed to import links'), failures: [] });
             }
         } catch {
             setBulkReport({ message: 'Network error during import', failures: [] });
@@ -318,6 +321,19 @@ export default function Dashboard() {
         setSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
     }, [currentPage, searchQuery, orgId, folderId, tagId]);
 
+    // Sorting, a pin, a create or a delete can move a ticked row off this page
+    // while the page number stays. Its tick goes with it, or the row would
+    // come back ticked when a later sort brings it into view.
+    const pageIds = paginatedLinks.map(link => link.id);
+    const pageIdsKey = pageIds.join(',');
+    useEffect(() => {
+        const onPage = new Set(pageIdsKey ? pageIdsKey.split(',').map(Number) : []);
+        setSelectedIds(prev => {
+            const kept = [...prev].filter(id => onPage.has(id));
+            return kept.length === prev.size ? prev : new Set(kept);
+        });
+    }, [pageIdsKey]);
+
     // Clamp the current page when the list shrinks (e.g. deleting the last link
     // on the final page) so the user is never stranded on an empty page.
     useEffect(() => {
@@ -330,7 +346,12 @@ export default function Dashboard() {
     // names another one. A reload of the same folder, tag and team asks for
     // as many links as are showing, so saving an edit does not fold away
     // pages the user loaded. A new search or filter starts from the first page.
-    const fetchLinks = async (search = listRef.current.scope.search) => {
+    // A failure goes to `report`; a caller with its own news for the user
+    // passes another so the page alert keeps that news.
+    const fetchLinks = async (
+        search = listRef.current.scope.search,
+        report: (message: string) => void = setError,
+    ) => {
         const requestId = ++linksFetchId.current;
         const scope: LinkListScope = { search, ...urlScopeRef.current };
         const showing = sameScope(scope, listRef.current.scope) ? listRef.current.loaded : 0;
@@ -343,7 +364,10 @@ export default function Dashboard() {
                     // Delete/pin bumped the generation so this snapshot must
                     // not replace the optimistic list (that would resurrect a
                     // deleted row). Still fold in ids we do not have, or a
-                    // create that raced the mutation never appears.
+                    // create that raced the mutation never appears. Only into
+                    // the list it was asked for: after a quick switch of team,
+                    // folder, tag or search, its rows belong to another view.
+                    if (!sameScope(scope, listRef.current.scope)) return;
                     setLinks(prev => {
                         const have = new Set(prev.map(l => l.id));
                         const extras = data.filter(
@@ -361,14 +385,14 @@ export default function Dashboard() {
                 listRef.current = { loaded: data.length, scope };
                 if (isUnfilteredAccount(scope)) setAccountTotal(count);
             } else {
-                const data = await res.json().catch(() => null) as { error?: string } | null;
+                const message = await responseError(res, 'Failed to load links. Please try again.');
                 if (requestId !== linksFetchId.current) return;
-                setError(data?.error || 'Failed to load links. Please try again.');
+                report(message);
             }
         } catch (error) {
             if (requestId !== linksFetchId.current) return;
             logger.error('Failed to fetch links', error);
-            setError('Failed to load links. Please try again.');
+            report('Failed to load links. Please try again.');
         } finally {
             if (requestId === linksFetchId.current) {
                 setLoading(false);
@@ -531,7 +555,6 @@ export default function Dashboard() {
         })();
     }, [needsAccountClicks]);
 
-    const pageIds = paginatedLinks.map(link => link.id);
     // A click on this page moves the row. The header total is the sum of the
     // loaded rows when they are the whole account, and the profile total
     // otherwise, so that one is moved too. Clicks on other pages are ignored.
@@ -542,8 +565,12 @@ export default function Dashboard() {
         setAccountClicks(prev => (prev == null ? prev : prev + 1));
     }, []);
     const live = useLiveClicks(pageIds, onLiveClick);
-    const selectedOnPage = pageIds.filter(id => selectedIds.has(id)).length;
-    const allOnPage = pageIds.length > 0 && selectedOnPage === pageIds.length;
+    // What the bar counts and a bulk action sends: the ticked rows on this
+    // page, read at this render. The effect above trims the rest a render
+    // later; an action must never reach a link whose box is out of sight.
+    const pageIdSet = new Set(pageIds);
+    const selectedOnPage = [...selectedIds].filter(id => pageIdSet.has(id));
+    const allOnPage = pageIds.length > 0 && selectedOnPage.length === pageIds.length;
 
     const toggleSelected = (id: number) => {
         setSelectedIds(prev => {
@@ -578,17 +605,23 @@ export default function Dashboard() {
     // Bulk routes answer with a count, not a list of failures. Ids the caller
     // may not change are skipped, and a shortfall against `ids` is that fact.
     // Click caps are not on POST /links/bulk/update, so they are not offered.
+    // Resolves true when the selection was cleared.
     const applyBulk = async (
         action: 'delete' | 'update',
         extra: Record<string, unknown>,
     ): Promise<boolean> => {
-        const ids = [...selectedIds];
+        const ids = selectedOnPage;
         if (ids.length === 0 || bulkInFlight.current) return false;
         bulkInFlight.current = true;
         setBulkBusy(true);
         const field = action === 'delete' ? 'deleted' : 'updated';
         const endpoint = action === 'delete' ? API_ENDPOINTS.bulkDeleteLinks : API_ENDPOINTS.bulkUpdateLinks;
         const fallback = action === 'delete' ? 'Failed to delete links' : 'Failed to update links';
+        // Only a refusal (4xx) is known to have changed nothing. A 5xx can
+        // come after the commit (the bulk routes answer 500 when the rows
+        // changed but the redirect cache could not be cleared), and so can a
+        // lost answer or an unreadable one.
+        let mayHaveChanged = false;
         try {
             const run = await runBulkChunks(ids, async (chunk) => {
                 try {
@@ -597,26 +630,33 @@ export default function Dashboard() {
                         body: JSON.stringify({ ids: [...chunk], ...extra }),
                     });
                     if (!res.ok) {
+                        if (res.status >= 500) mayHaveChanged = true;
                         return { ok: false as const, error: await responseError(res, fallback) };
                     }
                     const affected = bulkAffectedCount(await res.json().catch(() => null), field);
                     if (affected === null) {
+                        mayHaveChanged = true;
                         return { ok: false as const, error: 'The server response could not be read.' };
                     }
                     return { ok: true as const, affected };
                 } catch (error) {
+                    if (!(error instanceof SessionExpiredError)) mayHaveChanged = true;
                     return { ok: false as const, error: failureMessage(error, 'Network error. Please try again.') };
                 }
             }, BULK_IDS_PER_REQUEST);
 
-            if (run.error && run.sent === 0) {
+            const confirmed = run.sent > 0;
+            if (run.error && !confirmed && !mayHaveChanged) {
                 setError(run.error);
                 return false;
             }
+            let notice: string;
             if (run.error) {
-                setError(bulkStoppedMessage(action, run.affected, run.error));
+                notice = confirmed ? bulkStoppedMessage(action, run.affected, run.error) : run.error;
+                setError(notice);
             } else {
                 const result = bulkResultMessage(action, run.affected, run.sent);
+                notice = result.message;
                 if (result.complete) {
                     setError('');
                     toast(result.message, 'success');
@@ -631,9 +671,15 @@ export default function Dashboard() {
             if (action === 'delete') {
                 for (const id of ids) droppedLinkIds.current.add(id);
             }
-            await fetchLinks();
-            clearSelection();
-            return true;
+            // The answer is a count, not which rows changed, so the list is
+            // read again. If that fails, the alert still says what was done.
+            let reloadFailed = false;
+            await fetchLinks(undefined, () => { reloadFailed = true; });
+            if (reloadFailed) setError(`${notice} The list could not be refreshed.`);
+            // With nothing confirmed the ticks stay for a retry. Rows that are
+            // gone after the reload lose theirs with the page.
+            if (confirmed) clearSelection();
+            return confirmed;
         } finally {
             bulkInFlight.current = false;
             setBulkBusy(false);
@@ -671,8 +717,7 @@ export default function Dashboard() {
                 body: JSON.stringify(data),
             });
             if (!res.ok) {
-                const response = await res.json().catch(() => null) as { error?: string } | null;
-                throw new Error(updateFailureMessage(res.status, response?.error));
+                throw new Error(updateFailureMessage(res.status, await responseError(res, 'Failed to update link')));
             }
 
             await fetchLinks();
@@ -719,6 +764,12 @@ export default function Dashboard() {
                 linksFetchId.current += 1;
                 setLinks(prev => prev.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
                 toast(data.message, 'success');
+                // The server lists pinned links first, and Load more asks for
+                // the rows after the ones held here. A pin moves a link into or
+                // out of that first stretch, so while links are left on the
+                // server the list is read again; otherwise the next page skips
+                // a link and the count is never reached.
+                if (hasMore) void fetchLinks();
             } else {
                 toast('Failed to update pin status', 'error');
             }
@@ -743,8 +794,7 @@ export default function Dashboard() {
                 toast(`Link cloned! New code: ${data.code}`, 'success');
                 fetchLinks();
             } else {
-                const data = await res.json();
-                toast(data.error || 'Failed to clone link', 'error');
+                toast(await responseError(res, 'Failed to clone link'), 'error');
             }
         } catch {
             toast('Network error', 'error');
@@ -801,7 +851,12 @@ export default function Dashboard() {
     const loadOrgs = useCallback(async () => {
         try {
             const res = await authFetch(API_ENDPOINTS.orgs);
-            setOrgs(res.ok ? orgOptions(await res.json()) : []);
+            if (res.ok) {
+                setOrgs(orgOptions(await res.json()));
+                setOrgsLoaded(true);
+            } else {
+                setOrgs([]);
+            }
         } catch (error) {
             if (error instanceof SessionExpiredError) return;
             logger.error('Failed to load teams', error);
@@ -817,13 +872,12 @@ export default function Dashboard() {
         const failed = kind === 'folder' ? 'Failed to load folders' : 'Failed to load tags';
         try {
             const res = await authFetch(`${kind === 'folder' ? API_ENDPOINTS.folders : API_ENDPOINTS.tags}${query}`);
+            const items = res.ok ? catalogItems(await res.json()) : [];
+            const message = res.ok ? '' : await responseError(res, failed);
+            // Checked after the body is read: a team switch meanwhile owns the list now.
             if (requestId !== req.current) return;
-            if (res.ok) {
-                setItems(catalogItems(await res.json()));
-            } else {
-                setItems([]);
-                setError(await responseError(res, failed));
-            }
+            setItems(items);
+            if (message) setError(message);
         } catch (error) {
             if (requestId !== req.current) return;
             if (error instanceof SessionExpiredError) return;
@@ -840,9 +894,28 @@ export default function Dashboard() {
 
     useEffect(() => {
         if (!safeLocalStorage.getItem('token')) return;
+        // The previous team's folders and tags are not offered while this
+        // team's load: picking one would filter, or file a link, across teams.
+        setFolders(prev => (prev.length === 0 ? prev : []));
+        setTags(prev => (prev.length === 0 ? prev : []));
         void loadScopedList('folder', orgId);
         void loadScopedList('tag', orgId);
     }, [orgId, loadScopedList]);
+
+    // A team the user is not (or no longer) a member of, from an old link or
+    // a bookmark: its list is empty, its folders and tags are refused, and a
+    // create would be too. Show the personal links and say why.
+    useEffect(() => {
+        if (!orgsLoaded || orgId == null || orgs.some(org => org.id === orgId)) return;
+        setSearchParams(prev => {
+            const next = new URLSearchParams(prev);
+            next.delete('org');
+            next.delete('folder');
+            next.delete('tag');
+            return next;
+        }, { replace: true });
+        setError('You are not a member of that team. Showing your personal links.');
+    }, [orgsLoaded, orgs, orgId, setSearchParams]);
 
     const replaceParams = (mutate: (next: URLSearchParams) => void) => {
         const next = new URLSearchParams(searchParams);
@@ -851,7 +924,14 @@ export default function Dashboard() {
     };
 
     const folderById = new Map(folders.map(folder => [folder.id, folder]));
-    const activeOrgName = orgId != null ? orgs.find(org => org.id === orgId)?.name ?? null : null;
+    const activeOrg = orgId != null ? orgs.find(org => org.id === orgId) ?? null : null;
+    const activeOrgName = activeOrg?.name ?? null;
+    // A viewer can read a team's links and nothing more: create, import,
+    // edit, pin, clone, delete, bulk actions and folder or tag changes all
+    // answer 403, so they are not offered. Until GET /orgs says the role, the
+    // controls stay and the server decides.
+    const readOnly = readOnlyIn(activeOrg);
+    const showBulkBar = selectedOnPage.length > 0 && !readOnly;
 
     if (loading) {
         return (
@@ -927,16 +1007,18 @@ export default function Dashboard() {
                     </div>
                 </div>
                 <div className="flex gap-2">
-                    <button
-                        onClick={() => {
-                            setBulkReport(null);
-                            setShowBulkImport(true);
-                        }}
-                        className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
-                    >
-                        <Upload className="h-4 w-4 text-muted" />
-                        Bulk Import
-                    </button>
+                    {!readOnly && (
+                        <button
+                            onClick={() => {
+                                setBulkReport(null);
+                                setShowBulkImport(true);
+                            }}
+                            className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
+                        >
+                            <Upload className="h-4 w-4 text-muted" />
+                            Bulk Import
+                        </button>
+                    )}
                     <button
                         onClick={handleExport}
                         className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
@@ -976,16 +1058,22 @@ export default function Dashboard() {
             )}
 
             {/* Create Link Form */}
-            <CreateLinkForm
-                appSettings={appSettings}
-                initialUrl={createInitialUrl}
-                onCreated={() => { fetchLinks(); }}
-                onError={setError}
-                folders={folders}
-                tags={tags}
-                orgId={orgId}
-                orgName={activeOrgName}
-            />
+            {readOnly ? (
+                <p className="mb-8 rounded-2xl border border-dashed border-line2 bg-paper px-6 py-4 text-sm text-muted">
+                    You can view the links in {activeOrgName}. Editors and admins can add and change them.
+                </p>
+            ) : (
+                <CreateLinkForm
+                    appSettings={appSettings}
+                    initialUrl={createInitialUrl}
+                    onCreated={() => { fetchLinks(); }}
+                    onError={setError}
+                    folders={folders}
+                    tags={tags}
+                    orgId={orgId}
+                    orgName={activeOrgName}
+                />
+            )}
 
             {/* Search and filter stay up with no links, so the first folder can be created here. */}
             <LinkFilters
@@ -1021,6 +1109,7 @@ export default function Dashboard() {
                         else next.set('tag', String(id));
                     });
                 }}
+                canManage={!readOnly}
                 onOrganizeChanged={(kind) => { void loadScopedList(kind, orgId); }}
                 onFolderDeleted={(id) => {
                     if (folderId === id) {
@@ -1037,20 +1126,19 @@ export default function Dashboard() {
             />
 
             {/* Links List */}
-            <div className={selectedIds.size > 0 ? 'pb-24 sm:pb-0' : undefined}>
-                {paginatedLinks.length > 0 && (
+            <div className={showBulkBar ? 'pb-24 sm:pb-0' : undefined}>
+                {paginatedLinks.length > 0 && !readOnly && (
                     <div className="flex items-center gap-2 py-3">
                         <SelectAllCheckbox
                             checked={allOnPage}
-                            indeterminate={selectedOnPage > 0 && !allOnPage}
+                            indeterminate={selectedOnPage.length > 0 && !allOnPage}
                             onChange={toggleSelectPage}
                         />
-                        <span className="text-sm text-muted">Select all on this page</span>
                     </div>
                 )}
-                {selectedIds.size > 0 && (
+                {showBulkBar && (
                     <BulkActionBar
-                        count={selectedIds.size}
+                        count={selectedOnPage.length}
                         busy={bulkBusy}
                         onDelete={() => applyBulk('delete', {})}
                         onSetExpiry={(expiresAt) => applyBulk('update', { expires_at: expiresAt })}
@@ -1086,6 +1174,7 @@ export default function Dashboard() {
                                     onEdit={setEditingLink}
                                     onDelete={handleDelete}
                                     folder={link.folder_id != null ? folderById.get(link.folder_id) ?? null : null}
+                                    readOnly={readOnly}
                                 />
                             );
                         })}

@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Plus, ChevronDown, Lock, Calendar, Flame, ShieldCheck, MousePointer } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, SessionExpiredError, authFetch, type CheckCodeResponse } from '../../config/api';
+import { API_ENDPOINTS, SessionExpiredError, authFetch, responseError, type CheckCodeResponse } from '../../config/api';
 import logger from '../../utils/logger';
 import { savePendingUrl } from '../../utils/pendingUrl';
 import { localIsoDate } from '../../utils/localIsoDate';
@@ -74,6 +74,13 @@ export default function CreateLinkForm({
     const [tagIds, setTagIds] = useState<number[]>([]);
     const destination = useDestinationCheck(newUrl);
 
+    // A UTM answer can land after a create cleared the form, while the panel it
+    // came from animates away with the old destination still in its props.
+    // Only the destination it was built from may be replaced.
+    const applyUtm = (next: string, builtFrom: string) => {
+        setNewUrl(current => (current.trim() === builtFrom ? next : current));
+    };
+
     // A folder or tag from the previous context cannot be filed on a link in this one.
     useEffect(() => {
         setFolderId('');
@@ -101,7 +108,10 @@ export default function CreateLinkForm({
                 });
                 if (ignore) return;
                 if (!res.ok) {
-                    setAliasHint(null);
+                    // A 429 here says how long to wait; anything else that
+                    // failed is still worth a word rather than a silent blank.
+                    const text = await responseError(res, 'Could not check this alias');
+                    if (!ignore) setAliasHint({ text, ok: false });
                     return;
                 }
                 const data = await res.json() as CheckCodeResponse;
@@ -243,12 +253,7 @@ export default function CreateLinkForm({
                 setShowAdvanced(false);
                 onCreated();
             } else {
-                const data = await res.json();
-                // A 429's `error` is always "Too many requests". The sentence
-                // that says which limit ran out is `message`.
-                onError(
-                    (typeof data.message === 'string' && data.message) || data.error || 'Failed to create link',
-                );
+                onError(await responseError(res, 'Failed to create link'));
             }
         } catch (error) {
             logger.error('Failed to create link', error);
@@ -274,25 +279,27 @@ export default function CreateLinkForm({
                 <p className="mb-4 text-sm text-muted">Creating in {orgName}</p>
             )}
             <form onSubmit={handleCreate}>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                {/* The controls sit beside the destination only from lg up.
+                    Narrower, the destination takes a line of its own and the
+                    controls share the next; on one line it was squeezed to a
+                    few characters. The check's answer goes under the row for
+                    the same reason: it can be a long sentence. */}
+                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start">
                     <label htmlFor="create-url" className="sr-only">Destination URL</label>
                     <input
                         id="create-url"
                         type="url"
                         required
                         placeholder="https://example.com/long-url"
-                        className="min-w-0 w-full flex-1 rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
+                        className="min-w-0 w-full sm:basis-full lg:flex-1 lg:min-w-[16rem] rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                         value={newUrl}
                         onChange={(e) => setNewUrl(e.target.value)}
                     />
-                    <div className="flex flex-col gap-1.5 sm:shrink-0">
-                        <DestinationCheckButton
-                            pending={destination.pending}
-                            disabled={!newUrl.trim()}
-                            onClick={() => void destination.check()}
-                        />
-                        <DestinationStatus status={destination.status} />
-                    </div>
+                    <DestinationCheckButton
+                        pending={destination.pending}
+                        disabled={!newUrl.trim()}
+                        onClick={() => void destination.check()}
+                    />
                     <button
                         type="button"
                         onClick={pasteClipboardUrl}
@@ -308,7 +315,7 @@ export default function CreateLinkForm({
                                 type="text"
                                 placeholder={`alias (${appSettings.min_alias_length}-${appSettings.max_alias_length} chars)`}
                                 aria-describedby={aliasHint ? 'create-alias-hint' : undefined}
-                                className="w-full sm:w-48 rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
+                                className="min-w-0 w-full sm:w-auto sm:flex-1 lg:w-48 lg:flex-none rounded-lg border border-line2 bg-surface px-4 py-2.5 font-mono text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint"
                                 value={alias}
                                 onChange={(e) => setAlias(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
                                 minLength={appSettings.min_alias_length}
@@ -329,6 +336,11 @@ export default function CreateLinkForm({
                         Create
                     </button>
                 </div>
+                {destination.status && (
+                    <div className="mt-2">
+                        <DestinationStatus status={destination.status} />
+                    </div>
+                )}
                 {aliasHint && (
                     <p
                         id="create-alias-hint"
@@ -530,7 +542,7 @@ export default function CreateLinkForm({
                                     </div>
                                 </div>
 
-                                <UtmBuilder url={newUrl} onApply={setNewUrl} />
+                                <UtmBuilder url={newUrl} onApply={applyUtm} />
 
                                 {appSettings.burn_after_reading_enabled && (
                                     <label className="flex items-center gap-2.5 text-sm text-muted cursor-pointer">

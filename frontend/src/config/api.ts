@@ -238,19 +238,23 @@ export function totalCount(response: Response): number | null {
     return Number.isSafeInteger(count) && count >= 0 ? count : null;
 }
 
-// The API's error text from a failed response: `{"error": "..."}` (or a
-// `message`), else the fallback. Never shows a raw JSON body to the user.
-export async function responseError(response: Response, fallback: string): Promise<string> {
-    const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
-    return body?.error || body?.message || fallback;
+// The text to show for a failed response's JSON body: its `error` (or a
+// `message`), else the fallback. A 429's `error` is always the generic "Too
+// many requests"; its `message` names the limit and how long to wait, so on a
+// 429 that one wins. For a caller that has already read the body.
+export function errorText(status: number, body: unknown, fallback: string): string {
+    const fields = (body && typeof body === 'object' ? body : {}) as { error?: unknown; message?: unknown };
+    const error = typeof fields.error === 'string' ? fields.error : '';
+    const message = typeof fields.message === 'string' ? fields.message : '';
+    if (status === 429 && message) return message;
+    return error || message || fallback;
 }
 
-// A 429's `error` is the generic "Too many requests"; its `message` says what
-// to do. Everywhere else the `error` string is the one to show.
-export async function responseDetail(response: Response, fallback: string): Promise<string> {
-    const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
-    if (response.status === 429 && body?.message) return body.message;
-    return body?.error || body?.message || fallback;
+// errorText for a response whose body has not been read. Never shows a raw
+// body to the user: one that is not JSON gives the fallback.
+export async function responseError(response: Response, fallback: string): Promise<string> {
+    const body = await response.json().catch(() => null);
+    return errorText(response.status, body, fallback);
 }
 
 // `REQUIRE_EMAIL_VERIFICATION`, from GET /auth/settings. Missing, or a read

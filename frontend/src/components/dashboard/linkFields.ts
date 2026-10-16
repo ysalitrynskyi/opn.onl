@@ -1,5 +1,5 @@
 import { pluralize } from '../../utils/plural';
-import type { CheckCodeResponse, UrlHealthResponse } from '../../config/api';
+import { errorText, type CheckCodeResponse, type UrlHealthResponse } from '../../config/api';
 
 /** Matches `check_link_text` in the links handler. */
 export const MAX_TITLE_CHARS = 500;
@@ -100,16 +100,19 @@ export interface DestinationStatus {
     text: string;
 }
 
+const CHECK_FAILED = 'Could not check this destination';
+
 /**
  * Health-check answers with the same body on success and on a refused URL.
  * Redirects are followed by the server, so a 3xx here is one it handed back
- * rather than a target we can name.
+ * rather than a target we can name. Any other failure (a 429, a 500) is read
+ * like every other API error.
  */
 export function statusFromHealth(
-    httpOk: boolean,
+    httpStatus: number,
     data: Partial<UrlHealthResponse> | { error?: string | null } | null,
 ): DestinationStatus {
-    if (!data) return { ok: false, text: 'Could not check this destination' };
+    if (!data) return { ok: false, text: CHECK_FAILED };
     const body = data as Partial<UrlHealthResponse>;
     if (body.reachable) {
         const code = body.status_code;
@@ -117,7 +120,7 @@ export function statusFromHealth(
         if (code != null) return { ok: true, text: `Reachable · HTTP ${code}` };
         return { ok: true, text: 'Reachable' };
     }
-    if (body.error) return { ok: false, text: body.error };
-    if (!httpOk) return { ok: false, text: 'Could not check this destination' };
+    const httpOk = httpStatus >= 200 && httpStatus < 300;
+    if (body.error || !httpOk) return { ok: false, text: errorText(httpStatus, data, CHECK_FAILED) };
     return { ok: false, text: 'Unreachable' };
 }

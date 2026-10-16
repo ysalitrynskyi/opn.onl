@@ -6,6 +6,7 @@ import {
     getAuthHeaders,
     apiCall,
     authFetch,
+    errorText,
     failureMessage,
     shortLinkBase,
     shortLinkHost,
@@ -374,6 +375,38 @@ describe('responseError', () => {
         expect(await responseError(json({ message: 'Try later' }), 'Failed')).toBe('Try later');
         expect(await responseError(json({}), 'Failed')).toBe('Failed');
         expect(await responseError(new Response('plain text', { status: 500 }), 'Failed')).toBe('Failed');
+    });
+
+    it('shows the wait from a 429 instead of its generic error', async () => {
+        const limited = (body: unknown) => new Response(JSON.stringify(body), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json', 'Retry-After': '7' },
+        });
+        expect(await responseError(limited({
+            error: 'Too many requests',
+            retry_after: 7,
+            message: 'Rate limit exceeded. Please try again in 7 seconds.',
+        }), 'Failed')).toBe('Rate limit exceeded. Please try again in 7 seconds.');
+        // A 429 without the sentence still says what it is.
+        expect(await responseError(limited({ error: 'Too many requests' }), 'Failed')).toBe('Too many requests');
+    });
+
+    it('keeps the error ahead of a message on every other status', async () => {
+        const res = new Response(JSON.stringify({ error: 'Alias already exists', message: 'Other text' }), {
+            status: 409,
+            headers: { 'Content-Type': 'application/json' },
+        });
+        expect(await responseError(res, 'Failed')).toBe('Alias already exists');
+    });
+});
+
+describe('errorText', () => {
+    it('reads a body that was already parsed, the same way', () => {
+        const body = { error: 'Too many requests', message: 'Rate limit: maximum 20 requests per second' };
+        expect(errorText(429, body, 'Failed')).toBe('Rate limit: maximum 20 requests per second');
+        expect(errorText(400, body, 'Failed')).toBe('Too many requests');
+        expect(errorText(500, null, 'Failed')).toBe('Failed');
+        expect(errorText(500, { error: 42 }, 'Failed')).toBe('Failed');
     });
 });
 

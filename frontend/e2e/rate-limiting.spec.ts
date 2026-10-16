@@ -384,7 +384,8 @@ test.describe('link creation', () => {
         const refusedList = linkListLoaded(page);
         await page.goto('/dashboard');
         expect((await refusedList).status()).toBe(429);
-        await expect(page.getByRole('alert')).toHaveText('Too many requests');
+        // The 429's `message` says how long to wait; its `error` does not.
+        await expect(page.getByRole('alert')).toHaveText('Rate limit exceeded. Please try again in 42 seconds.');
         await expect(page.getByText('No links yet')).toBeHidden();
 
         await page.unroute(listUrl);
