@@ -758,6 +758,12 @@ export default function Dashboard() {
                 linksFetchId.current += 1;
                 setLinks(prev => prev.map(l => l.id === link.id ? { ...l, is_pinned: data.is_pinned } : l));
                 toast(data.message, 'success');
+                // The server lists pinned links first, and Load more asks for
+                // the rows after the ones held here. A pin moves a link into or
+                // out of that first stretch, so while links are left on the
+                // server the list is read again; otherwise the next page skips
+                // a link and the count is never reached.
+                if (hasMore) void fetchLinks();
             } else {
                 toast('Failed to update pin status', 'error');
             }

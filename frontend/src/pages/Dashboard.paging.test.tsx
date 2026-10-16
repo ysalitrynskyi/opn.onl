@@ -48,8 +48,10 @@ const SETTINGS = {
 };
 
 /**
- * A server holding `all`: GET /links honours limit, offset and search and
- * reports the number of matches in X-Total-Count, like the real one.
+ * A server holding `all`: GET /links honours limit, offset and search,
+ * lists pinned links first (`all` is otherwise newest first), and reports the
+ * number of matches in X-Total-Count, like the real one. POST /links/:id/pin
+ * flips the pin.
  */
 function serve(all: ReturnType<typeof makeLinks>, account = { total_clicks: 0 }) {
     vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -58,6 +60,12 @@ function serve(all: ReturnType<typeof makeLinks>, account = { total_clicks: 0 })
         if (url.pathname === '/auth/settings') return json(SETTINGS);
         if (url.pathname === '/auth/me') return json(account);
         if (url.pathname === '/links/sparklines') return json({ sparklines: [] });
+        const pin = url.pathname.match(/^\/links\/(\d+)\/pin$/);
+        if (pin && method === 'POST') {
+            const link = all.find(l => l.id === Number(pin[1]))!;
+            link.is_pinned = !link.is_pinned;
+            return json({ is_pinned: link.is_pinned, message: link.is_pinned ? 'Link pinned' : 'Link unpinned' });
+        }
         if (url.pathname === '/links/bulk' && method === 'POST') {
             all.unshift(makeLink(all.length + 1, { title: 'Imported' }));
             return json({ links: [{}], errors: [] });
@@ -65,7 +73,7 @@ function serve(all: ReturnType<typeof makeLinks>, account = { total_clicks: 0 })
         if (url.pathname === '/links' && method === 'GET') {
             const search = (url.searchParams.get('search') ?? '').toLowerCase();
             // Same fields as GET /links: URL, code, title, notes, and tag names.
-            const matching = search
+            let matching = search
                 ? all.filter(l => {
                     const tagNames = Array.isArray(l.tags) ? l.tags.map(tag => tag.name).join(' ') : '';
                     return [l.original_url, l.code, l.title ?? '', l.notes ?? '', tagNames]
@@ -74,6 +82,8 @@ function serve(all: ReturnType<typeof makeLinks>, account = { total_clicks: 0 })
                         .includes(search);
                 })
                 : all;
+            // Stable, so the rest keep the order of `all`.
+            matching = [...matching].sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned));
             const limit = Number(url.searchParams.get('limit') ?? 1000);
             const offset = Number(url.searchParams.get('offset') ?? 0);
             return json(matching.slice(offset, offset + limit), {
@@ -282,6 +292,45 @@ describe('Dashboard paging', () => {
         expect(await screen.findByText('Showing 200 of 251 links')).toBeInTheDocument();
         // Two reloads of a couple of hundred rows; slow when the suite shares the CPU.
     }, 20_000);
+
+    it('reads the list again after an unpin, so Load more neither skips a link nor runs forever', async () => {
+        // An old pin keeps link 1 on the first page. Unpinning it hands its
+        // place to link 51, which the server then has at index 99.
+        const all = makeLinks(150);
+        all[149].is_pinned = true;
+        serve(all);
+        const { user } = render(<Dashboard />);
+        await screen.findByText('Showing 100 of 150 links');
+        expect(listRequests()).toHaveLength(1);
+
+        await user.click(screen.getByRole('button', { name: 'Unpin link code0001' }));
+
+        await waitFor(() => expect(listRequests()).toHaveLength(2));
+        expect(listRequests()[1].has('offset')).toBe(false);
+        expect(listRequests()[1].get('limit')).toBe('100');
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin link code0001' })).not.toBeInTheDocument());
+
+        await user.click(screen.getByRole('button', { name: 'Load more' }));
+
+        expect(await screen.findByText('1 / 8')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+        expect(screen.queryByText(/of 150 links/)).not.toBeInTheDocument();
+        await user.type(screen.getByRole('searchbox', { name: 'Search links' }), 'Link 0051');
+        expect(await screen.findByText('Link 0051')).toBeInTheDocument();
+        // A hundred and fifty animated rows. Slow when the suite shares the CPU.
+    }, 20_000);
+
+    it('keeps a pin local when every link is already loaded', async () => {
+        const all = makeLinks(5);
+        serve(all);
+        const { user } = render(<Dashboard />);
+        await screen.findByText('Link 0001');
+
+        await user.click(screen.getByRole('button', { name: 'Pin link code0001' }));
+
+        expect(await screen.findByRole('button', { name: 'Unpin link code0001' })).toBeInTheDocument();
+        expect(listRequests()).toHaveLength(1);
+    });
 
     it('says that sorting covers only the loaded links', async () => {
         serve(makeLinks(250));
