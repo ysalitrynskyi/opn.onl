@@ -20,6 +20,7 @@ interface Org {
     created_at: string;
     member_count: number;
     link_count: number;
+    role?: string | null;
 }
 
 interface Member {
@@ -88,6 +89,15 @@ function calls(method: string, path: string) {
     });
 }
 
+function memberGets() {
+    return vi.mocked(fetch).mock.calls.flatMap((call) => {
+        const url = new URL(String(call[0]));
+        const init = call[1] as RequestInit | undefined;
+        const method = (init?.method ?? 'GET').toUpperCase();
+        return method === 'GET' && /^\/orgs\/\d+\/members$/.test(url.pathname) ? [url.pathname] : [];
+    });
+}
+
 function team(role: 'owner' | 'admin' | 'editor' | 'viewer') {
     const meMember: Member = { id: 1, user_id: ME.id, email: ME.email, role, joined_at: JOINED };
     const owner: Member = { id: 2, user_id: 99, email: 'owner@example.com', role: 'owner', joined_at: '2026-01-01T00:00:00Z' };
@@ -101,6 +111,7 @@ function team(role: 'owner' | 'admin' | 'editor' | 'viewer') {
         created_at: '2026-01-01T00:00:00Z',
         member_count: members.length,
         link_count: 2,
+        role,
     };
     return { org, members, meMember, ada };
 }
@@ -127,7 +138,7 @@ describe('Organizations page', () => {
         expect(fetch).not.toHaveBeenCalled();
     });
 
-    it('lists teams with the role from the members list', async () => {
+    it('lists each team with the role from the org list', async () => {
         const owned = team('owner');
         const viewer: Member = { id: 4, user_id: ME.id, email: ME.email, role: 'viewer', joined_at: JOINED };
         const beta: Org = {
@@ -138,6 +149,7 @@ describe('Organizations page', () => {
             created_at: '2026-01-04T00:00:00Z',
             member_count: 1,
             link_count: 0,
+            role: 'viewer',
         };
         install({
             orgs: [owned.org, beta],
@@ -151,8 +163,61 @@ describe('Organizations page', () => {
         expect(acme).toHaveTextContent('2 links');
         expect(screen.getByRole('button', { name: /Beta/ })).toHaveTextContent('Viewer');
         expect(screen.getByText('2 teams')).toBeInTheDocument();
-        // Role comes from the members call, not from owner_id alone.
-        expect(calls('GET', '/orgs/8/members').length).toBeGreaterThan(0);
+        // The role is on the list payload, so nothing fetches members yet.
+        expect(memberGets()).toEqual([]);
+        expect(calls('GET', '/auth/me')).toHaveLength(1);
+    });
+
+    it('loads members for the selected team only', async () => {
+        const orgs: Org[] = [];
+        const members: Record<number, Member[]> = {};
+        for (let id = 1; id <= 5; id += 1) {
+            orgs.push({
+                id,
+                name: `Team ${id}`,
+                slug: `team-${id}`,
+                owner_id: ME.id,
+                created_at: JOINED,
+                member_count: 1,
+                link_count: 0,
+                role: 'owner',
+            });
+            members[id] = [{ id, user_id: ME.id, email: ME.email, role: 'owner', joined_at: JOINED }];
+        }
+        install({ orgs, members });
+        const { user } = render(<Organizations />);
+
+        expect(await screen.findByRole('button', { name: /Team 1/ })).toBeInTheDocument();
+        expect(memberGets()).toEqual([]);
+        expect(calls('GET', '/auth/me')).toHaveLength(1);
+        expect(calls('GET', '/orgs')).toHaveLength(1);
+
+        await user.click(screen.getByRole('button', { name: /Team 3/ }));
+        expect(await screen.findByRole('heading', { name: 'Team 3' })).toBeInTheDocument();
+        expect(memberGets()).toEqual(['/orgs/3/members']);
+
+        await user.click(screen.getByRole('button', { name: /Team 1/ }));
+        expect(await screen.findByRole('heading', { name: 'Team 1' })).toBeInTheDocument();
+        expect(memberGets()).toEqual(['/orgs/3/members', '/orgs/1/members']);
+        expect(calls('GET', '/auth/me')).toHaveLength(1);
+    });
+
+    it('reads the role from the open team when the server omits it', async () => {
+        const fixture = team('editor');
+        delete fixture.org.role;
+        install({ orgs: [fixture.org], members: { 7: fixture.members } });
+        const { user } = render(<Organizations />);
+
+        const acme = await screen.findByRole('button', { name: /Acme/ });
+        expect(acme).toHaveTextContent('Unknown');
+        expect(memberGets()).toEqual([]);
+
+        await user.click(acme);
+        expect(await screen.findByText('ada@example.com')).toBeInTheDocument();
+        expect(acme).toHaveTextContent('Editor');
+        expect(screen.getByRole('button', { name: 'Leave team' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Add member' })).not.toBeInTheDocument();
+        expect(memberGets()).toEqual(['/orgs/7/members']);
     });
 
     it('shows an empty state when the account has no teams', async () => {
@@ -221,6 +286,7 @@ describe('Organizations page', () => {
                         created_at: JOINED,
                         member_count: 1,
                         link_count: 0,
+                        role: 'owner',
                     };
                     orgs.push(created);
                     members[7] = [{ id: 1, user_id: ME.id, email: ME.email, role: 'owner', joined_at: JOINED }];
@@ -237,6 +303,8 @@ describe('Organizations page', () => {
 
         expect(await screen.findByRole('heading', { name: 'Acme' })).toBeInTheDocument();
         expect(screen.getByText('Team created')).toBeInTheDocument();
+        await waitFor(() => expect(memberGets()).toEqual(['/orgs/7/members']));
+        expect(calls('GET', '/auth/me')).toHaveLength(1);
         expect(calls('POST', '/orgs')).toHaveLength(1);
         expect(calls('POST', '/orgs')[0][1]).toEqual(expect.objectContaining({
             method: 'POST',
@@ -401,6 +469,7 @@ describe('Organizations page', () => {
             handle(method, path, _search, body) {
                 if (method === 'POST' && path === '/orgs/7/transfer-ownership') {
                     fixture.org.owner_id = (body as { new_owner_user_id: number }).new_owner_user_id;
+                    fixture.org.role = 'admin';
                     fixture.meMember.role = 'admin';
                     fixture.ada.role = 'owner';
                     return { status: 200, body: fixture.org };
@@ -425,12 +494,13 @@ describe('Organizations page', () => {
         const only: Member = { id: 1, user_id: ME.id, email: ME.email, role: 'owner', joined_at: JOINED };
         const org: Org = {
             id: 7, name: 'Acme', slug: 'acme', owner_id: ME.id,
-            created_at: JOINED, member_count: 1, link_count: 0,
+            created_at: JOINED, member_count: 1, link_count: 0, role: 'owner',
         };
         install({ orgs: [org], members: { 7: [only] } });
         const { user } = render(<Organizations />);
         await user.click(await screen.findByRole('button', { name: /Acme/ }));
-        await user.click(await screen.findByRole('button', { name: 'Transfer ownership' }));
+        expect(await screen.findByText('me@example.com (you)')).toBeInTheDocument();
+        await user.click(screen.getByRole('button', { name: 'Transfer ownership' }));
         const dialog = screen.getByRole('dialog', { name: 'Transfer ownership' });
         expect(within(dialog).getByText('Add a member before transferring ownership.')).toBeInTheDocument();
         expect(within(dialog).queryByRole('button', { name: 'Transfer ownership' })).not.toBeInTheDocument();
@@ -477,6 +547,8 @@ describe('Organizations page', () => {
 
     it('shows a members refusal and hides management when the role cannot be loaded', async () => {
         const fixture = team('owner');
+        // An older list omits `role`, so a failed members load still leaves the role unknown.
+        delete fixture.org.role;
         install({
             orgs: [fixture.org],
             memberError: { status: 403, error: 'Not a member of this organization' },
@@ -518,5 +590,40 @@ describe('Organizations page', () => {
         const urls = calls('GET', '/orgs/7/audit').map((call) => String(call[0]));
         expect(urls.some((url) => url.includes('offset=0'))).toBe(true);
         expect(urls.some((url) => url.includes('offset=50'))).toBe(true);
+    });
+
+    it('shows the server rate-limit message and retries that team only', async () => {
+        const fixture = team('owner');
+        let limited = true;
+        install({
+            orgs: [fixture.org],
+            members: { 7: fixture.members },
+            handle(method, path) {
+                if (method === 'GET' && path === '/orgs/7/members' && limited) {
+                    return {
+                        status: 429,
+                        body: {
+                            error: 'Too many requests',
+                            retry_after: 1,
+                            message: 'Rate limit exceeded. Please try again in 1 seconds.',
+                        },
+                    };
+                }
+            },
+        });
+        const { user } = render(<Organizations />);
+        await user.click(await screen.findByRole('button', { name: /Acme/ }));
+
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveTextContent('Rate limit exceeded. Please try again in 1 seconds.');
+        expect(alert).not.toHaveTextContent('Too many requests');
+        expect(screen.getByLabelText('Member email')).toBeInTheDocument();
+
+        limited = false;
+        await user.click(screen.getByRole('button', { name: 'Try again' }));
+        expect(await screen.findByText('ada@example.com')).toBeInTheDocument();
+        expect(memberGets()).toEqual(['/orgs/7/members', '/orgs/7/members']);
+        expect(calls('GET', '/auth/me')).toHaveLength(1);
+        expect(calls('GET', '/orgs')).toHaveLength(1);
     });
 });

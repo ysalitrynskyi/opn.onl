@@ -9,8 +9,9 @@ import { pluralize } from '../utils/plural';
 import { safeLocalStorage } from '../utils/storage';
 import logger from '../utils/logger';
 
-// GET /orgs does not include the caller's role. The members list does, and
-// every member may read it, so the role shown here is that row.
+// GET /orgs carries the caller's role. Members are loaded for the team that
+// is open, which is also where an older server (no `role`) is read from.
+// The account is loaded once per visit.
 const AUDIT_PAGE = 50;
 
 const ASSIGNABLE_ROLES = ['admin', 'editor', 'viewer'] as const;
@@ -28,6 +29,9 @@ interface Org {
     created_at: string;
     member_count: number;
     link_count: number;
+    // Absent on a server that predates the field. Null when this response
+    // does not know the caller's role.
+    role?: string | null;
 }
 
 interface Member {
@@ -266,29 +270,26 @@ function ActivityLog({ orgId }: { orgId: number }) {
     );
 }
 
-async function membershipOf(org: Org, myId: number): Promise<OrgRow> {
-    try {
-        const res = await authFetch(API_ENDPOINTS.orgMembers(org.id));
-        if (!res.ok) {
-            return {
-                ...org,
-                myRole: null,
-                members: null,
-                membersError: await responseError(res, 'Could not load members'),
-            };
+// A 429's `error` is the generic "Too many requests". `message` says how long
+// to wait; `retry_after` is that wait in seconds when `message` is absent.
+async function membersFailure(response: Response): Promise<string> {
+    const body = await response.json().catch(() => null) as {
+        error?: string;
+        message?: string;
+        retry_after?: number;
+    } | null;
+    if (response.status === 429) {
+        if (body?.message) return body.message;
+        if (typeof body?.retry_after === 'number' && Number.isFinite(body.retry_after)) {
+            const seconds = Math.max(0, Math.ceil(body.retry_after));
+            return `Too many requests. Try again in ${seconds} ${pluralize(seconds, 'second')}.`;
         }
-        const members = await res.json() as Member[];
-        const mine = members.find((member) => member.user_id === myId);
-        return { ...org, myRole: mine?.role ?? null, members, membersError: null };
-    } catch (err) {
-        if (err instanceof SessionExpiredError) throw err;
-        return {
-            ...org,
-            myRole: null,
-            members: null,
-            membersError: failureMessage(err, 'Could not load members'),
-        };
     }
+    return body?.error || body?.message || 'Could not load members';
+}
+
+function listedRole(org: Org): string | null {
+    return typeof org.role === 'string' && org.role.length > 0 ? org.role : null;
 }
 
 export default function Organizations() {
@@ -319,20 +320,79 @@ export default function Organizations() {
     const orgsRef = useRef<OrgRow[]>([]);
     const loadSeq = useRef(0);
     const pendingSelect = useRef<number | null | undefined>(undefined);
+    const meRef = useRef<Profile | null>(null);
+    // Latest members request per team, so a slow answer cannot overwrite a newer one.
+    const membersSeq = useRef(new Map<number, number>());
 
     const selected = orgs.find((org) => org.id === selectedId) ?? null;
+
+    function patchOrg(orgId: number, update: (org: OrgRow) => OrgRow) {
+        setOrgs((prev) => {
+            const rows = prev.map((org) => (org.id === orgId ? update(org) : org));
+            orgsRef.current = rows;
+            return rows;
+        });
+    }
+
+    function startMembersLoad(orgId: number): number {
+        const seq = (membersSeq.current.get(orgId) ?? 0) + 1;
+        membersSeq.current.set(orgId, seq);
+        return seq;
+    }
+
+    async function loadMembers(orgId: number, seq: number) {
+        const mine = meRef.current?.id;
+        try {
+            const res = await authFetch(API_ENDPOINTS.orgMembers(orgId));
+            if (membersSeq.current.get(orgId) !== seq) return;
+            if (!res.ok) {
+                const message = await membersFailure(res);
+                if (membersSeq.current.get(orgId) !== seq) return;
+                patchOrg(orgId, (org) => ({ ...org, members: null, membersError: message }));
+                return;
+            }
+            const members = await res.json() as Member[];
+            if (membersSeq.current.get(orgId) !== seq) return;
+            patchOrg(orgId, (org) => ({
+                ...org,
+                // The list wins only when the org payload did not say.
+                myRole: org.role ?? members.find((member) => member.user_id === mine)?.role ?? null,
+                members,
+                membersError: null,
+            }));
+        } catch (err) {
+            if (membersSeq.current.get(orgId) !== seq) return;
+            logger.error('Failed to load organization members', err);
+            if (err instanceof SessionExpiredError) {
+                setLoadError(failureMessage(err, 'Could not load members'));
+            }
+            patchOrg(orgId, (org) => ({
+                ...org,
+                members: null,
+                membersError: failureMessage(err, 'Could not load members'),
+            }));
+        }
+    }
+
+    async function refreshMembers(orgId: number) {
+        await loadMembers(orgId, startMembersLoad(orgId));
+    }
 
     async function loadTeams(): Promise<boolean> {
         const seq = ++loadSeq.current;
         if (orgsRef.current.length === 0) setLoading(true);
         try {
-            const meRes = await authFetch(API_ENDPOINTS.userProfile);
-            if (seq !== loadSeq.current) return false;
-            if (!meRes.ok) {
-                setLoadError(await responseError(meRes, 'Could not load your account'));
-                return false;
+            let profile = meRef.current;
+            if (!profile) {
+                const meRes = await authFetch(API_ENDPOINTS.userProfile);
+                if (seq !== loadSeq.current) return false;
+                if (!meRes.ok) {
+                    setLoadError(await responseError(meRes, 'Could not load your account'));
+                    return false;
+                }
+                profile = await meRes.json() as Profile;
+                meRef.current = profile;
             }
-            const profile = await meRes.json() as Profile;
             const orgsRes = await authFetch(API_ENDPOINTS.orgs);
             if (seq !== loadSeq.current) return false;
             if (!orgsRes.ok) {
@@ -341,17 +401,29 @@ export default function Organizations() {
                 return false;
             }
             const list = await orgsRes.json() as Org[];
-            const rows = await Promise.all(list.map((org) => membershipOf(org, profile.id)));
             if (seq !== loadSeq.current) return false;
-            orgsRef.current = rows;
             setMe(profile);
-            setOrgs(rows);
+            setOrgs((prev) => {
+                const rows = list.map((org) => {
+                    const prior = prev.find((row) => row.id === org.id);
+                    const role = listedRole(org);
+                    return {
+                        ...org,
+                        role,
+                        myRole: role ?? prior?.myRole ?? null,
+                        members: prior?.members ?? null,
+                        membersError: prior?.membersError ?? null,
+                    };
+                });
+                orgsRef.current = rows;
+                return rows;
+            });
             setLoadError('');
             const wanted = pendingSelect.current;
             pendingSelect.current = undefined;
             setSelectedId((current) => {
                 if (wanted !== undefined) return wanted;
-                return current != null && rows.some((org) => org.id === current) ? current : null;
+                return current != null && list.some((org) => org.id === current) ? current : null;
             });
             return true;
         } catch (err) {
@@ -373,6 +445,23 @@ export default function Organizations() {
         void loadTeams();
         // Initial load only. Later refreshes call loadTeams directly.
     }, [navigate]);
+
+    useEffect(() => {
+        if (selectedId == null || me == null) return;
+        // Already loaded for this visit. A member change calls refreshMembers.
+        if (orgsRef.current.some((org) => org.id === selectedId && org.members)) return;
+        const seqs = membersSeq.current;
+        const seq = (seqs.get(selectedId) ?? 0) + 1;
+        seqs.set(selectedId, seq);
+        void loadMembers(selectedId, seq);
+        return () => {
+            // Drop this attempt if the team changed before it returned. A newer
+            // attempt for the same team has already replaced `seq`.
+            if (seqs.get(selectedId) === seq) seqs.set(selectedId, seq + 1);
+        };
+        // Reloads when the open team changes, not when its row is patched.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedId, me]);
 
     useEffect(() => {
         if (!selected) return;
@@ -452,10 +541,11 @@ export default function Organizations() {
     async function handleInvite(event: FormEvent) {
         event.preventDefault();
         if (!selected) return;
+        const orgId = selected.id;
         setNotice(null);
         setInviting(true);
         try {
-            const res = await authFetch(API_ENDPOINTS.orgMembers(selected.id), {
+            const res = await authFetch(API_ENDPOINTS.orgMembers(orgId), {
                 method: 'POST',
                 body: JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
             });
@@ -466,6 +556,7 @@ export default function Organizations() {
             setInviteEmail('');
             const ok = await loadTeams();
             if (ok) {
+                await refreshMembers(orgId);
                 setNotice({ tone: 'ok', text: 'Member added' });
                 bumpAudit();
             }
@@ -478,10 +569,11 @@ export default function Organizations() {
 
     async function handleRoleChange(member: Member, role: string) {
         if (!selected || role === member.role) return;
+        const orgId = selected.id;
         setNotice(null);
         setPendingMemberId(member.id);
         try {
-            const res = await authFetch(API_ENDPOINTS.orgMember(selected.id, member.id), {
+            const res = await authFetch(API_ENDPOINTS.orgMember(orgId, member.id), {
                 method: 'PUT',
                 body: JSON.stringify({ role }),
             });
@@ -491,6 +583,7 @@ export default function Organizations() {
             }
             const ok = await loadTeams();
             if (ok) {
+                await refreshMembers(orgId);
                 setNotice({ tone: 'ok', text: 'Role updated' });
                 bumpAudit();
             }
@@ -503,10 +596,11 @@ export default function Organizations() {
 
     async function handleRemove(member: Member) {
         if (!selected) return;
+        const orgId = selected.id;
         setDialogBusy(true);
         setNotice(null);
         try {
-            const res = await authFetch(API_ENDPOINTS.orgMember(selected.id, member.id), { method: 'DELETE' });
+            const res = await authFetch(API_ENDPOINTS.orgMember(orgId, member.id), { method: 'DELETE' });
             if (!res.ok) {
                 setNotice({ tone: 'error', text: await responseError(res, 'Could not remove member') });
                 return;
@@ -514,6 +608,7 @@ export default function Organizations() {
             setDialog(null);
             const ok = await loadTeams();
             if (ok) {
+                await refreshMembers(orgId);
                 setNotice({ tone: 'ok', text: 'Member removed' });
                 bumpAudit();
             }
@@ -547,12 +642,13 @@ export default function Organizations() {
 
     async function handleTransfer() {
         if (!selected) return;
+        const orgId = selected.id;
         const newOwnerUserId = Number(transferUserId);
         if (!Number.isInteger(newOwnerUserId)) return;
         setDialogBusy(true);
         setNotice(null);
         try {
-            const res = await authFetch(API_ENDPOINTS.orgTransfer(selected.id), {
+            const res = await authFetch(API_ENDPOINTS.orgTransfer(orgId), {
                 method: 'POST',
                 body: JSON.stringify({ new_owner_user_id: newOwnerUserId }),
             });
@@ -564,6 +660,7 @@ export default function Organizations() {
             setTransferUserId('');
             const ok = await loadTeams();
             if (ok) {
+                await refreshMembers(orgId);
                 setNotice({ tone: 'ok', text: 'Ownership transferred' });
                 bumpAudit();
             }
@@ -821,10 +918,13 @@ export default function Organizations() {
                                                 {selected.membersError && (
                                                     <div role="alert" className="mb-4 flex flex-col gap-3 text-sm text-danger sm:flex-row sm:items-center">
                                                         <span className="break-words">{selected.membersError}</span>
-                                                        <button type="button" className={quietBtn} onClick={() => { void loadTeams(); }}>
+                                                        <button type="button" className={quietBtn} onClick={() => { void refreshMembers(selected.id); }}>
                                                             Try again
                                                         </button>
                                                     </div>
+                                                )}
+                                                {selected.members == null && !selected.membersError && (
+                                                    <Loader2 className="mb-4 h-5 w-5 animate-spin text-primary-600" aria-label="Loading members" />
                                                 )}
                                                 {selected.members && selected.myRole == null && (
                                                     <p className="mb-4 text-sm text-muted">You are not listed as a member of this team.</p>
