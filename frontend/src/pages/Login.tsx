@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Fingerprint, Mail, Send, CheckCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { API_ENDPOINTS } from '../config/api';
+import { API_ENDPOINTS, emailVerificationRequired, responseDetail } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
@@ -16,6 +16,7 @@ export default function Login() {
     const [needsVerification, setNeedsVerification] = useState(false);
     const [resendLoading, setResendLoading] = useState(false);
     const [resendSuccess, setResendSuccess] = useState(false);
+    const [resendError, setResendError] = useState('');
     // Shown until the server says the instance has passkeys turned off. The
     // page is prerendered with no server to ask, and an instance that has them
     // (the default) should not see the button jump in once /auth/settings answers.
@@ -66,8 +67,9 @@ export default function Login() {
             if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
             safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
 
-            // Check if email needs verification
-            if (data.email_verified === false) {
+            // The account is unverified. Ask them to verify only when this
+            // instance requires it; a settings read that fails still does.
+            if (data.email_verified === false && await emailVerificationRequired()) {
                 setNeedsVerification(true);
                 return;
             }
@@ -83,6 +85,7 @@ export default function Login() {
     const handleResendVerification = async () => {
         setResendLoading(true);
         setResendSuccess(false);
+        setResendError('');
 
         try {
             const res = await fetch(API_ENDPOINTS.resendVerification, {
@@ -94,9 +97,11 @@ export default function Login() {
             if (res.ok) {
                 setResendSuccess(true);
                 setTimeout(() => setResendSuccess(false), 5000);
+            } else {
+                setResendError(await responseDetail(res, 'Could not resend the verification email'));
             }
         } catch {
-            // Silent fail
+            setResendError('Could not resend the verification email');
         } finally {
             setResendLoading(false);
         }
@@ -179,7 +184,7 @@ export default function Login() {
             if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
             safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
 
-            if (data.email_verified === false) {
+            if (data.email_verified === false && await emailVerificationRequired()) {
                 setNeedsVerification(true);
                 return;
             }
@@ -230,6 +235,9 @@ export default function Login() {
                                     : resendSuccess ? <><CheckCircle className="h-4 w-4" /> Email sent</>
                                     : <><Send className="h-4 w-4" /> Resend verification email</>}
                             </button>
+                            {resendError && (
+                                <p role="alert" className="text-sm text-danger">{resendError}</p>
+                            )}
                             <button
                                 onClick={handleContinueUnverified}
                                 className="w-full rounded-xl border border-line2 bg-surface py-3 font-medium text-ink transition-colors hover:border-ink/30"

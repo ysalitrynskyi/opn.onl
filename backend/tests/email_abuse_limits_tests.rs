@@ -613,20 +613,22 @@ async fn a_signed_in_user_is_told_when_the_server_cannot_send_email() {
         .json(&json!({ "email": user.email }))
         .await;
     assert_eq!(res.status_code(), 503, "{}", res.text());
-    assert!(
-        res.json::<Value>()["error"]
-            .as_str()
-            .unwrap()
-            .contains("not set up to send email")
+    assert_eq!(
+        res.json::<Value>()["error"],
+        "Email is not configured on this instance"
     );
 
-    // The anonymous answer stays uniform: it must not reveal anything.
+    // No SMTP is the same 503 for an anonymous caller, known or not, so the
+    // refusal still reveals nothing.
     let anonymous = server
         .post("/auth/resend-verification")
         .json(&json!({ "email": user.email }))
         .await;
-    assert_eq!(anonymous.status_code(), 200);
-    assert!(anonymous.text().contains("If account exists"));
+    assert_eq!(anonymous.status_code(), 503, "{}", anonymous.text());
+    assert_eq!(
+        anonymous.json::<Value>()["error"],
+        "Email is not configured on this instance"
+    );
 
     // Nothing to resend for a verified account, with or without mail.
     let verified = account(&db, true).await;

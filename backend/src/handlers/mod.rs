@@ -18,9 +18,22 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+use crate::AppState;
+use crate::entity::users;
+
 /// An error in the shape every JSON endpoint returns: `{"error": "..."}`.
 /// Some handlers answered with a bare text body instead, so a client had to
 /// guess per endpoint whether to parse JSON.
 pub fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({ "error": message.into() }))).into_response()
+}
+
+/// Whether `user` may use a feature that otherwise requires a verified email.
+///
+/// The stored `email_verified` flag is left as it is. Every guard (link
+/// create, API keys, passkey enrollment) must call this rather than read the
+/// column alone, so `REQUIRE_EMAIL_VERIFICATION=false` — the switch for an
+/// instance that has no SMTP — cannot be forgotten by the next check.
+pub fn verification_satisfied(state: &AppState, user: &users::Model) -> bool {
+    user.email_verified || !state.require_email_verification
 }

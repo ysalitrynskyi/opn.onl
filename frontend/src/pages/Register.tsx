@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Mail, Lock, Check, CheckCircle, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { API_ENDPOINTS } from '../config/api';
+import { API_ENDPOINTS, emailVerificationRequired, responseDetail } from '../config/api';
 import SEO from '../components/SEO';
 import { SIGN_IN_NEEDS_STORAGE, safeLocalStorage } from '../utils/storage';
 
@@ -18,6 +18,7 @@ export default function Register() {
     const [registrationComplete, setRegistrationComplete] = useState(false);
     const [resendLoading, setResendLoading] = useState(false);
     const [resendSuccess, setResendSuccess] = useState(false);
+    const [resendError, setResendError] = useState('');
     const navigate = useNavigate();
 
     // Redirect to dashboard if already logged in
@@ -48,11 +49,11 @@ export default function Register() {
             if (!safeLocalStorage.setItem('token', data.token)) throw new Error(SIGN_IN_NEEDS_STORAGE);
             safeLocalStorage.setItem('is_admin', data.is_admin ? 'true' : 'false');
             
-            // Check if email verification is required
-            if (data.email_verified === false) {
+            // Unverified accounts see the check-your-email screen only when this
+            // instance requires verification. A settings read that fails still shows it.
+            if (data.email_verified === false && await emailVerificationRequired()) {
                 setRegistrationComplete(true);
             } else {
-                // If email is already verified (e.g., SMTP not configured), go to dashboard
                 navigate('/dashboard');
             }
         } catch (err: unknown) {
@@ -65,6 +66,7 @@ export default function Register() {
     const handleResendVerification = async () => {
         setResendLoading(true);
         setResendSuccess(false);
+        setResendError('');
 
         try {
             const res = await fetch(API_ENDPOINTS.resendVerification, {
@@ -76,9 +78,11 @@ export default function Register() {
             if (res.ok) {
                 setResendSuccess(true);
                 setTimeout(() => setResendSuccess(false), 5000);
+            } else {
+                setResendError(await responseDetail(res, 'Could not resend the verification email'));
             }
         } catch {
-            // Silent fail - user can try again
+            setResendError('Could not resend the verification email');
         } finally {
             setResendLoading(false);
         }
@@ -137,6 +141,9 @@ export default function Register() {
                                     : resendSuccess ? <><CheckCircle className="h-4 w-4 text-success" /> Email sent</>
                                     : <><Send className="h-4 w-4" /> Resend email</>}
                             </button>
+                            {resendError && (
+                                <p role="alert" className="text-sm text-danger">{resendError}</p>
+                            )}
                         </div>
                         <p className="mt-4 text-xs text-faint">No email? Check spam, or resend above.</p>
                     </div>

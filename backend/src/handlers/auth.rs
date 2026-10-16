@@ -601,15 +601,7 @@ async fn resend_verification_to_owner(
         .as_ref()
         .filter(|service| service.is_configured())
     else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "This server is not set up to send email, so no verification email can be \
-                        sent. Ask the administrator to verify your account."
-                    .to_string(),
-            }),
-        )
-            .into_response();
+        return email_not_configured();
     };
 
     if let Err(denied) = email_service.reserve(MailKind::Verification, &user.email, &client.0) {
@@ -658,14 +650,35 @@ async fn resend_verification_to_owner(
     }
 }
 
+/// What every caller is told when this instance has no SMTP. The same sentence
+/// for a known address and an unknown one, so the refusal is not an account oracle.
+const EMAIL_NOT_CONFIGURED: &str = "Email is not configured on this instance";
+
+fn email_not_configured() -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorResponse {
+            error: EMAIL_NOT_CONFIGURED.to_string(),
+        }),
+    )
+        .into_response()
+}
+
 /// Resend verification email
 ///
-/// Anonymous callers always get the same `200`, whether or not the address
-/// belongs to an unverified account, so the endpoint cannot be used to look
-/// accounts up. A caller whose `Authorization` header authenticates the account
-/// named in the body is told what happened instead: `200` when the mail was sent
-/// (or the address is already verified), `429` with `Retry-After` when one was
-/// sent recently, `503` when the server cannot send email.
+/// With no SMTP, every caller gets `503` [`EMAIL_NOT_CONFIGURED`] except a
+/// signed-in user whose own address is already verified (that answer does not
+/// claim a mail was sent). Nothing is stored: the link already on the account
+/// stays as it is.
+///
+/// Otherwise anonymous callers always get the same `200`, whether or not the
+/// address belongs to an unverified account, so the endpoint cannot be used to
+/// look accounts up. A caller whose `Authorization` header authenticates the
+/// account named in the body is told what happened instead: `200` when the mail
+/// was sent (or the address is already verified), `429` with `Retry-After` when
+/// one was sent recently, `503` when the server cannot send email. Turning
+/// `REQUIRE_EMAIL_VERIFICATION` off does not stop a resend: an unverified
+/// account can still ask for the mail when SMTP works.
 ///
 /// An address is sent at most one verification email every 5 minutes and five a
 /// day, and one client IP can trigger at most 20 account emails an hour.
@@ -678,7 +691,7 @@ async fn resend_verification_to_owner(
         (status = 200, description = "Verification email sent if an unverified account exists", body = MessageResponse),
         (status = 400, description = "Email domain is not allowed"),
         (status = 401, description = "Credentials were sent but are invalid, expired or revoked"),
-        (status = 503, description = "Signed-in caller only: the server cannot send email right now"),
+        (status = 503, description = "Email is not configured on this instance, or a signed-in caller cannot be sent mail right now"),
     ),
     tag = "Authentication",
     security((), ("bearer_auth" = []), ("api_key" = []))
@@ -719,42 +732,43 @@ pub async fn resend_verification(
         user => user,
     };
 
+    // No transport: the same 503 for a known address and an unknown one, and
+    // the stored token is left alone. There is no link to protect and nothing
+    // to send, so claiming success here is how the button used to lie.
+    let Some(service) = state
+        .email_service
+        .as_ref()
+        .filter(|service| service.is_configured())
+    else {
+        return email_not_configured();
+    };
+
     // Always the same 200 body, including on verified / unknown / update
     // failure / withheld by the mail limits: distinct answers here enumerate
     // live accounts.
     if let Some(user) = user
         && !user.email_verified
+        && may_send_mail(service, MailKind::Verification, &user.email, &client)
     {
-        // With mail configured, a request the mail limits refuse changes
-        // nothing, so the link already mailed stays valid. Without mail there
-        // is no link to protect and the token is stored as before.
-        let service = state
-            .email_service
-            .as_ref()
-            .filter(|service| service.is_configured());
-        if service.is_none_or(|service| {
-            may_send_mail(service, MailKind::Verification, &user.email, &client)
-        }) {
-            let verification_token = generate_token();
-            let verification_expires = Utc::now() + Duration::hours(24);
+        // A request the mail limits refuse never reaches this point, so the
+        // link already mailed stays valid.
+        let verification_token = generate_token();
+        let verification_expires = Utc::now() + Duration::hours(24);
 
-            let mut active_user: users::ActiveModel = user.clone().into();
-            active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
-            active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
+        let mut active_user: users::ActiveModel = user.clone().into();
+        active_user.verification_token = Set(Some(hash_secret_token(&verification_token)));
+        active_user.verification_token_expires = Set(Some(verification_expires.naive_utc()));
 
-            if active_user.update(&state.db).await.is_ok() {
-                // Never wait for SMTP here: the answer is the same whether or
-                // not a mail went out, and so must be its timing.
-                if let Some(service) = service {
-                    let service = Arc::clone(service);
-                    let (to, token) = (user.email.clone(), verification_token);
-                    send_in_background("verification", async move {
-                        service.send_verification_email(&to, &token).await
-                    });
-                }
-            } else {
-                tracing::error!("Failed to generate verification token");
-            }
+        if active_user.update(&state.db).await.is_ok() {
+            // Never wait for SMTP here: the answer is the same whether or
+            // not a mail went out, and so must be its timing.
+            let service = Arc::clone(service);
+            let (to, token) = (user.email.clone(), verification_token);
+            send_in_background("verification", async move {
+                service.send_verification_email(&to, &token).await
+            });
+        } else {
+            tracing::error!("Failed to generate verification token");
         }
     }
 
@@ -1648,6 +1662,11 @@ pub struct AppSettingsResponse {
     pub conditional_routing_enabled: bool,
     pub link_in_bio_enabled: bool,
     pub api_keys_enabled: bool,
+    /// `REQUIRE_EMAIL_VERIFICATION`. Default true, read once at startup.
+    pub require_email_verification: bool,
+    /// Whether this process can send mail. Distinct from the switch above:
+    /// missing SMTP does not turn the requirement off.
+    pub email_configured: bool,
 }
 
 /// Get app settings
@@ -1659,7 +1678,7 @@ pub struct AppSettingsResponse {
     ),
     tag = "Authentication"
 )]
-pub async fn get_app_settings() -> impl IntoResponse {
+pub async fn get_app_settings(State(state): State<AppState>) -> impl IntoResponse {
     let account_deletion_enabled = env_flag("ENABLE_ACCOUNT_DELETION", false);
 
     let custom_aliases_enabled = env_flag("ENABLE_CUSTOM_ALIASES", true);
@@ -1703,6 +1722,14 @@ pub async fn get_app_settings() -> impl IntoResponse {
     // Passkeys kill-switch — default ON.
     let passkeys_enabled = env_flag("ENABLE_PASSKEYS", true);
 
+    // The value the process started with, not a fresh read: the guards use the
+    // same field, so the page and the API cannot disagree.
+    let require_email_verification = state.require_email_verification;
+    let email_configured = state
+        .email_service
+        .as_ref()
+        .is_some_and(|service| service.is_configured());
+
     (
         StatusCode::OK,
         Json(AppSettingsResponse {
@@ -1721,6 +1748,8 @@ pub async fn get_app_settings() -> impl IntoResponse {
             conditional_routing_enabled,
             link_in_bio_enabled,
             api_keys_enabled,
+            require_email_verification,
+            email_configured,
         }),
     )
 }

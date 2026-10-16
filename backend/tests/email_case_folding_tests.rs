@@ -192,7 +192,7 @@ async fn login_matches_the_address_in_any_case() {
 async fn forgot_password_and_resend_find_the_account_in_any_case() {
     let (server, db) = spawn_real_app().await;
     let mixed = mixed_email();
-    let (_, user_id) = register(&server, &mixed).await;
+    let (token, user_id) = register(&server, &mixed).await;
     assert!(
         column_text(&db, "password_reset_token", user_id)
             .await
@@ -213,15 +213,34 @@ async fn forgot_password_and_resend_find_the_account_in_any_case() {
         "forgot-password typed in lowercase did not find the account"
     );
 
+    // No SMTP: the resend is refused and the stored token stays. Finding the
+    // row is proved below, once the owner asks about an address that is
+    // already verified — an unknown address would not get that answer.
     let res = server
         .post("/auth/resend-verification")
         .json(&json!({ "email": mixed.to_uppercase() }))
         .await;
-    assert_eq!(res.status_code(), 200, "resend: {}", res.text());
-    let verification_after = column_text(&db, "verification_token", user_id).await;
-    assert_ne!(
-        verification_before, verification_after,
-        "resend-verification typed in uppercase did not find the account"
+    assert_eq!(res.status_code(), 503, "resend: {}", res.text());
+    assert_eq!(
+        res.json::<Value>()["error"],
+        "Email is not configured on this instance"
+    );
+    assert_eq!(
+        column_text(&db, "verification_token", user_id).await,
+        verification_before,
+        "resend without SMTP must not rotate the token"
+    );
+    mark_email_verified(&db, user_id).await;
+    let res = server
+        .post("/auth/resend-verification")
+        .authorization_bearer(&token)
+        .json(&json!({ "email": mixed.to_uppercase() }))
+        .await;
+    assert_eq!(res.status_code(), 200, "owner resend: {}", res.text());
+    assert!(
+        res.text().contains("already verified"),
+        "resend-verification typed in uppercase did not find the account: {}",
+        res.text()
     );
 
     // Anti-enumeration is unchanged: an unknown address gets the same answer.
@@ -244,6 +263,7 @@ async fn an_account_stored_in_mixed_case_is_still_found_in_any_case() {
     let (status, body) = login(&server, &legacy.to_lowercase(), PASSWORD).await;
     assert_eq!(status, 200, "login: {body}");
     assert_eq!(body["user_id"].as_i64(), Some(id as i64));
+    let token = body["token"].as_str().expect("token").to_string();
 
     let res = server
         .post("/auth/forgot-password")
@@ -259,10 +279,22 @@ async fn an_account_stored_in_mixed_case_is_still_found_in_any_case() {
         .post("/auth/resend-verification")
         .json(&json!({ "email": legacy.to_lowercase() }))
         .await;
-    assert_eq!(res.status_code(), 200);
+    assert_eq!(res.status_code(), 503, "resend: {}", res.text());
     assert!(
-        column_text(&db, "verification_token", id).await.is_some(),
-        "resend-verification did not find the mixed-case row"
+        column_text(&db, "verification_token", id).await.is_none(),
+        "resend without SMTP must not invent a token"
+    );
+    mark_email_verified(&db, id).await;
+    let res = server
+        .post("/auth/resend-verification")
+        .authorization_bearer(&token)
+        .json(&json!({ "email": legacy.to_uppercase() }))
+        .await;
+    assert_eq!(res.status_code(), 200, "owner resend: {}", res.text());
+    assert!(
+        res.text().contains("already verified"),
+        "resend-verification did not find the mixed-case row: {}",
+        res.text()
     );
 
     // And a new sign-up cannot take the same address in another spelling.

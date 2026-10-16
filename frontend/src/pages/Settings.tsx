@@ -6,7 +6,7 @@ import {
     ChevronRight, Loader2, Check, AlertTriangle,
     Fingerprint, Plus, User, Edit2, X, Globe, MapPin
 } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, failureMessage, responseError, shortLinkHost } from '../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, responseDetail, responseError, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { formatDate, isSafeHttpUrl } from '../utils';
@@ -62,6 +62,10 @@ interface AppSettings {
     passkeys_enabled: boolean;
     link_in_bio_enabled: boolean;
     api_keys_enabled: boolean;
+    // Absent on an older server. Missing means verification is still required.
+    require_email_verification?: boolean;
+    // True only when this process can send mail. Unknown hides the quiet resend.
+    email_configured?: boolean;
 }
 
 function errorMessage(err: unknown, fallback = 'Something went wrong'): string {
@@ -398,10 +402,7 @@ export default function Settings() {
             });
 
             if (!res.ok) {
-                const body = await res.json().catch(() => null) as { error?: string; message?: string } | null;
-                // A 429's `error` is the generic "Too many requests"; its `message` says what to do.
-                const detail = (res.status === 429 ? body?.message : undefined) || body?.error || body?.message;
-                throw new Error(detail || 'Failed to resend verification email');
+                throw new Error(await responseDetail(res, 'Failed to resend verification email'));
             }
             const body = await res.json().catch(() => null) as { message?: string } | null;
             setSuccess(body?.message || 'Verification email sent');
@@ -624,6 +625,13 @@ export default function Settings() {
 
     const inputClass = "w-full rounded-lg border border-line2 bg-surface px-4 py-2 text-sm text-ink outline-none transition-colors focus:border-primary-500 placeholder:text-faint";
     const labelClass = "block font-mono text-xs uppercase tracking-[0.14em] text-faint mb-1.5";
+    // Default stays "required", including while settings are missing.
+    const verificationRequired = appSettings?.require_email_verification !== false;
+    const passkeyNeedsVerification = !profile.email_verified && verificationRequired;
+    // The nag and its button stay while verification is required, so a server
+    // that cannot send mail can say so. Once it is optional, offer a resend
+    // only when mail is actually configured.
+    const showResend = !profile.email_verified && (verificationRequired || appSettings?.email_configured === true);
 
     return (
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -812,13 +820,14 @@ export default function Settings() {
                                     </div>
                                 </div>
 
-                                {/* Show resend verification only if NOT verified */}
-                                {profile && !profile.email_verified && (
+                                {showResend && (
                                     <div className="rounded-xl border border-warning/40 bg-warning/10 p-4">
                                         <div className="flex items-center justify-between gap-4">
                                             <div>
                                                 <p className="font-medium text-ink">Email not verified</p>
-                                                <p className="text-sm text-muted">Please verify your email to access all features.</p>
+                                                {verificationRequired && (
+                                                    <p className="text-sm text-muted">Please verify your email to access all features.</p>
+                                                )}
                                             </div>
                                             <button
                                                 onClick={handleResendVerification}
@@ -856,8 +865,8 @@ export default function Settings() {
                                 </div>
                                 <button
                                     onClick={handleRegisterPasskey}
-                                    disabled={registeringPasskey || !profile.email_verified}
-                                    aria-describedby={profile.email_verified ? undefined : 'passkey-verify-hint'}
+                                    disabled={registeringPasskey || passkeyNeedsVerification}
+                                    aria-describedby={passkeyNeedsVerification ? 'passkey-verify-hint' : undefined}
                                     className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
                                 >
                                     {registeringPasskey ? (
@@ -868,7 +877,7 @@ export default function Settings() {
                                     Add Passkey
                                 </button>
                             </div>
-                            {!profile.email_verified && (
+                            {passkeyNeedsVerification && (
                                 <p id="passkey-verify-hint" className="mt-3 text-xs text-warning">
                                     Verify your email to add a passkey.
                                 </p>

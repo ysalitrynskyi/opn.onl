@@ -187,6 +187,19 @@ impl EmailService {
         self.mailer.is_some()
     }
 
+    /// A service that reports itself configured, aimed at a port that accepts
+    /// nothing. Integration tests use it so they can set `email_configured`
+    /// without writing `SMTP_*` into the shared process environment. Sends fail.
+    pub fn configured_for_tests() -> Self {
+        let mut service = Self::new();
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+            .port(1)
+            .tls(lettre::transport::smtp::client::Tls::None)
+            .build();
+        service.mailer = Some(mailer);
+        service
+    }
+
     /// Ask to send one mail of `kind` to `recipient` because of a request from
     /// `client` (its [`ClientKey`](super::rate_limiter::ClientKey)). `Ok`
     /// spends the recipient's and the client's allowance; the caller then

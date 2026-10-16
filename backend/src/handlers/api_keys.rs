@@ -12,8 +12,8 @@ use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::entity::{api_keys, users};
-use crate::handlers::json_error;
 use crate::handlers::links::{ApiKeyScope, get_jwt_auth_from_header, hash_api_key};
+use crate::handlers::{json_error, verification_satisfied};
 use crate::utils::env::env_flag;
 use crate::utils::time::utc_rfc3339;
 
@@ -145,7 +145,7 @@ pub async fn create_api_key(
             return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
         }
     };
-    if !user.email_verified {
+    if !verification_satisfied(&state, &user) {
         let _ = txn.rollback().await;
         return json_error(
             StatusCode::FORBIDDEN,

@@ -225,6 +225,28 @@ export async function responseError(response: Response, fallback: string): Promi
     return body?.error || body?.message || fallback;
 }
 
+// A 429's `error` is the generic "Too many requests"; its `message` says what
+// to do. Everywhere else the `error` string is the one to show.
+export async function responseDetail(response: Response, fallback: string): Promise<string> {
+    const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
+    if (response.status === 429 && body?.message) return body.message;
+    return body?.error || body?.message || fallback;
+}
+
+// `REQUIRE_EMAIL_VERIFICATION`, from GET /auth/settings. Missing, or a read
+// that fails, stays required: that is the default, and an old server does not
+// send the field.
+export async function emailVerificationRequired(): Promise<boolean> {
+    try {
+        const res = await fetch(API_ENDPOINTS.appSettings);
+        if (!res.ok) return true;
+        const settings = await res.json();
+        return settings?.require_email_verification !== false;
+    } catch {
+        return true;
+    }
+}
+
 // Helper for API calls with error handling
 export async function apiCall<T>(
     url: string,

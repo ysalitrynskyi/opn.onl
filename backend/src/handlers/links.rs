@@ -19,11 +19,11 @@ use validator::Validate;
 
 use crate::AppState;
 use crate::entity::{blocked_domains, blocked_links, click_events, link_tags, links, tags, users};
-use crate::handlers::json_error;
 use crate::handlers::link_access::{
     CallerAccess, LinkAction, listed_links, live_link_for, readable_links,
 };
 use crate::handlers::websocket::ClickEvent;
+use crate::handlers::{json_error, verification_satisfied};
 use crate::utils::env::env_flag;
 use crate::utils::geoip::{GeoLocation, UserAgentInfo, lookup_ip, parse_user_agent};
 use crate::utils::jwt::{PASSWORD_TOO_LONG, decode_jwt, password_exceeds_bcrypt_limit};
@@ -1562,7 +1562,7 @@ pub async fn create_link(
             .flatten();
 
         if let Some(u) = user
-            && !u.email_verified
+            && !verification_satisfied(&state, &u)
         {
             return (
                 StatusCode::FORBIDDEN,
@@ -4671,7 +4671,7 @@ pub async fn bulk_create_links(
             .flatten();
 
         if let Some(u) = user
-            && !u.email_verified
+            && !verification_satisfied(&state, &u)
         {
             return (
                 StatusCode::FORBIDDEN,

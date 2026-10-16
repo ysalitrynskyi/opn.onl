@@ -215,15 +215,16 @@ the frontend yourself (`docker compose up -d --build` from Option 1, or
 | `SMTP_FROM_NAME` | opn.onl | From display name (commas and quotes are fine) |
 | `ADMIN_EMAIL` | - | Where contact-form messages are delivered. There is no default: while it is unset the contact form answers `503` and mails nobody |
 | `EMAIL_RATE_LIMIT_PER_HOUR` | 500 | Most emails the instance sends per hour in total. Split 70% account mail (verification, password reset, welcome), 20% security notices (password changed) and 10% contact form, so a flood of one kind cannot starve the others |
+| `REQUIRE_EMAIL_VERIFICATION` | true | Set to false only if your instance has no SMTP; anyone can then sign up with an address they do not own. |
 
-Without SMTP, verification, password-reset and password-changed emails are not sent, and the
-contact form answers `503` ("not delivered") instead of accepting a message it has nowhere to send.
+Without SMTP, verification, password-reset and password-changed emails are not sent.
+`POST /auth/resend-verification` then answers `503` (`Email is not configured on this instance`) for every caller, except a signed-in user whose own address is already verified. That refusal does not say whether the address has an account. `REQUIRE_EMAIL_VERIFICATION` stays on unless you set it false: missing SMTP does not turn it off, and accounts stay unable to create links, API keys or passkeys until you do. The contact form answers `503` ("not delivered") instead of accepting a message it has nowhere to send.
 Every email carries a plain-text part alongside the HTML.
 
 Mail that a request can trigger (`register`, `forgot-password`, `resend-verification`) is limited
 per address and per client, on top of the hourly total. An address is sent at most one verification
 email and one password-reset email every 5 minutes, and five of each a day. One client IP can
-trigger at most 20 of these emails an hour. A request past a limit gets the same answer as one that
+trigger at most 20 of these emails an hour. When email is configured, a request past a limit gets the same answer as one that
 sent mail, sends nothing, and leaves the link already mailed valid, so the answers never reveal
 whether an address has an account. A signed-in user asking for their own verification email is told
 instead: `429` with `Retry-After`, or `503` when the server cannot send email. Client IPs follow
@@ -232,7 +233,7 @@ one budget. The limits are kept in memory, so a restart clears them.
 
 ### Link Management
 
-Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`)
+Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`, `REQUIRE_EMAIL_VERIFICATION`)
 accepts `true` or `false`, also written `1`/`0`, `yes`/`no` or `on`/`off`, in any case. Any other value
 is ignored with a warning in the log and the default applies.
 

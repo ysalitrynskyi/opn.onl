@@ -101,6 +101,9 @@ services:
       SMTP_TLS: ${SMTP_TLS:-starttls}
       EMAIL_RATE_LIMIT_PER_HOUR: ${EMAIL_RATE_LIMIT_PER_HOUR:-500}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      # Set to false only if your instance has no SMTP; anyone can then sign up
+      # with an address they do not own. Default true. Missing SMTP does not turn this off.
+      REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
       BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
       BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
       BACKUP_S3_ACCESS_KEY: ${BACKUP_S3_ACCESS_KEY:-}

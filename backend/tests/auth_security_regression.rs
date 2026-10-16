@@ -776,11 +776,12 @@ async fn resend_verification_does_not_enumerate_accounts() {
     let verified = post(&verified_email).await;
     let unknown = post(&unknown_email).await;
 
-    assert_eq!(unverified.status_code(), 200, "{}", unverified.text());
-    assert!(
-        unverified.text().contains("If account exists"),
-        "generic body: {}",
-        unverified.text()
+    // This server has no SMTP, so every anonymous resend is the same 503.
+    // Distinct answers here would say which addresses exist.
+    assert_eq!(unverified.status_code(), 503, "{}", unverified.text());
+    assert_eq!(
+        unverified.text(),
+        r#"{"error":"Email is not configured on this instance"}"#
     );
     assert_eq!(
         (verified.status_code(), verified.text()),

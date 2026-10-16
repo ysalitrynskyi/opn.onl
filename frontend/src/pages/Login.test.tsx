@@ -213,6 +213,71 @@ describe('Login Page', () => {
     }
   });
 
+  it('asks an unverified account to verify when the instance requires it', async () => {
+    vi.mocked(global.fetch).mockImplementation(((url: string) => {
+      if (url.includes('/auth/login')) {
+        return mockFetchResponse({ token: mockToken, email_verified: false });
+      }
+      return mockFetchResponse({ require_email_verification: true, passkeys_enabled: true });
+    }) as any);
+
+    const { user } = render(<Login />, { route: '/login' });
+    await user.type(screen.getByLabelText(/email address/i), 'test@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'password123');
+    await user.click(screen.getByRole('button', { name: /^sign in$/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Verify your email' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/login');
+    expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/auth/settings'));
+  });
+
+  it('sends an unverified account to the dashboard when verification is not required', async () => {
+    vi.mocked(global.fetch).mockImplementation(((url: string) => {
+      if (url.includes('/auth/login')) {
+        return mockFetchResponse({ token: mockToken, email_verified: false });
+      }
+      return mockFetchResponse({ require_email_verification: false, passkeys_enabled: true });
+    }) as any);
+
+    const { user } = render(<Login />, { route: '/login' });
+    await user.type(screen.getByLabelText(/email address/i), 'test@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'password123');
+    await user.click(screen.getByRole('button', { name: /^sign in$/i }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/dashboard');
+    });
+    expect(screen.queryByRole('heading', { name: 'Verify your email' })).not.toBeInTheDocument();
+  });
+
+  it('shows the server error when a verification email cannot be sent', async () => {
+    vi.mocked(global.fetch).mockImplementation(((url: string) => {
+      if (url.includes('/auth/resend-verification')) {
+        return mockFetchResponse({ error: 'Email is not configured on this instance' }, 503);
+      }
+      if (url.includes('/auth/login')) {
+        return mockFetchResponse({ token: mockToken, email_verified: false });
+      }
+      return mockFetchResponse({ require_email_verification: true, passkeys_enabled: true });
+    }) as any);
+
+    const { user } = render(<Login />, { route: '/login' });
+    await user.type(screen.getByLabelText(/email address/i), 'test@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'password123');
+    await user.click(screen.getByRole('button', { name: /^sign in$/i }));
+    await user.click(await screen.findByRole('button', { name: /resend verification email/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Email is not configured on this instance');
+    expect(screen.queryByText('Email sent')).not.toBeInTheDocument();
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/auth/resend-verification'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ email: 'test@example.com' }),
+      }),
+    );
+  });
+
   it('shows error on failed login', async () => {
     vi.mocked(global.fetch).mockResolvedValue(
       mockFetchError('Invalid credentials', 401) as any
