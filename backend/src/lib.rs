@@ -27,7 +27,7 @@ use tower_http::trace::TraceLayer;
 
 use handlers::websocket::WsState;
 use utils::cache::RedisCache;
-use utils::env::env_flag;
+use utils::env::{env_flag, normalize_public_base};
 use utils::rate_limiter::{RateLimiters, rate_limit_middleware};
 use utils::{BackupService, ClickBuffer, EmailService};
 
@@ -300,14 +300,12 @@ pub fn build_cors() -> CorsLayer {
     use axum::http::HeaderValue;
     let mut origins: Vec<HeaderValue> = Vec::new();
     for var in ["FRONTEND_URL", "BASE_URL"] {
-        if let Ok(val) = std::env::var(var) {
-            let trimmed = val.trim().trim_end_matches('/');
-            if !trimmed.is_empty()
-                && let Ok(hv) = trimmed.parse::<HeaderValue>()
-                && !origins.contains(&hv)
-            {
-                origins.push(hv);
-            }
+        if let Ok(val) = std::env::var(var)
+            && let Some(trimmed) = normalize_public_base(&val)
+            && let Ok(hv) = trimmed.parse::<HeaderValue>()
+            && !origins.contains(&hv)
+        {
+            origins.push(hv);
         }
     }
 

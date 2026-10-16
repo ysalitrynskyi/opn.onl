@@ -722,9 +722,8 @@ pub async fn get_folder_links(
             )
         })?;
 
-    let base_url =
-        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
-    let api_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let base_url = crate::handlers::links::get_base_url();
+    let api_url = crate::handlers::links::get_api_url();
     let mut responses = Vec::new();
     for l in links_list {
         let link_tags = tags_by_link.remove(&l.id).unwrap_or_default();

@@ -1876,14 +1876,16 @@ pub async fn reject_read_only_api_key_writes(
     }
 }
 
-fn get_base_url() -> String {
-    // Use FRONTEND_URL for short links (e.g., https://opn.onl)
-    std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string())
+pub(crate) fn get_base_url() -> String {
+    // Short links are handed out as `{FRONTEND_URL}/{code}`. A trailing slash
+    // on the setting would make `https://opn.onl//code`, which the frontend
+    // proxy does not route as a code.
+    crate::utils::env::frontend_base_url()
 }
 
-fn get_api_url() -> String {
-    // Use BASE_URL for direct API/redirect links (e.g., https://l.opn.onl)
-    std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
+pub(crate) fn get_api_url() -> String {
+    // Direct API/redirect links (e.g. https://l.opn.onl/{code}).
+    crate::utils::env::api_base_url()
 }
 
 fn burn_feature_enabled() -> bool {
@@ -1904,7 +1906,7 @@ fn frontend_interstitial_redirect(code: &str, unlock: Option<&str>) -> axum::res
     // Send to the SPA interstitial route (/r/<code>), NOT the bare short link —
     // the bare path is proxied straight back here and would loop. The SPA shows
     // the "you're leaving" screen and re-hits this endpoint with ?confirm=1.
-    let frontend = get_base_url().trim_end_matches('/').to_string();
+    let frontend = get_base_url();
     let mut location = format!("{frontend}/r/{code}");
     if let Some(unlock) = unlock {
         location.push_str("?unlock=");
@@ -2747,9 +2749,12 @@ fn dead_link(headers: &HeaderMap, status: StatusCode, reason: &str) -> axum::res
             .into_response();
     }
 
+    // Unset, blank or not an http(s) URL stays a relative "/", so the page
+    // links to whatever host served it. A configured URL loses its trailing
+    // slash the same way short links do.
     let home = std::env::var("FRONTEND_URL")
         .ok()
-        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .and_then(|url| crate::utils::env::normalize_public_base(&url))
         .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
         .unwrap_or_else(|| "/".to_string());
     let site = url::Url::parse(&home)
@@ -3087,9 +3092,7 @@ pub async fn redirect_link(
                 .get("x-link-password")
                 .and_then(|header| header.to_str().ok())
             else {
-                let frontend_url = std::env::var("FRONTEND_URL")
-                    .unwrap_or_else(|_| "http://localhost:5173".to_string());
-                return Redirect::temporary(&format!("{}/password/{}", frontend_url, code))
+                return Redirect::temporary(&format!("{}/password/{}", get_base_url(), code))
                     .into_response();
             };
 
@@ -3557,7 +3560,7 @@ pub async fn verify_link_password(
     // interstitial, conditional routing, cap consumption, and click accounting.
     let redirect_url = format!(
         "{}/{}?unlock={}",
-        get_base_url().trim_end_matches('/'),
+        get_base_url(),
         urlencoding::encode(&link.code),
         urlencoding::encode(&unlock),
     );
@@ -4476,6 +4479,50 @@ pub async fn replace_routing_rules(
         .into_response()
 }
 
+/// `EXISTS` for a tag whose name matches `pattern` (`ilike_pattern` output)
+/// and which is in scope for that link: an organization link matches tags of
+/// that organization, a personal link matches the caller's own personal tags.
+/// Same rule as `tags::tag_matches_link_scope`.
+///
+/// Correlated on `link_tags.link_id` (`idx_link_tags_link_id`), then the tag
+/// primary key. The `ILIKE` runs over the handful of tags on the candidate
+/// link, so `tags.name` does not need its own index. `idx_tags_user_id` and
+/// `idx_tags_org_id` are not the access path: the link id selects the rows.
+fn tag_name_matches(user_id: i32, pattern: &str) -> sea_orm::sea_query::SimpleExpr {
+    let in_scope = Condition::any()
+        .add(
+            Condition::all()
+                .add(Expr::col((links::Entity, links::Column::OrgId)).is_not_null())
+                .add(
+                    Expr::col((tags::Entity, tags::Column::OrgId))
+                        .equals((links::Entity, links::Column::OrgId)),
+                ),
+        )
+        .add(
+            Condition::all()
+                .add(Expr::col((links::Entity, links::Column::OrgId)).is_null())
+                .add(Expr::col((tags::Entity, tags::Column::OrgId)).is_null())
+                .add(Expr::col((tags::Entity, tags::Column::UserId)).eq(user_id)),
+        );
+    Expr::exists(
+        sea_orm::sea_query::Query::select()
+            .expr(Expr::val(1))
+            .from(link_tags::Entity)
+            .inner_join(
+                tags::Entity,
+                Expr::col((link_tags::Entity, link_tags::Column::TagId))
+                    .equals((tags::Entity, tags::Column::Id)),
+            )
+            .and_where(
+                Expr::col((link_tags::Entity, link_tags::Column::LinkId))
+                    .equals((links::Entity, links::Column::Id)),
+            )
+            .and_where(Expr::col((tags::Entity, tags::Column::Name)).ilike(pattern))
+            .cond_where(in_scope)
+            .to_owned(),
+    )
+}
+
 /// Get user's links with filtering
 #[utoipa::path(
     get,
@@ -4484,7 +4531,7 @@ pub async fn replace_routing_rules(
     responses(
         (
             status = 200,
-            description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member. Pinned links first, then newest first (limit defaults to 1000, maximum 1000). `search` is a case-insensitive substring match on URL, code, title and notes. `bio_visible` keeps only links that are or are not on a bio page",
+            description = "The caller's non-deleted links, or every non-deleted link of the organization given by `org_id` when the caller is a member. Pinned links first, then newest first (limit defaults to 1000, maximum 1000). `search` is a case-insensitive substring match on URL, code, title, notes and the name of a tag in the link's scope. `bio_visible` keeps only links that are or are not on a bio page",
             body = Vec<LinkResponse>,
             headers(("X-Total-Count" = u64, description = "How many links match the filters, ignoring `limit` and `offset`"))
         ),
@@ -4521,11 +4568,14 @@ pub async fn get_user_links(
         link_query = link_query.filter(links::Column::FolderId.eq(folder_id));
     }
 
-    // Search by URL, code, title, or notes: a case-insensitive substring match
-    // in which `%` and `_` in the text are ordinary characters. ILIKE '%…%'
-    // cannot use btree idx_links_original_url (or any btree). A pg_trgm GIN
-    // index is the real answer if this filter becomes hot; do not add another
-    // btree expecting it to serve a leading wildcard.
+    // Search by URL, code, title, notes, or an in-scope tag name: a
+    // case-insensitive substring match in which `%` and `_` are ordinary
+    // characters. ILIKE '%…%' cannot use btree idx_links_original_url (or any
+    // btree). A pg_trgm GIN index is the real answer if a column filter
+    // becomes hot; do not add another btree expecting it to serve a leading
+    // wildcard. The tag arm is an EXISTS from link_tags.link_id
+    // (idx_link_tags_link_id) to the tag primary key, so that ILIKE only sees
+    // the tags on the candidate link.
     if let Some(search) = query.search {
         let pattern = ilike_pattern(&search);
         link_query = link_query.filter(
@@ -4533,7 +4583,8 @@ pub async fn get_user_links(
                 .add(Expr::col((links::Entity, links::Column::OriginalUrl)).ilike(pattern.clone()))
                 .add(Expr::col((links::Entity, links::Column::Code)).ilike(pattern.clone()))
                 .add(Expr::col((links::Entity, links::Column::Title)).ilike(pattern.clone()))
-                .add(Expr::col((links::Entity, links::Column::Notes)).ilike(pattern)),
+                .add(Expr::col((links::Entity, links::Column::Notes)).ilike(pattern.clone()))
+                .add(tag_name_matches(user_id, &pattern)),
         );
     }
 

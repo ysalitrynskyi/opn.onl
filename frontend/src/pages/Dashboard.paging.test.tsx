@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '../test/test-utils';
 import Dashboard from './Dashboard';
 
+type LinkTag = { id: number; name: string; color: string | null };
+
 function makeLink(n: number, overrides: Record<string, unknown> = {}) {
     const label = String(n).padStart(4, '0');
     return {
@@ -14,10 +16,10 @@ function makeLink(n: number, overrides: Record<string, unknown> = {}) {
         created_at: '2026-01-01T00:00:00Z',
         expires_at: null,
         has_password: false,
-        notes: null,
+        notes: null as string | null,
         is_active: true,
         is_pinned: false,
-        tags: [],
+        tags: [] as LinkTag[],
         ...overrides,
     };
 }
@@ -61,9 +63,16 @@ function serve(all: ReturnType<typeof makeLinks>, account = { total_clicks: 0 })
             return json({ links: [{}], errors: [] });
         }
         if (url.pathname === '/links' && method === 'GET') {
-            const search = url.searchParams.get('search') ?? '';
+            const search = (url.searchParams.get('search') ?? '').toLowerCase();
+            // Same fields as GET /links: URL, code, title, notes, and tag names.
             const matching = search
-                ? all.filter(l => `${l.original_url} ${l.code} ${l.title}`.includes(search))
+                ? all.filter(l => {
+                    const tagNames = Array.isArray(l.tags) ? l.tags.map(tag => tag.name).join(' ') : '';
+                    return [l.original_url, l.code, l.title ?? '', l.notes ?? '', tagNames]
+                        .join(' ')
+                        .toLowerCase()
+                        .includes(search);
+                })
                 : all;
             const limit = Number(url.searchParams.get('limit') ?? 1000);
             const offset = Number(url.searchParams.get('offset') ?? 0);
@@ -203,6 +212,29 @@ describe('Dashboard paging', () => {
         expect(listRequests().at(-1)?.has('search')).toBe(false);
     });
 
+    it('finds a link by its tag when the list is paged', async () => {
+        const all = makeLinks(250);
+        // Past the first page, and "spring" is nowhere but the tag name.
+        all[200] = {
+            ...all[200],
+            title: 'Link 0050',
+            original_url: 'https://example.com/page-0050',
+            notes: null,
+            tags: [{ id: 1, name: 'spring', color: null }],
+        };
+        serve(all);
+        const { user } = render(<Dashboard />);
+        await screen.findByText('Showing 100 of 250 links');
+        expect(screen.queryByText('Link 0050')).not.toBeInTheDocument();
+
+        await user.type(screen.getByRole('searchbox', { name: 'Search links' }), 'spring');
+
+        expect(await screen.findByText('Link 0050', undefined, { timeout: 3000 })).toBeInTheDocument();
+        const search = listRequests().filter(p => p.has('search'));
+        expect(search).toHaveLength(1);
+        expect(search[0].get('search')).toBe('spring');
+    });
+
     it('keeps the search box when the server finds nothing', async () => {
         serve(makeLinks(250));
         const { user } = render(<Dashboard />);
@@ -246,7 +278,8 @@ describe('Dashboard paging', () => {
         await waitFor(() => expect(listRequests()).toHaveLength(3));
         expect(listRequests()[2].get('limit')).toBe('200');
         expect(await screen.findByText('Showing 200 of 251 links')).toBeInTheDocument();
-    });
+        // Two reloads of a couple of hundred rows; slow when the suite shares the CPU.
+    }, 20_000);
 
     it('says that sorting covers only the loaded links', async () => {
         serve(makeLinks(250));

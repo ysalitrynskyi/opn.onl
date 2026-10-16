@@ -428,8 +428,7 @@ pub async fn get_public_bio(
         _ => return json_error(StatusCode::NOT_FOUND, "Not found"),
     };
 
-    let base_url =
-        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let base_url = crate::handlers::links::get_base_url();
 
     // Organization links stay on the page only while their creator still
     // belongs to the organization.
