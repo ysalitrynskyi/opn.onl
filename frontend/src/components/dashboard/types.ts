@@ -39,3 +39,22 @@ export interface LinkUpdatePayload {
     safe_link_interstitial?: boolean;
     bio_visible?: boolean;
 }
+
+export interface AppSettings {
+    custom_aliases_enabled: boolean;
+    min_alias_length: number;
+    max_alias_length: number;
+    qr_branding_enabled: boolean;
+    burn_after_reading_enabled: boolean;
+    safe_link_interstitial_enabled: boolean;
+    conditional_routing_enabled: boolean;
+    link_in_bio_enabled: boolean;
+}
+
+export type LinkSortBy = 'date' | 'clicks';
+export type LinkSortOrder = 'asc' | 'desc';
+
+export interface SparklineSeries {
+    data: number[];
+    labels: string[];
+}
