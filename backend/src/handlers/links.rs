@@ -139,21 +139,24 @@ pub(crate) async fn destination_is_blocklisted<C: ConnectionTrait>(
 
 /// Confirm that a cached redirect still represents the active database row.
 ///
-/// Generation checks prevent stale writes after successful invalidation. This
-/// read is the fail-closed backstop for a security-state invalidation that could
-/// not reach Redis (delete, password/cap/interstitial change, or routing rules).
+/// `Ok(Some(click_count))` is that row's current click count: the realtime
+/// broadcast adds one to it, the same baseline a cache miss uses. `Ok(None)`
+/// means the entry must not be served (gone, inactive, or a security field
+/// changed) and the caller falls through to the database. Generation checks
+/// prevent stale writes after a successful invalidation; this read is the
+/// fail-closed backstop when that invalidation could not reach Redis.
 async fn cached_link_is_still_plain(
     db: &DatabaseConnection,
     code: &str,
     cached: &crate::utils::cache::CachedLink,
-) -> Result<bool, DbErr> {
+) -> Result<Option<i64>, DbErr> {
     let Some(current) = links::Entity::find_by_id(cached.id)
         .filter(links::Column::Code.eq(code))
         .filter(links::Column::DeletedAt.is_null())
         .one(db)
         .await?
     else {
-        return Ok(false);
+        return Ok(None);
     };
 
     if !current.is_active()
@@ -168,14 +171,26 @@ async fn cached_link_is_still_plain(
         || current.starts_at.map(|value| value.and_utc().timestamp()) != cached.starts_at
         || !link_owner_is_active(db, &current).await?
     {
-        return Ok(false);
+        return Ok(None);
     }
 
     let routing_rule_count = crate::entity::routing_rules::Entity::find()
         .filter(crate::entity::routing_rules::Column::LinkId.eq(current.id))
         .count(db)
         .await?;
-    Ok(routing_rule_count == 0)
+    if routing_rule_count != 0 {
+        return Ok(None);
+    }
+    Ok(Some(current.click_count))
+}
+
+/// A lookup that failed is not a missing link. Callers (and caches) must not
+/// be told the code is free because the pool timed out.
+fn link_state_unavailable() -> (StatusCode, &'static str) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Unable to verify link state",
+    )
 }
 
 /// Validate organization membership plus exact folder/tag ownership scope.
@@ -2893,6 +2908,7 @@ pub async fn redirect_report_code(
         (status = 401, description = "Only a wrong X-Link-Password. The body is plain text: Invalid password. A missing header is a 307 to the password page, not a 401"),
         (status = 200, description = "A HEAD, or a GET from a known link-preview bot, on a one-time or click-capped link that is neither password-protected nor behind the interstitial: no destination, and nothing is used up"),
         (status = 404, description = "Link not found"),
+        (status = 503, description = "The link could not be looked up or its state could not be verified (database unavailable). Never reported as a missing link"),
     ),
     tag = "Links"
 )]
@@ -2919,31 +2935,29 @@ pub async fn redirect_link(
                         && cached.max_clicks.is_none()
                         && !cached.safe_link_interstitial
                     {
-                        let still_plain =
+                        let fresh_click_count =
                             match cached_link_is_still_plain(&state.db, &code, &cached).await {
-                                Ok(still_plain) => still_plain,
+                                Ok(Some(click_count)) => Some(click_count),
+                                Ok(None) => {
+                                    if let Err(error) = cache.invalidate_link(&code).await {
+                                        tracing::error!(
+                                            "Failed to invalidate stale cached link {}: {}",
+                                            code,
+                                            error
+                                        );
+                                    }
+                                    None
+                                }
                                 Err(error) => {
                                     tracing::error!(
                                         "Failed to verify cached link state for {}: {}",
                                         code,
                                         error
                                     );
-                                    return (
-                                        StatusCode::SERVICE_UNAVAILABLE,
-                                        "Unable to verify link state",
-                                    )
-                                        .into_response();
+                                    return link_state_unavailable().into_response();
                                 }
                             };
-                        if !still_plain {
-                            if let Err(error) = cache.invalidate_link(&code).await {
-                                tracing::error!(
-                                    "Failed to invalidate stale cached link {}: {}",
-                                    code,
-                                    error
-                                );
-                            }
-                        } else {
+                        if let Some(fresh_click_count) = fresh_click_count {
                             // Blocklist checks remain authoritative on cache hits.
                             if check_blocked(&state.db, &cached.original_url)
                                 .await
@@ -2987,7 +3001,11 @@ pub async fn redirect_link(
                             }
 
                             // Record click using buffer (synchronous, non-blocking).
-                            // Only uncapped links reach the cache fast-path.
+                            // Only uncapped links reach the cache fast-path. The
+                            // count just read above is the baseline, so the entry
+                            // stays cached: blocks, edits, caps and deletes
+                            // invalidate on their own, and the read above refuses
+                            // a stale security snapshot.
                             record_click_buffered(
                                 &state.click_buffer,
                                 state.ws_state.as_ref().map(|w| w.as_ref()),
@@ -2996,20 +3014,10 @@ pub async fn redirect_link(
                                 cached.user_id,
                                 cached.org_id,
                                 ClickAccounting::Buffered {
-                                    db_click_count: cached.click_count,
+                                    db_click_count: fresh_click_count,
                                 },
                                 &headers,
                             );
-
-                            // Invalidate after click so any cached accounting snapshot
-                            // is not reused. Failure is non-security-critical here.
-                            let cache_clone = state.redis_cache.clone();
-                            let code_clone = code.clone();
-                            tokio::spawn(async move {
-                                if let Some(c) = cache_clone {
-                                    let _ = c.invalidate_link(&code_clone).await;
-                                }
-                            });
 
                             return destination_redirect(&cached.original_url);
                         }
@@ -3022,13 +3030,20 @@ pub async fn redirect_link(
         }
     }
 
-    // Fallback to database lookup
-    let link = links::Entity::find()
+    // Fallback to database lookup. A pool error is not "no such link": that
+    // 404 is what a visitor (and a cache) would treat as the code being free.
+    let link = match links::Entity::find()
         .filter(links::Column::Code.eq(&code))
         .filter(links::Column::DeletedAt.is_null())
         .one(&state.db)
         .await
-        .unwrap_or(None);
+    {
+        Ok(link) => link,
+        Err(error) => {
+            tracing::error!("Failed to load link {}: {}", code, error);
+            return link_state_unavailable().into_response();
+        }
+    };
 
     if let Some(link) = link {
         // Check if link is active
