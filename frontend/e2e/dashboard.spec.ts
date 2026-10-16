@@ -156,7 +156,11 @@ test.describe('Dashboard Page', () => {
         await expect(page.getByText('3 links', { exact: true })).toBeVisible();
         await expect(page.getByText('2 active', { exact: true })).toBeVisible();
         await expect(page.getByText('4 clicks', { exact: true })).toBeVisible();
-        await expect(linkRow(page, scheduled).getByText('Inactive', { exact: true })).toBeVisible();
+        await expect(linkRow(page, scheduled).getByText('Not started', { exact: true })).toBeVisible();
+        const startsLabel = await page.evaluate((iso: string) => {
+            return `Starts ${new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+        }, `${dayFromNow(7)}T12:00:00.000Z`);
+        await expect(linkRow(page, scheduled).getByText(startsLabel, { exact: true })).toBeVisible();
     });
 
     test("should display the user's links and no one else's", async ({ page, request, owner }) => {
@@ -498,5 +502,33 @@ test.describe('Dashboard - Link Actions', () => {
         await listed;
         await linkRow(page, link).getByRole('button', { name: 'Edit link' }).click();
         await expect(page.getByRole('dialog').getByLabel('Notes')).toHaveValue(notes);
+    });
+});
+
+test.describe('Dashboard - Bulk selection', () => {
+    test('bulk delete removes only the selected links', async ({ page, request }) => {
+        const user = await createUser(request);
+        const keep = await createLink(request, user.token, { original_url: uniqueDestination() });
+        const dropA = await createLink(request, user.token, { original_url: uniqueDestination() });
+        const dropB = await createLink(request, user.token, { original_url: uniqueDestination() });
+
+        await signIn(page, user);
+        await openDashboard(page);
+
+        await linkRow(page, dropA).getByRole('checkbox', { name: `Select link ${dropA.code}` }).check();
+        await linkRow(page, dropB).getByRole('checkbox', { name: `Select link ${dropB.code}` }).check();
+        const toolbar = page.getByRole('toolbar', { name: 'Bulk actions' });
+        await expect(toolbar).toContainText('2 links selected');
+        await toolbar.getByRole('button', { name: 'Delete' }).click();
+
+        const dialog = page.getByRole('dialog', { name: 'Delete 2 links?' });
+        const deleted = page.waitForResponse((res) => isApiCall(res, 'POST', '/links/bulk/delete'));
+        await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+        expect((await deleted).status()).toBe(200);
+
+        await expect(page.getByText('1 link', { exact: true })).toBeVisible();
+        await expect(page.getByRole('link', { name: shortText(keep.code), exact: true })).toBeVisible();
+        await expect(page.getByRole('link', { name: shortText(dropA.code), exact: true })).toHaveCount(0);
+        await expect(page.getByRole('link', { name: shortText(dropB.code), exact: true })).toHaveCount(0);
     });
 });

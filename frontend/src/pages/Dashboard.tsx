@@ -6,7 +6,7 @@ import {
     Zap, Link2, Upload, ArrowRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_ENDPOINTS, authFetch, shortLinkBase, totalCount } from '../config/api';
+import { API_ENDPOINTS, authFetch, failureMessage, responseError, shortLinkBase, totalCount } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
 import { toast } from '../components/Toast';
@@ -21,6 +21,8 @@ import Skeleton from '../components/dashboard/Skeleton';
 import CreateLinkForm from '../components/dashboard/CreateLinkForm';
 import LinkFilters from '../components/dashboard/LinkFilters';
 import LinkRow from '../components/dashboard/LinkRow';
+import BulkActionBar, { SelectAllCheckbox } from '../components/dashboard/BulkActionBar';
+import { BULK_IDS_PER_REQUEST, bulkAffectedCount, bulkResultMessage, bulkStoppedMessage, runBulkChunks } from '../components/dashboard/bulkActions';
 import type { AppSettings, LinkData, LinkSortBy, LinkSortOrder, LinkUpdatePayload, SparklineSeries } from '../components/dashboard/types';
 import { takePendingUrl } from '../utils/pendingUrl';
 import { safeLocalStorage } from '../utils/storage';
@@ -94,11 +96,14 @@ export default function Dashboard() {
     const [bulkUrls, setBulkUrls] = useState('');
     const [bulkImporting, setBulkImporting] = useState(false);
     const [cloningIds, setCloningIds] = useState<ReadonlySet<number>>(new Set());
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+    const [bulkBusy, setBulkBusy] = useState(false);
     // Shown inside the modal: the page's own error banner sits behind its backdrop.
     const [bulkReport, setBulkReport] = useState<BulkReport | null>(null);
     const navigate = useNavigate();
     const linksFetchId = useRef(0);
     const sparklineFetchId = useRef(0);
+    const bulkInFlight = useRef(false);
     const accountClicksRequested = useRef(false);
     // The list as it is now, for requests that finish after a later render.
     const listRef = useRef({ loaded: 0, search: '' });
@@ -281,6 +286,12 @@ export default function Dashboard() {
     useEffect(() => {
         setCurrentPage(1);
     }, [searchQuery]);
+
+    // A selection is the rows on the page the user is looking at. A new page
+    // or a new search shows different rows, so the old ticks would lie.
+    useEffect(() => {
+        setSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
+    }, [currentPage, searchQuery]);
 
     // Clamp the current page when the list shrinks (e.g. deleting the last link
     // on the final page) so the user is never stranded on an empty page.
@@ -470,6 +481,105 @@ export default function Dashboard() {
             }
         })();
     }, [needsAccountClicks]);
+
+    const pageIds = paginatedLinks.map(link => link.id);
+    const selectedOnPage = pageIds.filter(id => selectedIds.has(id)).length;
+    const allOnPage = pageIds.length > 0 && selectedOnPage === pageIds.length;
+
+    const toggleSelected = (id: number) => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const toggleSelectPage = () => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (allOnPage) {
+                for (const id of pageIds) next.delete(id);
+            } else {
+                for (const id of pageIds) next.add(id);
+            }
+            return next;
+        });
+    };
+
+    const clearSelection = () => {
+        setSelectedIds(new Set());
+        // The bar unmounts with the selection, so the trigger it would return
+        // focus to is gone. The select-all box is the control that remains.
+        requestAnimationFrame(() => {
+            document.getElementById('link-select-all')?.focus();
+        });
+    };
+
+    // Bulk routes answer with a count, not a list of failures. Ids the caller
+    // may not change are skipped, and a shortfall against `ids` is that fact.
+    // Click caps are not on POST /links/bulk/update, so they are not offered.
+    const applyBulk = async (
+        action: 'delete' | 'update',
+        extra: Record<string, unknown>,
+    ): Promise<boolean> => {
+        const ids = [...selectedIds];
+        if (ids.length === 0 || bulkInFlight.current) return false;
+        bulkInFlight.current = true;
+        setBulkBusy(true);
+        const field = action === 'delete' ? 'deleted' : 'updated';
+        const endpoint = action === 'delete' ? API_ENDPOINTS.bulkDeleteLinks : API_ENDPOINTS.bulkUpdateLinks;
+        const fallback = action === 'delete' ? 'Failed to delete links' : 'Failed to update links';
+        try {
+            const run = await runBulkChunks(ids, async (chunk) => {
+                try {
+                    const res = await authFetch(endpoint, {
+                        method: 'POST',
+                        body: JSON.stringify({ ids: [...chunk], ...extra }),
+                    });
+                    if (!res.ok) {
+                        return { ok: false as const, error: await responseError(res, fallback) };
+                    }
+                    const affected = bulkAffectedCount(await res.json().catch(() => null), field);
+                    if (affected === null) {
+                        return { ok: false as const, error: 'The server response could not be read.' };
+                    }
+                    return { ok: true as const, affected };
+                } catch (error) {
+                    return { ok: false as const, error: failureMessage(error, 'Network error. Please try again.') };
+                }
+            }, BULK_IDS_PER_REQUEST);
+
+            if (run.error && run.sent === 0) {
+                setError(run.error);
+                return false;
+            }
+            if (run.error) {
+                setError(bulkStoppedMessage(action, run.affected, run.error));
+            } else {
+                const result = bulkResultMessage(action, run.affected, run.sent);
+                if (result.complete) {
+                    setError('');
+                    toast(result.message, 'success');
+                } else {
+                    setError(result.message);
+                }
+            }
+
+            // A delete that the server accepted must not be written back by a
+            // list request that left before the delete. The same set is what
+            // a single-link delete records.
+            if (action === 'delete') {
+                for (const id of ids) droppedLinkIds.current.add(id);
+            }
+            await fetchLinks();
+            clearSelection();
+            return true;
+        } finally {
+            bulkInFlight.current = false;
+            setBulkBusy(false);
+        }
+    };
 
     const handleDelete = async (id: number) => {
         if (!confirm('Are you sure you want to delete this link?')) return;
@@ -762,7 +872,26 @@ export default function Dashboard() {
             )}
 
             {/* Links List */}
-            <div>
+            <div className={selectedIds.size > 0 ? 'pb-24 sm:pb-0' : undefined}>
+                {paginatedLinks.length > 0 && (
+                    <div className="flex items-center gap-2 py-3">
+                        <SelectAllCheckbox
+                            checked={allOnPage}
+                            indeterminate={selectedOnPage > 0 && !allOnPage}
+                            onChange={toggleSelectPage}
+                        />
+                        <span className="text-sm text-muted">Select all on this page</span>
+                    </div>
+                )}
+                {selectedIds.size > 0 && (
+                    <BulkActionBar
+                        count={selectedIds.size}
+                        busy={bulkBusy}
+                        onDelete={() => applyBulk('delete', {})}
+                        onSetExpiry={(expiresAt) => applyBulk('update', { expires_at: expiresAt })}
+                        onRemoveExpiry={() => applyBulk('update', { remove_expiration: true })}
+                    />
+                )}
                 <div className="divide-y divide-line border-y border-line">
                     <AnimatePresence mode="popLayout">
                         {paginatedLinks.map((link, index) => {
@@ -777,6 +906,8 @@ export default function Dashboard() {
                                     copied={copiedId === link.id}
                                     sourceCopied={copiedSourceId === link.id}
                                     cloning={cloningIds.has(link.id)}
+                                    selected={selectedIds.has(link.id)}
+                                    onToggleSelect={toggleSelected}
                                     onCopy={handleCopy}
                                     onCopySource={handleCopySource}
                                     onPreview={setPreviewLink}

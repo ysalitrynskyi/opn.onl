@@ -1,4 +1,4 @@
-import type { Ref } from 'react';
+import { useState, type Ref } from 'react';
 import { Link } from 'react-router-dom';
 import {
     Copy, Trash2, BarChart2, QrCode, Lock, Clock, Edit2, Check,
@@ -9,6 +9,7 @@ import { shortLinkBase } from '../../config/api';
 import Sparkline from '../Sparkline';
 import MiniStats from './MiniStats';
 import { pluralize } from '../../utils/plural';
+import { clickCapReached, clickLimitLabel, formatBadgeDay, inactiveBadge } from './linkStatus';
 import type { LinkData, SparklineSeries } from './types';
 
 interface LinkRowProps {
@@ -18,6 +19,8 @@ interface LinkRowProps {
     copied: boolean;
     sourceCopied: boolean;
     cloning: boolean;
+    selected: boolean;
+    onToggleSelect: (id: number) => void;
     onCopy: (link: LinkData) => void;
     onCopySource: (link: LinkData) => void;
     onPreview: (link: LinkData) => void;
@@ -38,6 +41,8 @@ export default function LinkRow({
     copied,
     sourceCopied,
     cloning,
+    selected,
+    onToggleSelect,
     onCopy,
     onCopySource,
     onPreview,
@@ -51,6 +56,14 @@ export default function LinkRow({
 }: LinkRowProps) {
     const mainUrl = `${shortLinkBase()}/${link.code}`;
     const apiUrl = link.api_url || link.short_url; // Use api_url from backend
+    // Same clock snapshot as MiniStats: the badge is fixed for this visit.
+    const [now] = useState(() => Date.now());
+    const reason = inactiveBadge(link, now);
+    const startsInFuture = !!link.starts_at && !Number.isNaN(Date.parse(link.starts_at)) && now < Date.parse(link.starts_at);
+    const capReached = clickCapReached(link);
+
+    const neutralBadge = 'inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted';
+    const dangerBadge = 'inline-flex items-center gap-1 rounded border border-danger/30 bg-danger/5 px-2 py-0.5 text-xs font-medium text-danger';
 
     return (
         <motion.div
@@ -59,174 +72,198 @@ export default function LinkRow({
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.98 }}
-            className="group py-5 transition-colors hover:bg-primary-50/40"
+            className={`group py-5 transition-colors hover:bg-primary-50/40 ${selected ? 'bg-primary-50/50' : ''}`}
         >
-            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                <div className="space-y-1 min-w-0 flex-1">
-                    {/* Link number and title */}
-                    <div className="flex items-center gap-2 mb-1">
-                        <span className="font-mono text-xs font-semibold text-faint">
-                            #{linkNumber}
-                        </span>
-                        {link.is_pinned && (
-                            <Pin className="h-3 w-3 text-primary-600 fill-current" aria-label="Pinned" />
-                        )}
-                        {link.title && (
-                            <span className="text-sm font-medium text-ink truncate">
-                                {link.title}
+            <div className="flex items-start gap-3">
+                <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => onToggleSelect(link.id)}
+                    aria-label={`Select link ${link.code}`}
+                    className="mt-1.5 h-4 w-4 shrink-0 rounded border-line2 text-primary-600 focus:ring-primary-500"
+                />
+                <div className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="space-y-1 min-w-0 flex-1">
+                        {/* Link number and title */}
+                        <div className="flex items-center gap-2 mb-1">
+                            <span className="font-mono text-xs font-semibold text-faint">
+                                #{linkNumber}
                             </span>
-                        )}
-                    </div>
-
-                    {/* Primary short URL → Destination */}
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <a
-                            href={mainUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="font-mono text-lg font-bold text-primary-600 hover:underline"
-                        >
-                            {mainUrl.replace(/^https?:\/\//, '')}
-                        </a>
-                        <button
-                            onClick={() => onCopy(link)}
-                            className="rounded p-1 text-faint transition-colors hover:bg-primary-50 hover:text-primary-600"
-                            title="Copy short URL"
-                            aria-label={`Copy short URL for ${link.code}`}
-                        >
-                            {copied ? (
-                                <Check className="h-4 w-4 text-success" />
-                            ) : (
-                                <Copy className="h-4 w-4" />
+                            {link.is_pinned && (
+                                <Pin className="h-3 w-3 text-primary-600 fill-current" aria-label="Pinned" />
                             )}
-                        </button>
-                        <span className="text-faint" aria-hidden="true">→</span>
-                        <a
-                            href={link.original_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="truncate max-w-[300px] font-mono text-sm text-muted transition-colors hover:text-ink hover:underline"
-                            title={link.original_url}
-                        >
-                            {link.original_url.replace(/^https?:\/\//, '').substring(0, 50)}{link.original_url.length > 60 ? '...' : ''}
-                        </a>
-                        <button
-                            onClick={() => onCopySource(link)}
-                            className="rounded p-1 text-faint transition-colors hover:bg-line hover:text-ink"
-                            title="Copy source URL"
-                            aria-label={`Copy source URL for ${link.code}`}
-                        >
-                            {sourceCopied ? (
-                                <Check className="h-4 w-4 text-success" />
-                            ) : (
-                                <Link2 className="h-4 w-4" />
+                            {link.title && (
+                                <span className="text-sm font-medium text-ink truncate">
+                                    {link.title}
+                                </span>
                             )}
-                        </button>
-                        {link.has_password && (
-                            <span className="inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted">
-                                <Lock className="h-3 w-3" />
-                                Protected
-                            </span>
-                        )}
-                        {link.expires_at && (
-                            <span className="inline-flex items-center gap-1 rounded border border-line px-2 py-0.5 text-xs font-medium text-muted">
-                                <Clock className="h-3 w-3" />
-                                {new Date(link.expires_at).toLocaleDateString()}
-                            </span>
-                        )}
-                        {!link.is_active && (
-                            <span className="inline-flex items-center gap-1 rounded border border-danger/30 bg-danger/5 px-2 py-0.5 text-xs font-medium text-danger">
-                                Inactive
-                            </span>
-                        )}
-                    </div>
-                    {/* API URL */}
-                    <p className="font-mono text-xs text-faint">
-                        API: <a href={apiUrl} target="_blank" rel="noreferrer" className="underline decoration-line2 underline-offset-2 hover:text-muted hover:decoration-current">{apiUrl}</a>
-                    </p>
-                    {/* Mini stats */}
-                    <MiniStats link={link} />
-                </div>
-
-                <div className="flex items-center gap-2 sm:gap-3">
-                    {/* Sparkline Chart */}
-                    {sparkline && (
-                        <div className="hidden sm:block">
-                            <Sparkline
-                                data={sparkline.data}
-                                labels={sparkline.labels}
-                                width={70}
-                                height={24}
-                            />
                         </div>
-                    )}
-                    <Link
-                        to={`/analytics/${link.id}`}
-                        aria-label={`${link.click_count.toLocaleString()} ${pluralize(link.click_count, 'click')}, analytics for ${link.code}`}
-                        className="inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary-600"
-                    >
-                        <BarChart2 className="h-4 w-4" />
-                        <span className="font-mono font-bold tabular-nums">{link.click_count.toLocaleString()}</span>
-                    </Link>
-                    <div className="flex items-center gap-0.5">
-                        <button
-                            onClick={() => onPreview(link)}
-                            className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                            title="Preview destination"
-                            aria-label={`Preview destination for ${link.code}`}
+
+                        {/* Primary short URL → Destination */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <a
+                                href={mainUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="font-mono text-lg font-bold text-primary-600 hover:underline"
+                            >
+                                {mainUrl.replace(/^https?:\/\//, '')}
+                            </a>
+                            <button
+                                onClick={() => onCopy(link)}
+                                className="rounded p-1 text-faint transition-colors hover:bg-primary-50 hover:text-primary-600"
+                                title="Copy short URL"
+                                aria-label={`Copy short URL for ${link.code}`}
+                            >
+                                {copied ? (
+                                    <Check className="h-4 w-4 text-success" />
+                                ) : (
+                                    <Copy className="h-4 w-4" />
+                                )}
+                            </button>
+                            <span className="text-faint" aria-hidden="true">→</span>
+                            <a
+                                href={link.original_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="truncate max-w-[300px] font-mono text-sm text-muted transition-colors hover:text-ink hover:underline"
+                                title={link.original_url}
+                            >
+                                {link.original_url.replace(/^https?:\/\//, '').substring(0, 50)}{link.original_url.length > 60 ? '...' : ''}
+                            </a>
+                            <button
+                                onClick={() => onCopySource(link)}
+                                className="rounded p-1 text-faint transition-colors hover:bg-line hover:text-ink"
+                                title="Copy source URL"
+                                aria-label={`Copy source URL for ${link.code}`}
+                            >
+                                {sourceCopied ? (
+                                    <Check className="h-4 w-4 text-success" />
+                                ) : (
+                                    <Link2 className="h-4 w-4" />
+                                )}
+                            </button>
+                            {link.has_password && (
+                                <span className={neutralBadge}>
+                                    <Lock className="h-3 w-3" />
+                                    Protected
+                                </span>
+                            )}
+                            {link.expires_at && (
+                                <span className={neutralBadge}>
+                                    <Clock className="h-3 w-3" />
+                                    {new Date(link.expires_at).toLocaleDateString()}
+                                </span>
+                            )}
+                            {link.max_clicks != null && (
+                                <span className={`${capReached ? dangerBadge : neutralBadge} tabular-nums`}>
+                                    {clickLimitLabel(link.click_count, link.max_clicks)}
+                                </span>
+                            )}
+                            {startsInFuture && link.starts_at && (
+                                <span className={neutralBadge}>
+                                    <Clock className="h-3 w-3" />
+                                    Starts {formatBadgeDay(link.starts_at)}
+                                </span>
+                            )}
+                            {reason ? (
+                                <span className={dangerBadge} title={reason.reason}>
+                                    {reason.label}
+                                </span>
+                            ) : !link.is_active && (
+                                <span className={dangerBadge}>
+                                    Inactive
+                                </span>
+                            )}
+                        </div>
+                        {/* API URL */}
+                        <p className="font-mono text-xs text-faint">
+                            API: <a href={apiUrl} target="_blank" rel="noreferrer" className="underline decoration-line2 underline-offset-2 hover:text-muted hover:decoration-current">{apiUrl}</a>
+                        </p>
+                        {/* Mini stats */}
+                        <MiniStats link={link} />
+                    </div>
+
+                    <div className="flex items-center gap-2 sm:gap-3">
+                        {/* Sparkline Chart */}
+                        {sparkline && (
+                            <div className="hidden sm:block">
+                                <Sparkline
+                                    data={sparkline.data}
+                                    labels={sparkline.labels}
+                                    width={70}
+                                    height={24}
+                                />
+                            </div>
+                        )}
+                        <Link
+                            to={`/analytics/${link.id}`}
+                            aria-label={`${link.click_count.toLocaleString()} ${pluralize(link.click_count, 'click')}, analytics for ${link.code}`}
+                            className="inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary-600"
                         >
-                            <Eye className="h-4 w-4" />
-                        </button>
-                        <button
-                            onClick={() => onPin(link)}
-                            className={`rounded-md p-2 transition-colors hover:bg-line ${link.is_pinned ? 'text-primary-600' : 'text-faint hover:text-ink'}`}
-                            title={link.is_pinned ? 'Unpin' : 'Pin'}
-                            aria-label={`${link.is_pinned ? 'Unpin' : 'Pin'} link ${link.code}`}
-                        >
-                            <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
-                        </button>
-                        <button
-                            onClick={() => onClone(link)}
-                            disabled={cloning}
-                            className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink disabled:cursor-wait disabled:opacity-50"
-                            title="Clone"
-                            aria-label={`Clone link ${link.code}`}
-                        >
-                            <CopyPlus className="h-4 w-4" />
-                        </button>
-                        <button
-                            onClick={() => onShare(link)}
-                            className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                            title="Share"
-                            aria-label={`Share link ${link.code}`}
-                        >
-                            <Share2 className="h-4 w-4" />
-                        </button>
-                        <button
-                            onClick={() => onQr(link)}
-                            className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                            title="QR Code"
-                            aria-label={`Show QR code for ${link.code}`}
-                        >
-                            <QrCode className="h-4 w-4" />
-                        </button>
-                        <button
-                            onClick={() => onEdit(link)}
-                            data-edit-link={link.id}
-                            className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
-                            title="Edit"
-                            aria-label={`Edit link ${link.code}`}
-                        >
-                            <Edit2 className="h-4 w-4" />
-                        </button>
-                        <button
-                            onClick={() => onDelete(link.id)}
-                            className="rounded-md p-2 text-faint transition-colors hover:bg-danger/5 hover:text-danger"
-                            title="Delete"
-                            aria-label={`Delete link ${link.code}`}
-                        >
-                            <Trash2 className="h-4 w-4" />
-                        </button>
+                            <BarChart2 className="h-4 w-4" />
+                            <span className="font-mono font-bold tabular-nums">{link.click_count.toLocaleString()}</span>
+                        </Link>
+                        <div className="flex items-center gap-0.5">
+                            <button
+                                onClick={() => onPreview(link)}
+                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                title="Preview destination"
+                                aria-label={`Preview destination for ${link.code}`}
+                            >
+                                <Eye className="h-4 w-4" />
+                            </button>
+                            <button
+                                onClick={() => onPin(link)}
+                                className={`rounded-md p-2 transition-colors hover:bg-line ${link.is_pinned ? 'text-primary-600' : 'text-faint hover:text-ink'}`}
+                                title={link.is_pinned ? 'Unpin' : 'Pin'}
+                                aria-label={`${link.is_pinned ? 'Unpin' : 'Pin'} link ${link.code}`}
+                            >
+                                <Pin className={`h-4 w-4 ${link.is_pinned ? 'fill-current' : ''}`} />
+                            </button>
+                            <button
+                                onClick={() => onClone(link)}
+                                disabled={cloning}
+                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink disabled:cursor-wait disabled:opacity-50"
+                                title="Clone"
+                                aria-label={`Clone link ${link.code}`}
+                            >
+                                <CopyPlus className="h-4 w-4" />
+                            </button>
+                            <button
+                                onClick={() => onShare(link)}
+                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                title="Share"
+                                aria-label={`Share link ${link.code}`}
+                            >
+                                <Share2 className="h-4 w-4" />
+                            </button>
+                            <button
+                                onClick={() => onQr(link)}
+                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                title="QR Code"
+                                aria-label={`Show QR code for ${link.code}`}
+                            >
+                                <QrCode className="h-4 w-4" />
+                            </button>
+                            <button
+                                onClick={() => onEdit(link)}
+                                data-edit-link={link.id}
+                                className="rounded-md p-2 text-faint transition-colors hover:bg-line hover:text-ink"
+                                title="Edit"
+                                aria-label={`Edit link ${link.code}`}
+                            >
+                                <Edit2 className="h-4 w-4" />
+                            </button>
+                            <button
+                                onClick={() => onDelete(link.id)}
+                                className="rounded-md p-2 text-faint transition-colors hover:bg-danger/5 hover:text-danger"
+                                title="Delete"
+                                aria-label={`Delete link ${link.code}`}
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
