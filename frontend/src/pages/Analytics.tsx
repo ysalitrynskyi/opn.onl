@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Download, Globe, Clock, MousePointer, TrendingUp, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { API_ENDPOINTS, authFetch, failureMessage, shortLinkHost } from '../config/api';
 import SEO from '../components/SEO';
 import logger from '../utils/logger';
+import { analyticsCsvFilename, BREAKDOWN_ROW_LIMIT, buildLinkAnalyticsCsv, cityBreakdownLabel } from '../utils/analyticsCsv';
 import { formatDayBucketLabel, sumClicksInUtcWindow } from '../utils/dayBuckets';
 import { safeLocalStorage } from '../utils/storage';
 
@@ -120,7 +121,7 @@ function StatCard({ title, value, icon: Icon, hint }: { title: string; value: st
 function StatsTable<T extends object>({ title, data, labelKey, valueKey }: { title: string; data: T[]; labelKey: keyof T; valueKey: keyof T }) {
     if (data.length === 0) return null;
 
-    const sortedData = [...data].sort((a, b) => Number(b[valueKey]) - Number(a[valueKey])).slice(0, 10);
+    const sortedData = [...data].sort((a, b) => Number(b[valueKey]) - Number(a[valueKey])).slice(0, BREAKDOWN_ROW_LIMIT);
     const total = data.reduce((sum, item) => sum + Number(item[valueKey]), 0);
 
     return (
@@ -250,18 +251,31 @@ export default function Analytics() {
     // The same city name can exist in two countries.
     const cityRows = stats.clicks_by_city.map(c => ({
         ...c,
-        label: c.country ? `${c.city}, ${c.country}` : c.city,
+        label: cityBreakdownLabel(c.city, c.country),
     }));
+
+    const downloadCsv = () => {
+        const csv = buildLinkAnalyticsCsv(stats);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = analyticsCsvFilename(stats.code);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    };
 
     return (
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
             <SEO title={`Analytics — /${stats.code}`} noIndex />
-            <div className="flex items-center justify-between mb-8">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-8">
                 <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm text-muted transition-colors hover:text-ink">
                     <ArrowLeft className="h-4 w-4" />
                     Back to Dashboard
                 </Link>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
                     <select
                         value={days}
                         onChange={(e) => setDays(Number(e.target.value))}
@@ -274,6 +288,15 @@ export default function Analytics() {
                         <option value={365}>Last year</option>
                     </select>
                     <button
+                        type="button"
+                        onClick={downloadCsv}
+                        className="inline-flex items-center gap-2 rounded-lg border border-line2 bg-surface px-3 py-2 text-sm font-medium text-ink transition-colors hover:border-ink/30"
+                    >
+                        <Download className="h-4 w-4 text-muted" />
+                        Download CSV
+                    </button>
+                    <button
+                        type="button"
                         onClick={fetchStats}
                         className="rounded-lg border border-line2 bg-surface p-2 text-muted transition-colors hover:text-ink hover:border-ink/30"
                         title="Refresh"
