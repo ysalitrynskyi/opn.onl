@@ -54,11 +54,17 @@ const SETTINGS = {
     link_in_bio_enabled: false,
 };
 
-type BulkAnswer = { status: number; body: unknown };
+/**
+ * `deleted` rows are taken off the server list, the first ones of the chunk.
+ * By default that is the `deleted` count of a 200; a 500 sent after the commit
+ * says how many it removed.
+ */
+type BulkAnswer = { status: number; body: unknown; deleted?: number };
 
 /**
- * GET /links pages the way the server does. Bulk routes are answered by
- * `bulk`, which may also drop deleted rows so the next list matches.
+ * GET /links pages the way the server does, until `listFails` says otherwise.
+ * Bulk routes are answered by `bulk`, which may also drop deleted rows so the
+ * next list matches.
  */
 function serve(
     all: ReturnType<typeof makeLinks>,
@@ -66,6 +72,7 @@ function serve(
         status: 200,
         body: { deleted: ids.length, updated: ids.length },
     }),
+    listFails: () => boolean = () => false,
 ) {
     const links = [...all];
     vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -83,10 +90,10 @@ function serve(
             const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
             const ids = body.ids as number[];
             const answer = bulk(url.pathname, ids, body);
-            if (answer.status === 200 && url.pathname === '/links/bulk/delete') {
-                const deleted = typeof (answer.body as { deleted?: unknown }).deleted === 'number'
-                    ? (answer.body as { deleted: number }).deleted
-                    : 0;
+            if (url.pathname === '/links/bulk/delete') {
+                const reported = (answer.body as { deleted?: unknown } | null)?.deleted;
+                const deleted = answer.deleted
+                    ?? (answer.status === 200 && typeof reported === 'number' ? reported : 0);
                 const gone = new Set(ids.slice(0, deleted));
                 for (let i = links.length - 1; i >= 0; i -= 1) {
                     if (gone.has(links[i].id)) links.splice(i, 1);
@@ -95,6 +102,7 @@ function serve(
             return json(answer.body, answer.status);
         }
         if (url.pathname === '/links' && method === 'GET') {
+            if (listFails()) return json({ error: 'Database error' }, 500);
             const search = url.searchParams.get('search') ?? '';
             const matching = search
                 ? links.filter((link) => `${link.original_url} ${link.code} ${link.title}`.includes(search))
@@ -113,6 +121,12 @@ function bulkPosts(path: string): Record<string, unknown>[] {
     return vi.mocked(fetch).mock.calls
         .filter(([input, init]) => new URL(String(input)).pathname === path && (init?.method ?? 'GET') === 'POST')
         .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+}
+
+function listRequestCount(): number {
+    return vi.mocked(fetch).mock.calls
+        .filter(([input, init]) => new URL(String(input)).pathname === '/links' && (init?.method ?? 'GET') === 'GET')
+        .length;
 }
 
 function sparklineRequests(): string[] {
@@ -161,6 +175,69 @@ describe('Dashboard bulk selection', () => {
         await user.click(selectAll);
         expect(screen.getByRole('checkbox', { name: 'Select link code0001' })).not.toBeChecked();
         expect(screen.queryByRole('toolbar', { name: 'Bulk actions' })).not.toBeInTheDocument();
+
+        // The words are the box's label, so they toggle it too.
+        await user.click(screen.getByText('Select all on this page'));
+        expect(selectAll).toBeChecked();
+        expect(screen.getByRole('toolbar', { name: 'Bulk actions' })).toHaveTextContent('3 links selected');
+    });
+
+    it('drops ticks that a sort moves off the page and sends only the boxes still ticked', async () => {
+        // The newest links have the fewest clicks, so sorting by clicks puts
+        // the oldest twenty on the first page.
+        serve(Array.from({ length: 25 }, (_, i) => {
+            const id = 25 - i;
+            return makeLink(id, { click_count: 100 - id });
+        }));
+        const { user } = renderDashboard();
+        const sortBy = () => screen.getByLabelText('Sort links by');
+        const toolbar = () => screen.queryByRole('toolbar', { name: 'Bulk actions' });
+
+        await screen.findByRole('checkbox', { name: 'Select link code0025' });
+        await selectCodes(user, ['code0025', 'code0024']);
+        expect(toolbar()).toHaveTextContent('2 links selected');
+
+        await user.selectOptions(sortBy(), 'clicks');
+        await waitFor(() => {
+            expect(screen.queryByRole('checkbox', { name: 'Select link code0025' })).not.toBeInTheDocument();
+        });
+        expect(toolbar()).not.toBeInTheDocument();
+
+        // Back to the old order: the rows that left the page come back unticked.
+        await user.selectOptions(sortBy(), 'date');
+        expect(await screen.findByRole('checkbox', { name: 'Select link code0025' })).not.toBeChecked();
+        expect(screen.getByRole('checkbox', { name: 'Select link code0024' })).not.toBeChecked();
+        expect(toolbar()).not.toBeInTheDocument();
+
+        // A row ticked before the sort is not sent with the rows ticked after it.
+        await selectCodes(user, ['code0025']);
+        await user.selectOptions(sortBy(), 'clicks');
+        await waitFor(() => {
+            expect(screen.queryByRole('checkbox', { name: 'Select link code0025' })).not.toBeInTheDocument();
+        });
+        await selectCodes(user, ['code0001']);
+        expect(toolbar()).toHaveTextContent('1 link selected');
+        await user.click(screen.getByRole('button', { name: 'Delete' }));
+        await user.click(within(screen.getByRole('dialog', { name: 'Delete 1 link?' })).getByRole('button', { name: 'Delete' }));
+        await waitFor(() => expect(bulkPosts('/links/bulk/delete')).toEqual([{ ids: [1] }]));
+        // Twenty-five animated rows, sorted four times. Slow when the suite shares the CPU.
+    }, 20_000);
+
+    it('forgets a ticked row that was deleted on its own', async () => {
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        serve(makeLinks(3));
+        const { user } = renderDashboard();
+
+        await screen.findByRole('checkbox', { name: 'Select link code0001' });
+        await selectCodes(user, ['code0001', 'code0002']);
+        await user.click(screen.getByRole('button', { name: 'Delete link code0001' }));
+
+        await waitFor(() => {
+            expect(screen.getByRole('toolbar', { name: 'Bulk actions' })).toHaveTextContent('1 link selected');
+        });
+        await user.click(screen.getByRole('button', { name: 'Delete' }));
+        await user.click(within(screen.getByRole('dialog', { name: 'Delete 1 link?' })).getByRole('button', { name: 'Delete' }));
+        await waitFor(() => expect(bulkPosts('/links/bulk/delete')).toEqual([{ ids: [2] }]));
     });
 
     it('clears the selection when the page changes', async () => {
@@ -234,6 +311,13 @@ describe('Dashboard bulk selection', () => {
         await waitFor(() => {
             expect(screen.queryByRole('toolbar', { name: 'Bulk actions' })).not.toBeInTheDocument();
         });
+        // Select all sends the page in order, code0002 first. The server took
+        // that one and skipped code0001, and the reloaded list says the same.
+        expect(bulkPosts('/links/bulk/delete')).toEqual([{ ids: [2, 1] }]);
+        await waitFor(() => {
+            expect(screen.queryByRole('checkbox', { name: 'Select link code0002' })).not.toBeInTheDocument();
+        });
+        expect(screen.getByRole('checkbox', { name: 'Select link code0001' })).not.toBeChecked();
     });
 
     it('shows a refused request and keeps the selection', async () => {
@@ -254,6 +338,8 @@ describe('Dashboard bulk selection', () => {
         expect(screen.getByRole('checkbox', { name: 'Select link code0001' })).toBeChecked();
         expect(screen.getByRole('toolbar', { name: 'Bulk actions' })).toBeInTheDocument();
         expect(screen.queryByText(/Deleted/)).not.toBeInTheDocument();
+        // A 4xx changed nothing, so the list is not read again.
+        expect(listRequestCount()).toBe(1);
     });
 
     it('says how long to wait when a bulk action is rate limited', async () => {
@@ -276,6 +362,52 @@ describe('Dashboard bulk selection', () => {
         expect(screen.getByRole('checkbox', { name: 'Select link code0001' })).toBeChecked();
     });
 
+    it('reloads after a 500 that came after the delete, and shows what the server said', async () => {
+        serve(makeLinks(2), (_path, ids) => ({
+            status: 500,
+            body: { error: 'Links deleted, but cache invalidation failed' },
+            deleted: ids.length,
+        }));
+        const { user } = renderDashboard();
+
+        await screen.findByRole('checkbox', { name: 'Select link code0001' });
+        await user.click(screen.getByRole('checkbox', { name: 'Select link code0001' }));
+        await user.click(screen.getByRole('button', { name: 'Delete' }));
+        await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Links deleted, but cache invalidation failed');
+        await waitFor(() => {
+            expect(screen.queryByRole('checkbox', { name: 'Select link code0001' })).not.toBeInTheDocument();
+        });
+        expect(listRequestCount()).toBe(2);
+        expect(screen.getByRole('checkbox', { name: 'Select link code0002' })).not.toBeChecked();
+        expect(screen.queryByRole('toolbar', { name: 'Bulk actions' })).not.toBeInTheDocument();
+    });
+
+    it('keeps the bulk result when the reload after it fails', async () => {
+        let bulkDone = false;
+        serve(
+            makeLinks(2),
+            (_path, ids) => {
+                bulkDone = true;
+                return { status: 200, body: { deleted: ids.length - 1 } };
+            },
+            () => bulkDone,
+        );
+        const { user } = renderDashboard();
+
+        await screen.findByRole('checkbox', { name: 'Select link code0001' });
+        await user.click(screen.getByRole('checkbox', { name: 'Select all on this page' }));
+        await user.click(screen.getByRole('button', { name: 'Delete' }));
+        await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+
+        await waitFor(() => expect(listRequestCount()).toBe(2));
+        expect(await screen.findByRole('alert')).toHaveTextContent(
+            'Deleted 1 of 2 links. 1 could not be deleted. The list could not be refreshed.',
+        );
+        expect(screen.getByRole('alert')).not.toHaveTextContent('Failed to load links');
+    });
+
     it('says when the server accepted the call but sent no count', async () => {
         serve(makeLinks(1), () => ({ status: 200, body: {} }));
         const { user } = renderDashboard();
@@ -287,6 +419,8 @@ describe('Dashboard bulk selection', () => {
 
         expect(await screen.findByRole('alert')).toHaveTextContent('The server response could not be read.');
         expect(screen.getByRole('checkbox', { name: 'Select link code0001' })).toBeChecked();
+        // A 200 may have changed rows even without a count: the list is read again.
+        await waitFor(() => expect(listRequestCount()).toBe(2));
     });
 
     it('sends a selection larger than the chunk size as several requests', async () => {
@@ -328,6 +462,14 @@ describe('Dashboard bulk selection', () => {
         );
         await waitFor(() => expect(bulkPosts('/links/bulk/delete')).toHaveLength(2));
         expect(screen.queryByText('Deleted 5 links.')).not.toBeInTheDocument();
+        // The first chunk went, the refused one and the one never sent stay.
+        await waitFor(() => {
+            expect(screen.queryByRole('checkbox', { name: 'Select link code0001' })).not.toBeInTheDocument();
+        });
+        expect(screen.queryByRole('checkbox', { name: 'Select link code0002' })).not.toBeInTheDocument();
+        for (const code of ['code0003', 'code0004', 'code0005']) {
+            expect(screen.getByRole('checkbox', { name: `Select link ${code}` })).toBeInTheDocument();
+        }
     }, 15_000);
 
     it('sets an expiry at the end of the picked local day and can clear it', async () => {

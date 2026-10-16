@@ -318,6 +318,19 @@ export default function Dashboard() {
         setSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
     }, [currentPage, searchQuery, orgId, folderId, tagId]);
 
+    // Sorting, a pin, a create or a delete can move a ticked row off this page
+    // while the page number stays. Its tick goes with it, or the row would
+    // come back ticked when a later sort brings it into view.
+    const pageIds = paginatedLinks.map(link => link.id);
+    const pageIdsKey = pageIds.join(',');
+    useEffect(() => {
+        const onPage = new Set(pageIdsKey ? pageIdsKey.split(',').map(Number) : []);
+        setSelectedIds(prev => {
+            const kept = [...prev].filter(id => onPage.has(id));
+            return kept.length === prev.size ? prev : new Set(kept);
+        });
+    }, [pageIdsKey]);
+
     // Clamp the current page when the list shrinks (e.g. deleting the last link
     // on the final page) so the user is never stranded on an empty page.
     useEffect(() => {
@@ -330,7 +343,12 @@ export default function Dashboard() {
     // names another one. A reload of the same folder, tag and team asks for
     // as many links as are showing, so saving an edit does not fold away
     // pages the user loaded. A new search or filter starts from the first page.
-    const fetchLinks = async (search = listRef.current.scope.search) => {
+    // A failure goes to `report`; a caller with its own news for the user
+    // passes another so the page alert keeps that news.
+    const fetchLinks = async (
+        search = listRef.current.scope.search,
+        report: (message: string) => void = setError,
+    ) => {
         const requestId = ++linksFetchId.current;
         const scope: LinkListScope = { search, ...urlScopeRef.current };
         const showing = sameScope(scope, listRef.current.scope) ? listRef.current.loaded : 0;
@@ -363,12 +381,12 @@ export default function Dashboard() {
             } else {
                 const message = await responseError(res, 'Failed to load links. Please try again.');
                 if (requestId !== linksFetchId.current) return;
-                setError(message);
+                report(message);
             }
         } catch (error) {
             if (requestId !== linksFetchId.current) return;
             logger.error('Failed to fetch links', error);
-            setError('Failed to load links. Please try again.');
+            report('Failed to load links. Please try again.');
         } finally {
             if (requestId === linksFetchId.current) {
                 setLoading(false);
@@ -531,7 +549,6 @@ export default function Dashboard() {
         })();
     }, [needsAccountClicks]);
 
-    const pageIds = paginatedLinks.map(link => link.id);
     // A click on this page moves the row. The header total is the sum of the
     // loaded rows when they are the whole account, and the profile total
     // otherwise, so that one is moved too. Clicks on other pages are ignored.
@@ -542,8 +559,12 @@ export default function Dashboard() {
         setAccountClicks(prev => (prev == null ? prev : prev + 1));
     }, []);
     const live = useLiveClicks(pageIds, onLiveClick);
-    const selectedOnPage = pageIds.filter(id => selectedIds.has(id)).length;
-    const allOnPage = pageIds.length > 0 && selectedOnPage === pageIds.length;
+    // What the bar counts and a bulk action sends: the ticked rows on this
+    // page, read at this render. The effect above trims the rest a render
+    // later; an action must never reach a link whose box is out of sight.
+    const pageIdSet = new Set(pageIds);
+    const selectedOnPage = [...selectedIds].filter(id => pageIdSet.has(id));
+    const allOnPage = pageIds.length > 0 && selectedOnPage.length === pageIds.length;
 
     const toggleSelected = (id: number) => {
         setSelectedIds(prev => {
@@ -578,17 +599,23 @@ export default function Dashboard() {
     // Bulk routes answer with a count, not a list of failures. Ids the caller
     // may not change are skipped, and a shortfall against `ids` is that fact.
     // Click caps are not on POST /links/bulk/update, so they are not offered.
+    // Resolves true when the selection was cleared.
     const applyBulk = async (
         action: 'delete' | 'update',
         extra: Record<string, unknown>,
     ): Promise<boolean> => {
-        const ids = [...selectedIds];
+        const ids = selectedOnPage;
         if (ids.length === 0 || bulkInFlight.current) return false;
         bulkInFlight.current = true;
         setBulkBusy(true);
         const field = action === 'delete' ? 'deleted' : 'updated';
         const endpoint = action === 'delete' ? API_ENDPOINTS.bulkDeleteLinks : API_ENDPOINTS.bulkUpdateLinks;
         const fallback = action === 'delete' ? 'Failed to delete links' : 'Failed to update links';
+        // Only a refusal (4xx) is known to have changed nothing. A 5xx can
+        // come after the commit (the bulk routes answer 500 when the rows
+        // changed but the redirect cache could not be cleared), and so can a
+        // lost answer or an unreadable one.
+        let mayHaveChanged = false;
         try {
             const run = await runBulkChunks(ids, async (chunk) => {
                 try {
@@ -597,26 +624,33 @@ export default function Dashboard() {
                         body: JSON.stringify({ ids: [...chunk], ...extra }),
                     });
                     if (!res.ok) {
+                        if (res.status >= 500) mayHaveChanged = true;
                         return { ok: false as const, error: await responseError(res, fallback) };
                     }
                     const affected = bulkAffectedCount(await res.json().catch(() => null), field);
                     if (affected === null) {
+                        mayHaveChanged = true;
                         return { ok: false as const, error: 'The server response could not be read.' };
                     }
                     return { ok: true as const, affected };
                 } catch (error) {
+                    if (!(error instanceof SessionExpiredError)) mayHaveChanged = true;
                     return { ok: false as const, error: failureMessage(error, 'Network error. Please try again.') };
                 }
             }, BULK_IDS_PER_REQUEST);
 
-            if (run.error && run.sent === 0) {
+            const confirmed = run.sent > 0;
+            if (run.error && !confirmed && !mayHaveChanged) {
                 setError(run.error);
                 return false;
             }
+            let notice: string;
             if (run.error) {
-                setError(bulkStoppedMessage(action, run.affected, run.error));
+                notice = confirmed ? bulkStoppedMessage(action, run.affected, run.error) : run.error;
+                setError(notice);
             } else {
                 const result = bulkResultMessage(action, run.affected, run.sent);
+                notice = result.message;
                 if (result.complete) {
                     setError('');
                     toast(result.message, 'success');
@@ -631,9 +665,15 @@ export default function Dashboard() {
             if (action === 'delete') {
                 for (const id of ids) droppedLinkIds.current.add(id);
             }
-            await fetchLinks();
-            clearSelection();
-            return true;
+            // The answer is a count, not which rows changed, so the list is
+            // read again. If that fails, the alert still says what was done.
+            let reloadFailed = false;
+            await fetchLinks(undefined, () => { reloadFailed = true; });
+            if (reloadFailed) setError(`${notice} The list could not be refreshed.`);
+            // With nothing confirmed the ticks stay for a retry. Rows that are
+            // gone after the reload lose theirs with the page.
+            if (confirmed) clearSelection();
+            return confirmed;
         } finally {
             bulkInFlight.current = false;
             setBulkBusy(false);
@@ -1035,20 +1075,19 @@ export default function Dashboard() {
             />
 
             {/* Links List */}
-            <div className={selectedIds.size > 0 ? 'pb-24 sm:pb-0' : undefined}>
+            <div className={selectedOnPage.length > 0 ? 'pb-24 sm:pb-0' : undefined}>
                 {paginatedLinks.length > 0 && (
                     <div className="flex items-center gap-2 py-3">
                         <SelectAllCheckbox
                             checked={allOnPage}
-                            indeterminate={selectedOnPage > 0 && !allOnPage}
+                            indeterminate={selectedOnPage.length > 0 && !allOnPage}
                             onChange={toggleSelectPage}
                         />
-                        <span className="text-sm text-muted">Select all on this page</span>
                     </div>
                 )}
-                {selectedIds.size > 0 && (
+                {selectedOnPage.length > 0 && (
                     <BulkActionBar
-                        count={selectedIds.size}
+                        count={selectedOnPage.length}
                         busy={bulkBusy}
                         onDelete={() => applyBulk('delete', {})}
                         onSetExpiry={(expiresAt) => applyBulk('update', { expires_at: expiresAt })}

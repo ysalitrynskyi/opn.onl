@@ -121,6 +121,7 @@ interface SelectAllCheckboxProps {
     onChange: () => void;
 }
 
+/** The box and the words beside it, which are its label: either one toggles the page. */
 export function SelectAllCheckbox({ checked, indeterminate, onChange }: SelectAllCheckboxProps) {
     const ref = useRef<HTMLInputElement>(null);
     useEffect(() => {
@@ -128,15 +129,19 @@ export function SelectAllCheckbox({ checked, indeterminate, onChange }: SelectAl
     }, [indeterminate]);
 
     return (
-        <input
-            ref={ref}
-            id="link-select-all"
-            type="checkbox"
-            checked={checked}
-            onChange={onChange}
-            aria-label="Select all on this page"
-            className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
-        />
+        <>
+            <input
+                ref={ref}
+                id="link-select-all"
+                type="checkbox"
+                checked={checked}
+                onChange={onChange}
+                className="h-4 w-4 rounded border-line2 text-primary-600 focus:ring-primary-500"
+            />
+            <label htmlFor="link-select-all" className="cursor-pointer text-sm text-muted">
+                Select all on this page
+            </label>
+        </>
     );
 }
 
