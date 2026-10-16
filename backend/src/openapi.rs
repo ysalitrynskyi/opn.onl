@@ -35,7 +35,7 @@ two headers, and a `RateLimitResponse` body.
 
 | Budget | Limit | Requests it covers |
 |---|---|---|
-| Burst | 10 per second | Every request except short-link visits (`/{code}`, `/{code}/preview`, \
+| Burst | 20 per second | Every request except short-link visits (`/{code}`, `/{code}/preview`, \
 `/{code}/verify`), counted in addition to the request's own budget below |
 | Sign-in | 10 per minute | Every `POST` under `/auth/` |
 | Link creation | 100 per hour | `POST /links` and `POST /links/{id}/clone`. `POST /links/bulk` \

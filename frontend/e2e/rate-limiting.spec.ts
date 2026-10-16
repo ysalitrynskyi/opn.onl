@@ -44,7 +44,7 @@ const linkListLoaded = (page: Page) =>
 /** Eleven simultaneous GET /health from one client: one more than the per-second gate allows. */
 async function burst(request: APIRequestContext, ip: string, headers: Record<string, string> = {}) {
     const responses = await Promise.all(
-        Array.from({ length: 11 }, () =>
+        Array.from({ length: 21 }, () =>
             request.get(`${API_URL}/health`, { headers: { ...asClient(ip), ...headers } }),
         ),
     );
@@ -187,19 +187,19 @@ test.describe('sign-in budget', () => {
 });
 
 test.describe('per-second gate', () => {
-    test('an eleventh API request within one second is refused', async ({ request }) => {
+    test('a twenty-first API request within one second is refused', async ({ request }) => {
         const { allowed, refused } = await burst(request, freshClientIp());
-        expect(allowed).toHaveLength(10);
+        expect(allowed).toHaveLength(20);
         expect(refused).toHaveLength(1);
 
         const [res] = refused;
         const body = await res.json();
         expect(body).toMatchObject({
             error: 'Too many requests',
-            message: 'Rate limit: maximum 10 requests per second',
+            message: 'Rate limit: maximum 20 requests per second',
         });
         expect(res.headers()['retry-after']).toBe(String(body.retry_after));
-        expect(res.headers()['x-ratelimit-limit']).toBe('10');
+        expect(res.headers()['x-ratelimit-limit']).toBe('20');
         expect(res.headers()['x-ratelimit-remaining']).toBe('0');
     });
 

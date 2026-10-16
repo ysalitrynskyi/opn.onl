@@ -152,8 +152,12 @@ pub struct RateLimiters {
 impl Default for RateLimiters {
     fn default() -> Self {
         Self {
-            // Increased from 1/sec to 10/sec for better UX
-            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(10, 1))),
+            // One page load of the app already sends several requests (the
+            // Dashboard: links, settings, profile, sparklines, folders, tags,
+            // teams, the live stream), and a click right after it lands in the
+            // same second. 10 answered the user's own first click with 429.
+            // Sustained use stays bounded by `general`.
+            per_second: Arc::new(RateLimiter::new(RateLimitConfig::new(20, 1))),
             general: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 60))),
             // Increased from 50/hour to 100/hour for link creation
             link_creation: Arc::new(RateLimiter::new(RateLimitConfig::new(100, 3600))),
