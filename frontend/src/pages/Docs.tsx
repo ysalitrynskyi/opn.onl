@@ -189,6 +189,7 @@ export default function Docs() {
                                 <li><code className="bg-slate-100 px-1 rounded">org_id</code> - List an organization's links instead of your own (members only)</li>
                                 <li><code className="bg-slate-100 px-1 rounded">limit</code> - Number of results (default and maximum: 1000)</li>
                                 <li><code className="bg-slate-100 px-1 rounded">offset</code> - Number of links to skip</li>
+                                <li><code className="bg-slate-100 px-1 rounded">bio_visible</code> - <code className="bg-slate-100 px-1 rounded">true</code> or <code className="bg-slate-100 px-1 rounded">false</code>, to keep only links that are or are not on a bio page</li>
                             </ul>
                             <p className="text-sm text-slate-600">
                                 The body is a JSON array, pinned links first and then newest first. The{' '}
@@ -232,6 +233,9 @@ export default function Docs() {
                                 <code className="bg-slate-100 px-1 rounded">bio_label</code> clears it.{' '}
                                 <code className="bg-slate-100 px-1 rounded">bio_label</code> is at most 80 characters
                                 and is what the public bio page shows instead of the title.
+                                Turning <code className="bg-slate-100 px-1 rounded">bio_visible</code> off
+                                clears <code className="bg-slate-100 px-1 rounded">bio_position</code>.
+                                At most 500 of your own links can be shown at once.
                             </p>
                             <div className="bg-slate-900 rounded-lg p-3 overflow-x-auto">
                                 <code className="text-green-400 text-sm whitespace-pre">{`{ "remove_expiration": true, "title": "Renamed" }`}</code>

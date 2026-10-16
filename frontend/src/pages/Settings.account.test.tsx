@@ -46,8 +46,14 @@ interface Call {
     authorization: string | undefined;
 }
 
-function reply(body: unknown, status = 200) {
-    return Promise.resolve({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) });
+function reply(body: unknown, status = 200, headers: Record<string, string> = {}) {
+    const lower = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
+    return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+        headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
+    });
 }
 
 /**
@@ -495,7 +501,7 @@ describe('Settings account correctness', () => {
         }
 
         it('sorts personal bio links, offers up and down, and leaves hidden and organization links out', async () => {
-            withLinks();
+            const calls = withLinks();
             render(<Settings />);
 
             const helloLabel = await screen.findByLabelText('Label for Hello', {}, shown);
@@ -504,7 +510,8 @@ describe('Settings account correctness', () => {
             expect(items[1]).toHaveTextContent('World');
             expect(items).toHaveLength(2);
             expect(screen.queryByText('Hidden')).not.toBeInTheDocument();
-            expect(screen.getByText(/1 organization link stays on the page/)).toBeInTheDocument();
+            expect(screen.getByText(/1 organization link stays at the end of the page/)).toBeInTheDocument();
+            expect(calls.some((call) => call.method === 'GET' && call.url.includes('bio_visible=true'))).toBe(true);
             expect(screen.getByRole('button', { name: 'Move Hello up' })).toBeDisabled();
             expect(screen.getByRole('button', { name: 'Move World down' })).toBeDisabled();
             expect(helloLabel).toHaveValue('');
@@ -605,7 +612,8 @@ describe('Settings account correctness', () => {
                 return undefined;
             });
             const view = render(<Settings />);
-            expect(await screen.findByText(/No links on your bio page yet/, {}, shown)).toBeInTheDocument();
+            expect(await screen.findByLabelText('Username', {}, shown)).toBeInTheDocument();
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
 
             await view.user.click(screen.getByRole('button', { name: 'Save' }));
             await screen.findByText('Bio page settings saved', {}, shown);
@@ -664,6 +672,175 @@ describe('Settings account correctness', () => {
             });
             expect(puts(calls, '/auth/profile')[0].body).toEqual({ avatar_url: avatar });
             expect(screen.getByRole('img', { name: 'Avatar preview' })).toHaveAttribute('src', expect.stringContaining('/api/bio/avatar?url='));
+        });
+
+        it('does not load bio links until the page is public or the list is opened', async () => {
+            const calls = installApi();
+            const view = render(<Settings />);
+            await screen.findByLabelText('Username', {}, shown);
+
+            expect(calls.some((call) => call.url.includes('/links?'))).toBe(false);
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
+
+            await view.user.click(screen.getByRole('button', { name: 'Show links on your page' }));
+
+            expect(await screen.findByText(/No links on your bio page yet/, {}, shown)).toBeInTheDocument();
+            const lists = calls.filter((call) => call.method === 'GET' && call.url.includes('/links?'));
+            expect(lists).toHaveLength(1);
+            expect(lists[0].url).toContain('bio_visible=true');
+        });
+
+        it('orders a fractional second by the instant, then the higher id', async () => {
+            const rows = [
+                { id: 2, code: 'early', title: 'Early', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-01T00:00:00.1Z' },
+                { id: 1, code: 'later', title: 'Later', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-01T00:00:00.12Z' },
+                { id: 10, code: 'low', title: 'Low', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-02T00:00:00Z' },
+                { id: 11, code: 'high', title: 'High', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2026-01-02T00:00:00Z' },
+            ];
+            installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply(rows);
+                return undefined;
+            });
+            render(<Settings />);
+
+            const items = await screen.findAllByRole('listitem', {}, shown);
+            expect(items.map((item) => item.textContent)).toEqual([
+                expect.stringContaining('High'),
+                expect.stringContaining('Low'),
+                expect.stringContaining('Later'),
+                expect.stringContaining('Early'),
+            ]);
+        });
+
+        it('keeps newer label text when an earlier save returns', async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const calls = withLinks((call) => {
+                if (call.method === 'PUT' && call.url.endsWith('/links/1')) {
+                    const label = (call.body as { bio_label: string }).bio_label;
+                    if (label === 'Shop') return gate.then(() => reply({ ...hello, bio_label: 'Shop' }));
+                    return reply({ ...hello, bio_label: label || null });
+                }
+                return undefined;
+            });
+            render(<Settings />);
+            const input = await screen.findByLabelText('Label for Hello', {}, shown);
+
+            fireEvent.change(input, { target: { value: 'Shop' } });
+            fireEvent.blur(input);
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(1), shown);
+
+            fireEvent.change(input, { target: { value: 'Shop window' } });
+            fireEvent.blur(input);
+            release();
+
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(2), shown);
+            expect(puts(calls, '/links/1')[0].body).toEqual({ bio_label: 'Shop' });
+            expect(puts(calls, '/links/1')[1].body).toEqual({ bio_label: 'Shop window' });
+            expect(await screen.findByLabelText('Label for Shop window', {}, shown)).toHaveValue('Shop window');
+        });
+
+        it('saves again when the text goes back to the value before an earlier save returns', async () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const calls = withLinks((call) => {
+                if (call.method === 'PUT' && call.url.endsWith('/links/1')) {
+                    const label = (call.body as { bio_label: string }).bio_label;
+                    if (label === 'Shop') return gate.then(() => reply({ ...hello, bio_label: 'Shop' }));
+                    return reply({ ...hello, bio_label: label || null });
+                }
+                return undefined;
+            });
+            render(<Settings />);
+            const input = await screen.findByLabelText('Label for Hello', {}, shown);
+
+            fireEvent.change(input, { target: { value: 'Shop' } });
+            fireEvent.blur(input);
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(1), shown);
+
+            // Back to what the row held before the first save: the page still
+            // has to clear the label the first request is about to store.
+            fireEvent.change(input, { target: { value: '' } });
+            fireEvent.blur(input);
+            release();
+
+            await waitFor(() => expect(puts(calls, '/links/1')).toHaveLength(2), shown);
+            expect(puts(calls, '/links/1')[1].body).toEqual({ bio_label: '' });
+            expect(await screen.findByLabelText('Label for Hello', {}, shown)).toHaveValue('');
+        });
+
+        it('does not reorder when a bio link is missing from the list', async () => {
+            const calls = installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) {
+                    return reply([hello, world], 200, { 'X-Total-Count': '3' });
+                }
+                return undefined;
+            });
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert', {}, shown)).toHaveTextContent(/Could not load every link on your bio page/);
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Move Hello down')).toBeDisabled();
+            fireEvent.click(screen.getByLabelText('Move Hello down'));
+            expect(puts(calls, '/auth/bio/order')).toHaveLength(0);
+        });
+
+        it('loads a later page before offering a reorder', async () => {
+            const orgs = Array.from({ length: 1000 }, (_, index) => ({
+                id: 3000 + index,
+                code: `o${index}`,
+                title: `Org ${index}`,
+                bio_visible: true,
+                bio_label: null,
+                bio_position: null,
+                org_id: 9,
+                created_at: '2024-06-01T00:00:00Z',
+            }));
+            const older = { id: 1, code: 'old', title: 'Older personal', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2020-01-01T00:00:00Z' };
+            const newer = { id: 2, code: 'new', title: 'Newer personal', bio_visible: true, bio_label: null, bio_position: null, org_id: null, created_at: '2021-01-01T00:00:00Z' };
+            const calls = installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) {
+                    const offset = Number(new URL(call.url).searchParams.get('offset') ?? '0');
+                    const page = offset === 0 ? orgs : [older, newer];
+                    return reply(page, 200, { 'X-Total-Count': '1002' });
+                }
+                if (call.method === 'PUT' && call.url.endsWith('/auth/bio/order')) {
+                    return reply({ link_ids: (call.body as { link_ids: number[] }).link_ids });
+                }
+                return undefined;
+            });
+            const view = render(<Settings />);
+
+            expect(await screen.findByLabelText('Label for Newer personal', {}, shown)).toBeInTheDocument();
+            const items = screen.getAllByRole('listitem');
+            expect(items).toHaveLength(2);
+            expect(items[0]).toHaveTextContent('Newer personal');
+            expect(items[1]).toHaveTextContent('Older personal');
+            expect(screen.getByText(/1000 organization links stay at the end of the page/)).toBeInTheDocument();
+            expect(calls.filter((call) => call.url.includes('/links?')).map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000']);
+
+            await view.user.click(screen.getByRole('button', { name: 'Move Newer personal down' }));
+            await waitFor(() => expect(puts(calls, '/auth/bio/order')).toHaveLength(1), shown);
+            expect(puts(calls, '/auth/bio/order')[0].body).toEqual({ link_ids: [1, 2] });
+        });
+
+        // The 500-link cap itself is unit-tested in bioOrder.test.ts: rendering
+        // 501 rows in jsdom takes minutes.
+
+        it('shows a failed link load instead of the empty bio page', async () => {
+            installApi((call) => {
+                if (call.url.includes('/auth/me')) return reply(publicProfile);
+                if (call.method === 'GET' && call.url.includes('/links?')) return reply({ error: 'Database error' }, 500);
+                return undefined;
+            });
+            render(<Settings />);
+
+            expect(await screen.findByRole('alert', {}, shown)).toHaveTextContent('Database error');
+            expect(screen.queryByText(/No links on your bio page yet/)).not.toBeInTheDocument();
+            expect(screen.queryByRole('listitem')).not.toBeInTheDocument();
         });
     });
 });

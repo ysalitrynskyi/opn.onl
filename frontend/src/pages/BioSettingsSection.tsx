@@ -1,13 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowDown, ArrowUp, Loader2, User } from 'lucide-react';
-import { API_ENDPOINTS, authFetch, responseError, shortLinkHost } from '../config/api';
+import { API_ENDPOINTS, authFetch, responseError, shortLinkHost, totalCount } from '../config/api';
+import { MAX_BIO_ORDER, bioOrderFits } from './bioOrder';
 import { isSafeHttpUrl } from '../utils';
 import { pluralize } from '../utils/plural';
 import { BIO_THEMES, bioThemeId, type BioThemeId } from './bioThemes';
 
 const MAX_AVATAR_URL_CHARS = 2048;
 const MAX_BIO_LABEL_CHARS = 80;
+/** `GET /links` never returns more than this. */
+const BIO_LINK_PAGE = 1000;
+const MAX_BIO_PAGES = 20;
+const INCOMPLETE_LINKS = 'Could not load every link on your bio page, so they cannot be reordered.';
 
 interface BioLinkRow {
     id: number;
@@ -43,16 +48,26 @@ function isBioLink(value: unknown): value is BioLinkRow {
     return typeof link.id === 'number' && typeof link.code === 'string';
 }
 
+/** Milliseconds since the epoch. Missing or unparseable instants sort last
+ *  among a tied position (oldest). Comparing the RFC 3339 text is wrong:
+ *  `…T00:00:00.1Z` sorts after `…T00:00:00.12Z` because `Z` sorts after `2`,
+ *  but 0.1s is earlier than 0.12s. */
+function createdAtMillis(value: string | undefined): number {
+    if (!value) return Number.NEGATIVE_INFINITY;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
 /** Same order as `GET /api/bio/:username`: position ascending, nulls last,
- *  then newest first. */
+ *  then newest instant, then highest id. */
 function sortBioLinks(links: BioLinkRow[]): BioLinkRow[] {
     return [...links].sort((a, b) => {
         const ap = a.bio_position ?? Number.POSITIVE_INFINITY;
         const bp = b.bio_position ?? Number.POSITIVE_INFINITY;
         if (ap !== bp) return ap - bp;
-        const ac = a.created_at ?? '';
-        const bc = b.created_at ?? '';
-        if (ac !== bc) return ac < bc ? 1 : -1;
+        const at = createdAtMillis(a.created_at);
+        const bt = createdAtMillis(b.created_at);
+        if (at !== bt) return bt - at;
         return b.id - a.id;
     });
 }
@@ -83,31 +98,89 @@ export default function BioSettingsSection<T extends BioCarrier>({
     const [bioLinks, setBioLinks] = useState<BioLinkRow[]>([]);
     const [orgLinkCount, setOrgLinkCount] = useState(0);
     const [labelDrafts, setLabelDrafts] = useState<Record<number, string>>({});
-    const [linksLoading, setLinksLoading] = useState(true);
+    const labelDraftsRef = useRef(labelDrafts);
+    // What the server holds for each label. A save that returns after the
+    // person typed on is compared against this, not against the row the
+    // click handler closed over.
+    const storedLabels = useRef<Record<number, string>>({});
+    const labelInFlight = useRef<Set<number>>(new Set());
+    const labelPending = useRef<Set<number>>(new Set());
+    const [linksAsked, setLinksAsked] = useState(false);
+    const [linksLoading, setLinksLoading] = useState(false);
+    const [linksReady, setLinksReady] = useState(false);
+    const [linksError, setLinksError] = useState<string | null>(null);
     const [savingOrder, setSavingOrder] = useState(false);
+    // The list is a burst of its own. Skip it on a Settings visit that is not
+    // about the bio page: the account page already loads four resources, and
+    // one more trips the per-second limit.
+    const wantsLinks = Boolean(profile.bio_enabled) || linksAsked;
+
+    const replaceDrafts = useCallback((next: Record<number, string>) => {
+        labelDraftsRef.current = next;
+        setLabelDrafts(next);
+    }, []);
 
     useEffect(() => {
+        if (!wantsLinks) return;
         let cancelled = false;
         (async () => {
             setLinksLoading(true);
+            setLinksReady(false);
+            setLinksError(null);
             try {
-                const res = await authFetch(`${API_ENDPOINTS.links}?limit=1000`);
-                if (!res.ok) throw new Error(await responseError(res, 'Failed to load links'));
-                const data: unknown = await res.json();
+                const collected: BioLinkRow[] = [];
+                let offset = 0;
+                let incomplete = false;
+                for (let page = 0; page < MAX_BIO_PAGES; page += 1) {
+                    const params = new URLSearchParams({
+                        bio_visible: 'true',
+                        limit: String(BIO_LINK_PAGE),
+                        offset: String(offset),
+                    });
+                    const res = await authFetch(`${API_ENDPOINTS.links}?${params}`);
+                    if (!res.ok) throw new Error(await responseError(res, 'Failed to load links'));
+                    const data: unknown = await res.json();
+                    if (cancelled) return;
+                    const rows = Array.isArray(data) ? data.filter(isBioLink) : [];
+                    const total = totalCount(res);
+                    collected.push(...rows);
+                    const pageShort = rows.length < BIO_LINK_PAGE;
+                    const reachedTotal = total != null && collected.length >= total;
+                    if (pageShort || reachedTotal || rows.length === 0) {
+                        if (total != null && collected.length < total) incomplete = true;
+                        break;
+                    }
+                    // A full page and no total: another page may exist, and
+                    // ordering a partial id list is rejected.
+                    if (total == null || page + 1 >= MAX_BIO_PAGES) {
+                        incomplete = true;
+                        break;
+                    }
+                    offset += rows.length;
+                }
                 if (cancelled) return;
-                const rows = Array.isArray(data) ? data.filter(isBioLink) : [];
-                const personal = sortBioLinks(rows.filter((link) => link.org_id == null && link.bio_visible === true));
+                const personal = sortBioLinks(collected.filter((link) => link.org_id == null && link.bio_visible === true));
                 setBioLinks(personal);
-                setOrgLinkCount(rows.filter((link) => link.org_id != null && link.bio_visible === true).length);
-                setLabelDrafts(Object.fromEntries(personal.map((link) => [link.id, link.bio_label ?? ''])));
+                setOrgLinkCount(collected.filter((link) => link.org_id != null && link.bio_visible === true).length);
+                storedLabels.current = Object.fromEntries(personal.map((link) => [link.id, link.bio_label ?? '']));
+                replaceDrafts({ ...storedLabels.current });
+                if (incomplete) {
+                    setLinksError(INCOMPLETE_LINKS);
+                    return;
+                }
+                setLinksReady(true);
             } catch (err) {
-                if (!cancelled) onError(shownError(err, 'Failed to load links'));
+                if (cancelled) return;
+                const message = shownError(err, 'Failed to load links');
+                setBioLinks([]);
+                setOrgLinkCount(0);
+                setLinksError(message);
             } finally {
                 if (!cancelled) setLinksLoading(false);
             }
         })();
         return () => { cancelled = true; };
-    }, [profile.id, onError]);
+    }, [profile.id, wantsLinks, replaceDrafts]);
 
     useEffect(() => {
         setAvatarFailed(false);
@@ -175,27 +248,46 @@ export default function BioSettingsSection<T extends BioCarrier>({
     };
 
     const saveLabel = async (link: BioLinkRow) => {
-        const draft = labelDrafts[link.id] ?? '';
-        if (draft === (link.bio_label ?? '')) return;
+        const id = link.id;
+        const currentDraft = () => labelDraftsRef.current[id] ?? '';
+        // One request per link. A blur while that request is out remembers to
+        // save again when it returns, and the late body must not replace what
+        // the person has typed since.
+        if (labelInFlight.current.has(id)) {
+            labelPending.current.add(id);
+            return;
+        }
+        const sent = currentDraft();
+        if (sent === (storedLabels.current[id] ?? '')) return;
+        labelInFlight.current.add(id);
         onError('');
         try {
-            const res = await authFetch(API_ENDPOINTS.linkUpdate(link.id), {
+            const res = await authFetch(API_ENDPOINTS.linkUpdate(id), {
                 method: 'PUT',
-                body: JSON.stringify({ bio_label: draft }),
+                body: JSON.stringify({ bio_label: sent }),
             });
             if (!res.ok) throw new Error(await responseError(res, 'Failed to save label'));
             const saved = await res.json() as { bio_label?: string | null };
             const stored = saved.bio_label ?? null;
-            setBioLinks((prev) => prev.map((row) => (row.id === link.id ? { ...row, bio_label: stored } : row)));
-            setLabelDrafts((prev) => ({ ...prev, [link.id]: stored ?? '' }));
+            storedLabels.current = { ...storedLabels.current, [id]: stored ?? '' };
+            setBioLinks((prev) => prev.map((row) => (row.id === id ? { ...row, bio_label: stored } : row)));
+            // The server may have trimmed the text. Show its version unless
+            // the person has typed on since.
+            if (currentDraft() === sent) replaceDrafts({ ...labelDraftsRef.current, [id]: stored ?? '' });
         } catch (err) {
             onError(shownError(err, 'Failed to save label'));
+        } finally {
+            labelInFlight.current.delete(id);
+            if (labelPending.current.delete(id) && currentDraft() !== (storedLabels.current[id] ?? '')) {
+                void saveLabel(link);
+            }
         }
     };
 
+    const reorderLocked = linksError != null || !linksReady || !bioOrderFits(bioLinks.length);
     const moveLink = async (index: number, direction: -1 | 1) => {
         const nextIndex = index + direction;
-        if (nextIndex < 0 || nextIndex >= bioLinks.length || savingOrder) return;
+        if (reorderLocked || nextIndex < 0 || nextIndex >= bioLinks.length || savingOrder) return;
         const previous = bioLinks;
         const reordered = [...bioLinks];
         const [moved] = reordered.splice(index, 1);
@@ -338,12 +430,25 @@ export default function BioSettingsSection<T extends BioCarrier>({
             <div className="px-6 pb-6 space-y-3">
                 <div>
                     <h3 className="font-display text-sm font-bold text-ink">Links on your page</h3>
-                    {!linksLoading && (
+                    {!wantsLinks && (
+                        <button
+                            type="button"
+                            onClick={() => setLinksAsked(true)}
+                            className="mt-2 text-sm font-medium text-primary-600 hover:text-primary-700"
+                        >
+                            Show links on your page
+                        </button>
+                    )}
+                    {linksError && (
+                        <p role="alert" className="text-sm text-danger mt-1">{linksError}</p>
+                    )}
+                    {!linksError && !linksLoading && linksReady && (
                         <p className="text-xs text-faint mt-1">
                             {bioLinks.length === 0
                                 ? 'No links on your bio page yet. Turn on “Show this link on my bio page” in a link’s edit dialog.'
                                 : `${bioLinks.length} ${pluralize(bioLinks.length, 'link')} on your page. Leave a label blank to use the link’s title.`}
-                            {orgLinkCount > 0 && ` ${orgLinkCount} ${pluralize(orgLinkCount, 'organization link')} ${pluralize(orgLinkCount, 'stays', 'stay')} on the page and ${pluralize(orgLinkCount, 'is', 'are')} not part of this order.`}
+                            {orgLinkCount > 0 && ` ${orgLinkCount} ${pluralize(orgLinkCount, 'organization link')} ${pluralize(orgLinkCount, 'stays', 'stay')} at the end of the page and ${pluralize(orgLinkCount, 'is', 'are')} not part of this order.`}
+                            {!bioOrderFits(bioLinks.length) && ` Reordering is available for up to ${MAX_BIO_ORDER} links. Hide one to rearrange them.`}
                         </p>
                     )}
                 </div>
@@ -364,7 +469,7 @@ export default function BioSettingsSection<T extends BioCarrier>({
                                             <button
                                                 type="button"
                                                 aria-label={`Move ${name} up`}
-                                                disabled={index === 0 || savingOrder}
+                                                disabled={index === 0 || savingOrder || reorderLocked}
                                                 onClick={() => moveLink(index, -1)}
                                                 className="rounded p-1 text-faint transition-colors hover:text-ink disabled:opacity-40 disabled:hover:text-faint"
                                             >
@@ -373,7 +478,7 @@ export default function BioSettingsSection<T extends BioCarrier>({
                                             <button
                                                 type="button"
                                                 aria-label={`Move ${name} down`}
-                                                disabled={index === bioLinks.length - 1 || savingOrder}
+                                                disabled={index === bioLinks.length - 1 || savingOrder || reorderLocked}
                                                 onClick={() => moveLink(index, 1)}
                                                 className="rounded p-1 text-faint transition-colors hover:text-ink disabled:opacity-40 disabled:hover:text-faint"
                                             >
@@ -391,7 +496,7 @@ export default function BioSettingsSection<T extends BioCarrier>({
                                             value={labelDrafts[link.id] ?? ''}
                                             maxLength={MAX_BIO_LABEL_CHARS}
                                             placeholder="Shown instead of the title"
-                                            onChange={(e) => setLabelDrafts((prev) => ({ ...prev, [link.id]: e.target.value }))}
+                                            onChange={(e) => replaceDrafts({ ...labelDraftsRef.current, [link.id]: e.target.value })}
                                             onBlur={() => saveLabel(link)}
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
