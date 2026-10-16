@@ -7,8 +7,11 @@ mod common;
 use chrono::{Duration, NaiveDate, Utc};
 use common::{mark_email_verified, spawn_real_app, unique_code, unique_email};
 use opn_onl_backend::entity::{click_events, links};
+use opn_onl_backend::utils::rate_limiter::{RateLimitConfig, RateLimiter, RateLimiters};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 async fn register_verified(
     server: &axum_test::TestServer,
@@ -187,6 +190,58 @@ async fn a_truncated_sample_does_not_claim_the_older_days_were_quiet() {
     let days = series(&body);
     assert_eq!(days.len(), 1, "only today was loaded: {days:?}");
     assert_eq!(days[0].1, 50_000);
+}
+
+/// The answer counts the clicks it describes, even while clicks are being
+/// written. The total came from a second query, so a click flush that
+/// committed between that count and the read of the clicks themselves made the
+/// total include clicks the series, the breakdowns and the recent clicks did
+/// not have. Clients that wait for the total to reach a number (the analytics
+/// e2e spec does) then read a chart without those clicks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_total_counts_the_clicks_the_answer_describes_while_clicks_arrive() {
+    // A hundred stats requests in a row: more than the per-second and
+    // per-minute budgets allow one client.
+    let (_, db) = spawn_real_app().await;
+    let mut state = opn_onl_backend::AppState::for_tests(db.clone()).await;
+    let roomy = || Arc::new(RateLimiter::new(RateLimitConfig::new(1_000_000, 60)));
+    state.rate_limiters = Arc::new(RateLimiters {
+        per_second: roomy(),
+        general: roomy(),
+        ..RateLimiters::default()
+    });
+    let server = axum_test::TestServer::new(opn_onl_backend::build_router(state)).expect("server");
+    let (token, user_id) = register_verified(&server, &db).await;
+    let link_id = insert_link(&db, user_id).await;
+
+    // One committed click after another for as long as the requests run.
+    let writing = Arc::new(AtomicBool::new(true));
+    let writer = {
+        let (db, writing) = (db.clone(), writing.clone());
+        tokio::spawn(async move {
+            while writing.load(Ordering::Relaxed) {
+                insert_click(&db, link_id, 0, None, None).await;
+            }
+        })
+    };
+
+    let mut mismatches = Vec::new();
+    for _ in 0..100 {
+        let body = link_stats(&server, &token, link_id, 7).await;
+        assert_eq!(body["truncated"], false);
+        let total = body["total_clicks"].as_i64().expect("total_clicks");
+        let in_series: i64 = series(&body).iter().map(|(_, count)| count).sum();
+        if total != in_series {
+            mismatches.push((total, in_series));
+        }
+    }
+    writing.store(false, Ordering::Relaxed);
+    writer.await.expect("writer");
+
+    assert!(
+        mismatches.is_empty(),
+        "answers whose total was not the clicks in their series (total, series): {mismatches:?}"
+    );
 }
 
 /// Paris, France and Paris, Texas are two cities. They were merged under

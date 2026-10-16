@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
-import { test, expect, type APIRequestContext, type APIResponse } from '@playwright/test';
+import { test, expect, type APIRequestContext, type APIResponse, type Page } from '@playwright/test';
 import {
     API_URL,
     WEB_URL,
@@ -22,8 +22,9 @@ import {
  * only checks headers the backend itself sends.
  *
  * Every API request carries its own CF-Connecting-IP (helpers add one; direct
- * calls pass clientIpHeader()), so these tests neither spend nor depend on the
- * rate-limit buckets that browser traffic from 127.0.0.1 shares.
+ * calls pass clientIpHeader()), and so does every page (withOwnAddress), so
+ * these tests neither spend nor depend on the rate-limit buckets that browser
+ * traffic from 127.0.0.1 shares.
  */
 
 /** A real, non-reserved destination. example.com/.org/.net are refused by the URL policy. */
@@ -51,6 +52,17 @@ async function listLinks(request: APIRequestContext, token: string) {
     const response = await api(request, 'get', '/links', token);
     expect(response.status()).toBe(200);
     return response.json();
+}
+
+/**
+ * Send the page's requests from a client address of its own. Without one they
+ * share 127.0.0.1's budgets (100 API requests a minute) with every other page
+ * that has none: a dashboard load alone spends about thirteen of them under
+ * the dev server, and a repeated run of this file used them up and turned the
+ * expected answers into 429s.
+ */
+async function withOwnAddress(page: Page): Promise<void> {
+    await page.setExtraHTTPHeaders(clientIpHeader());
 }
 
 async function login(request: APIRequestContext, email: string, password: string, client = clientIpHeader()) {
@@ -147,6 +159,10 @@ test.describe('Security Tests', () => {
     });
 
     test.describe('XSS Prevention', () => {
+        test.beforeEach(async ({ page }) => {
+            await withOwnAddress(page);
+        });
+
         test('should sanitize URL input', async ({ page, request }) => {
             const user = await createUser(request);
             await signIn(page, user);
@@ -411,6 +427,7 @@ test.describe('Security Tests', () => {
         test('should reject a forged admin session', async ({ page }) => {
             // localStorage is attacker-writable (XSS, shared machine). A token forged
             // for the admin plus is_admin=true must not open the admin panel.
+            await withOwnAddress(page);
             const forged = signWithGuessedKey(claimsOf(adminToken()));
             await page.addInitScript((token) => {
                 // Plant once; the SPA must be free to clear it afterwards.
@@ -419,8 +436,13 @@ test.describe('Security Tests', () => {
                 localStorage.setItem('token', token);
                 localStorage.setItem('is_admin', 'true');
             }, forged);
+            // The panel asks for /admin/stats and /admin/activity at once (twice
+            // under the dev server's StrictMode), and the first 401 sends the
+            // page to /login, which drops the requests still in flight. Wait for
+            // whichever admin call answers first: waiting for /admin/stats alone
+            // never resolved when /admin/activity won that race.
             const adminCall = page.waitForResponse(
-                (r) => r.url() === `${API_URL}/admin/stats` && r.request().method() === 'GET',
+                (r) => r.url().startsWith(`${API_URL}/admin/`) && r.request().method() === 'GET',
             );
 
             await page.goto('/admin');

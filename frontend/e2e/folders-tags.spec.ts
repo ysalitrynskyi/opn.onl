@@ -179,6 +179,12 @@ test.describe('Folders and the dashboard', () => {
         const user = await createUser(request);
         const other = await createLink(request, user.token, { original_url: 'https://www.iana.org/numbers' });
         await openDashboard(page, user);
+        // A new address for everything after the page load. Under the dev
+        // server's StrictMode the load alone sends about thirteen requests, and
+        // with the folder, the tag, the create and the folder filter after it
+        // one address passed the real 20-per-second burst limit: the filtered
+        // list answered 429 and both links stayed on screen.
+        await page.setExtraHTTPHeaders(clientIpHeader());
 
         await page.getByRole('button', { name: 'Manage' }).click();
         await page.getByRole('textbox', { name: 'New folder name' }).fill('Campaigns');

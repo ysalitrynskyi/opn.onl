@@ -173,6 +173,19 @@ test.describe('Organizations in the admin panel', () => {
 
 const LAZY_PAGE = { timeout: 20_000 };
 
+/**
+ * Send the page's next requests from a new client address. After every change
+ * the Teams page reloads the teams, the members and the activity log, and the
+ * dev server's StrictMode loads the activity log twice: five requests per
+ * change. The four changes below, on top of the page loads, fit in under a
+ * second from one address, past the real 20-per-second burst limit, and
+ * whichever reload came 21st answered 429 and left the page showing the old
+ * members. Each change gets an address of its own.
+ */
+async function newClientAddress(page: Page): Promise<void> {
+    await page.setExtraHTTPHeaders(clientIpHeader());
+}
+
 test.describe('Teams page', () => {
     test('creates a team, invites a member, changes their role and removes them', async ({ page, request }) => {
         const [owner, member] = await Promise.all([createUser(request), createUser(request)]);
@@ -187,6 +200,7 @@ test.describe('Teams page', () => {
         const suffix = randomUUID().slice(0, 8);
         const name = `Acme ${suffix}`;
         const slug = `acme-${suffix}`;
+        await newClientAddress(page);
         await page.getByLabel('Team name').fill(name);
         await page.getByLabel('Team slug').fill(slug);
         const created = page.waitForResponse(
@@ -198,6 +212,7 @@ test.describe('Teams page', () => {
         const org = await createdResponse.json() as Org;
         await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
 
+        await newClientAddress(page);
         await page.getByLabel('Member email').fill(member.email);
         await page.getByLabel('Member role').selectOption('editor');
         const invited = page.waitForResponse(
@@ -209,6 +224,7 @@ test.describe('Teams page', () => {
         await expect(members.getByRole('listitem').filter({ hasText: member.email })).toBeVisible();
         await expect(page.getByLabel(`Role for ${member.email}`)).toHaveValue('editor');
 
+        await newClientAddress(page);
         const updated = page.waitForResponse(
             (res) => res.url().includes(`/orgs/${org.id}/members/`) && res.request().method() === 'PUT',
         );
@@ -216,6 +232,7 @@ test.describe('Teams page', () => {
         expect((await updated).status()).toBe(200);
         await expect(page.getByLabel(`Role for ${member.email}`)).toHaveValue('viewer');
 
+        await newClientAddress(page);
         await page.getByRole('button', { name: `Remove ${member.email}` }).click();
         const removed = page.waitForResponse(
             (res) => res.url().includes(`/orgs/${org.id}/members/`) && res.request().method() === 'DELETE',
