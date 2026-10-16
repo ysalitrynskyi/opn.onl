@@ -267,6 +267,30 @@ export async function apiCall<T>(
 }
 
 // Types for API responses
+
+/** GET /links/check-code. Validation failures are still 200, with `available: false`. */
+export interface CheckCodeResponse {
+    available: boolean;
+    code: string;
+    message: string;
+}
+
+/** POST /links/health-check. A refused URL is 400 with this body, not `{"error"}` alone. */
+export interface UrlHealthResponse {
+    url: string;
+    reachable: boolean;
+    status_code?: number | null;
+    response_time_ms?: number | null;
+    error?: string | null;
+}
+
+/** POST /links/build-utm. Empty parameter strings are omitted; the server ignores them too. */
+export interface BuildUtmResponse {
+    original_url: string;
+    url_with_utm: string;
+    utm_params: Record<string, string>;
+}
+
 export interface Link {
     id: number;
     code: string;

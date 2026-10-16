@@ -262,9 +262,13 @@ test.describe('Dashboard Page', () => {
         const toggle = page.getByRole('button', { name: 'Advanced options' });
         const fields = [
             page.getByLabel('Title (private unless the link is on your bio page)'),
+            page.getByLabel('Notes'),
             page.getByLabel('Password Protection'),
             page.getByLabel('Expiration', { exact: true }),
             page.getByLabel('Expiration time'),
+            page.getByLabel('Start date'),
+            page.getByLabel('Click limit'),
+            page.getByRole('button', { name: 'Add UTM parameters' }),
         ];
         for (const field of fields) await expect(field).toBeHidden();
 
@@ -392,6 +396,27 @@ test.describe('Dashboard Page', () => {
         expect(redirect.status()).toBe(307);
         expect(redirect.headers()['location']).toBe(destination);
     });
+
+    test('should stop the link after the click limit set in the form', async ({ page, request, owner }) => {
+        await signIn(page, owner);
+        await openDashboard(page);
+        const destination = uniqueDestination();
+        await page.getByPlaceholder('https://example.com/long-url').fill(destination);
+        await page.getByRole('button', { name: 'Advanced options' }).click();
+        await page.getByLabel('Click limit').fill('1');
+        const created = page.waitForResponse((res) => isApiCall(res, 'POST', '/links'));
+        await page.getByRole('button', { name: 'Create', exact: true }).click();
+        const res = await created;
+        expect(res.status()).toBe(201);
+        const link: CreatedLink & { max_clicks: number } = await res.json();
+        expect(link.max_clicks).toBe(1);
+
+        const first = await request.get(`${API_URL}/${link.code}`, { maxRedirects: 0, headers: clientIpHeader() });
+        expect(first.status()).toBe(307);
+        expect(first.headers()['location']).toBe(destination);
+        const second = await request.get(`${API_URL}/${link.code}`, { maxRedirects: 0, headers: clientIpHeader() });
+        expect(second.status()).toBe(410);
+    });
 });
 
 test.describe('Dashboard - Empty State', () => {
@@ -456,5 +481,22 @@ test.describe('Dashboard - Link Actions', () => {
         const redirect = await request.get(`${API_URL}/${link.code}`, { maxRedirects: 0, headers: clientIpHeader() });
         expect(redirect.status()).toBe(307);
         expect(redirect.headers()['location']).toBe(next);
+    });
+
+    test('should keep notes entered in the edit dialog after reload', async ({ page }) => {
+        await linkRow(page, link).getByRole('button', { name: 'Edit link' }).click();
+        const dialog = page.getByRole('dialog');
+        const notes = 'Shown only to me after a reload';
+        await dialog.getByLabel('Notes').fill(notes);
+        const saved = page.waitForResponse((res) => isApiCall(res, 'PUT', `/links/${link.id}`));
+        await dialog.getByRole('button', { name: 'Save changes' }).click();
+        expect((await saved).status()).toBe(200);
+        await expect(dialog).toBeHidden();
+
+        const listed = page.waitForResponse((res) => isApiCall(res, 'GET', '/links'));
+        await page.reload();
+        await listed;
+        await linkRow(page, link).getByRole('button', { name: 'Edit link' }).click();
+        await expect(page.getByRole('dialog').getByLabel('Notes')).toHaveValue(notes);
     });
 });

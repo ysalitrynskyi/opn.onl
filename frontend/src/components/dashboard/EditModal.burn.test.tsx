@@ -32,9 +32,9 @@ async function saveWith(link: LinkData, toggleBurn: boolean) {
     return onSave.mock.calls[0][1] as Record<string, unknown>;
 }
 
-// The form never shows the click cap. A burn link's implied cap of 1 is
-// removed by the server when the flag goes off, so the form only has to say
-// so: the flag itself, and nothing that would put a cap back or hide the flag.
+// The click limit is on the form, but an untouched limit is not sent. A burn
+// link's implied cap is removed by the server when the flag goes off, so
+// un-ticking must not put that cap back into the body.
 describe('EditModal burn after reading', () => {
     it('sends burn_after_reading false when a burn link is un-ticked', async () => {
         const payload = await saveWith(
