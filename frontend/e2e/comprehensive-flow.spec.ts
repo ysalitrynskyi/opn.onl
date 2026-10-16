@@ -189,6 +189,13 @@ test('a visitor signs up, is verified, signs in, shortens a link and sees its cl
     });
 
     await test.step('deleting the link retires the short URL', async () => {
+        // A new address for the way back as well. The dashboard reload in the
+        // click step, the analytics page and this second dashboard load came to
+        // 26 or 27 requests inside one second from one address in a request
+        // log, past the real 20-per-second burst limit: the folders, tags,
+        // teams and links of this load answered 429, and the error banner then
+        // stood where "No links yet" should appear after the delete.
+        await page.setExtraHTTPHeaders({ 'CF-Connecting-IP': freshClientIp() });
         const listed = linkListLoaded();
         await page.goBack();
         expect((await listed).status()).toBe(200);
