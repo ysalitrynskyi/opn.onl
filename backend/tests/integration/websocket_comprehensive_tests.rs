@@ -1,0 +1,580 @@
+//! Integration tests for the real-time analytics transports (`/ws`, `/sse`).
+//!
+//! This file previously defined LOCAL copies of the event structs and only
+//! tested that those copies round-tripped through serde — it exercised none of
+//! the production handlers, so it passed no matter what `ws_handler` /
+//! `sse_handler` did. It now drives the real router over an HTTP transport with
+//! a real `WsState`, asserting the three properties that actually matter:
+//!   * both transports reject unauthenticated / bad / revoked tokens
+//!     (the `token_version` revocation the audit added), and
+//!   * a connected `/ws` subscriber receives broadcast click events for its own
+//!     links but NOT another user's (the per-user filter in `handle_socket`).
+
+use crate::common;
+
+use common::{
+    mark_email_verified, spawn_real_app_ws, spawn_real_app_ws_with_interval, unique_email,
+};
+use futures_util::StreamExt;
+use opn_onl_backend::handlers::websocket::{ClickEvent, WsState};
+use serde_json::{Value, json};
+use std::time::Duration;
+
+/// Register a user and return `(jwt, user_id)`.
+async fn register(server: &axum_test::TestServer, email: &str) -> (String, i32) {
+    let res = server
+        .post("/auth/register")
+        .json(&json!({ "email": email, "password": "password123" }))
+        .await;
+    assert_eq!(res.status_code(), 201, "register: {}", res.text());
+    let body: Value = res.json();
+    (
+        body["token"].as_str().unwrap().to_string(),
+        body["user_id"].as_i64().unwrap() as i32,
+    )
+}
+
+/// A click event addressed to `user_id`, tagged with `code` so the receiving
+/// side can tell whose event it got.
+fn click_for(user_id: i32, code: &str) -> ClickEvent {
+    ClickEvent {
+        link_id: 1,
+        link_code: code.to_string(),
+        user_id: Some(user_id),
+        org_id: None,
+        click_count: 7,
+        country: Some("US".to_string()),
+        city: Some("NYC".to_string()),
+        device: Some("Desktop".to_string()),
+        browser: Some("Firefox".to_string()),
+        timestamp: "2026-07-11T00:00:00Z".to_string(),
+    }
+}
+
+/// Wait until the handler has actually subscribed to the broadcast channel.
+/// `broadcast` only delivers to receivers that existed at send time, so
+/// broadcasting before the socket's `subscribe()` runs would race; gating on
+/// `receiver_count` makes the delivery test deterministic.
+async fn wait_for_subscriber(ws: &WsState) {
+    for _ in 0..200 {
+        if ws.click_tx.receiver_count() >= 1 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("socket never subscribed to the broadcast channel");
+}
+
+#[tokio::test]
+async fn ws_rejects_missing_and_bad_tokens() {
+    let (server, _db, _ws) = spawn_real_app_ws().await;
+
+    // No token at all.
+    let res = server.get_websocket("/ws").expect_failure().await;
+    assert_eq!(res.status_code(), 401, "missing token must be 401");
+
+    // A syntactically-present but invalid token.
+    let res = server
+        .get_websocket("/ws")
+        .add_query_param("token", "not.a.jwt")
+        .expect_failure()
+        .await;
+    assert_eq!(res.status_code(), 401, "garbage token must be 401");
+}
+
+#[tokio::test]
+async fn ws_rejects_token_revoked_by_version_bump() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let (server, db, _ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+
+    // Simulate a password change/reset: bump token_version so the issued JWT is
+    // now stale. The WS handshake must honor that, not just the signature.
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .expect_failure()
+        .await;
+    assert_eq!(res.status_code(), 401, "revoked token must be 401 on /ws");
+}
+
+#[tokio::test]
+async fn ws_delivers_owner_click_and_filters_other_users() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+
+    wait_for_subscriber(&ws).await;
+
+    // Broadcast an event for a DIFFERENT user first, then one for the connected
+    // user. The socket must skip the first and deliver the second — if the
+    // per-user filter regressed, the first message received would be the other
+    // user's event and the code assertion below would fail.
+    let other_user = user_id + 100_000;
+    ws.broadcast_click(click_for(other_user, "OTHER-USER-EVENT"));
+    ws.broadcast_click(click_for(user_id, "MY-EVENT"));
+
+    let msg: Value = socket.receive_json().await;
+    assert_eq!(msg["type"], "click", "expected a click frame: {msg}");
+    assert_eq!(
+        msg["link_code"], "MY-EVENT",
+        "socket must receive its own event, never another user's: {msg}"
+    );
+    assert_eq!(msg["user_id"], user_id);
+    assert_eq!(msg["country"], "US");
+    assert_eq!(msg["city"], "NYC");
+    assert_eq!(msg["device"], "Desktop");
+    assert_eq!(msg["browser"], "Firefox");
+
+    socket.close().await;
+}
+
+/// SSE is the untagged ClickEvent JSON, not the WS `{type: click}` envelope.
+/// Same per-user filter as `/ws`.
+#[tokio::test]
+async fn sse_delivers_owner_click_and_filters_other_users() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let mut body = response.bytes_stream();
+
+    wait_for_subscriber(&ws).await;
+
+    let other_user = user_id + 100_000;
+    ws.broadcast_click(click_for(other_user, "OTHER-SSE-EVENT"));
+    ws.broadcast_click(click_for(user_id, "MY-SSE-EVENT"));
+
+    let mut acc = Vec::new();
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(chunk) = body.next().await {
+            acc.extend_from_slice(&chunk.expect("read SSE body"));
+            let text = String::from_utf8_lossy(&acc);
+            if let Some(start) = text.find("data:") {
+                let rest = text[start + 5..].trim_start();
+                let json_line = rest.lines().next().unwrap_or("").trim();
+                if let Ok(v) = serde_json::from_str::<Value>(json_line) {
+                    return v;
+                }
+            }
+        }
+        panic!("SSE stream ended before a click event");
+    })
+    .await
+    .expect("timed out waiting for SSE click");
+
+    assert_eq!(
+        event["link_code"], "MY-SSE-EVENT",
+        "SSE must skip other users: {event}"
+    );
+    assert_eq!(event["user_id"], user_id);
+    assert!(
+        event.get("type").is_none(),
+        "SSE payload is the ClickEvent struct, not a tagged WsMessage: {event}"
+    );
+    assert_eq!(event["country"], "US");
+    assert_eq!(event["device"], "Desktop");
+}
+
+/// `handle_socket` only forwards `event.user_id == Some(subscriber)`. A click
+/// with `user_id: None` (anonymous / unowned) must not leak to any socket.
+#[tokio::test]
+async fn ws_drops_clicks_with_no_user_id() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    let mut anon = click_for(user_id, "ANON-EVENT");
+    anon.user_id = None;
+    ws.broadcast_click(anon);
+    ws.broadcast_click(click_for(user_id, "OWNED-EVENT"));
+
+    let msg: Value = socket.receive_json().await;
+    assert_eq!(msg["type"], "click");
+    assert_eq!(
+        msg["link_code"], "OWNED-EVENT",
+        "anonymous click must not be delivered: {msg}"
+    );
+
+    socket.close().await;
+}
+
+#[tokio::test]
+async fn sse_rejects_missing_and_revoked_tokens() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let (server, db, _ws) = spawn_real_app_ws().await;
+
+    // No token → 401 before the stream opens.
+    let res = server.get("/sse").expect_failure().await;
+    assert_eq!(res.status_code(), 401, "missing token must be 401 on /sse");
+
+    // Revoked token → 401 (same DB-backed check as /ws and the HTTP API).
+    let (token, user_id) = register(&server, &unique_email()).await;
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
+
+    let res = server
+        .get("/sse")
+        .add_query_param("token", &token)
+        .expect_failure()
+        .await;
+    assert_eq!(res.status_code(), 401, "revoked token must be 401 on /sse");
+}
+
+#[tokio::test]
+async fn ws_connection_closes_after_token_is_revoked() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let (server, db, ws) = spawn_real_app_ws_with_interval(Duration::from_millis(50)).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
+
+    let close = tokio::time::timeout(Duration::from_secs(2), socket.receive_message())
+        .await
+        .expect("revoked WebSocket stayed open");
+    assert!(
+        matches!(close, axum_test::WsMessage::Close(_)),
+        "expected close frame after token revocation, got {close:?}"
+    );
+}
+
+#[tokio::test]
+async fn sse_stream_ends_after_token_is_revoked() {
+    use opn_onl_backend::entity::users;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let (server, db, _ws) = spawn_real_app_ws_with_interval(Duration::from_millis(50)).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let mut body = response.bytes_stream();
+
+    let user = users::Entity::find_by_id(user_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = user.token_version;
+    let mut active: users::ActiveModel = user.into();
+    active.token_version = Set(current + 1);
+    active.update(&db).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(chunk) = body.next().await {
+            chunk.expect("read SSE body");
+        }
+    })
+    .await
+    .expect("revoked SSE stream stayed open");
+}
+
+// ------------------------------------------------------------- keep-alive
+
+/// Milliseconds are enough: the server pings every 100 ms and gives up on a
+/// connection that has said nothing for 400 ms. Production uses 30 s and 90 s.
+fn quick_keepalive() -> std::sync::Arc<WsState> {
+    std::sync::Arc::new(
+        WsState::new().with_keepalive(Duration::from_millis(100), Duration::from_millis(400)),
+    )
+}
+
+/// A half-open peer: connected, but nothing reads from the socket, so no Ping
+/// is ever answered (tungstenite replies to a Ping only when the application
+/// reads). The server stops waiting and closes the connection instead of
+/// holding it open, and counting it against the user's limit, forever.
+#[tokio::test]
+async fn ws_closes_a_connection_that_stops_answering() {
+    let (server, db, ws) = common::spawn_real_app_ws_with_state(quick_keepalive()).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let _socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+    assert_eq!(ws.open_connections(user_id), 1);
+
+    for _ in 0..250 {
+        if ws.open_connections(user_id) == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("a WebSocket that never answers a ping stayed open");
+}
+
+/// Control: a client that reads, which is what makes a browser answer pings,
+/// is never dropped for silence, and still gets its events.
+#[tokio::test]
+async fn ws_keeps_a_connection_that_answers_pings() {
+    let (server, db, ws) = common::spawn_real_app_ws_with_state(quick_keepalive()).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    // Three times the idle timeout, answering every ping on the way.
+    let until = tokio::time::Instant::now() + Duration::from_millis(1200);
+    let mut pings = 0;
+    while let Ok(message) = tokio::time::timeout_at(until, socket.receive_message()).await {
+        match message {
+            axum_test::WsMessage::Ping(_) => pings += 1,
+            other => panic!("unexpected frame while idle: {other:?}"),
+        }
+    }
+    assert!(
+        pings >= 3,
+        "pings keep coming while the peer answers: {pings}"
+    );
+
+    ws.broadcast_click(click_for(user_id, "STILL-HERE"));
+    let message = loop {
+        match socket.receive_message().await {
+            axum_test::WsMessage::Ping(_) => continue,
+            other => break other,
+        }
+    };
+    let axum_test::WsMessage::Text(text) = message else {
+        panic!("expected the click event, got {message:?}");
+    };
+    let msg: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(msg["link_code"], "STILL-HERE", "{msg}");
+}
+
+/// The SSE stream carries a comment line on the keep-alive interval, so a quiet
+/// stream is not closed by a proxy and a vanished client fails a write.
+#[tokio::test]
+async fn sse_sends_a_comment_line_while_idle() {
+    let (server, db, _ws) = common::spawn_real_app_ws_with_state(quick_keepalive()).await;
+    let (token, user_id) = register(&server, &unique_email()).await;
+    mark_email_verified(&db, user_id).await;
+
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let mut body = response.bytes_stream();
+
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(chunk) = body.next().await {
+            seen.extend_from_slice(&chunk.expect("read SSE body"));
+            if String::from_utf8_lossy(&seen)
+                .lines()
+                .any(|line| line.starts_with(':'))
+            {
+                return;
+            }
+        }
+        panic!("the SSE stream ended");
+    })
+    .await
+    .expect("no keep-alive comment arrived on an idle SSE stream");
+}
+
+// ------------------------------------------------------------- timestamps
+
+/// A verified user with one link: `(jwt, link_id, code)`.
+async fn user_with_link(
+    server: &axum_test::TestServer,
+    db: &sea_orm::DatabaseConnection,
+) -> (String, i32, String) {
+    let (token, user_id) = register(server, &unique_email()).await;
+    mark_email_verified(db, user_id).await;
+    let res = server
+        .post("/links")
+        .authorization_bearer(&token)
+        .json(&json!({ "original_url": "https://iana.org/realtime-stamp" }))
+        .await;
+    assert_eq!(res.status_code(), 201, "create link: {}", res.text());
+    let body: Value = res.json();
+    (
+        token,
+        body["id"].as_i64().unwrap() as i32,
+        body["code"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Every time the API emits is RFC 3339 in UTC with an explicit `Z`; a client
+/// that parses `+00:00` and `Z` differently, or compares the strings, must not
+/// meet two spellings of the same instant.
+fn assert_utc_z(timestamp: &Value) {
+    let text = timestamp.as_str().expect("timestamp is a string");
+    assert!(text.ends_with('Z'), "{text}");
+    let parsed = chrono::DateTime::parse_from_rfc3339(text).expect("RFC 3339");
+    let skew = chrono::Utc::now() - parsed.with_timezone(&chrono::Utc);
+    assert!(
+        skew.num_minutes().abs() < 5,
+        "{text} is not the time of the click"
+    );
+}
+
+#[tokio::test]
+async fn ws_click_event_timestamp_is_utc_with_z() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, _, code) = user_with_link(&server, &db).await;
+    let mut socket = server
+        .get_websocket("/ws")
+        .add_query_param("token", &token)
+        .await
+        .into_websocket()
+        .await;
+    wait_for_subscriber(&ws).await;
+
+    let visit = server.get(&format!("/{code}")).await;
+    assert_eq!(visit.status_code(), 307, "redirect: {}", visit.text());
+
+    let msg: Value = socket.receive_json().await;
+    assert_eq!(msg["type"], "click", "{msg}");
+    assert_eq!(msg["link_code"], code, "{msg}");
+    assert_utc_z(&msg["timestamp"]);
+    socket.close().await;
+}
+
+#[tokio::test]
+async fn sse_click_event_timestamp_is_utc_with_z() {
+    let (server, db, ws) = spawn_real_app_ws().await;
+    let (token, _, code) = user_with_link(&server, &db).await;
+    let url = server
+        .server_address()
+        .expect("HTTP transport address")
+        .join("sse")
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(url)
+        .query(&[("token", token.as_str())])
+        .send()
+        .await
+        .expect("open SSE stream");
+    let mut body = response.bytes_stream();
+    wait_for_subscriber(&ws).await;
+
+    let visit = server.get(&format!("/{code}")).await;
+    assert_eq!(visit.status_code(), 307, "redirect: {}", visit.text());
+
+    let mut acc = Vec::new();
+    let event = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(chunk) = body.next().await {
+            acc.extend_from_slice(&chunk.expect("read SSE body"));
+            let text = String::from_utf8_lossy(&acc);
+            if let Some(start) = text.find("data:")
+                && let Ok(event) =
+                    serde_json::from_str::<Value>(text[start + 5..].lines().next().unwrap_or(""))
+            {
+                return event;
+            }
+        }
+        panic!("SSE stream ended before a click event");
+    })
+    .await
+    .expect("timed out waiting for the SSE click");
+    assert_eq!(event["link_code"], code, "{event}");
+    assert_utc_z(&event["timestamp"]);
+}
+
+#[tokio::test]
+async fn realtime_click_count_timestamp_is_utc_with_z() {
+    let (server, db, _ws) = spawn_real_app_ws().await;
+    let (token, link_id, _) = user_with_link(&server, &db).await;
+
+    let res = server
+        .get(&format!("/links/{link_id}/clicks/realtime"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+    assert_utc_z(&res.json::<Value>()["timestamp"]);
+}

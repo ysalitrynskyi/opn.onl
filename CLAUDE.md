@@ -22,7 +22,7 @@ cargo build --release
 # at a throwaway database (migrations run automatically, once per process):
 createdb opn_test
 DATABASE_URL=postgres://localhost/opn_test cargo test
-DATABASE_URL=postgres://localhost/opn_test cargo test --test admin_tests   # single test file
+DATABASE_URL=postgres://localhost/opn_test cargo test --test integration admin_tests::   # one test file
 ```
 
 ### Frontend (`frontend/`)
@@ -119,8 +119,12 @@ Deployment to production is a manual Portainer redeploy by the operator; a green
 
 ## Testing conventions
 
-- Backend integration tests live in `backend/tests/*.rs` and use `common::spawn_real_app()` (real router + real Postgres via `axum_test::TestServer`). Write new tests this way — do not stub the router or hit a running server with shell scripts.
-- For WebSocket/SSE tests use `common::spawn_real_app_ws()`, which builds the router over an HTTP transport (mock transport can't upgrade) with a real `WsState` so you can broadcast and observe what a `/ws` subscriber receives (see `tests/websocket_comprehensive_tests.rs`). Requires the `axum-test` `ws` feature.
+- Backend integration tests use `common::spawn_real_app()` (real router + real Postgres via `axum_test::TestServer`). Write new tests this way — do not stub the router or hit a running server with shell scripts.
+- **Where a test file goes.** Every top-level file in `backend/tests/` is a test binary that links the whole app, and one per file made a debug build 20–30 GB (2026-10). So:
+  - New files go in `backend/tests/integration/`, one test binary: add a `mod` line to its `main.rs`. Its tests run in parallel on one fixed environment (`common::baseline_env`), so they may not change an environment variable or sweep the whole database.
+  - A test that changes an environment variable (link caps, public URLs, retention windows, switches turned off) or sweeps the whole database (purges, retention scrubs) goes in `backend/tests/integration_serial/` and starts with `let _serial = common::serial_guard().await;`, which runs it alone and puts the environment back afterwards.
+  - The files left at the top of `tests/` need a process of their own, and their headers say why: a counting global allocator, log capture that depends on `tracing`'s per-process callsite cache, and proxy-header trust, which the app reads once per process. Add a new one only for the same kind of reason.
+- For WebSocket/SSE tests use `common::spawn_real_app_ws()`, which builds the router over an HTTP transport (mock transport can't upgrade) with a real `WsState` so you can broadcast and observe what a `/ws` subscriber receives (see `tests/integration/websocket_comprehensive_tests.rs`). Requires the `axum-test` `ws` feature.
 - Tests run in parallel against one shared database: generate unique emails/codes via `common::unique_email()` / `unique_code()`, and don't assert on global counts.
 - Frontend unit tests colocate as `*.test.tsx` next to the component (Vitest + Testing Library, jsdom).
 - Playwright specs in `frontend/e2e/` run against the real stack. Use `e2e/support/api.ts`:

@@ -9,7 +9,7 @@ use crate::handlers::{
 /// `info.description` of the served document (Markdown), set in [`api_doc`].
 ///
 /// The rate-limit table mirrors `RateLimiters::default()` and the routing in
-/// `rate_limit_middleware`. `tests/audit_openapi.rs` fails if the numbers drift.
+/// `rate_limit_middleware`. `tests/integration/audit_openapi.rs` fails if the numbers drift.
 const API_DESCRIPTION: &str = "\
 A modern, feature-rich URL shortening service with analytics, teams, and real-time updates.
 
@@ -62,7 +62,7 @@ answer never reveals whether an address has an account. The one exception is a s
 ";
 
 // Only the document uses this type: `rate_limit_middleware` builds the body
-// with `json!`, and tests/audit_openapi.rs checks that the two agree.
+// with `json!`, and tests/integration/audit_openapi.rs checks that the two agree.
 /// Body of a `429 Too Many Requests` answer from the rate limiter.
 #[derive(ToSchema)]
 pub struct RateLimitResponse {
