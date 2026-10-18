@@ -330,10 +330,38 @@ async fn api_key_is_refused_when_api_keys_are_switched_off() {
     common::set_env("ENABLE_API_KEYS", "true");
 }
 
-/// Control: with no `Authorization` header the link is anonymous, as before.
+/// Without an `Authorization` header there is no link: an anonymous link has
+/// no owner, and creating one is how public shorteners end up hiding phishing
+/// links. Unset, blank and every spelling of off refuse alike.
 #[tokio::test]
-async fn no_credential_still_creates_an_anonymous_link() {
+async fn no_credential_is_refused_unless_the_instance_allows_anonymous_links() {
     let _serial = crate::common::serial_guard().await;
+    let (server, db) = spawn_real_app().await;
+    for setting in [None, Some(""), Some("false"), Some("0"), Some("OFF")] {
+        match setting {
+            None => common::remove_env("ALLOW_ANONYMOUS_LINKS"),
+            Some(value) => common::set_env("ALLOW_ANONYMOUS_LINKS", value),
+        }
+        let (res, alias) = create_with_authorization(&server, None).await;
+        assert_eq!(res.status_code(), 401, "{setting:?}: {}", res.text());
+        let body: serde_json::Value = res.json();
+        assert_eq!(
+            body["error"], "Sign in or send an API key to create a link.",
+            "{setting:?}"
+        );
+        assert!(
+            link_by_code(&db, &alias).await.is_none(),
+            "{setting:?}: a refused request must not create the link"
+        );
+    }
+}
+
+/// An instance that opts in (`ALLOW_ANONYMOUS_LINKS=true`) gets the old
+/// behaviour: no `Authorization` header creates a link nobody owns.
+#[tokio::test]
+async fn no_credential_creates_an_anonymous_link_when_the_instance_allows_it() {
+    let _serial = crate::common::serial_guard().await;
+    common::set_env("ALLOW_ANONYMOUS_LINKS", "true");
     let (server, db) = spawn_real_app().await;
     let (res, alias) = create_with_authorization(&server, None).await;
     assert_eq!(res.status_code(), 201, "anonymous create: {}", res.text());
@@ -341,11 +369,13 @@ async fn no_credential_still_creates_an_anonymous_link() {
     assert_eq!(row.user_id, None, "an anonymous link has no owner");
 }
 
-/// Control: anonymous callers still cannot use folders, tags or orgs. That
-/// stays a 403: nothing was rejected, there is just nobody to scope the link to.
+/// Where anonymous links are allowed, anonymous callers still cannot use
+/// folders, tags or orgs. That stays a 403: nothing was rejected, there is just
+/// nobody to scope the link to.
 #[tokio::test]
 async fn anonymous_caller_with_folder_scope_is_still_forbidden() {
     let _serial = crate::common::serial_guard().await;
+    common::set_env("ALLOW_ANONYMOUS_LINKS", "true");
     let (server, _db) = spawn_real_app().await;
     let res = server
         .post("/links")

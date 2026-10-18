@@ -157,7 +157,7 @@ docker-compose logs -f
 
 ```bash
 curl https://api.opn.onl/health
-# {"status":"healthy","version":"1.8.0","database":"connected","redis":"connected",...}
+# {"status":"healthy","version":"1.9.0","database":"connected","redis":"connected",...}
 ```
 
 `status` is `healthy`, `degraded` or `unhealthy`. Only the database can fail the check (503, `unhealthy`).
@@ -172,7 +172,7 @@ Docker images are automatically built by GitHub Actions on every push to `releas
 2. Choose the appropriate file for your architecture:
    - `docker-compose.portainer.amd64.yml` - Intel/AMD servers
    - `docker-compose.portainer.arm64.yml` - ARM servers (Raspberry Pi, Apple Silicon, etc.)
-3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.8.0`):
+3. Add environment variables (rolling `:latest`, or pin a release tag such as `:1.9.0`):
    ```
    BACKEND_IMAGE=ghcr.io/ysalitrynskyi/opn-backend:latest
    FRONTEND_IMAGE=ghcr.io/ysalitrynskyi/opn-frontend:latest
@@ -216,6 +216,7 @@ the frontend yourself (`docker compose up -d --build` from Option 1, or
 | `ADMIN_EMAIL` | - | Where contact-form messages are delivered. There is no default: while it is unset the contact form answers `503` and mails nobody |
 | `EMAIL_RATE_LIMIT_PER_HOUR` | 500 | Most emails the instance sends per hour in total. Split 60% account mail (verification, password reset, welcome), 20% security notices (password changed), 10% contact form and 10% link expiry reminders, so a flood of one kind cannot starve the others |
 | `REQUIRE_EMAIL_VERIFICATION` | true | Set to false only if your instance has no SMTP; anyone can then sign up with an address they do not own. |
+| `ALLOW_ANONYMOUS_LINKS` | false | Let `POST /links` create a link without credentials. Such a link has no owner, so it cannot be listed, edited or deleted later, and anonymous creation is a common way to hide phishing links behind a short URL. Off, a request without a sign-in token or API key is a 401. The web app always asks visitors to sign in |
 | `LINK_EXPIRY_REMINDERS` | true | Once a day, email each owner the personal links that expire within the next 3 days, soonest first, at most 20 per email (organization links are not included). A link is mentioned once per expiry date; changing the date makes it due again. Users turn the reminders off in Settings. Not sent to unverified accounts while `REQUIRE_EMAIL_VERIFICATION` is on. When the reminders' share of `EMAIL_RATE_LIMIT_PER_HOUR` runs out, the rest go out an hour later |
 
 Without SMTP, verification, password-reset, password-changed and expiry reminder emails are not sent.
@@ -234,7 +235,7 @@ one budget. The limits are kept in memory, so a restart clears them.
 
 ### Link Management
 
-Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`, `REQUIRE_EMAIL_VERIFICATION`, `LINK_EXPIRY_REMINDERS`)
+Every on/off switch in this README (`ENABLE_*`, `BLOCK_*`, `FORCE_HTTPS`, `TRUST_PROXY_HEADERS`, `REQUIRE_EMAIL_VERIFICATION`, `LINK_EXPIRY_REMINDERS`, `ALLOW_ANONYMOUS_LINKS`)
 accepts `true` or `false`, also written `1`/`0`, `yes`/`no` or `on`/`off`, in any case. Any other value
 is ignored with a warning in the log and the default applies.
 
@@ -356,7 +357,7 @@ Authenticate any request with `Authorization: Bearer <token>` — either a **JWT
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/links` | List your links, or with `?org_id=` every link of that organization (members only). Pinned links first, then newest first. Filters: `folder_id`, `tag_id`, `search`. Pages with `limit` (default and maximum 1000) and `offset`; the body is a JSON array and the `X-Total-Count` response header carries how many links match, ignoring `limit`/`offset` |
-| POST | `/links` | Create new link (`custom_alias` sets the code). Without an `Authorization` header the link is anonymous; a header that does not authenticate (expired, revoked or unknown token) is a 401, not an anonymous link |
+| POST | `/links` | Create new link (`custom_alias` sets the code). Needs a sign-in token or API key: without an `Authorization` header the answer is a 401, unless `ALLOW_ANONYMOUS_LINKS` is on, which creates an anonymous link; a header that does not authenticate (expired, revoked or unknown token) is a 401 either way |
 | GET | `/links/{id}` | Get one link, in the same shape as an item of `GET /links`. Organization links: any current member. A missing, deleted or someone else's link is a `403` |
 | PUT | `/links/{id}` | Update link. The short code cannot be changed. Only the fields you send change; `null` counts as not sent, so clear a field with its flag: `remove_expiration`, `remove_starts_at`, `remove_max_clicks`, `remove_password`, `remove_folder`. An empty `title` or `notes` clears it. A burn-after-reading link always has a click cap (1 unless you set another): turning burn off removes the cap it implied, and `remove_max_clicks` on a burn link turns burn off |
 | POST | `/links/{id}/clone` | Copy a link under a new code: destination, password, schedule, click cap, burn-after-reading, interstitial, folder, tags and routing rules. Clicks start at zero and the copy is not pinned |

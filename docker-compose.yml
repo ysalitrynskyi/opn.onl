@@ -130,6 +130,8 @@ services:
       # Once a day, mail owners whose personal links expire within 3 days
       # (users can turn it off in Settings). Default true; needs SMTP.
       LINK_EXPIRY_REMINDERS: ${LINK_EXPIRY_REMINDERS:-true}
+      # POST /links without credentials. Default false: the API needs an account.
+      ALLOW_ANONYMOUS_LINKS: ${ALLOW_ANONYMOUS_LINKS:-false}
       
       # S3 Backup (Optional - Cloudflare R2)
       BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
