@@ -24,8 +24,8 @@ token it accepts:
 tags, organizations, analytics, and the profile accept it. Account security (password, account \
 deletion, passkeys, API keys) and `/admin` require the session JWT.
 
-Operations without a security requirement are public. `POST /links` also works without a token \
-and then creates an anonymous link.
+Operations without a security requirement are public. `POST /links` needs a token unless the \
+instance sets `ALLOW_ANONYMOUS_LINKS=true`; then a request without one creates an anonymous link.
 
 ## Rate limits
 

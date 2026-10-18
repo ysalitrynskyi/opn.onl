@@ -609,7 +609,6 @@ const PUBLIC_OPERATIONS: &[(&str, &str)] = &[
 /// empty requirement `{}` next to the bearer ones. Resending the verification
 /// email answers the owner of the account specifically when they sign in.
 const OPTIONAL_AUTH_OPERATIONS: &[(&str, &str)] = &[
-    ("POST", "/links"),
     ("POST", "/auth/resend-verification"),
     // A report needs no account. A present Authorization header still has to
     // authenticate, the same rule as creating a link.

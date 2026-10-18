@@ -36,15 +36,16 @@ describe('FAQ', () => {
         expect(answer).not.toHaveTextContent(/does not load until you allow it/i);
     });
 
-    // The home page sends a visitor without a session to /register, so "you can
-    // use it without an account" was only true of the raw API.
-    it('says the website needs an account', async () => {
+    // The home page sends a visitor without a session to /register, and the API
+    // needs a token too unless the operator allows anonymous links.
+    it('says the website and the API need an account', async () => {
         const { user } = render(<Faq />);
 
         await user.click(screen.getByRole('button', { name: /do i need an account to shorten links/i }));
 
         const answer = await screen.findByText(/asks you to sign up or log in before it creates a link/i);
-        expect(answer).toHaveTextContent(/the api can create a basic link without an account/i);
+        expect(answer).toHaveTextContent(/the api needs an account too: a sign-in token or an api key/i);
+        expect(answer).not.toHaveTextContent(/the api can create a basic link without an account/i);
         expect(answer).not.toHaveTextContent(/you can use opn\.onl without an account/i);
     });
 

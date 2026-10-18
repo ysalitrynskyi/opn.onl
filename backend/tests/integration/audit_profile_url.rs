@@ -84,9 +84,11 @@ async fn profile_accepts_https_website() {
 #[tokio::test]
 async fn create_link_rejects_localhost_destination() {
     let (server, _db) = spawn_real_app().await;
+    let token = register(&server, &unique_email()).await;
 
     let res = server
         .post("/links")
+        .authorization_bearer(&token)
         .json(&json!({ "original_url": "http://localhost/secret" }))
         .await;
     assert_eq!(res.status_code(), 400, "body: {}", res.text());

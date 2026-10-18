@@ -2068,15 +2068,24 @@ fn secs_until(opens_at: chrono::NaiveDateTime, now: chrono::NaiveDateTime) -> u6
     secs.saturating_add(round_up).max(1)
 }
 
+/// Whether `POST /links` may create a link without credentials
+/// (`ALLOW_ANONYMOUS_LINKS`, default off). An anonymous link has no owner: it
+/// cannot be listed, edited or deleted afterwards, and unauthenticated creation
+/// is how public shorteners get used to hide phishing and malware links.
+pub fn anonymous_links_allowed() -> bool {
+    env_flag("ALLOW_ANONYMOUS_LINKS", false)
+}
+
 /// Create a new shortened link
 ///
-/// Credentials are optional. Without them the link is anonymous and cannot be
-/// put in a folder, tagged, or owned by an organization. Credentials that are
-/// sent but do not authenticate (expired, revoked, unknown key) are refused
-/// with 401 instead of creating an anonymous link; omit the `Authorization`
-/// header to create one. An account can shorten the same URL at most 10 times
-/// in 10 minutes. The next request is a 429 in the rate-limit shape, and
-/// `Retry-After` is when one of those ten leaves the window.
+/// Needs a session JWT or an API key. Without either the answer is 401, unless
+/// the instance sets `ALLOW_ANONYMOUS_LINKS=true`: then a request without an
+/// `Authorization` header creates an anonymous link, which nobody owns and
+/// which cannot be put in a folder, tagged, or owned by an organization.
+/// Credentials that are sent but do not authenticate (expired, revoked,
+/// unknown key) are a 401 either way. An account can shorten the same URL at
+/// most 10 times in 10 minutes. The next request is a 429 in the rate-limit
+/// shape, and `Retry-After` is when one of those ten leaves the window.
 #[utoipa::path(
     post,
     path = "/links",
@@ -2084,12 +2093,12 @@ fn secs_until(opens_at: chrono::NaiveDateTime, now: chrono::NaiveDateTime) -> u6
     responses(
         (status = 201, description = "Link created", body = LinkResponse),
         (status = 400, description = "Invalid request"),
-        (status = 401, description = "Credentials were sent but are invalid, expired or revoked"),
+        (status = 401, description = "No credentials (and the instance does not set ALLOW_ANONYMOUS_LINKS), or credentials that are invalid, expired or revoked"),
         (status = 403, description = "Email unverified, link cap reached, URL blocked, or custom aliases disabled"),
         (status = 409, description = "Alias already exists"),
     ),
     tag = "Links",
-    security((), ("bearer_auth" = []), ("api_key" = []))
+    security(("bearer_auth" = []), ("api_key" = []))
 )]
 pub async fn create_link(
     State(state): State<AppState>,
@@ -2102,6 +2111,12 @@ pub async fn create_link(
         Ok(user_id) => user_id,
         Err(rejected) => return rejected.into_response(),
     };
+    if user_id.is_none() && !anonymous_links_allowed() {
+        return json_error(
+            StatusCode::UNAUTHORIZED,
+            "Sign in or send an API key to create a link.",
+        );
+    }
 
     // Validate URL first
     let validated_url = match validate_url(&payload.original_url) {

@@ -50,7 +50,7 @@ const faqs = [
             },
             {
                 q: "Do I need an account to shorten links?",
-                a: "On the website, yes: the home page asks you to sign up or log in before it creates a link. An account is also what gives you analytics tracking, custom aliases, password protection, link expiration, and the ability to manage all your links in one place. The API can create a basic link without an account, but nobody owns it afterwards, so it can't be listed, edited or deleted later."
+                a: "On the website, yes: the home page asks you to sign up or log in before it creates a link. An account is also what gives you analytics tracking, custom aliases, password protection, link expiration, and the ability to manage all your links in one place. The API needs an account too: a sign-in token or an API key. An instance's operator can allow links without one, but nobody owns such a link, so it can't be listed, edited or deleted later."
             },
             {
                 q: "How do I create a shortened link?",
