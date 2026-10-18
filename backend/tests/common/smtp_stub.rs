@@ -2,10 +2,9 @@
 //! count the mail the app really handed to SMTP, see who it went to and read
 //! the link in it.
 //!
-//! Include it with `#[path = "common/smtp_stub.rs"] mod smtp_stub;` next to
-//! `mod common;`. The server runs on a thread of its own: a `#[tokio::test]`
-//! runtime ends with its test, and the stub has to outlive the test that
-//! started it because the other tests in the binary share it.
+//! Use it as `common::smtp_stub`. The server runs on a thread of its own: a
+//! `#[tokio::test]` runtime ends with its test, and the stub has to outlive the
+//! test that started it because the other tests in the binary share it.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -163,11 +162,14 @@ impl SmtpStub {
     }
 }
 
-/// The process-wide stub. The first call starts it and points the SMTP
-/// environment variables at it, so call it before building an `EmailService`.
+/// The process-wide stub. The first call starts it; every call points the
+/// SMTP environment variables at it (an `integration_serial` test puts the
+/// environment back when it ends), so call it before building an
+/// `EmailService`. Links in the mail use the baseline `FRONTEND_URL`.
 pub fn smtp_stub() -> &'static SmtpStub {
     static STUB: OnceLock<SmtpStub> = OnceLock::new();
-    STUB.get_or_init(|| {
+    crate::common::baseline_env();
+    let stub = STUB.get_or_init(|| {
         let mails: Arc<Mutex<Vec<Delivered>>> = Arc::default();
         let holds: Arc<Mutex<HashMap<String, Arc<Semaphore>>>> = Arc::default();
         let (port_tx, port_rx) = std::sync::mpsc::channel();
@@ -193,16 +195,15 @@ pub fn smtp_stub() -> &'static SmtpStub {
             });
         });
         let port = port_rx.recv().expect("stub port");
-
-        crate::common::set_env("SMTP_HOST", "127.0.0.1");
-        crate::common::set_env("SMTP_PORT", port.to_string());
-        crate::common::set_env("SMTP_USER", "stub");
-        crate::common::set_env("SMTP_PASS", "stub");
-        crate::common::set_env("SMTP_TLS", "none");
-        crate::common::set_env("SMTP_FROM_EMAIL", "noreply@mail.test");
-        crate::common::set_env("FRONTEND_URL", "https://app.test");
         SmtpStub { port, mails, holds }
-    })
+    });
+    crate::common::set_env("SMTP_HOST", "127.0.0.1");
+    crate::common::set_env("SMTP_PORT", stub.port.to_string());
+    crate::common::set_env("SMTP_USER", "stub");
+    crate::common::set_env("SMTP_PASS", "stub");
+    crate::common::set_env("SMTP_TLS", "none");
+    crate::common::set_env("SMTP_FROM_EMAIL", "noreply@mail.test");
+    stub
 }
 
 async fn serve(

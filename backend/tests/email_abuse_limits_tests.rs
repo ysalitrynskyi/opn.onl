@@ -13,8 +13,7 @@
 //! as behind the production proxy.
 
 mod common;
-#[path = "common/smtp_stub.rs"]
-mod smtp_stub;
+use common::smtp_stub;
 
 use std::sync::Arc;
 

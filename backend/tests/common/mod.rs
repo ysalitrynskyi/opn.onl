@@ -1,7 +1,99 @@
+//! Shared helpers for the integration tests.
+//!
+//! Most tests are built into two binaries, because a test binary links the
+//! whole app and one per file made a debug build 20–30 GB. A binary is one
+//! process, so its tests share the process environment and run against the
+//! shared database at the same time:
+//!
+//! - **`integration`** runs every test in parallel on one fixed environment,
+//!   [`baseline_env`]. A test there may set a variable only to its baseline
+//!   value, and must not sweep the whole database.
+//! - **`integration_serial`** holds the tests that change the environment or
+//!   sweep the database. Each one starts with
+//!   `let _serial = common::serial_guard().await;`, so they run one at a time
+//!   and the environment is put back after each.
+//!
+//! The files left at the top of `tests/` stay binaries of their own: a counting
+//! global allocator, log capture that depends on `tracing`'s per-process
+//! callsite cache, and proxy-header trust, which the app reads once per process.
+
 use sea_orm::{Database, DatabaseConnection};
 use std::env;
+use std::ffi::OsString;
+
+pub mod smtp_stub;
+pub mod soft_passkey;
+
+/// The environment every test in a binary starts from, applied once per
+/// process before the first database connection or app.
+///
+/// Fixed values, so a test cannot see one setting at its start and another
+/// after a test in some other file switched it. Each is set only when unset:
+/// a binary that pins something else first (proxy-header trust, say) keeps it.
+/// The values are what the tests that set them always set: the switches on, the
+/// frontend and WebAuthn origin the SMTP stub and the passkey helper use.
+pub fn baseline_env() {
+    static BASELINE: std::sync::Once = std::sync::Once::new();
+    BASELINE.call_once(|| {
+        for (key, value) in [
+            ("FORCE_HTTPS", "false"),
+            ("TRUST_PROXY_HEADERS", "false"),
+            ("JWT_SECRET", "integration-test-secret-0123456789abcdef"),
+            ("ENABLE_ACCOUNT_DELETION", "true"),
+            ("ENABLE_API_KEYS", "true"),
+            ("ENABLE_PASSKEYS", "true"),
+            ("ENABLE_LINK_IN_BIO", "true"),
+            ("FRONTEND_URL", soft_passkey::ORIGIN),
+            ("WEBAUTHN_RP_ID", soft_passkey::RP_ID),
+        ] {
+            if env::var_os(key).is_none() {
+                set_env(key, value);
+            }
+        }
+    });
+}
+
+/// One test in `integration_serial` running alone. Taking it waits for the
+/// test before it to finish; dropping it (after a failed assertion too) puts
+/// back exactly the environment variables there were when it was taken, so
+/// nothing a test sets leaks into the next one.
+#[allow(dead_code)]
+pub struct SerialGuard {
+    saved: Vec<(OsString, OsString)>,
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+}
+
+/// Take the [`SerialGuard`]. Every test in `integration_serial` calls this first.
+#[allow(dead_code)]
+pub async fn serial_guard() -> SerialGuard {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let lock = LOCK.lock().await;
+    baseline_env();
+    SerialGuard {
+        saved: env::vars_os().collect(),
+        _lock: lock,
+    }
+}
+
+impl Drop for SerialGuard {
+    fn drop(&mut self) {
+        let saved: std::collections::HashMap<&OsString, &OsString> =
+            self.saved.iter().map(|(k, v)| (k, v)).collect();
+        for (key, _) in env::vars_os() {
+            if !saved.contains_key(&key) {
+                remove_env(&key);
+            }
+        }
+        for (key, value) in &self.saved {
+            if env::var_os(key).as_ref() != Some(value) {
+                set_env(key, value);
+            }
+        }
+    }
+}
 
 pub async fn setup_test_db() -> DatabaseConnection {
+    baseline_env();
     dotenvy::dotenv().ok();
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
     let db = Database::connect(&db_url)
@@ -48,6 +140,7 @@ pub fn remove_env<K: AsRef<std::ffi::OsStr>>(key: K) {
 /// stub router.
 #[allow(dead_code)]
 pub async fn spawn_real_app() -> (axum_test::TestServer, DatabaseConnection) {
+    baseline_env();
     // Pin environment-dependent middleware before dotenvy runs so a developer
     // .env (e.g. FORCE_HTTPS=true) can't change test behavior: dotenvy never
     // overrides variables that are already set.
@@ -107,6 +200,7 @@ pub async fn spawn_real_app_ws_with_state(
     DatabaseConnection,
     std::sync::Arc<opn_onl_backend::handlers::websocket::WsState>,
 ) {
+    baseline_env();
     set_env("FORCE_HTTPS", "false");
     set_env("TRUST_PROXY_HEADERS", "false");
     if std::env::var("JWT_SECRET").is_err() {
